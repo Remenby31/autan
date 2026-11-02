@@ -3,6 +3,7 @@ add_executable(
   test_readers.cpp
   test_mesh_info.cpp
   test_mesh_counts.cpp
+  test_polymesh_write.cpp
   ${PROJECT_SOURCE_DIR}/tests/core/fixtures.cpp
 )
 target_include_directories(autan_io_tests PRIVATE ${PROJECT_SOURCE_DIR}/tests/core)
@@ -69,6 +70,19 @@ endif()
 add_cli_test(groups-without-ranks 2 "usage: autan-mesh-info" --json --groups lines ${mesh_dir}/hex/polyMesh)
 add_cli_test(one-rank 2 "usage: autan-mesh-info" --json --ranks 1 ${mesh_dir}/hex/polyMesh)
 add_cli_test(counts-without-json 2 "usage: autan-mesh-info" --ranks 2 ${mesh_dir}/hex/polyMesh)
+
+# autan-mesh-prisms through its exit status and report.
+function(add_prisms_test name code regex)
+  add_test(
+    NAME autan-mesh-prisms.${name}
+    COMMAND
+      ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:autan-mesh-prisms> "-DARGS=${ARGN}"
+      -DEXPECT_CODE=${code} "-DEXPECT=${regex}" -P ${CMAKE_CURRENT_SOURCE_DIR}/run_cli.cmake
+  )
+endfunction()
+add_prisms_test(report 0 "\"prisms\": [0-9]+.*\"min_volume_ratio\": [0-9]" ${mesh_dir}/hybrid/polyMesh ${CMAKE_CURRENT_BINARY_DIR}/prisms-out)
+add_prisms_test(usage 2 "usage: autan-mesh-prisms" --planarity 0 ${mesh_dir}/hybrid/polyMesh out)
+add_prisms_test(missing 1 "E0130" ${mesh_dir}/missing.msh ${CMAKE_CURRENT_BINARY_DIR}/prisms-none)
 add_test(
   NAME autan-mesh-info.surface
   COMMAND

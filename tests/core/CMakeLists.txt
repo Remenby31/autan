@@ -8,6 +8,7 @@ add_executable(
   test_lines.cpp
   test_wall_distance.cpp
   test_periodic.cpp
+  test_prisms.cpp
 )
 target_link_libraries(
   autan_core_tests
