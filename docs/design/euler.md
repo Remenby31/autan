@@ -72,7 +72,17 @@ Protocol (`tests/physics/test_euler.cpp`): a smooth flow perturbed by 5–10 % i
 | poly | 3.53 | 3.60 | 3.63 |
 | hybrid | 4.19 | 4.32 | 4.00 |
 
-A steady `fp32+acc64` run on the host evaluates the floors at every iteration, against the second-order residual the history reports; on the device it does not, and logs it. Like that residual and the drop of `converged`, the floors judge the state the iteration starts from, and the run saves the state after its step (and, with a point vortex, the circulation measured from it): a step from a state whose every cell is at its floor solves for a round-off right-hand side and leaves the saved state at its floor too; continued from its solution, the hybrid MMS below is at its floor at its first iteration, every ratio at most 0.31 (`tests/physics/test_euler_run.cpp`). Accuracy of `floor`: on the hybrid MMS asked for ten orders, the run ends `floor` at iteration 20 with the multigrid, the worst equation 5.5 orders down and every cell at most 0.52 of its floor, and at iteration 23 with Gauss-Seidel, 5.17 orders down; the residuals' plateau is 6.5 orders, reached at iterations 25 and 30: `floor` ends a run 1.0 to 1.35 orders above its plateau.
+A steady `fp32+acc64` run on the host evaluates the floors every 4 iterations, against the second-order residual the history reports, and the runtime asks for those of the state a run ends with (`final_floors`); on the device it evaluates none, and logs it. An evaluation is a pass of the residual's loops with magnitudes, so its cadence trades cost against how late a stop comes. On hex n032 (32 768 cells, Roe), host time per cell and iteration, median of three runs alone on spark-5359:
+
+| Floors | ns / cell / iteration | Run ends |
+|---|---|---|
+| none (before them) | 4101 | `completed` at 40 |
+| every iteration | 4675 (+14 %) | `floor` at 27 |
+| every 2 | 4462 (+9 %) | `floor` at 28 |
+| every 4 | 4358 (+6 %) | `floor` at 28 |
+| every 8 | 4234 (+3 %) | `floor` at 32 |
+
+Every 4 iterations delays a stop by at most 3 iterations, never causes one, and costs 6 % of a run that never reaches its floor. Like the history's residual and the drop of `converged`, the floors at an iteration judge the state it starts from; the run saves the state after its step (and, with a point vortex, the circulation measured from it), and a run that reaches `max_iterations` is judged on that saved state. A step from a state whose every cell is at its floor solves for a round-off right-hand side and leaves the saved state at its floor too: continued from its solution, the hybrid MMS below is at its floor at its first iteration, every ratio at most 0.31 (`tests/physics/test_euler_run.cpp`). Accuracy of `floor`: on the hybrid MMS asked for ten orders, the run ends `floor` at iteration 20 with the multigrid, the worst equation 5.5 orders down and every cell at most 0.52 of its floor, and at iteration 24 with Gauss-Seidel, 5.44 orders down; the residuals' plateau is 6.5 orders, reached at iterations 25 and 30: `floor` ends a run 1.0 to 1.1 orders above its plateau.
 
 A ten-order drop is therefore measured in `fp64`; in `fp32+acc64` the gate is the integrated forces and the surface pressure against `fp64`, and the plateau is reported ([acceptance.md](../validation/acceptance.md#m2--compressible-euler)). The surface pressure must then agree with `fp64` to max |ΔCp| ≤ 10⁻³ over the wall faces, shock cells excepted (reported there): the plateau leaves state differences of order 10⁻⁶–10⁻⁵ relative, so 10⁻³ is a margin of 100 or more, and it is ten times finer than the 0.01 to which Cp distributions are compared with experiment.
 
