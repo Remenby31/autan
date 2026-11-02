@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -318,4 +319,69 @@ TEMPLATE_TEST_CASE("wall shear stress of a cubic velocity is exact", "[navier-st
   }
   // Round-off of the fit, amplified by its conditioning like the linear gradients above.
   CHECK(worst <= 4096 * eps<P>());
+}
+
+// The matrix-free product's residual (Euler<P>::freeze's contract, with the viscous terms): at the
+// frozen state it is the residual bit for bit, and evaluating it elsewhere leaves the residual's
+// own cache, which the wall traction reads, untouched.
+TEMPLATE_TEST_CASE("the frozen residual is the residual at its state and keeps the cache",
+                   "[navier-stokes]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  using P = TestType;
+  const auto* file = GENERATE(from_range(meshes));
+  CAPTURE(file);
+  const auto mesh = autan::io::read_mesh(mesh_dir / file);
+  const auto g = autan::compute_geometry(mesh);
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  Scheme scheme;  // limited: freeze holds the limiter
+  scheme.reference = {rho, 0.0, 0.0, 0.0, 1e5 / (air.gamma - 1.0)};
+  Transport t;
+  t.sutherland = false;
+  t.mu_ref = mu;
+  t.prandtl = prandtl;
+  NavierStokes<P> ns(mesh, g, air, scheme, t);
+  std::vector<BoundaryKind> kind(nb, BoundaryKind::state);
+  std::vector<double> data(5 * nb);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const auto f = ni + b;
+    const auto w = primitive(g.face_centroid_x[f], g.face_centroid_y[f], g.face_centroid_z[f]);
+    const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[f])].name;
+    if (zone == "ymin") {
+      kind[b] = BoundaryKind::wall;
+      data[b] = 0.0;
+    } else {
+      for (std::size_t k = 0; k < 5; ++k) data[k * nb + b] = w[k];
+    }
+  }
+  ns.set_boundary(kind, data);
+  auto conserved = [&](double amplitude) {
+    std::vector<double> u(5 * n);
+    for (std::size_t c = 0; c < n; ++c) {
+      const double x = g.cell_centroid_x[c], y = g.cell_centroid_y[c], z = g.cell_centroid_z[c];
+      auto w = primitive(x, y, z);
+      w[1] += amplitude * std::sin(7.0 * x + 3.0 * z);
+      w[4] += amplitude * 300.0 * std::cos(5.0 * y);
+      u[c] = w[0];
+      for (std::size_t k = 0; k < 3; ++k) u[(1 + k) * n + c] = w[0] * w[1 + k];
+      u[4 * n + c] =
+          w[4] / (air.gamma - 1.0) + 0.5 * w[0] * (w[1] * w[1] + w[2] * w[2] + w[3] * w[3]);
+    }
+    std::vector<typename P::state> s(5 * n);
+    ns.state(u, s);
+    return s;
+  };
+  const auto s1 = conserved(1.0), s2 = conserved(2.0);
+  std::vector<typename P::residual> r(5 * n), rf(5 * n), other(5 * n);
+  ns.residual(s1, r);
+  std::vector<double> traction(3 * nb), after(3 * nb);
+  ns.viscous_traction(traction);
+  ns.freeze(s1);
+  ns.residual_frozen(s1, rf);
+  CHECK(r == rf);
+  ns.residual_frozen(s2, other);
+  ns.viscous_traction(after);
+  CHECK(traction == after);
+  ns.release_frozen();
+  CHECK_THROWS_AS(ns.residual_frozen(s1, rf), std::logic_error);
 }

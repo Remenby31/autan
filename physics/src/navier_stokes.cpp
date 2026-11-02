@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -12,6 +13,7 @@
 
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
+#include "euler.hpp"
 #include "navier_stokes_cpu.hpp"
 
 namespace autan::physics {
@@ -34,6 +36,12 @@ struct NavierStokes<P>::Impl {
   stored<decltype(D::cell_centroid)> cell_centroid;
   stored<decltype(D::cell_volume)> cell_volume;
   std::vector<State> mu_t, mu_t_b, lam_v, traction, ut, ut_b;
+  // freeze(): the viscous terms' workspace for residual_frozen, apart from the cache above.
+  struct Frozen {
+    std::vector<State> ut, ut_b;
+    std::array<std::vector<typename P::grad>, 7> fits;
+  };
+  std::optional<Frozen> frozen;
   // The boundary fit's weights: 19 per stencil entry in seven 3-vectors (kernels/navier_stokes.py).
   std::array<stored<decltype(D::q0)>, 7> q;
   stored<decltype(D::quad)> quad;
@@ -693,6 +701,54 @@ void NavierStokes<P>::residual_and_jacobian(std::span<const State> s, std::span<
   m.d.res = res.data();
   nk::cpu::viscous_faces_jacobian(m.d);
   nk::cpu::viscous_boundaries_jacobian(m.d);
+}
+
+template <class P>
+void NavierStokes<P>::freeze(std::span<const State> s) {
+  auto& m = *impl_;
+  if (!m.bounded) throw std::logic_error("NavierStokes: set_boundary before freeze");
+  m.euler.freeze(s);
+  if (!m.frozen) {
+    m.frozen.emplace();
+    m.frozen->ut.assign(m.ut.size(), State(0));
+    m.frozen->ut_b.assign(m.ut_b.size(), State(0));
+    for (std::size_t k = 0; k < 7; ++k)
+      m.frozen->fits[k].assign(m.fits[k].size(), typename P::grad(0));
+  }
+}
+
+template <class P>
+void NavierStokes<P>::residual_frozen(std::span<const State> s, std::span<Res> res) {
+  auto& m = *impl_;
+  if (!m.frozen) throw std::logic_error("NavierStokes::residual_frozen before freeze");
+  m.euler.residual_frozen(s, res);
+  const auto a = m.euler.frozen_data();
+  auto& f = *m.frozen;
+  auto d = m.d;
+  d.prim = a.prim;
+  d.grad = a.grad;
+  d.prim_b = a.prim_b;
+  d.ut = f.ut.data();
+  d.ut_b = f.ut_b.data();
+  d.fit0 = f.fits[0].data();
+  d.fit1 = f.fits[1].data();
+  d.fit2 = f.fits[2].data();
+  d.fit3 = f.fits[3].data();
+  d.fit4 = f.fits[4].data();
+  d.fit5 = f.fits[5].data();
+  d.fit6 = f.fits[6].data();
+  d.res = res.data();
+  nk::cpu::temperatures_velocities(d);
+  nk::cpu::boundary_temperatures_velocities(d);
+  nk::cpu::cubic_fits(d);
+  nk::cpu::viscous_faces(d);
+  nk::cpu::viscous_boundaries(d);
+}
+
+template <class P>
+void NavierStokes<P>::release_frozen() {
+  impl_->euler.release_frozen();
+  impl_->frozen.reset();
 }
 
 template <class P>

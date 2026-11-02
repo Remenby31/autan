@@ -60,6 +60,16 @@ class NavierStokes {
   /// R(s) and the approximate Jacobian: Euler<P>'s, plus dF_v/dW of every face with the cell
   /// gradients held fixed.
   void residual_and_jacobian(std::span<const State> s, std::span<Res> res);
+  /// For the implicit step's matrix-free product: Euler<P>::freeze at s (its limiter and
+  /// reconstruction branches held), and a workspace of the viscous terms' own; the viscous
+  /// gradients are not held. Leaves what residual() last evaluated untouched.
+  void freeze(std::span<const State> s);
+  /// R(s) with the branches of freeze()'s state, in that workspace: equal to residual(s) bit for
+  /// bit at that state; the eddy viscosity is the one last set. Throws std::logic_error before
+  /// freeze().
+  void residual_frozen(std::span<const State> s, std::span<Res> res);
+  /// Frees what freeze() allocated.
+  void release_frozen();
   /// A = diag(shift) + J~ into `a`: Euler<P>'s blocks, the viscous face Jacobians and, through
   /// the boundary fit, the viscous fluxes' dependence on the fitted cell and the face's other cell.
   void assemble(std::span<const double> shift, BlockMatrix& a) const;
