@@ -134,8 +134,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # A bisection on main checks out earlier commits of main.
-          fetch-depth: ${{ github.event_name == 'pull_request' && 1 || 0 }}
+          # A bisection on main checks out earlier commits of main; a pull request's merge commit
+          # needs its first parent, the base the paired gate measures it against.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 0 }}
       - name: Give this job priority on the GPU lock
         # As long as the job may last: a bisection on main keeps the GPU first through its probes.
         run: bench/ci/priority.sh start ${{ github.event_name == 'pull_request' && 90 || 240 }}
@@ -161,12 +162,26 @@ jobs:
         run: >-
           REQUIRE_GPU=1 bench/lock/autan-gpu-lock -m "gpu-bench: image smoke test"
           -w "$AUTAN_BENCH_LOCK_TIMEOUT" -t 600 -- docker/dev/smoke/run.sh build/smoke
+      # Pull requests: the paired gate (#403). The change is measured against its base, built from
+      # main at merge time, alternately in one hold of the GPU lock, so that the machine's state
+      # weighs on both sides alike (docs/infra/bench.md). A base that does not build ends in
+      # "BASE BUILD FAILED": no verdict on the change, never green.
+      - name: Build the base's benchmarks (pull requests)
+        if: needs.changes.outputs.bench == 'true' && github.event_name == 'pull_request'
+        run: bench/ci/build-base.sh "$RUNNER_TEMP/base"
+      - name: STREAM, paired with the base (pull requests)
+        if: needs.changes.outputs.bench == 'true' && github.event_name == 'pull_request'
+        run: >-
+          uv run --project bench --locked autan-bench pair --suite stream --precision fp64
+          --change build/bench/stream --base "$RUNNER_TEMP/base/build/bench/stream"
+          --out results/pair/stream --confirm --summary "$GITHUB_STEP_SUMMARY"
+      # Main: the absolute gate against the GB10 baselines, the history and the bisection.
       - name: STREAM bandwidth
-        if: needs.changes.outputs.bench == 'true'
+        if: needs.changes.outputs.bench == 'true' && github.event_name != 'pull_request'
         run: uv run --project bench --locked autan-bench stream --binary build/bench/stream --out results/stream.json
       - name: Compare with the GB10 baseline (failures confirmed by a rerun)
         id: stream-gate
-        if: needs.changes.outputs.bench == 'true'
+        if: needs.changes.outputs.bench == 'true' && github.event_name != 'pull_request'
         run: >-
           bench/ci/gate.sh results/stream.json bench/baselines/gb10.json --
           uv run --project bench --locked autan-bench stream --binary build/bench/stream --out results/stream.json
@@ -186,8 +201,16 @@ jobs:
       - name: The measured paths are the benchmarks' build graph
         if: needs.changes.outputs.bench == 'true'
         run: python3 bench/ci/check-measured.py build/autan:codegen/autan_loop_bench build/bench:stream
+      - name: Generated loops, hex n = 128, fp32, RCM order, paired with the base (pull requests)
+        if: needs.changes.outputs.bench == 'true' && github.event_name == 'pull_request'
+        run: >-
+          uv run --project bench --locked autan-bench pair --suite codegen --precision fp32
+          --change build/autan/codegen/autan_loop_bench
+          --base "$RUNNER_TEMP/base/build/autan/codegen/autan_loop_bench"
+          --out results/pair/codegen-hex-n128-fp32 --confirm --summary "$GITHUB_STEP_SUMMARY"
+          -- meshes/hex-n128.msh --policy fp32 --order rcm
       - name: Generated loops, hex n = 128, fp32, RCM order
-        if: needs.changes.outputs.bench == 'true'
+        if: needs.changes.outputs.bench == 'true' && github.event_name != 'pull_request'
         run: >-
           uv run --project bench --locked autan-bench run --suite codegen
           --binary build/autan/codegen/autan_loop_bench --precision fp32
@@ -196,7 +219,7 @@ jobs:
       - name: Compare the tracked loops with their GB10 baseline (failures confirmed by a rerun)
         id: loops-gate
         # Its status: 1 only for a regression confirmed by the rerun, which alone starts a bisection.
-        if: needs.changes.outputs.bench == 'true'
+        if: needs.changes.outputs.bench == 'true' && github.event_name != 'pull_request'
         run: >-
           bench/ci/gate.sh results/codegen-hex-n128-fp32.json bench/baselines/gb10-codegen-hex-n128-fp32.json --
           uv run --project bench --locked autan-bench run --suite codegen
@@ -222,6 +245,9 @@ jobs:
       - name: Release the GPU lock priority
         if: always()
         run: bench/ci/priority.sh stop
+      - name: Remove the base's worktree
+        if: always() && github.event_name == 'pull_request'
+        run: bench/ci/build-base.sh --remove "$RUNNER_TEMP/base"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         id: results
         if: always() && needs.changes.outputs.bench == 'true'

@@ -1,0 +1,296 @@
+import functools
+import json
+import os
+import random
+import stat
+import sys
+from contextlib import contextmanager
+from pathlib import Path
+
+import pytest
+from autan_bench import gpu, pair, runner
+from autan_bench.cli import main
+from autan_bench.errors import BenchError, Code
+from conftest import bench, make_result
+from test_run import FAKE_SMI, fake_runnable, raw_output
+
+
+def noisy(center: float, rng: random.Random, n: int = 20, spread: float = 0.005) -> list[float]:
+    """n samples within ±spread of center."""
+    return [center * (1 + rng.uniform(-spread, spread)) for _ in range(n)]
+
+
+def test_the_order_alternates_which_side_goes_first():
+    assert pair.order(5) == ["change", "base", "base", "change", "change", "base",
+                             "base", "change", "change", "base"]  # fmt: skip
+
+
+def test_no_change_is_ok_with_an_interval_containing_one():
+    rng = random.Random(1)
+    row = pair.judge("s.triad", "GB/s", "higher", [noisy(220, rng) for _ in range(5)],
+                     [noisy(220, rng) for _ in range(5)])  # fmt: skip
+    assert row.verdict == pair.OK
+    assert row.ci[0] < 1 < row.ci[1]
+    assert row.ratio == pytest.approx(1, abs=0.005)
+
+
+@pytest.mark.parametrize(("better", "change_center"), [("higher", 200.0), ("lower", 1.1)])
+def test_a_known_ten_percent_loss_is_a_regression(better, change_center):
+    rng = random.Random(2)
+    base_center = 220.0 if better == "higher" else 1.0
+    row = pair.judge("s.k", "u", better, [noisy(change_center, rng) for _ in range(5)],
+                     [noisy(base_center, rng) for _ in range(5)])  # fmt: skip
+    assert row.verdict == pair.REGRESSION
+    # R < 1 means worse whichever the direction: 200/220 and 1/1.1.
+    assert row.ratio == pytest.approx(1 / 1.1, rel=0.01)
+    assert row.ci[1] < 1
+
+
+@pytest.mark.parametrize(("better", "factor"), [("higher", 1.15), ("lower", 0.85)])
+def test_an_improvement_is_ok(better, factor):
+    rng = random.Random(3)
+    row = pair.judge("s.k", "u", better, [noisy(100 * factor, rng) for _ in range(5)],
+                     [noisy(100, rng) for _ in range(5)])  # fmt: skip
+    assert row.verdict == pair.OK
+    assert row.ratio > 1
+
+
+def test_exactly_the_threshold_is_tolerated():
+    row = pair.judge("s.k", "u", "higher", [[95.0, 95.0]] * 3, [[100.0, 100.0]] * 3)
+    assert row.ratio == pytest.approx(0.95)
+    assert row.verdict == pair.OK
+
+
+def test_a_drift_of_the_machine_is_cancelled_by_the_alternation():
+    """The machine slows by 1 % per run over the series, the code is the same on both sides: in
+    the alternated order the sides' median runs are one run apart (runs 4 and 5 of 0-9, the last pair
+    being AB), so at most one run's drift is left, while all base runs then all change runs would
+    read a 5 % regression."""
+    rng = random.Random(4)
+
+    def series(sides: list[str]) -> tuple[list[list[float]], list[list[float]]]:
+        runs = {"change": [], "base": []}
+        for i, side in enumerate(sides):
+            runs[side].append(noisy(220 * (1 - 0.01 * i), rng, spread=0.002))
+        return runs["change"], runs["base"]
+
+    alternated = pair.judge("s.k", "GB/s", "higher", *series(pair.order(5)))
+    assert alternated.verdict == pair.OK
+    assert alternated.ratio == pytest.approx(1, abs=0.012)
+    blocked = pair.judge("s.k", "GB/s", "higher", *series(["base"] * 5 + ["change"] * 5))
+    assert blocked.ratio < 0.95
+
+
+def test_run_to_run_noise_enters_the_interval():
+    """Each run is tight but runs differ by up to ±8 %: a 6 % loss is not established, and the
+    run CV reports that noise."""
+    rng = random.Random(5)
+    offsets = [0.92, 1.08, 1.0, 0.95, 1.05]
+    change = [noisy(94 * o, rng, spread=0.001) for o in offsets[::-1]]
+    base = [noisy(100 * o, rng, spread=0.001) for o in offsets]
+    row = pair.judge("s.k", "GB/s", "higher", change, base)
+    assert row.ratio < 0.95
+    assert row.verdict == pair.INCONCLUSIVE
+    assert row.ci[1] >= 1
+    # Run medians 92, 108, 100, 95, 105: standard deviation √44.5 over a mean of 100.
+    assert row.base_run_cv == pytest.approx(44.5**0.5 / 100, rel=0.01)
+
+
+def test_the_bootstrap_is_reproducible():
+    rng = random.Random(6)
+    change, base = [noisy(97, rng) for _ in range(5)], [noisy(100, rng) for _ in range(5)]
+    assert pair.judge("s", "u", "higher", change, base) == pair.judge("s", "u", "higher", change,
+                                                                       base)  # fmt: skip
+
+
+def test_runs_from_another_gpu_or_config_are_refused():
+    ok = make_result([bench("stream.triad", [1.0, 2.0])])
+    with pytest.raises(BenchError) as err:
+        pair.judge_all([ok], [make_result([bench("stream.triad", [1.0, 2.0])], gpu="Other")])
+    assert err.value.code == Code.GPU_MISMATCH
+    with pytest.raises(BenchError) as err:
+        pair.judge_all([make_result([bench("stream.triad", [1.0, 2.0])], config={"n": 2})], [ok])
+    assert err.value.code == Code.INCOMPATIBLE
+
+
+def test_a_benchmark_missing_from_a_run_is_refused():
+    both = make_result([bench("stream.triad", [1.0, 2.0]), bench("stream.copy", [1.0, 2.0])])
+    with pytest.raises(BenchError) as err:
+        pair.judge_all([make_result([bench("stream.triad", [1.0, 2.0])])], [both])
+    assert err.value.code == Code.MISSING_BENCHMARK
+
+
+def test_a_benchmark_whose_direction_differs_is_refused():
+    lower = make_result([bench("stream.triad", [1.0, 2.0], better="lower")])
+    with pytest.raises(BenchError) as err:
+        pair.judge_all([lower], [make_result([bench("stream.triad", [1.0, 2.0])])])
+    assert err.value.code == Code.INCOMPATIBLE
+
+
+# The command, with fake binaries: each prints the raw format with its kernel times scaled by a
+# factor per run (read from a file, one line per run), appends its side to a log, and records
+# whether the GPU lock was held by someone else while it ran.
+PAIR_BINARY = """#!{python}
+import fcntl, json, pathlib, time
+log = pathlib.Path({log!r})
+runs = [line for line in log.read_text().splitlines()] if log.exists() else []
+factors = [float(x) for x in pathlib.Path({factors!r}).read_text().split()]
+factor = factors[sum(1 for r in runs if r.startswith({side!r}))]
+with open({lock!r}) as handle:
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        held = False
+        fcntl.flock(handle, fcntl.LOCK_UN)
+    except BlockingIOError:
+        held = True
+with log.open("a") as out:
+    out.write(f"{side} {{held}}\\n")
+busy = pathlib.Path({busy!r})
+busy.touch()
+time.sleep(0.3)
+busy.unlink()
+raw = json.loads(pathlib.Path({raw!r}).read_text())
+raw["kernels"][0]["seconds"] = [s * factor * (1 + 0.001 * i) for i, s in
+                                enumerate([0.010] * 12)]
+print(json.dumps(raw))
+"""
+
+
+@pytest.fixture
+def paired(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    fake_runnable(tmp_path, monkeypatch, 3)
+    busy = tmp_path / "busy"
+    smi = tmp_path / "nvidia-smi"
+    smi.write_text(FAKE_SMI.format(busy=busy))
+    smi.chmod(smi.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    # The load and idle checks are test_run's; here they are made quick, not skipped.
+    monkeypatch.setattr(gpu, "require_idle", functools.partial(gpu.require_idle, interval_s=0.02))
+    monkeypatch.setattr(gpu, "runnable_threads", lambda: 2.0)
+    raw = tmp_path / "raw.json"
+    raw.write_text(json.dumps(raw_output(True, "cuda")))
+    lock = tmp_path / "lock"
+    lock.touch()
+
+    def make(change: list[float], base: list[float]) -> list[str]:
+        binaries = {}
+        for side, factors in (("change", change), ("base", base)):
+            (tmp_path / f"{side}.factors").write_text(" ".join(map(str, factors)))
+            path = tmp_path / f"{side}-bench"
+            path.write_text(PAIR_BINARY.format(
+                python=sys.executable, log=str(tmp_path / "log"), side=side, lock=str(lock),
+                busy=str(busy), raw=str(raw), factors=str(tmp_path / f"{side}.factors")))  # fmt: skip
+            path.chmod(path.stat().st_mode | stat.S_IEXEC)
+            binaries[side] = str(path)
+        return ["pair", "--suite", "codegen", "--precision", "fp32", "--change",
+                binaries["change"], "--base", binaries["base"], "--out", str(tmp_path / "out"),
+                "--lock", str(lock), "--pairs", "3"]  # fmt: skip
+
+    return make
+
+
+def log(tmp_path: Path) -> list[str]:
+    return (tmp_path / "log").read_text().splitlines()
+
+
+def test_pair_alternates_the_sides_in_one_hold_and_records_each_run(
+    paired, tmp_path, capsys, monkeypatch
+):
+    holds = []
+    take = gpu.gpu_lock
+
+    @contextmanager
+    def counted(*args, **kwargs):
+        holds.append(1)
+        with take(*args, **kwargs) as waited:
+            yield waited
+
+    monkeypatch.setattr(gpu, "gpu_lock", counted)
+    assert main([*paired([1.0] * 6, [1.0] * 6), "--confirm"]) == 0
+    # One hold for the series; an ok first series needs no confirmation.
+    assert holds == [1]
+    # Each run saw the lock held (by the gate), change first, then base first, then change first.
+    assert log(tmp_path) == [f"{s} True" for s in pair.order(3)]
+    out = tmp_path / "out"
+    runs = sorted(p.name for p in (out / "series-1").iterdir())
+    assert runs == [f"{i + 1:02d}-{s}.json" for i, s in enumerate(pair.order(3))]
+    summary = json.loads((out / "pair.json").read_text())
+    assert summary["schema"] == pair.SCHEMA_ID
+    assert summary["outcome"] == pair.OK
+    (series,) = summary["series"]
+    assert series["order"] == pair.order(3)
+    assert series["hold_s"] > 0
+    names = {r["name"] for r in series["rows"]}
+    assert names == {"codegen.flux", "codegen.flux.time_per_cell"}
+    for row in series["rows"]:
+        assert row["ratio"] == pytest.approx(1)
+        assert row["change_run_cv"] == row["base_run_cv"] == pytest.approx(0)
+    assert "lock held" in capsys.readouterr().out
+
+
+def test_a_regression_is_confirmed_by_a_second_series_which_decides(paired, tmp_path, capsys):
+    # The change's kernels take 10 % longer in every run of both series.
+    assert main([*paired([1.1] * 6, [1.0] * 6), "--confirm"]) == 1
+    err = capsys.readouterr().err
+    assert "error[REGRESSION]" in err
+    assert "confirmed by a second series" in err
+    summary = json.loads((tmp_path / "out" / "pair.json").read_text())
+    assert [s["outcome"] for s in summary["series"]] == [pair.REGRESSION, pair.REGRESSION]
+    assert summary["outcome"] == pair.REGRESSION
+    assert len(log(tmp_path)) == 12
+
+
+def test_a_regression_not_confirmed_passes(paired, tmp_path):
+    # The first series reads the change 10 % slower; the second, the same as the base.
+    assert main([*paired([1.1, 1.1, 1.1, 1.0, 1.0, 1.0], [1.0] * 6), "--confirm"]) == 0
+    summary = json.loads((tmp_path / "out" / "pair.json").read_text())
+    assert [s["outcome"] for s in summary["series"]] == [pair.REGRESSION, pair.OK]
+    assert summary["outcome"] == pair.OK
+
+
+def test_inconclusive_twice_is_noise_too_high(paired, tmp_path, capsys):
+    # A 7 % loss on average, but runs ±10 % apart: the interval contains 1 in both series.
+    change = [0.97, 1.17, 1.07] * 2
+    base = [1.10, 0.90, 1.0] * 2
+    summary_md = tmp_path / "summary.md"
+    assert main([*paired(change, base), "--confirm", "--summary", str(summary_md)]) == 3
+    assert "### Paired gate, codegen: **INCONCLUSIVE: noise too high**" in summary_md.read_text()
+    assert summary_md.read_text().count("| codegen.flux |") == 2
+    err = capsys.readouterr().err
+    assert "error[INCONCLUSIVE]" in err
+    assert "noise too high" in err
+    summary = json.loads((tmp_path / "out" / "pair.json").read_text())
+    assert [s["outcome"] for s in summary["series"]] == [pair.INCONCLUSIVE] * 2
+    assert len(summary["series"]) == 2
+
+
+def test_without_confirm_one_series_decides(paired, tmp_path, capsys):
+    summary_md = tmp_path / "summary.md"
+    assert main([*paired([1.1] * 3, [1.0] * 3), "--summary", str(summary_md)]) == 1
+    text = summary_md.read_text()
+    assert "### Paired gate, codegen: **REGRESSION**" in text
+    assert "Series 1: 6 runs (C B B C C B)" in text
+    assert "Series 2" not in text
+    assert "confirmed" not in capsys.readouterr().err
+    assert len(log(tmp_path)) == 6
+
+
+def test_pair_refuses_fewer_than_three_pairs(paired, capsys):
+    assert main([*paired([1.0] * 4, [1.0] * 4), "--pairs", "2"]) == 2
+    assert "error[TOO_FEW_RUNS]" in capsys.readouterr().err
+
+
+def test_the_stream_suite_measures_with_the_stream_command_s_arguments(monkeypatch, tmp_path):
+    seen = []
+
+    def series(*args, **_):
+        seen.append(args[2])
+        raise BenchError(Code.NO_STREAM, "stop here")
+
+    monkeypatch.setattr(runner, "pair_series", series)
+    argv = ["pair", "--suite", "stream", "--precision", "fp64", "--change", "c", "--base", "b",
+            "--out", str(tmp_path / "out")]  # fmt: skip
+    assert main(argv) == 2
+    assert seen == [["--elements", str(1 << 28), "--warmup", "10", "--reps", "100",
+                     "--batch", "5", "--block", "256"]]  # fmt: skip
