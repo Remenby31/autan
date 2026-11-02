@@ -683,6 +683,42 @@ Level as_level(const Graph& g) {
 
 }  // namespace
 
+std::vector<std::vector<std::size_t>> line_colours(const Level& l) {
+  std::vector<std::size_t> line_of(l.n_nodes);
+  for (std::size_t li = 0; li < l.n_lines(); ++li) {
+    for (auto k = l.line_offsets[li]; k < l.line_offsets[li + 1]; ++k) {
+      line_of[static_cast<std::size_t>(l.line_nodes[static_cast<std::size_t>(k)])] = li;
+    }
+  }
+  // Greedy colouring of the lines in line order: lines of a colour share no edge.
+  std::vector<std::vector<std::size_t>> adjacent(l.n_lines());
+  for (std::size_t e = 0; e < l.owner.size(); ++e) {
+    const std::size_t a = line_of[static_cast<std::size_t>(l.owner[e])];
+    const std::size_t b = line_of[static_cast<std::size_t>(l.neighbour[e])];
+    if (a == b) continue;
+    adjacent[a].push_back(b);
+    adjacent[b].push_back(a);
+  }
+  std::vector<int> colour(l.n_lines(), -1);
+  std::vector<int> seen;
+  int n_colours = 0;
+  for (std::size_t li = 0; li < l.n_lines(); ++li) {
+    seen.assign(static_cast<std::size_t>(n_colours) + 1, 0);
+    for (const std::size_t o : adjacent[li]) {
+      if (colour[o] >= 0) seen[static_cast<std::size_t>(colour[o])] = 1;
+    }
+    int k = 0;
+    while (seen[static_cast<std::size_t>(k)] != 0) ++k;
+    colour[li] = k;
+    n_colours = std::max(n_colours, k + 1);
+  }
+  std::vector<std::vector<std::size_t>> colours(static_cast<std::size_t>(n_colours));
+  for (std::size_t li = 0; li < l.n_lines(); ++li) {
+    colours[static_cast<std::size_t>(colour[li])].push_back(li);
+  }
+  return colours;
+}
+
 std::vector<Level> agglomerate(const Mesh& mesh, const Geometry& geometry,
                                const AgglomerationOptions& options) {
   if (mesh.n_owned_cells() != mesh.n_cells()) {

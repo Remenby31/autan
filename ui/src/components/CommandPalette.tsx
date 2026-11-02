@@ -1,11 +1,22 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
-import { Box, CornerDownLeft, FilePlus2, ListTree, Monitor, Moon, Search, Sun } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import {
+  Box,
+  CornerDownLeft,
+  FilePlus2,
+  GitCompareArrows,
+  ListTree,
+  Monitor,
+  Moon,
+  Search,
+  Sun,
+} from "lucide-react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import type { Run } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
 import { runsQuery } from "../api/runs";
+import { studies } from "../api/studies";
 import { setTheme } from "./shell/theme";
 import { Kbd } from "./ui/Kbd";
 import { formatRelative } from "./ui/RelativeTime";
@@ -23,6 +34,7 @@ export function CommandPalette({
 }) {
   const navigate = useNavigate();
   const { data } = useQuery(runsQuery);
+  const offered = useMemo(() => (open ? studies(data) : []), [open, data]);
   const [value, setValue] = useState("");
 
   useEffect(() => {
@@ -86,6 +98,12 @@ export function CommandPalette({
               onSelect={() => close(() => navigate({ to: "/" }))}
             />
             <Item
+              value="go compare"
+              icon={<GitCompareArrows className="size-4" />}
+              title="Compare"
+              onSelect={() => close(() => navigate({ to: "/compare", search: { runs: [] } }))}
+            />
+            <Item
               value="go analysis"
               icon={<Box className="size-4" />}
               title="Analysis"
@@ -98,6 +116,24 @@ export function CommandPalette({
               onSelect={() => close(() => navigate({ to: "/cases/new" }))}
             />
           </Command.Group>
+          {offered.length > 0 && (
+            <Command.Group heading="Compare a study">
+              {offered.map((s) => (
+                <Item
+                  key={s.name}
+                  // A study is one case name: its value is that name, quoted, which stays the same
+                  // as runs come and never reads as another study's; its label is searched too.
+                  value={`compare study ${JSON.stringify(s.name)}`}
+                  keywords={["compare", s.name, s.label]}
+                  icon={<GitCompareArrows className="size-4" />}
+                  title={`${s.name} · ${s.label}`}
+                  onSelect={() =>
+                    close(() => navigate({ to: "/compare", search: { runs: s.ids } }))
+                  }
+                />
+              ))}
+            </Command.Group>
+          )}
           <Command.Group heading="Theme">
             <Item
               value="theme system"
