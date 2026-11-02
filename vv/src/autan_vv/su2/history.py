@@ -105,6 +105,24 @@ def read_autan(path: Path, monitor: str = "forces") -> History:
         raise VVError(msg, code="V0904") from None
 
 
+def continued(history: History, residual_reference: dict[str, float]) -> History:
+    """The history of a `continue` run with the residuals at iteration 1 of its original run
+    (run.json `start.residual_reference`, results.md) as its first line, so that the criterion is
+    judged as for the uninterrupted run and iterations count from the original's first; forces of
+    that line are not known (NaN)."""
+    nan = np.array([np.nan])
+    return History(
+        iterations=np.concatenate([[1], history.iterations]).astype(np.int64),
+        residuals={
+            eq: np.concatenate([[residual_reference[eq]], r]) for eq, r in history.residuals.items()
+        },
+        cl=np.concatenate([nan, history.cl]),
+        cd=np.concatenate([nan, history.cd]),
+        cmy=np.concatenate([nan, history.cmy]),
+        wall_seconds=None,
+    )
+
+
 def converged_at(history: History, orders: float) -> int | None:
     """Index into `history` of the first iteration meeting the criterion, or None."""
     first = {eq: r[0] for eq, r in history.residuals.items()}

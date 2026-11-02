@@ -513,6 +513,19 @@ def test_compare_autan_with_an_su2_study(tmp_path: Path) -> None:
         return str(tmp_path / "family" / family.levels[level].file)
 
     runs = [autan_run(cases.case("m080-a125", mesh(i)), i) for i in range(4)]
+    # A run stopped early and continued: judged against its original run's first residuals, with
+    # the iteration count of the uninterrupted run, as the runtime judges it.
+    path0 = tmp_path / "family" / family.levels[0].file
+    info0 = mesh_info(meshes[0], path0, "gmsh")
+    short = cases.case("m080-a125", mesh(0), max_iterations=10)
+    first = short.run(info0, backend=autan.FakeBackend(), runs=tmp_path / "autan")
+    whole = cases.case("m080-a125", mesh(0)).run(
+        info0, backend=autan.FakeBackend(), runs=tmp_path / "autan", start=first, mode="continue"
+    )
+    level = compare.read_autan(whole.path)
+    assert whole.run.status == "converged"
+    assert level.converged
+    assert level.iterations == whole.run.iterations
     report = compare.compare(runs, tmp_path / "su2.json")
     assert report["autan"]["point_vortex"]
     for row, run, cl, cd in zip(report["levels"], runs, FLO82_CL, FLO82_CD, strict=True):

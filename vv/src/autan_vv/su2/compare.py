@@ -51,8 +51,9 @@ class AutanLevel:
 
 
 def read_autan(run: Path) -> AutanLevel:
-    """An Autan run directory: its forces at the criterion and its provenance. V0904 if a file the
-    results contract requires is missing or the run is not a one-layer NACA 0012 slab."""
+    """An Autan run directory: its forces at the criterion and its provenance; a `continue` run is
+    judged against the residuals of its original run. V0904 if a file the results contract
+    requires is missing or the run is not a one-layer NACA 0012 slab."""
     try:
         info = json.loads((run / "run.json").read_text())
         mesh = json.loads((run / "mesh-info.json").read_text())
@@ -65,7 +66,11 @@ def read_autan(run: Path) -> AutanLevel:
     if n * n != cells:
         msg = f"{run}: {cells} cells is not an NC x NC slab"
         raise VVError(msg, code="V0904")
-    conv = history.convergence(history.read_autan(run / "history.jsonl"), cases.RESIDUAL_ORDERS)
+    series = history.read_autan(run / "history.jsonl")
+    start = info.get("start") or {}
+    if start.get("residual_reference"):
+        series = history.continued(series, start["residual_reference"])
+    conv = history.convergence(series, cases.RESIDUAL_ORDERS)
     vortex = any("point_vortex" in rule["condition"] for rule in spec["boundaries"])
     return AutanLevel(
         run=info["run_id"],
