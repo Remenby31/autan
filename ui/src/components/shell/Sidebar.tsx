@@ -4,6 +4,7 @@ import { Link } from "@tanstack/react-router";
 import {
   Box,
   FilePlus2,
+  Gauge,
   GitCompareArrows,
   ListTree,
   Monitor,
@@ -16,7 +17,7 @@ import { Kbd } from "../ui/Kbd";
 import { setTheme, type ThemeChoice, useResolvedTheme, useTheme } from "./theme";
 
 const NAV: {
-  to: "/" | "/compare" | "/viewer" | "/cases/new";
+  to: "/" | "/compare" | "/viewer" | "/cases/new" | "/perf";
   label: string;
   icon: ReactNode;
   exact?: boolean;
@@ -25,6 +26,7 @@ const NAV: {
   { to: "/compare", label: "Compare", icon: <GitCompareArrows className="size-4" /> },
   { to: "/viewer", label: "Analysis", icon: <Box className="size-4" /> },
   { to: "/cases/new", label: "New case", icon: <FilePlus2 className="size-4" /> },
+  { to: "/perf", label: "Performance", icon: <Gauge className="size-4" /> },
 ];
 
 /** The only navigation chrome: Find on top, sections, theme at the bottom. Below 768 px it is

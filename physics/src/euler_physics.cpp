@@ -116,6 +116,8 @@ class EulerPhysics final : public runtime::Physics {
       euler_.set_second_order(false);
     } else if (in.time.kind == "steady") {
       matrix_.emplace(mesh);
+      // Under reproducibility "ranks", each row sums its neighbours in global face order.
+      if (keys_) matrix_->order_rows(*keys_);
       if (in.time.linear_solver == "multigrid") {
         multigrid_.emplace(mesh, ctx.geometry);
         nlohmann::json nodes = nlohmann::json::array();
@@ -256,7 +258,7 @@ class EulerPhysics final : public runtime::Physics {
     }
     for (std::size_t i = 0; i < vortices_.size(); ++i) {
       out.push_back({.name = "VortexCirculation" + std::to_string(i),
-                     .values = std::vector<double>(n_, vortices_[i].circulation)});
+                     .values = std::vector<double>(owned_, vortices_[i].circulation)});
     }
     return out;
   }
@@ -1183,14 +1185,14 @@ bool same_gas(const runtime::Medium& a, const runtime::Medium& b) {
 // What the Euler physics runs beyond its key: every cell zone of one ideal gas, boundary
 // conditions that apply to inviscid flow, and the multigrid on one rank without periodic pairs.
 std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in, int ranks) {
-  // The multigrid's agglomeration and smoothing and Gauss-Seidel's row sums follow local cell
-  // order; "lines" sums in global face order and reduces exactly.
+  // Under reproducibility "ranks" Gauss-Seidel and "lines" sum each row in global face order;
+  // the multigrid still agglomerates, smooths and sums in local cell order.
   if (in.reproducibility == "ranks" && in.time.kind == "steady" &&
-      in.time.linear_solver != "lines") {
+      in.time.linear_solver == "multigrid") {
     return runtime::PhysicsRefusal{
         .message =
-            "this steady linear solver does not give the same bits on any number of ranks "
-            "yet; linear_solver = \"lines\" does",
+            "the steady multigrid does not give the same bits on any number of ranks yet; "
+            "linear_solver = \"gauss-seidel\" or \"lines\" does",
         .path = "reproducibility",
         .data_json = "{}",
         .code = "E1109"};
