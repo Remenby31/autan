@@ -305,6 +305,8 @@ void read_mesh_info(const Json& info, SolverInput& in) {
   }
   if (level_cells[0].get<std::int64_t>() != cells)
     invalid(multigrid.at("cells_by_level"), "must start with counts.cells");
+  if (level_edges[0].get<std::int64_t>() != faces - boundary_faces)
+    invalid(multigrid.at("edges_by_level"), "must start with the interior faces");
 
   if (info.contains("partition")) {
     const Object part(root.get("partition"), root.at("partition"),
