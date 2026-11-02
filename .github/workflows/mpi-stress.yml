@@ -44,16 +44,29 @@ jobs:
           cache-environment: false
       - name: Put the environment's tools on the PATH
         run: echo "${MAMBA_ROOT_PREFIX}/envs/mpi/bin" >> "${GITHUB_PATH}"
+      # #304 trial: the ranks keep Open MPI 5.0.11; PRRTE 4.0.0's prterun launches them.
+      - name: PRRTE 4.0.0 in its own environment
+        run: >-
+          "$MAMBA_EXE" create -q -y -r "$MAMBA_ROOT_PREFIX" -n prte4 -c conda-forge prrte=4.0.0 &&
+          "$MAMBA_ROOT_PREFIX/envs/prte4/bin/prterun" --version
       - name: Configure with MPI and METIS
         run: >-
           cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="${MAMBA_ROOT_PREFIX}/envs/mpi"
           -DCMAKE_BUILD_TYPE=Release -DAUTAN_WARNINGS_AS_ERRORS=ON
           -DAUTAN_ENABLE_MPI=ON -DAUTAN_ENABLE_METIS=ON -DMPIEXEC_PREFLAGS=--oversubscribe
+          -DMPIEXEC_EXECUTABLE="${MAMBA_ROOT_PREFIX}/envs/prte4/bin/prterun"
       - name: Build
         run: cmake --build build
       - name: Install gdb for the hang watchdog
         timeout-minutes: 5
         run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends gdb
+      - name: Every multi-rank test once with this launcher (no functional regression)
+        env:
+          OMPI_MCA_rmaps_base_oversubscribe: "1"
+          PRTE_MCA_rmaps_default_mapping_policy: ":oversubscribe"
+        run: >-
+          grep -q "envs/prte4/bin/prterun" build/CMakeCache.txt &&
+          ctest --test-dir build -L mpi --output-on-failure --no-tests=error
       - name: Run the selected tests again and again
         env:
           OMPI_MCA_rmaps_base_oversubscribe: "1"
