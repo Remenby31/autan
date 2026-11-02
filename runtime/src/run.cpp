@@ -1548,7 +1548,7 @@ class Run final : public Log {
     io::Solution s;
     Json metadata = info_;
     for (const char* key :
-         {"status", "finished", "iterations", "monitors", "timing", "diagnostics"})
+         {"status", "finished", "iterations", "convergence", "monitors", "timing", "diagnostics"})
       metadata.erase(key);
     // ASCII JSON, as readers decode CGNS descriptors.
     s.run_metadata = metadata.dump(-1, ' ', true);

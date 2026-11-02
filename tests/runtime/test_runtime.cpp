@@ -1614,6 +1614,13 @@ TEST_CASE("A steady fp32+acc64 run stops at its round-off floor, not converged",
   CHECK(stopped_info["status"] == "stopped");
   CHECK(stopped_info["iterations"] == 13);
   convergence(stopped_info, 13, 1.0, 1.0);
+  // results.md: RunMetadata is run.json without the keys written with the final status.
+  Json metadata = stopped_info;
+  for (const char* key :
+       {"status", "finished", "iterations", "convergence", "monitors", "timing", "diagnostics"})
+    metadata.erase(key);
+  CHECK(Json::parse(autan::io::read_solution(stopped.run / "solution.cgns").run_metadata) ==
+        metadata);
   const Json short_of = Json::parse(read(run(input([](Json& d) {
                                                d["precision"] = "fp32+acc64";
                                                d["time"]["max_iterations"] = 12;
