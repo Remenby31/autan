@@ -173,7 +173,7 @@ def reduce_body(
                 assert isinstance(ref, str)
                 b = loop.finalise_bindings[ref]
                 t = lm.fin_sig.types[lm.fin_sig.names.index(ref)]
-                if regs is not None and b.via == "self" and id(b.dataset) in regs:
+                if regs is not None and id(b.dataset) in regs:
                     fargs += [f"{regs[id(b.dataset)]}[{c}]" for c in range(t.size)]
                 else:
                     fargs += [at(b.dataset, "c", c, layout) for c in range(t.size)]
@@ -218,9 +218,15 @@ def chain_body(lm: LoopModel, indent: str, layout: str = "soa") -> list[str]:
     kept = {id(d) for d in lm.loop.keep}
     capture: dict[int, tuple[str, bool]] = {}
     lines = []
+    # Names the kernel's scope already uses: the bodies it calls and reduce_body's locals.
+    taken = {f.name for p in (first, second) for f in (p.fn, p.fin_fn) if f is not None}
+    taken |= {"acc", "accm", "out", "fin", "k", "kn", "e", "f", "nb", "c", "across", "d", "A", "P"}
     for o in first.loop.outputs:
-        if getattr(o, "write", False):
+        if getattr(o, "write", False) and id(o.dataset) not in capture:
             reg = f"chain_{o.dataset.name}"
+            while reg in taken:
+                reg += "_"
+            taken.add(reg)
             capture[id(o.dataset)] = (reg, id(o.dataset) in kept)
             role, size = o.dataset.type.role, o.dataset.type.size
             lines.append(f"{indent}[[maybe_unused]] {ctype(role)} {reg}[{size}];")

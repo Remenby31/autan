@@ -269,18 +269,30 @@ def parts(lm: LoopModel) -> list[LoopModel]:
 
 
 def build_chain(name: str, loop: dsl.Loop) -> LoopModel:
-    """A chain of two cell reductions (dsl.chain): the second reads the first's outputs only
-    through `.self_`, from registers."""
+    """A chain of two cell reductions (dsl.chain): the second reads the first's outputs only for
+    its own cell (`.self_` in the body, the cell's value in the finalise), from registers, and
+    writes nothing the first reads (a later cell's first pass would read it already updated)."""
     assert loop.chained is not None
     first, second = (build_loop(f"{name}_{k}", sub) for k, sub in enumerate(loop.chained))
     where = f"{loop.body.source_file}: loop {name}"
     written = {id(o.dataset) for o in first.loop.outputs if getattr(o, "write", False)}
-    for b in [*second.loop.bindings.values(), *second.loop.finalise_bindings.values()]:
-        if id(b.dataset) in written and b.via != "self":
+    own = [(b, "self") for b in second.loop.bindings.values()]
+    own += [(b, "direct") for b in second.loop.finalise_bindings.values()]
+    for b, via in own:
+        if id(b.dataset) in written and b.via != via:
             raise CodegenError(
                 Code.INVALID_BINDING,
                 f"the second reduction of a chain reads {b.dataset.name} through .{b.via}: only "
-                "its own cell's value (.self_) is in registers",
+                "its own cell's value is in registers",
+                where,
+            )
+    read = {id(d) for d in first.reads()}
+    for d in second.writes():
+        if id(d) in read:
+            raise CodegenError(
+                Code.INVALID_BINDING,
+                f"the second reduction of a chain writes {d.name}, which the first reads: in one "
+                "pass a cell would read it already updated by another",
                 where,
             )
     lm = LoopModel(name, loop, first.fn, first.sig, first.fin_fn, first.fin_sig)

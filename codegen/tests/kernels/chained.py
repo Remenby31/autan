@@ -57,8 +57,10 @@ def smooth(qc: State, g: Grad.Vec3, lo_: State, hi_: State, xf: Geom.Vec3, xc: G
 
 
 @pointwise
-def at_most_one(p: Residual) -> State:
-    return min(p, 1.0)
+def at_most_one(p: Residual, lo_: State, hi_: State) -> State:
+    # Reads the bounds again (hi_ >= lo_ always holds): a finalise reading the first reduction's
+    # outputs, from registers in the chain.
+    return min(p, 1.0) if hi_ >= lo_ else 0.0
 
 
 limiter = cell_reduce(
@@ -71,6 +73,7 @@ limiter = cell_reduce(
     xc=geometry.cell_centroid.self_,
     acc=Min(phi),
     finalise=at_most_one,
+    finalise_args={"lo_": lo, "hi_": hi},
 )
 
 fused = chain(gradients, limiter, keep=[grad])
