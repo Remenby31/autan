@@ -15,6 +15,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "autan/core/lines.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/euler_device.hpp"
@@ -1304,7 +1305,7 @@ std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverI
 runtime::CellGroups euler_groups(const runtime::SolverInput& in, const Mesh& mesh,
                                  const Geometry& geometry) {
   if (in.time.kind != "steady" || in.time.linear_solver != "lines") return {};
-  auto lines = solvers::smoother_lines(mesh, geometry);
+  auto lines = smoother_lines(mesh, geometry);
   if (lines.cells.empty()) return {};
   return {std::move(lines.offsets), std::move(lines.cells)};
 }
