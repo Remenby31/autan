@@ -2,6 +2,7 @@ add_executable(
   autan_io_tests
   test_readers.cpp
   test_mesh_info.cpp
+  test_polymesh_write.cpp
   ${PROJECT_SOURCE_DIR}/tests/core/fixtures.cpp
 )
 target_include_directories(autan_io_tests PRIVATE ${PROJECT_SOURCE_DIR}/tests/core)
@@ -38,6 +39,19 @@ add_cli_test(json 0 "\"max_faces_per_cell\": 105" --json ${mesh_dir}/hanging/pol
 add_cli_test(text 0 "cells +27\n" ${mesh_dir}/hex/hex.binary.msh)
 add_cli_test(coded-error 1 "E0130" ${mesh_dir}/missing.msh)
 add_cli_test(usage 2 "usage: autan-mesh-info" --unknown)
+
+# autan-mesh-prisms through its exit status and report.
+function(add_prisms_test name code regex)
+  add_test(
+    NAME autan-mesh-prisms.${name}
+    COMMAND
+      ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:autan-mesh-prisms> "-DARGS=${ARGN}"
+      -DEXPECT_CODE=${code} "-DEXPECT=${regex}" -P ${CMAKE_CURRENT_SOURCE_DIR}/run_cli.cmake
+  )
+endfunction()
+add_prisms_test(report 0 "\"prisms\": [0-9]+" ${mesh_dir}/hybrid/polyMesh ${CMAKE_CURRENT_BINARY_DIR}/prisms-out)
+add_prisms_test(usage 2 "usage: autan-mesh-prisms" --planarity 0 ${mesh_dir}/hybrid/polyMesh out)
+add_prisms_test(missing 1 "E0130" ${mesh_dir}/missing.msh ${CMAKE_CURRENT_BINARY_DIR}/prisms-none)
 add_test(
   NAME autan-mesh-info.surface
   COMMAND
