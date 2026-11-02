@@ -82,9 +82,56 @@ CFD - Euler, host:
    - On ring 3 it can be tested exactly: second order, limiter off, A v against central differences of R on the four meshes, in FP64 and FP32+acc64, which today's J̃ fails.
    - It needs Multigrille's general block pattern first.
 
-CFD - Générateur kernels and CFD - Multigrille GPU, consulted, to be filled by them:
-- The device assembly (generated face loops writing stencil-entry blocks).
-- `DeviceMesh` holding the wider pattern.
-- The device multigrid on it.
+CFD - Générateur kernels, consulted (estimates, nothing measured): about 3.5–4.5 weeks, four PRs.
+- (A) Topology, about 1 week: the ring-3 pattern from the stencil, in row order and sliced as J4's block rows. Also a per-row contribution list: one entry per (face, side, stencil entry), naming the destination block slot. Both on the host and in `DeviceMesh`.
+- (B) Jacobian outputs with respect to gradient arguments, tested against the complex step, 2–3 days. The face loops already write dF/d(grad) per side, but that is untested.
+- (C) A listed reduction accumulating 5 × 5 blocks into slots in a fixed order (deterministic), on CPU, CUDA, HIP and Metal, about 1.5 weeks. This is a new reduction mode, generalising J4's per-incidence write.
+- (D) Block relaxation and the BSR product on the wider pattern, and the colouring of the ring-3 graph, 0.5–1 week. The graph needs about as many colours as its largest degree, about 40, with much less parallelism per sweep, to be measured before committing.
+- `DeviceMesh` has no structural blocker. Tet n = 96 (3.9 M rows): about 15 GB FP32 for the matrix, twice that in FP64, plus about 6 GB for the contribution list unless the slots are recomputed.
+- Not advised: recomputing dF/dW_face for every stencil entry, about 17 × the flux linearisations on tetrahedra.
+
+CFD - Multigrille GPU, consulted (estimates):
+- The transfers (#343) are unchanged.
+- The coarse-operator kernel (#413) does not depend on the pattern, but needs levels whose edges are the matrix pattern. That is host work, a symbolic Pᵀ A P, CFD - Multigrille's.
+- The smoother (#416) needs a distance-1 colouring of the matrix graph: 2–3 × more colours, and bytes per sweep about × 3.5 (ring 2) or × 9 (ring 3).
+- Memory with the coarse levels: ring 2 about 45 GB FP64, or 25 GB with FP32 off-diagonal blocks; ring 3 about 100 GB FP64, which does not fit beside the host's copy on a GB10, or 55 GB FP32, borderline.
+- About 2–3 weeks after the host hierarchy exists, with no new kernels.
 
 *(CFD - Multigrille: the general block-CSR `BlockMatrix`; the agglomeration and Galerkin coarse operators with edges between non-adjacent agglomerates; the line smoother and Gauss-Seidel on the wider pattern, with a distance-2 colouring; memory of the hierarchy and totals against DPW4; smoothing cost per step; weeks and PRs.)*
+
+## Compared alternative: the true Jacobian matrix-free, today's J̃ as preconditioner (CFD - Euler; CFD - Multigrille to complete)
+
+#397's operator: the outer Krylov product is the frozen-limiter J by finite differences of the residual, and today's ring-1 J̃ with its multigrid or line sweeps is the preconditioner.
+
+**Memory.** It is the only way to the true J at DPW4's scale.
+- The extra memory is the GCR basis: at most 10 directions and their products, 2 × 10 × 5 FP64 values a cell, so 800 B a cell, about 7.8 GB on DPW4.
+- Then the frozen state of #402: the primitives, gradients, φ and fallback flags at U, a fraction of the residual's own arrays.
+- Against that, the ring-3 matrix needs 78 GB, and ring 2 needs 34 GB that still leaves 15–17 % of the weights out.
+
+**Cost per step.** One residual evaluation per GCR iteration, at most 10, plus today's preconditioner. Measured with #397's product on the cases below.
+
+**What is measured** (#397, closed as measured):
+- The laminar plate 69×49 converged in 1655 steps. On the assembled J̃ it wanders.
+- SA 35×25 converged in 2017 steps.
+- SA 69×49 did not converge in 6000 steps: the loosely coupled SA update is note 2's subject.
+- The limited Euler cases lost: Ni's bump 384 did not converge, and NACA 0012 256² took +19 %, +21 % and +193 % steps.
+
+**Why the limited cases lose.** The product is the derivative of the residual with φ and the fallback held at U. The step then leaves that residual, through the limiter's switches and through φ's own variation (note (iii): d(φd) = φ δd + d δφ). With the SER's CFL numbers, nothing in the step reacts to the model's error. The ring-3 J̃ would have the same defect, since it too holds φ. The limited cases do not separate the two options; they separate globalisations.
+
+**What could make it hold on the limited cases, and at what cost:**
+1. **A residual test on the step** (`design/pseudo-transient`, Fidkowski and Ceze 2016, §IV.C, read in full): backtrack while ‖R(U + ωΔU)‖ > 2 ‖R(U)‖, reject below ω = 0.24, and grow the CFL number only after a full update.
+   - It reacts to the model's error whatever its source: the limiter's switches, φ's variation, the fallback.
+   - Cost: one trial residual per step, which becomes the next step's residual when accepted, plus one per backtrack. No memory.
+   - It is already designed. Its check on #395's histories found it would act on the laminar plate (more than ×2 on a fifth of the steps) and not on the SA 2-cycle.
+   - What is not known is whether it fires on #397's limited cases. The same kind of check answers it before any code, on the histories #397 already has: the bump 384 and NACA 256² runs, the ratio ‖R_{n+1}‖ / ‖R_n‖ per step, with the reading declared first.
+2. **A smaller CFL number on the limited cells only.** For example, a local V/Δt raised where φ < 1 or where a selection switched (the record of note (iii)). No source read in full gives such a rule or its factor, so none is proposed here: its threshold would be fitted to the cases.
+3. **A limiter that is differentiable** (#244, blocked on its source's PDF).
+   - With it, the finite-difference product through the unfrozen residual is the derivative of a C¹ residual, so the freezing error goes.
+   - It changes the discretisation, so every M2 verification and validation gate runs again (MMS orders, Sod, Ringleb, NACA, ONERA M6 forces).
+   - It does not remove the nonlinearity at shocks, so it needs (1) as well.
+
+**Reading for the decision, for the orchestrator.**
+- Ring 3 is exact but does not fit DPW4 on one GB10. Ring 2 fits only with FP32 off-diagonal blocks and is not argued to be enough.
+- The matrix-free path reaches the true J at any scale for about 8 GB.
+- Its known failure, the limited cases, is a globalisation failure, which ring 3 would share.
+- The cheapest next step that can falsify it is the declared check of (1) on #397's limited histories: hours, no code.
