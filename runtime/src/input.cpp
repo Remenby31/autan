@@ -280,7 +280,7 @@ void read_mesh_info(const Json& info, SolverInput& in) {
     invalid(root.at("periodic"), "must hold each periodic zone in exactly one pair");
 
   const Object quality(root.get("quality"), root.at("quality"),
-                       {"max_non_orthogonality_deg", "max_faces_per_cell", "lines"});
+                       {"max_non_orthogonality_deg", "max_faces_per_cell", "lines", "multigrid"});
   const double angle = quality.number("max_non_orthogonality_deg");
   if (angle < 0.0 || angle > 180.0)
     invalid(quality.at("max_non_orthogonality_deg"), "expected 0 to 180");
@@ -292,6 +292,19 @@ void read_mesh_info(const Json& info, SolverInput& in) {
   const std::int64_t in_lines = count(lines, "cells"), long_lines = count(lines, "long_cells");
   if (!(long_lines <= in_lines && in_lines <= cells))
     invalid(lines.at("cells"), "must hold long_cells <= cells <= counts.cells");
+  const Object multigrid(quality.get("multigrid"), quality.at("multigrid"),
+                         {"cells_by_level", "edges_by_level"});
+  const Json& level_cells = list(multigrid, "cells_by_level");
+  const Json& level_edges = list(multigrid, "edges_by_level");
+  if (level_cells.empty() || level_edges.size() != level_cells.size())
+    invalid(multigrid.at("edges_by_level"), "expected one value per level, at least one level");
+  for (std::size_t l = 0; l < level_cells.size(); ++l) {
+    if (!level_cells[l].is_number_integer() || level_cells[l].get<std::int64_t>() < 1 ||
+        !level_edges[l].is_number_integer() || level_edges[l].get<std::int64_t>() < 0)
+      invalid(indexed(multigrid.at("cells_by_level"), l), "expected counts, cells >= 1");
+  }
+  if (level_cells[0].get<std::int64_t>() != cells)
+    invalid(multigrid.at("cells_by_level"), "must start with counts.cells");
 
   if (info.contains("partition")) {
     const Object part(root.get("partition"), root.at("partition"),

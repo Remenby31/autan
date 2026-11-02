@@ -75,6 +75,15 @@ TEST_CASE("MeshInfo counts the cells in the smoother's lines", "[mesh-info]") {
   const auto cubes = counts(box(n, 1.0), order);
   CHECK(cubes.line_cells == 0);
   CHECK(cubes.long_line_cells == 0);
+  // The multigrid's finest level is the mesh: its cells, and its interior faces 3 n^2 (n - 1).
+  for (const auto& c : {flat, cubes}) {
+    REQUIRE(!c.multigrid_cells.empty());
+    CHECK(c.multigrid_cells.size() == c.multigrid_edges.size());
+    CHECK(c.multigrid_cells[0] == n * n * n);
+    CHECK(c.multigrid_edges[0] == 3 * n * n * (n - 1));
+    for (std::size_t l = 1; l < c.multigrid_cells.size(); ++l)
+      CHECK(c.multigrid_cells[l] < c.multigrid_cells[l - 1]);
+  }
 }
 
 TEST_CASE("MeshInfo counts a single-rank run's stencil entries and periodic ghosts",

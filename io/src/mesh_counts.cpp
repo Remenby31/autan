@@ -9,6 +9,7 @@
 #include "autan/core/renumber.hpp"
 #include "autan/kernels/geometry.hpp"
 #include "autan/partition/partition.hpp"
+#include "autan/solvers/agglomeration.hpp"
 
 namespace autan::io {
 namespace {
@@ -19,10 +20,16 @@ std::int64_t stencil_entries(const Mesh& mesh, const Geometry& geometry) {
       kernels::cell_stencil(mesh, packed, kernels::StencilKind::face2).entries.size());
 }
 
-void count_lines(const Mesh& mesh, const Geometry& geometry, MeshInfoRun& out) {
+// What depends on the cell order: the smoother's lines, and the multigrid's hierarchy, which
+// the run builds with its default options on one rank.
+void count_ordered(const Mesh& mesh, const Geometry& geometry, MeshInfoRun& out) {
   const Lines lines = smoother_lines(mesh, geometry);
   out.line_cells = static_cast<std::int64_t>(cells_in_lines(lines));
   out.long_line_cells = static_cast<std::int64_t>(cells_in_lines(lines, long_line));
+  for (const auto& level : solvers::agglomerate(mesh, geometry)) {
+    out.multigrid_cells.push_back(static_cast<std::int64_t>(level.n_nodes));
+    out.multigrid_edges.push_back(static_cast<std::int64_t>(level.owner.size()));
+  }
 }
 
 }  // namespace
@@ -40,10 +47,10 @@ MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
     AssemblyMap map;
     const std::vector<index_t> new_to_old = rcm_order(mesh);
     const Mesh ordered = renumber_cells(mesh, new_to_old, &map);
-    count_lines(ordered, renumber_geometry(geometry, new_to_old, map), out);
+    count_ordered(ordered, renumber_geometry(geometry, new_to_old, map), out);
   } else {
     out.line_order = "input";
-    count_lines(mesh, geometry, out);
+    count_ordered(mesh, geometry, out);
   }
 
   // The stencil and ghosts are sets, the same in any cell order.

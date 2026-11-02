@@ -91,7 +91,7 @@ add_library(autan::mesh_counts ALIAS autan_mesh_counts)
 target_link_libraries(
   autan_mesh_counts
   PUBLIC autan::io autan::core
-  PRIVATE autan::kernels autan::partition autan_compile_options
+  PRIVATE autan::kernels autan::partition autan::solvers autan_compile_options
 )
 
 add_executable(autan-mesh-info tools/autan_mesh_info.cpp)

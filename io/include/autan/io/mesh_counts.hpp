@@ -27,7 +27,9 @@ struct RanksRequest {
 /// compute_geometry, whose round-off decides couplings at the lines' threshold:
 /// - lines: smoother_lines on the mesh in `order` (for rcm, renumber_cells by
 ///   rcm_order with renumber_geometry, as the run renumbers), cells in lines of
-///   at least 2 and of at least long_line cells;
+///   at least 2 and of at least long_line cells, and in that order the multigrid's levels
+///   (solvers::agglomerate with its default options, as a run's multigrid builds them on one
+///   rank): nodes and edges per level, the mesh first;
 /// - stencil_entries, periodic_ghosts: the face2 cell stencil's entries and the
 ///   ghost cells of a single-rank run's mesh (its one-part partition when the
 ///   mesh has periodic pairs, the mesh otherwise);

@@ -27,13 +27,15 @@ MeshInfoZones meshinfo_zones(const Mesh& mesh);
 
 /// What a mesh costs the solver that runs on it (docs/contracts/mesh-info.md):
 /// its smoother's lines in a cell order, the stencil and periodic ghosts of a
-/// single-rank run, and with `partition` those of each rank of a run on
-/// several (autan::io::run_counts computes them).
+/// single-rank run, its multigrid's levels in that cell order, and with `partition` those of
+/// each rank of a run on several (autan::io::run_counts computes them).
 struct MeshInfoRun {
   std::string line_order;   // "rcm" or "input"
   double line_scale = 1.0;  // metres per mesh unit the counts were computed with
   std::int64_t line_cells = 0;
   std::int64_t long_line_cells = 0;
+  /// The multigrid's levels, finest (the mesh) first: their nodes and edges.
+  std::vector<std::int64_t> multigrid_cells, multigrid_edges;
   std::int64_t stencil_entries = 0;
   std::int64_t periodic_ghosts = 0;
   struct Partition {

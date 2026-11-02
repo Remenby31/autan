@@ -274,6 +274,34 @@ TEST_CASE("a verification case converges to its discrete solution", "[euler]") {
   CHECK(fs::exists(out.run / "manufactured.json"));
 }
 
+TEST_CASE("the multigrid builds the levels autan-mesh-info publishes", "[euler]") {
+  // mesh-info.md, quality.multigrid: the hierarchy a steady multigrid run builds on one rank, in
+  // the cell order it computes in, against the run's own log of it.
+  const char* order = GENERATE("rcm", "input");
+  CAPTURE(order);
+  REQUIRE(setenv("AUTAN_CELL_ORDER", order, 1) == 0);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, "fp64");
+    d["time"]["linear_solver"] = "multigrid";
+    d["time"]["max_iterations"] = 1;
+  });
+  const auto out = run(doc);
+  unsetenv("AUTAN_CELL_ORDER");
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  Json built;
+  std::ifstream log_in(out.run / "log.jsonl");
+  for (std::string line; std::getline(log_in, line);) {
+    const Json event = Json::parse(line);
+    if (event["message"] == "agglomeration multigrid") built = event["data"];
+  }
+  REQUIRE(built.is_object());
+  const Json& published = doc["mesh_info"]["quality"]["multigrid"];
+  CHECK(doc["mesh_info"]["quality"]["lines"]["order"] == order);
+  CHECK(built["nodes"] == published["cells_by_level"]);
+  CHECK(built["edges"] == published["edges_by_level"]);
+}
+
 TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[euler]") {
   const char* precision = GENERATE("fp64", "fp32+acc64");
   const bool steady = GENERATE(true, false);
