@@ -87,4 +87,38 @@ CFD - Générateur kernels and CFD - Multigrille GPU, consulted, to be filled by
 - `DeviceMesh` holding the wider pattern.
 - The device multigrid on it.
 
-*(CFD - Multigrille: the general block-CSR `BlockMatrix`; the agglomeration and Galerkin coarse operators with edges between non-adjacent agglomerates; the line smoother and Gauss-Seidel on the wider pattern, with a distance-2 colouring; memory of the hierarchy and totals against DPW4; smoothing cost per step; weeks and PRs.)*
+## The linear solver on a wider pattern (CFD - Multigrille)
+
+**What changes, host.** Every consumer of J̃ is face-based today: a block per cell and two per interior face.
+
+- `BlockMatrix` becomes block-CSR: per row, its diagonal and the off-diagonal blocks of the ring-k pattern, with their column indices (one `index_t` per block, 4 B against 200 B of values). Its `multiply`, `factor` (the diagonal's inverse) and `gauss_seidel` run over rows. The assembly API takes (row, column) block destinations (Euler's chain writes into them).
+- **The multigrid's levels.** The agglomeration itself stays on the face graph: its couplings are geometric (A_f/d), not J̃'s, and the lines and agglomerates do not change. What changes is the operator each level carries. A level's edges become the matrix pattern, not the face adjacency, and the Galerkin product PᵀAP with piecewise-constant P sums each fine block into the (I, J) block of the agglomerates of its row and column. So the coarse pattern gets edges between agglomerates that share no face. This needs a symbolic product once per hierarchy (the coarse pattern and each fine block's coarse destination, as `coarse_edge` does for faces today), then numeric sums per step in a fixed order (deterministic, as today). The coarse levels' patterns are at most as wide as the fine level's, in blocks per row: an agglomerate of about eight cells covers a ring of the fine pattern.
+- **Smoothers.** Block Gauss-Seidel by colour needs a colouring of the pattern's graph, i.e. distance-1 on the ring-k graph, distance k on the faces. The line smoother keeps its lines (face couplings), but its off-line couplings become every pattern entry of the line's cells, swept in the lagged part as today, summed in global order (row's global id, then column's) so that `reproducibility = "ranks"` keeps its bits. The lines' colouring is then also on the pattern graph. The coarsest level's dense LU is unchanged (at most 1000 unknowns).
+- **Colours.** A colouring of a graph of degree d needs at least d + 1 colours: about 8–12 colours today, about 17–25 on ring 2 and 40–70 on ring 3 (hybrid to hex, more on polyhedra). On several ranks every colour costs a ghost exchange per sweep, so a sweep's exchanges grow by the same factor. On one rank the colour count only changes the order.
+
+**Memory of the hierarchy.** The coarse levels hold Σ_{l≥1} n_l = 0.14–0.45 n₀ (measured for #325: 0.14 on isotropic meshes, up to 0.45 with long lines). With blocks per row at most the fine level's, the hierarchy's matrices total at most 1.15–1.45 × the finest level's J̃. The line smoother adds its Thomas factors, about 3 blocks per cell in a line (600 B), unchanged by the pattern.
+
+DPW4 CRM, hybrid row (tet–prism range in parentheses), host FP64:
+
+| | Ring 1 (today) | Ring 2 | Ring 3 |
+|---|---|---|---|
+| J̃, finest level (Euler's table) | 12.4 GB | 34.1 GB | 77.7 GB |
+| J̃ with its hierarchy (× 1.15–1.45) | 14–18 GB | 39–49 GB (35–57) | 89–113 GB (80–132) |
+| line factors (81 % of cells in lines ≥ 4, #325) | 4.7 GB | 4.7 GB | 4.7 GB |
+
+Against 104.2 GiB (111.9 GB) on one GB10, beside the physics' state (which an implicit host run needs on top):
+
+- Ring 3 does not fit: the hierarchy alone is 89–113 GB (80–132 over the range) before the physics.
+- Ring 2 fits with room: 44–54 GB with the line factors.
+- On the device, Multigrille GPU's note: ring 3 in FP64 does not fit, ring 2 in FP32 only.
+
+**Smoothing cost per step.** A Gauss-Seidel sweep and a matrix product cost one block product per stored block: 3.1 × today on ring 2 and 7.3 × on ring 3 (hybrid; 4.5 × and 12.3 × on polyhedra). The multigrid cycle (pre- and post-sweeps on every level, the restriction and the GCR's product) scales the same, so the linear solve per iteration costs 3–7 × today's, on top of the assembly's 3–7 ×. Whether the multigrid still converges in its 10 iterations on the wider matrix is not known before measuring. The blocks off the diagonal grow, and the block diagonal dominance that Gauss-Seidel and the lines rely on weakens (note 1's caveat). Today's linear solve is the larger part of a step on the plate, so the step's time would grow by about the same 3–7 ×. #397 converged the laminar plate in 1655 steps, against `main`'s never.
+
+**Effort, host (CFD - Multigrille).**
+
+1. `BlockMatrix` as block-CSR, with its host consumers: the assembly API, the product, the diagonal's inverse, Gauss-Seidel by colour on the pattern, and the physics' `"gauss-seidel"` path. About 1.5 weeks.
+2. The multigrid on a general pattern: levels whose edges are the pattern, the symbolic and numeric Galerkin product, the smoothers' couplings, and `LineSmoother` over the pattern's entries in global order (ranks bit for bit, #282's gate). About 1.5–2 weeks.
+3. The colouring on the pattern's graph (distance k on the faces) through the runtime's `colour_cells`, with CFD - Noyau maillage. About 0.5 week.
+4. The memory model (#325) and MeshInfo's estimate (#358) for the pattern. About 2 days.
+
+Total about 4–5 weeks, then Euler's chain (1 week, it needs (1)), then the device (CFD - Multigrille GPU: 2–3 weeks after (2)). Each piece lands Euler-bit-for-bit (the pattern is ring 1 unless `NavierStokes` sets the parameter), with its own tests. The plate's gain cannot be measured before (1), (2) and Euler's chain exist.
