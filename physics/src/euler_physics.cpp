@@ -1140,7 +1140,10 @@ class EulerPhysics final : public runtime::Physics {
             multigrid_->cycle(r.first(nf), z.first(nf));
             t.model.solve(t.diag, t.upper, t.lower, r.subspan(nf), z.subspan(nf), nt_sweeps);
           },
-          q.r, q.x, linear_max_cycles, linear_tolerance);
+          q.r, q.x, linear_max_cycles, linear_tolerance,
+          {.dot = [this](std::span<const double> u,
+                         std::span<const double> v) { return scaled_dot(u, v); },
+           .max_abs = [this](std::span<const double> u) { return scaled_max_abs(u); }});
       std::copy(q.x.begin(), q.x.begin() + static_cast<std::ptrdiff_t>(nf), du_.begin());
       std::copy(q.x.begin() + static_cast<std::ptrdiff_t>(nf), q.x.end(), t.dx.begin());
       return report;
@@ -1218,6 +1221,31 @@ class EulerPhysics final : public runtime::Physics {
       for (std::size_t c = 0; c < n_; ++c) q.base[5 * n_ + c] = static_cast<double>(q.res_nt[c]);
     }
     for (std::size_t i = 0; i < 5 * n_; ++i) q.base[i] = static_cast<double>(q.res[i]);
+  }
+
+  // The coupled GCR's inner product and largest entry on S^-1-scaled residuals, so that it
+  // minimises |S^-1 r| (SUNDIALS' scaled iterative solvers, eq. 10.1-10.2, with KINSOL's left
+  // scaling S_1 = D_F; docs/design/coupled-sa.md): unscaled, the energy rows outweigh the others
+  // and a step can leave a row at the round-off floor unsolved. Exact over the owned unknowns.
+  double scaled_dot(std::span<const double> u, std::span<const double> v) {
+    std::array<runtime::ExactSum, 1> sum;
+    for (std::size_t k = 0; k < probe_.equations; ++k) {
+      const double w = 1.0 / (probe_.scale[k] * probe_.scale[k]);
+      for (std::size_t c = 0; c < owned_; ++c) sum[0].add(u[k * n_ + c] * v[k * n_ + c] * w);
+    }
+    ctx_.ranks.sum(sum);
+    return sum[0].value();
+  }
+
+  double scaled_max_abs(std::span<const double> u) {
+    double m = 0.0;
+    for (std::size_t k = 0; k < probe_.equations; ++k) {
+      for (std::size_t c = 0; c < owned_; ++c) {
+        const double a = std::abs(u[k * n_ + c]) / probe_.scale[k];
+        m = std::isnan(a) ? std::numeric_limits<double>::infinity() : std::max(m, a);
+      }
+    }
+    return ctx_.ranks.max(m);
   }
 
   // Root mean square of S^-1 x over the owned unknowns of every rank, exact.
