@@ -720,6 +720,9 @@ class EulerPhysics final : public runtime::Physics {
     // equations at the round-off floor (the runtime's rule, decided on the reported residuals):
     // their ratio is round-off and would set the CFL number.
     const double drop = relative_drop(norms.empty() ? report.residuals : norms, report.residuals);
+    // docs/design/matrix-free-step.md: from the step after the switch to second order, the
+    // solve's operator is the true Jacobian, applied matrix-free.
+    const bool matrix_free = second_order_ && (multigrid_ || lines_);
     switch_order(drop);
     // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
     // after each step the admissibility check shortened and recovering by half otherwise.
@@ -737,7 +740,14 @@ class EulerPhysics final : public runtime::Physics {
     try {
       if (multigrid_) {
         multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
-        linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
+        if (matrix_free) {
+          start_products(shift);
+          linear = multigrid_->solve(
+              [this](std::span<const double> v, std::span<double> y) { product(v, y); }, rhs_, du_,
+              linear_max_cycles, linear_tolerance);
+        } else {
+          linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
+        }
       } else if (lines_) {
         // GCR preconditioned by the line sweeps, as the multigrid's outer iteration; its inner
         // products are exact sums over the owned cells of every rank.
@@ -752,8 +762,15 @@ class EulerPhysics final : public runtime::Physics {
         if (ctx_.ranks.max(singular ? 1.0 : 0.0) > 0.0) throw std::domain_error("singular block");
         auto exchange = [this](std::span<double> x) { fill_ghosts(x); };
         krylov_residual_ = rhs_;
+        if (matrix_free) start_products(shift);
         linear = gcr_.solve(
-            [&](std::span<const double> v, std::span<double> y) { lines_->multiply(v, y); },
+            [&](std::span<const double> v, std::span<double> y) {
+              if (matrix_free) {
+                product(v, y);
+              } else {
+                lines_->multiply(v, y);
+              }
+            },
             [&](std::span<const double> r, std::span<double> z) {
               lines_->sweep(r, z, gauss_seidel_sweeps, exchange);
             },
@@ -783,6 +800,10 @@ class EulerPhysics final : public runtime::Physics {
     const bool failed = !(linear.residual_drop <= linear_failure);
     if (!(linear.residual_drop <= linear_tolerance)) {
       nlohmann::json data = {{"cycles", linear.cycles}, {"residual_drop", nullptr}};
+      if (matrix_free) {
+        data["halvings"] = probe_.halvings;
+        data["representation"] = probe_.representation;
+      }
       if (std::isfinite(linear.residual_drop)) data["residual_drop"] = linear.residual_drop;
       ctx_.log.write("warning", "linear",
                      failed ? "the implicit step's linear solve failed: step rejected"
@@ -876,6 +897,138 @@ class EulerPhysics final : public runtime::Physics {
       }
     }
     return ctx_.ranks.max(m);
+  }
+
+  // The matrix-free product's workspace (docs/design/matrix-free-step.md): the perturbed state,
+  // its residual and the residual at U, all evaluated with the limiter and the reconstruction
+  // branches frozen at U, apart from state_ and res_.
+  struct Probe {
+    std::vector<double> u, base, shift;
+    std::vector<State> state;
+    std::vector<Res> res;
+    std::array<double, 5> scale{};  // freestream scale of each equation
+    double eps_storage = 0.0;
+    int halvings = 0;           // largest of the step's products
+    double representation = 0;  // largest |S^-1 (delta - eps v)| / |S^-1 eps v| of the step
+    bool failed = false;
+    bool announced = false;
+  };
+  Probe probe_;
+
+  // Freezes the limiter at U and evaluates R(U) for the step's products.
+  void start_products(std::span<const double> shift) {
+    auto& q = probe_;
+    if (q.u.empty()) {
+      q.u.assign(5 * n_, 0.0);
+      q.base.assign(5 * n_, 0.0);
+      q.state.assign(5 * n_, State(0));
+      q.res.assign(res_.size(), Res(0));
+      // Knoll and Keyes (2004), J. Comput. Phys. 193:357-397, sec. 2.2: sqrt of the precision the
+      // state is stored in.
+      q.eps_storage = std::sqrt(static_cast<double>(std::numeric_limits<State>::epsilon()));
+      const auto& r = reference_;
+      const double rho = r[0];
+      const double m2 = r[1] * r[1] + r[2] * r[2] + r[3] * r[3];
+      const double p = (gas_.gamma - 1.0) * (r[4] - 0.5 * m2 / rho);
+      const double q_inf = std::sqrt(m2) / rho + std::sqrt(gas_.gamma * p / rho);
+      q.scale = {rho, rho * q_inf, rho * q_inf, rho * q_inf, r[4]};
+      for (auto& v : q.scale) {
+        if (!(v > 0.0)) v = 1.0;
+      }
+    }
+    if (!q.announced) {
+      q.announced = true;
+      ctx_.log.write("info", "linear", "matrix-free products of the residual from this step", {},
+                     "{}");
+    }
+    q.shift.assign(shift.begin(), shift.end());
+    q.halvings = 0;
+    q.representation = 0.0;
+    q.failed = false;
+    euler_.freeze(state_);
+    euler_.residual_frozen(state_, q.res);
+    for (std::size_t i = 0; i < 5 * n_; ++i) q.base[i] = static_cast<double>(q.res[i]);
+  }
+
+  // Root mean square of S^-1 x over the owned unknowns of every rank, exact.
+  double scaled_rms(std::span<const double> x) {
+    std::array<runtime::ExactSum, 1> sum;
+    for (std::size_t k = 0; k < 5; ++k) {
+      for (std::size_t c = 0; c < owned_; ++c) {
+        const double a = x[k * n_ + c] / probe_.scale[k];
+        sum[0].add(a * a);
+      }
+    }
+    std::array<runtime::ExactSum, 1> count;
+    count[0].add(static_cast<double>(5 * owned_));
+    ctx_.ranks.sum(sum);
+    ctx_.ranks.sum(count);
+    return std::sqrt(sum[0].value() / count[0].value());
+  }
+
+  // y = (V/dt) v + [R(U + eps v) - R(U)] / eps, R with the limiter frozen at U.
+  void product(std::span<const double> v, std::span<double> y) {
+    auto& q = probe_;
+    std::fill(y.begin(), y.end(), 0.0);
+    if (q.failed) {
+      std::fill(y.begin(), y.end(), std::numeric_limits<double>::quiet_NaN());
+      return;
+    }
+    const double vn = scaled_rms(v);
+    if (vn == 0.0) return;
+    double eps = q.eps_storage * (1.0 + scaled_rms(u_)) / vn;
+    for (int halving = 0;; ++halving) {
+      for (std::size_t i = 0; i < 5 * n_; ++i) q.u[i] = u_[i] + eps * v[i];
+      // Admissible and small: density and pressure within 10 % of U's in every owned cell.
+      double worst = 0.0;
+      for (std::size_t c = 0; c < owned_; ++c) {
+        const double rho = u_[c];
+        const double rho_p = q.u[c];
+        const double p = pressure(c, 0.0);
+        double w[5];
+        for (std::size_t k = 0; k < 5; ++k) w[k] = q.u[k * n_ + c];
+        const double p_p =
+            (gas_.gamma - 1.0) * (w[4] - 0.5 * (w[1] * w[1] + w[2] * w[2] + w[3] * w[3]) / w[0]);
+        const double d = std::max(std::abs(rho_p - rho) / rho, std::abs(p_p - p) / p);
+        worst = std::isnan(d) ? std::numeric_limits<double>::infinity() : std::max(worst, d);
+      }
+      euler_.state(q.u, q.state);
+      // Representable: what the stored state received, against eps v.
+      std::array<runtime::ExactSum, 2> sums;
+      for (std::size_t k = 0; k < 5; ++k) {
+        for (std::size_t c = 0; c < owned_; ++c) {
+          const std::size_t i = k * n_ + c;
+          const double want = eps * v[i] / q.scale[k];
+          const double got =
+              (static_cast<double>(q.state[i]) - static_cast<double>(state_[i])) / q.scale[k];
+          sums[0].add((got - want) * (got - want));
+          sums[1].add(want * want);
+        }
+      }
+      ctx_.ranks.sum(sums);
+      const double ratio = std::sqrt(sums[0].value() / sums[1].value());
+      const bool admissible = ctx_.ranks.max(worst) <= 0.1;
+      if (admissible && ratio <= 1e-2) {
+        q.halvings = std::max(q.halvings, halving);
+        q.representation = std::max(q.representation, ratio);
+        break;
+      }
+      if (halving == 10) {
+        q.halvings = halving;
+        q.representation = std::max(q.representation, ratio);
+        q.failed = true;
+        std::fill(y.begin(), y.end(), std::numeric_limits<double>::quiet_NaN());
+        return;
+      }
+      eps *= 0.5;
+    }
+    euler_.residual_frozen(q.state, q.res);
+    for (std::size_t k = 0; k < 5; ++k) {
+      for (std::size_t c = 0; c < owned_; ++c) {
+        const std::size_t i = k * n_ + c;
+        y[i] = q.shift[c] * v[i] + (static_cast<double>(q.res[i]) - q.base[i]) / eps;
+      }
+    }
   }
 
   void fill_ghosts(std::span<double> x) {
