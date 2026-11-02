@@ -1134,11 +1134,23 @@ class EulerPhysics final : public runtime::Physics {
       q.x.assign(6 * n_, 0.0);
       for (std::size_t i = 0; i < nf; ++i) q.r[i] = rhs_[i];
       for (std::size_t c = 0; c < n_; ++c) q.r[nf + c] = -static_cast<double>(t.res[c]);
+      // coupled-sa.md, amendment 2: an equation at the round-off floor (the runtime's exemption)
+      // is left out of the solve, its update zero: its residual is round-off, so solving for it
+      // only puts round-off into its unknowns (the span momentum of a one-cell-thick mesh, which
+      // is zero by symmetry).
+      auto drop_exempt = [&](std::span<double> x) {
+        for (std::size_t k = 0; k < 6; ++k) {
+          if (exempt_.exempt(k))
+            std::fill_n(x.begin() + static_cast<std::ptrdiff_t>(k * n_), n_, 0.0);
+        }
+      };
+      drop_exempt(q.r);
       const auto report = gcr_.solve(
           [this](std::span<const double> v, std::span<double> y) { product(v, y); },
           [&](std::span<const double> r, std::span<double> z) {
             multigrid_->cycle(r.first(nf), z.first(nf));
             t.model.solve(t.diag, t.upper, t.lower, r.subspan(nf), z.subspan(nf), nt_sweeps);
+            drop_exempt(z);
           },
           q.r, q.x, linear_max_cycles, linear_tolerance,
           {.dot = [this](std::span<const double> u,
@@ -1342,30 +1354,23 @@ class EulerPhysics final : public runtime::Physics {
     }
     // An equation at the round-off floor (the runtime's exemption: the span momentum of a
     // one-cell-thick mesh) has no derivative a difference can resolve, only its round-off over
-    // eps: its rows take the assembled operator, so that the solve leaves it at the floor.
+    // eps. In the flow's solve its rows take the assembled operator, so that the solve leaves it
+    // at the floor; the coupled solve leaves it out (matrix_free_solve).
     bool exempt = false;
     for (std::size_t k = 0; k < m; ++k) exempt = exempt || exempt_.exempt(k);
-    if (exempt) {
-      q.assembled.assign(m * n_, 0.0);
-      matrix_->multiply(v.first(nf), std::span<double>(q.assembled).first(nf));
-      if (m == 6) {
-        const auto& t = *sa_;
-        const auto owner = ctx_.mesh.owner();
-        const auto neighbour = ctx_.mesh.neighbour();
-        for (std::size_t c = 0; c < n_; ++c) q.assembled[nf + c] = t.diag[c] * v[nf + c];
-        for (std::size_t f = 0; f < neighbour.size(); ++f) {
-          const auto o = static_cast<std::size_t>(owner[f]);
-          const auto n = static_cast<std::size_t>(neighbour[f]);
-          q.assembled[nf + o] += t.upper[f] * v[nf + n];
-          q.assembled[nf + n] += t.lower[f] * v[nf + o];
-        }
-      }
+    if (exempt && m == 5) {
+      q.assembled.assign(nf, 0.0);
+      matrix_->multiply(v.first(nf), q.assembled);
     }
     for (std::size_t k = 0; k < m; ++k) {
       for (std::size_t c = 0; c < owned_; ++c) {
         const std::size_t i = k * n_ + c;
         const double r = k < 5 ? static_cast<double>(q.res[i]) : static_cast<double>(q.res_nt[c]);
-        y[i] = exempt_.exempt(k) ? q.assembled[i] : q.shift[c] * v[i] + (r - q.base[i]) / eps;
+        if (!exempt_.exempt(k)) {
+          y[i] = q.shift[c] * v[i] + (r - q.base[i]) / eps;
+        } else {
+          y[i] = m == 5 ? q.assembled[i] : 0.0;
+        }
       }
     }
   }
