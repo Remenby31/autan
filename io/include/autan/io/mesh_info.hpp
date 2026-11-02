@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -23,9 +25,27 @@ struct MeshInfoZones {
 };
 MeshInfoZones meshinfo_zones(const Mesh& mesh);
 
+/// What a mesh costs the solver that runs on it (docs/contracts/mesh-info.md):
+/// its smoother's lines in a cell order, the stencil and periodic ghosts of a
+/// single-rank run, and with `partition` those of each rank of a run on
+/// several (autan::io::run_counts computes them).
+struct MeshInfoRun {
+  std::string line_order;  // "rcm" or "input"
+  std::int64_t line_cells = 0;
+  std::int64_t long_line_cells = 0;
+  std::int64_t stencil_entries = 0;
+  std::int64_t periodic_ghosts = 0;
+  struct Partition {
+    std::int32_t ranks = 0;
+    std::string groups;  // "none" or "lines"
+    std::vector<std::int64_t> cells, ghosts, faces, interior_faces, stencil_entries;
+  };
+  std::optional<Partition> partition;
+};
+
 /// MeshInfo document (docs/contracts/mesh-info.md, schema autan.mesh-info/1)
 /// of an assembled, unpartitioned mesh read from its source, as JSON text.
-std::string mesh_info_json(const Mesh& mesh, const std::string& sha256);
+std::string mesh_info_json(const Mesh& mesh, const std::string& sha256, const MeshInfoRun& run);
 
 /// The boundary surface of an assembled, unpartitioned mesh as an
 /// autan.surface/1 file (docs/contracts/mesh.md#boundary-surface): its

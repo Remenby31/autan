@@ -3,30 +3,38 @@
 // --surface OUT writes its boundary surface (docs/contracts/mesh.md).
 
 #include <algorithm>
+#include <charconv>
+#include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <fstream>
 #include <numeric>
+#include <optional>
 #include <string>
 #include <string_view>
 
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/core/quality.hpp"
+#include "autan/io/mesh_counts.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 
 namespace {
 
 constexpr const char* usage =
-    "usage: autan-mesh-info [--json | --surface OUT] MESH\n"
+    "usage: autan-mesh-info [--json] [--cell-order rcm|input] [--ranks N [--groups lines]] MESH\n"
+    "       autan-mesh-info --surface OUT MESH\n"
     "\n"
     "Reads MESH (Gmsh .msh 4.1, Fluent .msh, CGNS, or an OpenFOAM polyMesh or\n"
     "case directory) and prints its counts, zones and quality. With --json,\n"
-    "prints the MeshInfo document (schema autan.mesh-info/1) instead. With\n"
-    "--surface OUT, writes its boundary faces by zone to OUT (schema\n"
-    "autan.surface/1) and prints nothing. Exits 1 with a coded error (E01xx)\n"
-    "if the mesh cannot be read, 2 on a usage error.\n";
+    "prints the MeshInfo document (schema autan.mesh-info/1) instead: its\n"
+    "smoother lines in the cell order of --cell-order (default rcm, the run's),\n"
+    "and with --ranks N the partition of a run on N ranks, keeping the\n"
+    "smoother's lines whole with --groups lines. With --surface OUT, writes its\n"
+    "boundary faces by zone to OUT (schema autan.surface/1) and prints nothing.\n"
+    "Exits 1 with a coded error (E01xx) if the mesh cannot be read or cannot\n"
+    "be partitioned, 2 on a usage error.\n";
 
 double max_of(const std::vector<double>& v) {
   return v.empty() ? 0.0 : *std::ranges::max_element(v);
@@ -66,18 +74,39 @@ void print_text(const autan::Mesh& mesh, const std::string& hash) {
   std::printf("  max closure error      %.3g\n", max_of(closure));
 }
 
+std::optional<std::int32_t> rank_count(std::string_view text) {
+  std::int32_t n = 0;
+  const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), n);
+  if (error != std::errc{} || end != text.data() + text.size() || n < 1) return std::nullopt;
+  return n;
+}
+
 }  // namespace
 
 int main(int argc, char* const* argv) {
   bool json = false;
   const char* surface = nullptr;
   const char* path = nullptr;
+  std::optional<autan::io::CellOrder> order;
+  std::optional<autan::io::RanksRequest> ranks;
+  bool groups = false;
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i];
-    if (arg == "--json" && surface == nullptr) {
+    const std::string_view next = i + 1 < argc ? argv[i + 1] : "";
+    if (arg == "--json" && !json) {
       json = true;
-    } else if (arg == "--surface" && !json && surface == nullptr && i + 1 < argc) {
+    } else if (arg == "--surface" && surface == nullptr && i + 1 < argc) {
       surface = argv[++i];
+    } else if (arg == "--cell-order" && !order && (next == "rcm" || next == "input")) {
+      order = next == "rcm" ? autan::io::CellOrder::rcm : autan::io::CellOrder::input;
+      ++i;
+    } else if (arg == "--ranks" && !ranks && rank_count(next)) {
+      ranks = autan::io::RanksRequest{.ranks = *rank_count(next),
+                                      .groups = autan::io::RankGroups::none};
+      ++i;
+    } else if (arg == "--groups" && !groups && next == "lines") {
+      groups = true;
+      ++i;
     } else if (arg == "-h" || arg == "--help") {
       std::fputs(usage, stdout);
       return 0;
@@ -88,10 +117,13 @@ int main(int argc, char* const* argv) {
       return 2;
     }
   }
-  if (path == nullptr) {
+  const bool counted = order || ranks || groups;
+  if (path == nullptr || (surface != nullptr && (json || counted)) || (counted && !json) ||
+      (groups && !ranks)) {
     std::fputs(usage, stderr);
     return 2;
   }
+  if (groups) ranks->groups = autan::io::RankGroups::lines;
   try {
     const autan::Mesh mesh = autan::io::read_mesh(path);
     const std::string hash = autan::io::mesh_hash(path);
@@ -105,7 +137,9 @@ int main(int argc, char* const* argv) {
                            "cannot write '" + std::string(surface) + "'");
       }
     } else if (json) {
-      std::printf("%s\n", autan::io::mesh_info_json(mesh, hash).c_str());
+      const auto run = autan::io::run_counts(mesh, autan::compute_geometry(mesh),
+                                             order.value_or(autan::io::CellOrder::rcm), ranks);
+      std::printf("%s\n", autan::io::mesh_info_json(mesh, hash, run).c_str());
     } else {
       print_text(mesh, hash);
     }
