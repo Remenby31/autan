@@ -1,12 +1,14 @@
 """Measure, validate and compare Autan benchmark results."""
 
 import argparse
+import json
 import os
+import shutil
 import sys
 from fnmatch import fnmatch
 from pathlib import Path
 
-from autan_bench import gpu, result, runner
+from autan_bench import gpu, pair, result, runner
 from autan_bench.compare import (
     DEFAULT_THRESHOLD,
     HEALTH_MINIMUM,
@@ -48,12 +50,16 @@ def _report(doc: dict, out: Path) -> int:
     return 0
 
 
-def _stream(args: argparse.Namespace) -> int:
+def _stream_args(args: argparse.Namespace) -> list[str]:
     binary_args = ["--elements", args.elements, "--warmup", args.warmup, "--reps", args.reps]
     binary_args += ["--batch", args.batch, "--block", args.block]
+    return [str(a) for a in binary_args]
+
+
+def _stream(args: argparse.Namespace) -> int:
     doc = runner.run(
         args.binary,
-        [str(a) for a in binary_args],
+        _stream_args(args),
         suite="stream",
         precision="fp64",
         lock=args.lock,
@@ -128,6 +134,132 @@ def _health(args: argparse.Namespace) -> int:
         err=True,
     )
     return 4
+
+
+def _pair_table(rows: list[pair.Row]) -> str:
+    width = max(len(r.name) for r in rows)
+    lines = [
+        (
+            f"{'benchmark':<{width}} {'change':>10} {'base':>10} {'ratio [95 % CI]':>24}"
+            f" {'run CV c/b':>14}"
+        )
+    ]
+    for r in rows:
+        ratio = f"{r.ratio:.4f} [{r.ci[0]:.4f}, {r.ci[1]:.4f}]"
+        cv = f"{r.change_run_cv:.2%}/{r.base_run_cv:.2%}"
+        flag = "" if r.verdict == pair.OK else f"  {r.verdict.upper()}"
+        lines.append(
+            f"{r.name:<{width}} {r.change_median:>10.2f} {r.base_median:>10.2f} {ratio:>24}"
+            f" {cv:>14}  {r.unit}{flag}"
+        )
+    return "\n".join(lines)
+
+
+def _pair(args: argparse.Namespace) -> int:
+    if args.pairs < pair.MIN_PAIRS:
+        raise BenchError(
+            Code.INSUFFICIENT_PAIRS,
+            f"{args.pairs} pair(s) asked, the paired gate needs {pair.MIN_PAIRS}",
+        )
+    binary_args = args.binary_args[1:] if args.binary_args[:1] == ["--"] else args.binary_args
+    if args.suite == "stream" and not binary_args:
+        # The stream command's defaults, so that both sides measure what the absolute gate does.
+        defaults = parser().parse_args(["stream", "--binary", "-", "--out", "-"])
+        binary_args = _stream_args(defaults)
+    args.out.mkdir(parents=True, exist_ok=True)
+    # Nothing of an earlier run in this directory may pass for this one's.
+    (args.out / "pair.json").unlink(missing_ok=True)
+    for old in args.out.glob("series-*"):
+        shutil.rmtree(old)
+    summary: dict = {
+        "schema": pair.SCHEMA_ID,
+        "suite": args.suite,
+        "threshold": args.threshold,
+        "pairs": args.pairs,
+        "state": "running",
+        "series": [],
+    }
+
+    def save() -> None:
+        (args.out / "pair.json").write_text(json.dumps(summary, indent=2) + "\n")
+
+    def report() -> None:
+        if args.summary:
+            with args.summary.open("a") as out:
+                out.write(pair.markdown(summary))
+
+    save()
+    final = pair.OK
+    try:
+        # A first series that is not ok is confirmed by a second, in a hold of its own, which
+        # decides (as gate.sh does for the absolute gate); never a third.
+        for number in (1, 2) if args.confirm else (1,):
+            directory = args.out / f"series-{number}"
+            directory.mkdir()
+
+            def keep(i: int, side: str, doc: dict, directory: Path = directory) -> None:
+                result.write(doc, directory / f"{i + 1:02d}-{side}.json")
+
+            series = runner.pair_series(
+                args.change,
+                args.base,
+                binary_args,
+                pair.order(args.pairs),
+                suite=args.suite,
+                precision=args.precision,
+                lock=args.lock,
+                lock_timeout_s=args.lock_timeout,
+                max_load_per_cpu=args.max_load,
+                on_run=keep,
+            )
+            sides = series.sides
+            change = [d for s, d in zip(sides, series.docs, strict=True) if s == "change"]
+            base = [d for s, d in zip(sides, series.docs, strict=True) if s == "base"]
+            rows = pair.judge_all(change, base, args.threshold)
+            final = pair.outcome(rows)
+            summary["series"].append(pair.series_record(sides, series.lock_wait_s,
+                                                        series.hold_s, rows, final))  # fmt: skip
+            # Saved after each series: a failed confirmation keeps the first series' record,
+            # with the gate's state still "running", never a verdict.
+            save()
+            _say(f"series {number}: {len(sides)} runs, lock held {series.hold_s:.0f} s")
+            _say(_pair_table(rows))
+            if final == pair.OK:
+                break
+    except BenchError as err:
+        summary["state"] = "failed"
+        summary["error"] = str(err)
+        save()
+        report()
+        raise
+    summary["state"] = "complete"
+    summary["outcome"] = final
+    save()
+    report()
+    _say(f"wrote {args.out / 'pair.json'}")
+    confirmed = len(summary["series"]) == 2
+    names = [r["name"] for r in summary["series"][-1]["rows"] if r["verdict"] == final]
+    if final == pair.REGRESSION:
+        _say(
+            f"error[REGRESSION]: {', '.join(names)} worse than the base by more than "
+            f"{args.threshold:.0%}, the ratio's 95 % interval below 1"
+            + (", confirmed by a second series" if confirmed else ""),
+            err=True,
+        )
+        return 1
+    if final == pair.INCONCLUSIVE:
+        _say(
+            f"error[INCONCLUSIVE]: {', '.join(names)} worse by more than {args.threshold:.0%} "
+            + (
+                "with an interval containing 1 in both series: noise too high; measure again "
+                "at another time"
+                if confirmed
+                else "but within noise"
+            ),
+            err=True,
+        )
+        return 3
+    return 0
 
 
 def _baseline(args: argparse.Namespace) -> int:
@@ -307,6 +439,58 @@ def parser() -> argparse.ArgumentParser:
         help="keep only the benchmarks whose name matches this glob (repeatable): the tracked set",
     )
     b.set_defaults(func=_baseline)
+
+    a = sub.add_parser(
+        "pair",
+        help="judge a change against its base, measured alternately in one hold of the lock",
+        description=pair.__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    a.add_argument("--suite", required=True, help="suite name, the prefix of every benchmark")
+    a.add_argument("--change", type=Path, required=True, help="the change's benchmark binary")
+    a.add_argument("--base", type=Path, required=True, help="the base's, built from its own tree")
+    a.add_argument("--precision", required=True, choices=["fp32", "fp32+acc64", "fp64"])
+    a.add_argument("--out", type=Path, required=True, help="directory for the runs and pair.json")
+    a.add_argument(
+        "--pairs",
+        type=int,
+        default=pair.DEFAULT_PAIRS,
+        help="pairs per series, each side first in turn",
+    )
+    a.add_argument(
+        "--confirm",
+        action="store_true",
+        help="when the first series is not ok, measure a second series, which decides",
+    )
+    a.add_argument(
+        "--threshold", type=float, default=pair.DEFAULT_THRESHOLD, help="tolerated relative loss"
+    )
+    a.add_argument(
+        "--summary", type=Path, help="append the verdicts as Markdown (a CI job summary)"
+    )
+    a.add_argument(
+        "--lock", type=Path, default=gpu.DEFAULT_LOCK, help="flock file serialising GPU jobs"
+    )
+    a.add_argument(
+        "--lock-timeout",
+        type=float,
+        metavar="SECONDS",
+        default=_env_seconds("AUTAN_BENCH_LOCK_TIMEOUT"),
+        help="fail (LOCK_TIMEOUT) if the GPU lock is still held after this long; default: wait"
+        " ($AUTAN_BENCH_LOCK_TIMEOUT)",
+    )
+    a.add_argument(
+        "--max-load",
+        type=float,
+        metavar="PER_CPU",
+        help="refuse to run when the host's runnable threads per CPU exceed this (HOST_BUSY)",
+    )
+    a.add_argument(
+        "binary_args",
+        nargs=argparse.REMAINDER,
+        help="-- then the binaries' arguments; none for the stream suite: the stream command's",
+    )
+    a.set_defaults(func=_pair)
 
     k = sub.add_parser("peak", help="print the peak STREAM bandwidth (GB/s) of a baseline")
     k.add_argument("baseline", type=Path)

@@ -115,10 +115,45 @@ net_kill() {  # launcher PID whose ranks have all ended
   kill -KILL "$launcher" 2>/dev/null
 }
 
+ticks() {  # PID: "START STATE CPU_TICKS VOLUNTARY NONVOLUNTARY" (start time: the process's
+  # identity with its PID; utime + stime of all its threads; the leader's context switches)
+  local stat fields
+  stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+  read -ra fields <<<"${stat##*) }"  # after the command name, which may hold spaces
+  awk -v id="${fields[19]}" -v s="${fields[0]}" -v t=$((fields[11] + fields[12])) \
+    '/^voluntary_ctxt_switches/ {v = $2} /^nonvoluntary_ctxt_switches/ {n = $2}
+     END {print id, s, t, v + 0, n + 0}' "/proc/$1/status" 2>/dev/null
+}
+
+activity() {  # PIDS...: what each does over about one second, from /proc alone (no ptrace).
+  # Observations, not a diagnosis: ranks deadlocked while busy-polling also burn CPU. CPU sums
+  # all threads (above 100 % for a multi-threaded rank); state and wait channel are the leader's.
+  local pid i=0 before=() after=() t_before=() t_after=() id0 id1 s1 c0 c1 v0 v1 n0 n1 ms
+  for pid in "$@"; do before+=("$(ticks "$pid")"); t_before+=("${EPOCHREALTIME/./}"); done
+  sleep 1
+  for pid in "$@"; do after+=("$(ticks "$pid")"); t_after+=("${EPOCHREALTIME/./}"); done
+  for pid in "$@"; do
+    read -r id0 _ c0 v0 n0 <<<"${before[$i]}"
+    read -r id1 s1 c1 v1 n1 <<<"${after[$i]}"
+    ms=$(((t_after[i] - t_before[i]) / 1000))
+    if [[ -z ${before[$i]} || -z ${after[$i]} || $id0 != "$id1" ]] || ((ms <= 0)); then
+      printf 'pid %s: gone during the sample, no activity measured\n' "$pid"
+    else
+      printf 'pid %s %s: state %s, CPU %d %% over %d ms, wchan %s, +%d voluntary +%d involuntary switches\n' \
+        "$pid" "$(cat "/proc/$pid/comm" 2>/dev/null || echo '?')" "$s1" \
+        $(((c1 - c0) * 100000 / clk_tck / ms)) "$ms" "$(cat "/proc/$pid/wchan" 2>/dev/null || echo '?')" \
+        $((v1 - v0)) $((n1 - n0))
+    fi
+    i=$((i + 1))
+  done
+}
+
 dump_and_kill() {  # launcher PID
   local launcher=$1 pid tree debuggers=()
   tree=$(descendants "$launcher")
   echo "::group::watchdog: $(tr '\0' ' ' <"/proc/$launcher/cmdline") ran over ${limit} s; stacks"
+  # shellcheck disable=SC2086
+  activity $tree | tee "$dir/$launcher-activity.txt"
   if ! command -v "${gdb_cmd##* }" >/dev/null 2>&1; then
     echo "::warning::watchdog: no debugger ($gdb_cmd): stacks not collected"
   fi
@@ -180,9 +215,20 @@ while kill -0 "$cmd" 2>/dev/null; do
       dump_and_kill "$pid"
     fi
   done
-  sleep 2
+  # Wake when the command ends, not at the end of the poll: a lock that stops the job at its
+  # limit must never catch the watchdog asleep after a command that passed.
+  sleep 2 &
+  sleeper=$!
+  which=
+  wait -n -p which "$cmd" "$sleeper"
+  waited=$?
+  if [[ $which == "$cmd" ]]; then
+    kill "$sleeper" 2>/dev/null
+    wait "$sleeper" 2>/dev/null
+    status=$waited
+    break
+  fi
 done
-wait "$cmd"
-status=$?
+[[ -n ${status:-} ]] || { wait "$cmd"; status=$?; }
 if ((caught && status == 0)); then status=1; fi
 exit "$status"
