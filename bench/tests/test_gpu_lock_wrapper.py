@@ -324,26 +324,66 @@ def test_a_docker_run_command_has_its_container_killed_with_it(lock, tmp_path):
             subprocess.run(["docker", "rm", "-f", cid], capture_output=True, check=False)
 
 
-def test_a_command_waits_for_memory_a_killed_holder_is_returning(lock, tmp_path):
-    # A process holds real memory below the floor and frees it 2 s later, as one the floor
-    # killed does while the kernel reclaims it: the next command waits, then runs.
-    ready, done = tmp_path / "ready", tmp_path / "done"
+def test_waiters_on_memory_being_returned_start_one_at_a_time_once_it_is_back(lock, tmp_path):
+    # A process holds 3 GiB of real memory below the floor, as one the floor killed does while
+    # the kernel reclaims it, and frees it only when the test says so, 4 s after two commands
+    # queued (a wait shorter than that would refuse them). Each command then re-checks the
+    # floor once it holds the lock: they run one after the other, never together.
+    ready, release, log = tmp_path / "ready", tmp_path / "release", tmp_path / "log"
     hog = subprocess.Popen([sys.executable, "-c", (
-        "import sys, time\nchunks = [b'\\1' * (128 << 20) for _ in range(24)]\n"
-        f"open({str(ready)!r}, 'w').write('x')\ntime.sleep(2)\n")])  # fmt: skip
+        "import os, sys, time\nchunks = [b'\\1' * (128 << 20) for _ in range(24)]\n"
+        f"open({str(ready)!r}, 'w').write('x')\n"
+        f"while not os.path.exists({str(release)!r}):\n    time.sleep(0.05)\n")])  # fmt: skip
     try:
-        for _ in range(200):
+        for _ in range(400):
             if ready.exists():
                 break
             time.sleep(0.05)
+        assert hog.poll() is None
         # 1 GiB above what is left while it holds its 3 GiB: below the floor until it exits.
         floor = f"{(mem_available() + (1 << 30)) >> 20}M"
-        start = time.monotonic()
-        waiting = wrapper(lock, "-m", "test", "-f", floor, "-r", "30", "--", "touch", str(done))
-        assert waiting.wait(timeout=60) == 0
-        assert time.monotonic() - start >= 0.5
-        assert done.exists()
-        assert [r[1] for r in events(lock)][-1] == "release"
+        step = f"echo start $(date +%s.%N) >> {log}; sleep 1; echo end $(date +%s.%N) >> {log}"
+        waiters = [wrapper(lock, "-m", "test", "-f", floor, "--", "sh", "-c", step)
+                   for _ in range(2)]  # fmt: skip
+        time.sleep(4)
+        assert not log.exists()
+        assert all(w.poll() is None for w in waiters)
+        release.touch()
+        assert [w.wait(timeout=60) for w in waiters] == [0, 0]
     finally:
-        hog.kill()
-        hog.wait()
+        release.touch()
+        hog.wait(timeout=30)
+    times = [line.split() for line in log.read_text().splitlines()]
+    assert [kind for kind, _ in times] == ["start", "end", "start", "end"]
+    assert float(times[2][1]) >= float(times[1][1])
+
+
+def test_the_memory_wait_counts_in_the_hold_and_not_in_a_self_locking_command_s(lock, tmp_path):
+    # Below the floor for good: the wait ends with the hold (-t 4: TERM time at 2 s), not after
+    # -r 30, and refuses.
+    above = f"{(mem_available() >> 20) + 4096}M"
+    start = time.monotonic()
+    held = wrapper(lock, "-m", "test", "-t", "4", "-r", "30", "-f", above, "--", "true")
+    assert held.wait(timeout=30) == 71
+    assert time.monotonic() - start < 6
+    # With -n the command takes the lock itself and its -t counts from its start: 3 s of
+    # waiting for memory do not eat into the 3 s it is given.
+    ready, release = tmp_path / "ready", tmp_path / "release"
+    hog = subprocess.Popen([sys.executable, "-c", (
+        "import os, time\nchunks = [b'\\1' * (128 << 20) for _ in range(24)]\n"
+        f"open({str(ready)!r}, 'w').write('x')\n"
+        f"while not os.path.exists({str(release)!r}):\n    time.sleep(0.05)\n")])  # fmt: skip
+    try:
+        for _ in range(400):
+            if ready.exists():
+                break
+            time.sleep(0.05)
+        floor = f"{(mem_available() + (1 << 30)) >> 20}M"
+        own = wrapper(lock, "-n", "-m", "test", "-t", "3", "-r", "30", "-f", floor, "--",
+                      "flock", str(lock), "sleep", "1")  # fmt: skip
+        time.sleep(3)
+        release.touch()
+        assert own.wait(timeout=30) == 0
+    finally:
+        release.touch()
+        hog.wait(timeout=30)
