@@ -282,6 +282,17 @@ test("polars keep each Mach number apart and every run, and say which runs are m
       await expect(row.locator("td").nth(2)).toHaveText((forces?.cl ?? Number.NaN).toFixed(4));
       await expect(row.locator("td").nth(3)).toHaveText((forces?.cd ?? Number.NaN).toFixed(4));
     }
+
+    // On Home these runs are one study whatever their case names (results.md#studies): its
+    // header names the newest run's case and counts the others, on one line.
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/");
+    await expect(page.getByRole("button", { name: "Group by study" })).toBeVisible();
+    const group = page.locator("li").filter({ has: page.locator(`a[data-run="${ids[0]}"]`) });
+    const name = group.getByTestId("study-name");
+    await expect(name).toHaveText(/^polar-\d+-\d \+\d+$/);
+    const box = await name.boundingBox();
+    expect(box?.height ?? 99).toBeLessThan(24);
   } finally {
     for (const id of ids) rmSync(join(RUNS, id), { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });

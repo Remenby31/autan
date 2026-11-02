@@ -13,7 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RUN_STATUSES, type Run, type RunStatus, type RunSummary } from "../api/contracts";
 import { finalCoefficients } from "../api/polars";
 import { runsQuery } from "../api/runs";
-import { groupByStudy, study } from "../api/studies";
+import { groupByStudy, shortName, study } from "../api/studies";
 import { coefficient, degrees } from "../api/units";
 import { Peek } from "../components/runs/Peek";
 import { SelectionBar } from "../components/runs/SelectionBar";
@@ -200,7 +200,7 @@ function Runs() {
                 onClick={() => setSearch({ flat: grouped ? true : undefined })}
                 className="ml-auto aria-pressed:bg-bg-3"
               >
-                Group by case
+                Group by study
               </Button>
             )}
           </div>
@@ -272,7 +272,7 @@ function Runs() {
                   groups.map((group) => (
                     <Group
                       key={group.key}
-                      name={group.name}
+                      names={group.names}
                       runs={group.runs}
                       summaries={data.summaries}
                     />
@@ -348,11 +348,11 @@ function TableFrame({ header, children }: { header?: React.ReactNode; children: 
 }
 
 function Group({
-  name,
+  names,
   runs,
   summaries,
 }: {
-  name: string;
+  names: string[];
   runs: Run[];
   summaries: Record<string, RunSummary>;
 }) {
@@ -375,8 +375,12 @@ function Group({
               open && "rotate-90",
             )}
           />
-          <span className="font-medium">{name}</span>
-          <span className="text-fg-3">
+          <Tooltip content={names.join(" · ")}>
+            <span className="min-w-0 truncate font-medium" data-testid="study-name">
+              {shortName(names)}
+            </span>
+          </Tooltip>
+          <span className="flex-none whitespace-nowrap text-fg-3">
             {runs.length} {runs.length === 1 ? "run" : "runs"}
           </span>
           {sweep && (
