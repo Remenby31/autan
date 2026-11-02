@@ -40,6 +40,15 @@ struct GeometryView {
 /// volume.
 Geometry compute_geometry(const Mesh& mesh);
 
+/// The area of face `face`, or the volume of owned cell `cell`, as compute_geometry computes it,
+/// and whether compute_geometry accepts it (E0120, E0121), without throwing.
+struct GeometryCheck {
+  double value = 0.0;
+  bool valid = false;
+};
+[[nodiscard]] GeometryCheck check_face(const Mesh& mesh, index_t face);
+[[nodiscard]] GeometryCheck check_cell(const Mesh& mesh, index_t cell);
+
 [[nodiscard]] GeometryView view(const Geometry& geometry) noexcept;
 
 /// Closure error |sum_f S_f| / sum_f |S_f| of each owned cell, with outward

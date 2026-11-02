@@ -235,6 +235,62 @@ jobs:
           path: ui/test-results/
           if-no-files-found: ignore
 
+  ui-golden:
+    # The UI driven on what the solver itself writes: autan-mesh-info and autan-run (CPU) produce
+    # a mesh's MeshInfo and surface and two runs, which the golden-path e2e reads.
+    name: UI golden path
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: website/package.json
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.6"
+          enable-cache: false
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
+        with:
+          micromamba-version: 2.3.3-0
+          environment-name: cgns
+          create-args: -c conda-forge cgns=4.5.2 ninja=1.13.2
+          init-shell: none
+          cache-downloads: false
+          cache-environment: false
+      - name: Put CGNS tools and Ninja on the PATH
+        run: |
+          grep -q '#define CG_BUILD_64BIT  1' "${MAMBA_ROOT_PREFIX}/envs/cgns/include/cgnstypes.h"
+          echo "${MAMBA_ROOT_PREFIX}/envs/cgns/bin" >> "${GITHUB_PATH}"
+      - name: Build autan-run and autan-mesh-info
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="${MAMBA_ROOT_PREFIX}/envs/cgns" -DCMAKE_BUILD_TYPE=Release -DAUTAN_BUILD_TESTS=OFF
+          cmake --build build --target autan-run autan-mesh-info
+      - name: Install the UI
+        working-directory: ui
+        run: bun install --frozen-lockfile
+      - name: Install the server from its lock file
+        working-directory: ui/server
+        run: |
+          uv sync --locked --no-install-project --no-install-package autan
+          uv sync --locked --no-build-isolation
+      - name: Golden path (Playwright on the solver's own output)
+        working-directory: ui
+        env:
+          AUTAN_RUN: ${{ github.workspace }}/build/runtime/autan-run
+          AUTAN_MESH_INFO: ${{ github.workspace }}/build/io/autan-mesh-info
+        run: bun run e2e:golden
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: ui-golden-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ui/test-results/
+          if-no-files-found: ignore
+
   clang-tidy:
     name: clang-tidy
     runs-on: ubuntu-24.04
