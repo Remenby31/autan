@@ -16,7 +16,6 @@
 #include <numeric>
 #include <optional>
 #include <random>
-#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -365,64 +364,76 @@ struct Rows {
   std::size_t rows = 0;
   bool ok = true;
 };
-using RowMap = std::map<std::vector<std::string>, Rows>;
+// Rows by the ordinals of the members leading to them (each member's position in its object,
+// in file order): no key is copied, so a long name costs its text and its one document key.
+using RowMap = std::map<std::vector<std::size_t>, Rows>;
+using StateDocument = nlohmann::ordered_json;
+
+// The position of member `key` in `object`, in file order; npos when absent.
+std::size_t ordinal(const StateDocument& object, std::string_view key) {
+  std::size_t i = 0;
+  for (const auto& [k, v] : object.items()) {
+    if (k == key) return i;
+    ++i;
+  }
+  return std::string_view::npos;
+}
 
 // `text` parsed (discarded if not JSON), every "centroids" and "values" array member streamed into
-// `streamed` under the keys leading to it and left empty in the document: what a state file holds
-// in memory is then its text, 8 bytes per number of its rows, and its other members. `duplicate`
-// receives the first member an object has twice, as its keys joined by '.'; empty: none.
-nlohmann::json parse_rows(const std::string& text, RowMap& streamed, std::string& duplicate) {
+// `streamed` under the ordinals of the members leading to it and left empty in the document:
+// what a state file holds in memory is then its text, 8 bytes per number of its rows, and its
+// other members once. `duplicate` is set when an object has a member twice.
+StateDocument parse_rows(const std::string& text, RowMap& streamed, bool& duplicate) {
   enum class Kind : std::uint8_t { plain, rows, row };
+  enum class Member : std::uint8_t { other, centroids, values };
+  constexpr std::size_t none = std::string_view::npos;
   struct Frame {
     bool array;
-    std::string key;
+    std::size_t ordinal;  // its position in the object holding it; none in an array or at the top
     Kind kind;
-    std::size_t count;
-    std::set<std::string> keys;  // an object's members so far
+    std::size_t count;    // a row's numbers so far
+    std::size_t members;  // an object's keys so far
   };
   std::vector<Frame> stack;
-  std::string pending;
+  Member pending = Member::other;
   Rows* current = nullptr;
   std::size_t width = 0;
-  using Event = nlohmann::json::parse_event_t;
-  const auto callback = [&](int /*depth*/, Event event, nlohmann::json& parsed) {
+  using Event = StateDocument::parse_event_t;
+  const auto callback = [&](int /*depth*/, Event event, StateDocument& parsed) {
     switch (event) {
-      case Event::key:
-        pending = parsed.get<std::string>();
-        if (!stack.empty() && !stack.back().keys.insert(pending).second && duplicate.empty()) {
-          for (const auto& g : stack) {
-            if (!g.key.empty()) duplicate += g.key + ".";
-          }
-          duplicate += pending;
-        }
+      case Event::key: {
+        const auto& key = parsed.get_ref<const std::string&>();
+        pending = key == "centroids" ? Member::centroids
+                  : key == "values"  ? Member::values
+                                     : Member::other;
+        if (!stack.empty()) ++stack.back().members;
         return true;
+      }
       case Event::object_start:
       case Event::array_start: {
         const bool member = !stack.empty() && !stack.back().array;
         const Kind parent = stack.empty() ? Kind::plain : stack.back().kind;
         Frame f{.array = event == Event::array_start,
-                .key = member ? pending : std::string(),
+                .ordinal = member ? stack.back().members - 1 : none,
                 .kind = Kind::plain,
                 .count = 0,
-                .keys = {}};
+                .members = 0};
         if (parent == Kind::rows && f.array) {
           f.kind = Kind::row;
         } else if (parent != Kind::plain) {
           current->ok = false;  // an object in the rows, or anything nested in a row
-        } else if (f.array && member && current == nullptr &&
-                   (pending == "centroids" || pending == "values")) {
+        } else if (f.array && member && current == nullptr && pending != Member::other) {
           f.kind = Kind::rows;  // not inside another rows member, which this one would replace
+          width = pending == Member::centroids ? 3 : 5;
         }
-        pending.clear();
-        const bool rows = f.kind == Kind::rows;
-        stack.push_back(std::move(f));
-        if (rows) {
-          std::vector<std::string> path;
+        pending = Member::other;
+        stack.push_back(f);
+        if (f.kind == Kind::rows) {
+          std::vector<std::size_t> path;
           for (const auto& g : stack) {
-            if (!g.key.empty()) path.push_back(g.key);
+            if (g.ordinal != none) path.push_back(g.ordinal);
           }
           current = &streamed[path];
-          width = stack.back().key == "centroids" ? 3 : 5;
         }
         return true;
       }
@@ -440,12 +451,12 @@ nlohmann::json parse_rows(const std::string& text, RowMap& streamed, std::string
           current->ok = false;
           return false;
         }
-        if (!top.array) pending.clear();
+        if (!top.array) pending = Member::other;
         return true;
       }
       case Event::object_end:
       case Event::array_end: {
-        const Frame f = std::move(stack.back());
+        const Frame f = stack.back();
         stack.pop_back();
         if (f.kind == Kind::row) {
           current->ok = current->ok && f.count == width;
@@ -456,22 +467,26 @@ nlohmann::json parse_rows(const std::string& text, RowMap& streamed, std::string
           current = nullptr;
           return true;
         }
+        // A member given twice leaves the object with fewer members than keys were read.
+        if (!f.array && f.kind == Kind::plain && parsed.is_object() && parsed.size() < f.members)
+          duplicate = true;
         return stack.empty() || stack.back().kind == Kind::plain;
       }
     }
     return true;
   };
-  return nlohmann::json::parse(text, callback, false);
+  return StateDocument::parse(text, callback, false);
 }
 
 // The zones of a face-state document, or why it is not one (face-states.md, Document): every
 // key, every zone and every row are checked, whatever the case uses.
-std::map<std::string, ZoneStates> face_state_zones(const nlohmann::json& doc, RowMap& rows,
-                                                   std::string& why) {
-  std::map<std::string, ZoneStates> zones;
+// The zones are views of the document's keys, which must outlive them.
+std::map<std::string_view, ZoneStates> face_state_zones(const StateDocument& doc, RowMap& rows,
+                                                        std::string& why) {
+  std::map<std::string_view, ZoneStates> zones;
   const auto fail = [&](std::string what) {
     why = std::move(what);
-    return std::map<std::string, ZoneStates>{};
+    return std::map<std::string_view, ZoneStates>{};
   };
   if (!doc.is_object()) return fail("not a JSON object");
   for (const auto& [key, value] : doc.items()) {
@@ -489,29 +504,34 @@ std::map<std::string, ZoneStates> face_state_zones(const nlohmann::json& doc, Ro
     return fail("mesh_sha256");
   if (!doc.contains("variables") ||
       doc["variables"] !=
-          nlohmann::json{"density", "velocity-x", "velocity-y", "velocity-z", "pressure"})
+          StateDocument{"density", "velocity-x", "velocity-y", "velocity-z", "pressure"})
     return fail("variables");
   if (!doc.contains("zones") || !doc["zones"].is_object()) return fail("zones");
-  for (const auto& [name, z] : doc["zones"].items()) {
-    const std::string at_zone = "zones." + name;
+  const std::size_t zones_at = ordinal(doc, "zones");
+  std::size_t index = 0;
+  for (const auto& item : doc["zones"].items()) {
+    const std::string& name = item.key();
+    const StateDocument& z = item.value();
+    const std::size_t zone_at = index++;
+    const auto at_zone = [&] { return "zones." + name; };
     if (!z.is_object() || z.size() != 3 || !z.contains("faces") ||
         !z["faces"].is_number_integer() || z["faces"].get<std::int64_t>() < 0)
-      return fail(at_zone + ".faces");
+      return fail(at_zone() + ".faces");
     ZoneStates out;
     out.faces = z["faces"].get<std::size_t>();
     for (const char* array : {"centroids", "values"}) {
-      const auto it = rows.find({"zones", name, array});
+      const auto it = rows.find({zones_at, zone_at, ordinal(z, array)});
       if (!z.contains(array) || !z[array].is_array() || it == rows.end() || !it->second.ok ||
           it->second.rows != out.faces)
-        return fail(at_zone + "." + array);
+        return fail(at_zone() + "." + array);
       (std::string(array) == "centroids" ? out.centroids : out.values) =
           std::move(it->second.numbers);
     }
     for (std::size_t r = 0; r < out.faces; ++r) {
       if (!(out.values[5 * r] > 0.0) || !(out.values[5 * r + 4] > 0.0))
-        return fail(at_zone + ".values: density and pressure must be > 0");
+        return fail(at_zone() + ".values: density and pressure must be > 0");
     }
-    zones.emplace(name, std::move(out));
+    zones.emplace(std::string_view(name), std::move(out));
   }
   return zones;
 }
@@ -543,12 +563,12 @@ void load_states(Prepared& p) {
            {{"expected", b.states->sha256}, {"found", found}});
     }
     RowMap rows;
-    std::string duplicate;
-    nlohmann::json doc = parse_rows(bytes, rows, duplicate);
+    bool duplicate = false;
+    StateDocument doc = parse_rows(bytes, rows, duplicate);
     std::string why = doc.is_discarded() ? "not JSON" : "";
-    if (why.empty() && !duplicate.empty()) why = "member '" + duplicate + "' appears twice";
-    const auto zones =
-        why.empty() ? face_state_zones(doc, rows, why) : std::map<std::string, ZoneStates>{};
+    if (why.empty() && duplicate) why = "an object has a member twice";
+    auto zones =
+        why.empty() ? face_state_zones(doc, rows, why) : std::map<std::string_view, ZoneStates>{};
     if (!why.empty()) {
       fail("E0420", "'" + b.states->path + "' is not an autan.face-states/1 document: " + why,
            ".path", {{"problem", why}});
@@ -557,13 +577,14 @@ void load_states(Prepared& p) {
       fail("E0422", "the face states were exported for another mesh", ".path",
            {{"expected", p.mesh_hash}, {"found", doc["mesh_sha256"]}});
     }
-    doc = nlohmann::json();  // its numbers are in zones: the pairing needs no more
     const auto it = zones.find(b.zone);
     if (it == zones.end()) {
       fail("E0423", "the face states do not cover zone '" + b.zone + "'", ".path",
            {{"zone", b.zone}});
     }
-    const ZoneStates& z = it->second;
+    const ZoneStates z = std::move(it->second);
+    zones.clear();
+    doc = StateDocument();  // the zone's numbers are in z: the pairing needs no more
     const index_t zone = p.face_zone.at(b.zone);
     const auto first = static_cast<std::size_t>(offsets[at(zone)]);
     const auto n = static_cast<std::size_t>(offsets[at(zone) + 1]) - first;
@@ -645,14 +666,14 @@ void load_initial(Prepared& p) {
          {{"expected", file.sha256}, {"found", found}});
   }
   RowMap streamed;
-  std::string duplicate;
-  nlohmann::json doc = parse_rows(bytes, streamed, duplicate);
+  bool duplicate = false;
+  StateDocument doc = parse_rows(bytes, streamed, duplicate);
   const auto invalid_document = [&](const std::string& why) {
     fail("E0508", "'" + file.path + "' is not an autan.initial-state/1 document: " + why,
          {{"problem", why}});
   };
   if (doc.is_discarded() || !doc.is_object()) invalid_document("not a JSON object");
-  if (!duplicate.empty()) invalid_document("member '" + duplicate + "' appears twice");
+  if (duplicate) invalid_document("an object has a member twice");
   for (const auto& [key, value] : doc.items()) {
     if (key != "schema" && key != "oracle" && key != "mesh_sha256" && key != "variables" &&
         key != "cells" && key != "centroids" && key != "values")
@@ -668,7 +689,7 @@ void load_initial(Prepared& p) {
     invalid_document("mesh_sha256");
   if (!doc.contains("variables") ||
       doc["variables"] !=
-          nlohmann::json{"density", "velocity-x", "velocity-y", "velocity-z", "pressure"})
+          StateDocument{"density", "velocity-x", "velocity-y", "velocity-z", "pressure"})
     invalid_document("variables");
   if (!doc.contains("cells") || !doc["cells"].is_number_integer() ||
       doc["cells"].get<std::int64_t>() < 1)
@@ -676,7 +697,7 @@ void load_initial(Prepared& p) {
   const auto rows = doc["cells"].get<std::size_t>();
   std::vector<double> centroids, values;
   for (const char* array : {"centroids", "values"}) {
-    const auto it = streamed.find({array});
+    const auto it = streamed.find({ordinal(doc, array)});
     if (!doc.contains(array) || !doc[array].is_array() || it == streamed.end() || !it->second.ok ||
         it->second.rows != rows)
       invalid_document(array);
@@ -690,7 +711,7 @@ void load_initial(Prepared& p) {
     fail("E0509", "the initial state was written for another mesh",
          {{"expected", p.mesh_hash}, {"found", doc["mesh_sha256"]}});
   }
-  doc = nlohmann::json();  // its numbers are in centroids and values: the pairing needs no more
+  doc = StateDocument();  // its numbers are in centroids and values: the pairing needs no more
   // Fluid cells: those of zones whose initial state is a fluid's.
   std::map<std::string, bool> fluid_zone;
   for (const auto& z : p.input.cell_zones) fluid_zone[z.zone] = z.initial.kind == "fluid";
