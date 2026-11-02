@@ -1,3 +1,4 @@
+import calendar
 import contextlib
 import fcntl
 import logging
@@ -216,6 +217,33 @@ def require_campaigns_frozen(lock: Path, timeout_s: float = 10.0) -> None:
                 Code.HOST_BUSY, f"CPU campaigns still running under the GPU lock: {running}"
             )
         time.sleep(0.1)
+
+
+FOREIGN_MAX_AGE_S = 120
+
+
+def foreign_tenants(lock: Path = DEFAULT_LOCK) -> list[str] | None:
+    """The GPU's processes outside Autan's containers, as autan-gpu-guard last listed them in
+    `foreign-gpu` next to the lock (bench/lock/autan-gpu-guard): one "name (container, MiB)"
+    each; None when there is no list, or one older than FOREIGN_MAX_AGE_S or that could not be
+    taken (unknown, not empty)."""
+    try:
+        text = (lock.parent / "foreign-gpu").read_text()
+    except OSError:
+        return None
+    lines = text.splitlines()
+    match = re.match(r"# (\S+Z) (\d+) foreign", lines[0]) if lines else None
+    if match is None:
+        return None
+    stamp = calendar.timegm(time.strptime(match[1], "%Y-%m-%dT%H:%M:%SZ"))
+    if time.time() - stamp > FOREIGN_MAX_AGE_S:
+        return None
+    tenants = []
+    for row in lines[1:]:
+        fields = row.split("\t")
+        if len(fields) == 4:
+            tenants.append(f"{fields[3]} ({fields[1]}, {fields[2]})")
+    return tenants
 
 
 def require_idle(
