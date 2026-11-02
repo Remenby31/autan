@@ -919,7 +919,14 @@
    "archive_zip": "https://hlpw5.s3.us-east-1.amazonaws.com/website/Workshop5.zip (1,750,486,485 B)",
    "cad": "https://commonresearchmodel.larc.nasa.gov/high-lift-prediction-workshop-5-cad-files/",
    "grid_sizes": "9 RANS families + 4 high-order + 1 adapted + 2 LES; finest 200M to >1B cells, best-practice 100-200M (NTRS 20240014255, 20240014696)",
-   "note": "hiliftpw.larc.nasa.gov now redirects to a generic nasa.gov page"
+   "note": "hiliftpw.larc.nasa.gov now redirects to a generic nasa.gov page",
+   "grid": {
+    "url": "https://hlpw5.s3.amazonaws.com/hlpw5_grids/config_buildup/2.R.01/h5c23_rans_c01.cgns.gz",
+    "size": 204194470,
+    "sha256": "654cae1609909411728204dc04f772666193ce312d86d6174da6cd39b324a63c",
+    "member_sha256": "046a87e110279f849ca1364783412bf677d04509c43dcb523ff3a7142bed8ce1",
+    "description": "HeldenMesh 2.R.01, config 2.3, level C; zone groups: h5c23_rans_c01.cgns.zones.json; units: inches"
+   }
   },
   "DPW7": {
    "landing": "https://www.aiaa-dpw.org/",
