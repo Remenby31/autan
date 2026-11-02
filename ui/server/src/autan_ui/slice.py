@@ -75,11 +75,11 @@ class Connectivity:
         return list(zip(edges[:-1].tolist(), edges[1:].tolist(), strict=True))
 
     def read(self, first: int, last: int) -> tuple[I64, I64]:
-        """Element of each entry and the entry (0-based, unsigned), for elements first..last."""
+        """The offsets of elements first..last from their first entry, and their entries
+        (0-based, unsigned)."""
         offsets = self.start[first : last + 1]
-        values = np.asarray(self.entries[offsets[0] : offsets[-1]]).ravel().astype(np.int64)
-        element = np.repeat(np.arange(first, last), np.diff(offsets))
-        return element, np.abs(values) - 1
+        values = np.asarray(self.entries[offsets[0] : offsets[-1]]).ravel()
+        return offsets - offsets[0], np.abs(values.astype(np.int64, copy=False)) - 1
 
 
 def _cut(
@@ -97,13 +97,20 @@ def _cut(
     # meeting there give one point.
     crossed: list[tuple[I64, I64, I64]] = []
     for first, last in faces.chunks():
-        face, node = faces.read(first, last)
-        start = faces.start[face]
-        count = faces.start[face + 1] - start
-        position = np.arange(len(node)) + (faces.start[first] - start)
-        following = node[np.arange(len(node)) - position + (position + 1) % count]
-        crossing = above[node] != above[following]
-        crossed.append((face[crossing], node[crossing], following[crossing]))
+        offsets, node = faces.read(first, last)
+        node_above = above[node]
+        count = np.diff(offsets)
+        # The faces with nodes on both sides, then their edges.
+        ups = np.add.reduceat(node_above, offsets[:-1], dtype=np.int32)
+        cut = np.flatnonzero((ups > 0) & (ups < count))
+        n = count[cut]
+        within = np.arange(n.sum()) - np.repeat(np.cumsum(n) - n, n)
+        begin = np.repeat(offsets[cut], n)
+        here = begin + within
+        there = begin + (within + 1) % np.repeat(n, n)
+        crossing = node_above[here] != node_above[there]
+        face = np.repeat(first + cut, n)
+        crossed.append((face[crossing], node[here[crossing]], node[there[crossing]]))
     face = np.concatenate([c[0] for c in crossed])
     a = np.concatenate([c[1] for c in crossed])
     b = np.concatenate([c[2] for c in crossed])
@@ -122,13 +129,14 @@ def _cut(
     seg_face, seg_p, seg_q = segments
 
     # The cells holding each crossed face, read cell by cell from NFACE.
-    crossed_faces = np.unique(seg_face)
+    is_crossed = np.zeros(len(faces), dtype=bool)
+    is_crossed[seg_face] = True
     pairs: list[tuple[I64, I64]] = []
     for first, last in cells.chunks():
-        cell, cell_face = cells.read(first, last)
-        slot = np.minimum(np.searchsorted(crossed_faces, cell_face), len(crossed_faces) - 1)
-        hit = crossed_faces[slot] == cell_face
-        pairs.append((cell[hit], cell_face[hit]))
+        offsets, cell_face = cells.read(first, last)
+        hit = np.flatnonzero(is_crossed[cell_face])
+        cell = first + np.searchsorted(offsets, hit, side="right") - 1
+        pairs.append((cell, cell_face[hit]))
     pair_cell = np.concatenate([p[0] for p in pairs])
     pair_face = np.concatenate([p[1] for p in pairs])
     # Each cell's segments: its crossed faces' segments.
