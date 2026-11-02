@@ -912,4 +912,5 @@ def test_runs_of_one_study_differ_only_in_their_freestream(
     assert other.case_without_freestream != base.case_without_freestream
     moved = parts(CRM_HL, "moved.py", mesh="1" * 64)
     assert moved.fields["mesh.sha256"] != base.fields["mesh.sha256"]
-    assert list(base.fields) == identity_fields()[:7]  # no start: the start fields are absent
+    # No start: the start fields are absent.
+    assert list(base.fields) == [f for f in identity_fields() if not f.startswith("start.")]

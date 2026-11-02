@@ -241,12 +241,15 @@ class FakeBackend:
         started = utc_now()
         solver = Solver(version=__version__, commit=COMMIT, backend="fake")
         devices = Devices(kind="cpu", count=1)
+        groups = mesh_info.groups_source.sha256 if mesh_info.groups_source else None
         info = RunInfo(
             run_id=RunWriter.new_run_id(started),
             identity="0" * 64,
             status="running",
             case=CaseIdentity(name=spec.name, sha256=spec.hash()),
-            mesh=MeshIdentity(path=str(case.mesh_path), sha256=mesh_info.source.sha256),
+            mesh=MeshIdentity(
+                path=str(case.mesh_path), sha256=mesh_info.source.sha256, groups_sha256=groups
+            ),
             solver=solver,
             precision=spec.physics.precision,
             devices=devices,

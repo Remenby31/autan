@@ -29,7 +29,7 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
   "identity": "4be1…",
   "status": "converged",
   "case": {"name": "crm-hl", "sha256": "…"},
-  "mesh": {"path": "/data/crm-hl.cgns", "sha256": "…"},
+  "mesh": {"path": "/data/crm-hl.cgns", "sha256": "…", "groups_sha256": null},
   "solver": {"version": "0.1.0", "commit": "d769576…", "backend": "fake"},
   "precision": "fp32+acc64",
   "devices": {"kind": "cpu", "count": 1},
@@ -52,7 +52,7 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
 | `identity` | What the run computes: the SHA-256 of the fields of [Identity](#identity). |
 | `status` | `running` · `converged` (convergence criterion of [case-schema.md](case-schema.md#time) met) · `completed` (iteration or step budget reached without convergence, or every unsteady step done) · `stopped` (stopped by user code, signal or an execution cap) · `diverged` (carries a `D` diagnostic) · `failed` (carries `E0704`). |
 | `case.sha256` | Case hash as defined in [case-schema.md](case-schema.md#case-hash). |
-| `mesh.path`, `mesh.sha256` | Absolute path of the mesh read, and `source.sha256` of its MeshInfo. |
+| `mesh.path`, `mesh.sha256`, `mesh.groups_sha256` | Absolute path of the mesh read, `source.sha256` of its MeshInfo, and `groups_source.sha256` of its MeshInfo, null without zone groups: the zones a case's `group` selected. |
 | `solver.version`, `solver.commit` | Version and full 40-character git commit of the solver build. |
 | `solver.backend` | `cuda` · `hip` · `cpu` · `fake`. Results of the `fake` backend are synthetic and must never be used as reference data. |
 | `precision` | Precision as run, from the case. |
@@ -72,19 +72,20 @@ Two runs of the solver (not the `fake` backend) with the same `identity` whose c
 
 ### Identity
 
-`identity` is the SHA-256 of these `run.json` fields, in this order, each as text (an integer in decimal), joined by `\n`, UTF-8. The `start.` fields are present exactly for a run with a `start`. A field enters the identity only by a line of this list, which `py/tests` reads as the definition and `autan.results.IDENTITY` follows. `autan.results.run_identity(run)` computes it from a `RunInfo` or a `run.json` document: a writer records it, a reader compares it.
+`identity` is the SHA-256 of these `run.json` fields, in this order, each as text (an integer in decimal, null as the empty string), joined by `\n`, UTF-8. The `start.` fields are present exactly for a run with a `start`. A field enters the identity only by a line of this list, which `py/tests` reads as the definition and `autan.results.IDENTITY` follows. `autan.results.run_identity(run)` computes it from a `RunInfo` or a `run.json` document: a writer records it, a reader compares it.
 
 1. `case.sha256`
 2. `mesh.sha256`
-3. `solver.commit`
-4. `precision`
-5. `solver.backend`
-6. `devices.kind`
-7. `devices.count`
-8. `start.identity`
-9. `start.mode`
-10. `start.iterations`
-11. `start.solution_sha256`
+3. `mesh.groups_sha256`
+4. `solver.commit`
+5. `precision`
+6. `solver.backend`
+7. `devices.kind`
+8. `devices.count`
+9. `start.identity`
+10. `start.mode`
+11. `start.iterations`
+12. `start.solution_sha256`
 
 ### Studies
 

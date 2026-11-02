@@ -45,6 +45,7 @@ class CaseIdentity(_Strict):
 class MeshIdentity(_Strict):
     path: str
     sha256: Hex
+    groups_sha256: Hex | None
 
 
 class Solver(_Strict):
@@ -178,6 +179,7 @@ def iso(moment: datetime) -> str:
 IDENTITY = (
     "case.sha256",
     "mesh.sha256",
+    "mesh.groups_sha256",
     "solver.commit",
     "precision",
     "solver.backend",
@@ -727,6 +729,9 @@ def run_problems(run: RunInfo, case: CaseSpec, mesh_info: MeshInfo) -> list[str]
         found.append("case.toml does not match run.json case")
     if mesh_info.source.sha256 != run.mesh.sha256:
         found.append("mesh-info.json does not match run.json mesh.sha256")
+    groups = mesh_info.groups_source.sha256 if mesh_info.groups_source else None
+    if groups != run.mesh.groups_sha256:
+        found.append("mesh-info.json groups_source does not match run.json mesh.groups_sha256")
     if not Path(run.mesh.path).is_absolute():
         found.append("mesh.path must be absolute")
     if run.precision != case.physics.precision:
