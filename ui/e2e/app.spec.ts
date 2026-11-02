@@ -418,19 +418,13 @@ with h5py.File(sys.argv[1], "r+") as tree:
 `;
 
 test("hovering a slice reads the value drawn there and where it is", async ({ page }) => {
+  // A sample run's solution with the manufactured density, put back as it was afterwards; the
+  // last converged run, which no other test reads values from.
+  const run = (await runs(page)).filter((r) => r.status === "converged").at(-1) as Run;
+  const solution = join(RUNS, run.run_id, "solution.cgns");
   const dir = mkdtempSync(join(tmpdir(), "autan-probe-"));
-  const name = `probe-${Date.now()}`;
-  writeFileSync(
-    join(dir, "case.py"),
-    readFileSync("../py/examples/crm_hl.py", "utf8").replace('"crm-hl"', `"${name}"`),
-  );
-  execFileSync("uv", [
-    ...["run", "--locked", "--project", "server", "autan", "run", join(dir, "case.py")],
-    ...["--mesh-info", "../py/tests/fixtures/crm-hl.meshinfo.json", "--runs", RUNS],
-  ]);
-  const run = (await runs(page)).find((r) => r.case.name === name) as Run;
+  cpSync(solution, join(dir, "solution.cgns"));
   try {
-    const solution = join(RUNS, run.run_id, "solution.cgns");
     execFileSync("uv", [
       ...["run", "--locked", "--project", "server", "python", "-c", MANUFACTURE, solution],
     ]);
@@ -458,10 +452,20 @@ test("hovering a slice reads the value drawn there and where it is", async ({ pa
     );
     expect(expected.some((e) => Math.abs(value - e) < tolerance * 6)).toBe(true);
 
+    // A zoom moves what is under the pointer: the reading goes.
+    await page.mouse.wheel(0, 200);
+    await expect(probe).toHaveCount(0);
+
     await page.mouse.move(box.x + 4, box.y + 4);
     await expect(probe).toHaveCount(0);
+    // From the keyboard, the focused view reads what is at its centre.
+    await page.getByTestId("viewport").focus();
+    await expect(probe).toContainText("Density");
+    await page.keyboard.press("Tab");
+    await expect(probe).toHaveCount(0);
   } finally {
-    rmSync(join(RUNS, run.run_id), { recursive: true, force: true });
+    cpSync(join(dir, "solution.cgns"), join(dir, "restored.cgns"));
+    renameSync(join(dir, "restored.cgns"), solution);
     rmSync(dir, { recursive: true, force: true });
   }
 });

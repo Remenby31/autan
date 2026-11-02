@@ -166,6 +166,8 @@ function ProbeReadout({
   return (
     <div
       className="pointer-events-none absolute rounded-md border border-line bg-glass px-2 py-1 font-mono text-xs backdrop-blur"
+      role="status"
+      aria-live="polite"
       style={{ left: x + 14, top: y + 14 }}
       data-testid="probe"
       data-value={probe.value}
@@ -376,30 +378,44 @@ function Viewer() {
   const hovering = useRef(false);
   const probeNext = async () => {
     probing.current = true;
-    while (pending.current) {
-      const { x, y } = pending.current;
-      pending.current = null;
-      const probe = await viewer.current?.probe(x, y);
-      // The pointer may have left, or pressed a button, while the pixel was read.
-      setProbed(probe && hovering.current ? { x, y, probe } : null);
-    }
-    probing.current = false;
-  };
-  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    hovering.current = e.buttons === 0;
-    if (e.buttons !== 0) {
-      pending.current = null;
+    try {
+      while (pending.current) {
+        const { x, y } = pending.current;
+        pending.current = null;
+        const probe = await viewer.current?.probe(x, y);
+        // The pointer may have left, or pressed a button, while the pixel was read.
+        setProbed(probe && hovering.current ? { x, y, probe } : null);
+      }
+    } catch {
       setProbed(null);
-      return;
+    } finally {
+      probing.current = false;
     }
-    const rect = e.currentTarget.getBoundingClientRect();
-    pending.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
+  const probeAt = (x: number, y: number) => {
+    pending.current = { x, y };
     if (!probing.current) void probeNext();
   };
-  const onPointerLeave = () => {
+  const stopProbing = () => {
     hovering.current = false;
     pending.current = null;
     setProbed(null);
+  };
+  // What was read no longer holds once the camera, the field or the slice changes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the viewer exists once a surface is shown
+  useEffect(() => viewer.current?.onCameraChange(() => setProbed(null)), [surface]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: clears on each change of these
+  useEffect(() => setProbed(null), [fieldName, sliceField, cut]);
+  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.buttons !== 0) return stopProbing();
+    hovering.current = true;
+    const rect = e.currentTarget.getBoundingClientRect();
+    probeAt(e.clientX - rect.left, e.clientY - rect.top);
+  };
+  // From the keyboard: the focused view reads what is at its centre.
+  const onFocus = (e: React.FocusEvent<HTMLCanvasElement>) => {
+    hovering.current = true;
+    probeAt(e.currentTarget.clientWidth / 2, e.currentTarget.clientHeight / 2);
   };
 
   const field = surface?.fields.find((f) => f.name === fieldName) ?? surface?.fields[0];
@@ -441,9 +457,13 @@ function Viewer() {
           ref={canvas}
           onClick={onClick}
           onPointerMove={onPointerMove}
-          onPointerLeave={onPointerLeave}
+          onPointerDown={stopProbing}
+          onPointerLeave={stopProbing}
+          onFocus={onFocus}
+          onBlur={stopProbing}
+          tabIndex={0}
           className="block h-full w-full touch-none"
-          aria-label="3D surface"
+          aria-label="3D surface: hover or focus it to read the value drawn"
           data-testid="viewport"
           data-slice-field={drawn ?? ""}
         />

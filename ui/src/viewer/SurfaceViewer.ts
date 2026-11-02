@@ -24,6 +24,12 @@ export interface Probe {
 // The slice's id in the id pass, after any zone's (ids are 16-bit, 0 the background).
 const SLICE_ID = 0xfffe;
 
+// The id an id-pass pixel holds: zone index, SLICE_ID, or null for the background.
+function idOf(pixel: Uint8Array): number | null {
+  const id = (pixel[0] ?? 0) + 256 * (pixel[1] ?? 0);
+  return id === 0 ? null : id - 1;
+}
+
 export type Backend = "webgpu" | "webgl2";
 
 const token = (name: string) =>
@@ -233,7 +239,10 @@ export class SurfaceViewer {
   /** Zone index under the canvas pixel (CSS pixels), or null for the background. */
   async pick(x: number, y: number): Promise<number | null> {
     // Zones are picked through the slice: it is not drawn into the pick target.
-    const id = await this.idAt(x, y, false);
+    const read = this.renderId(x, y, false);
+    if (!read) return null;
+    const id = idOf((await read) as Uint8Array);
+    this.requestRender();
     return id === null || id === SLICE_ID ? null : id;
   }
 
@@ -241,22 +250,23 @@ export class SurfaceViewer {
    * surface's coordinates and the displayed field's value there, interpolated as it is drawn;
    * null for the background. */
   async probe(x: number, y: number): Promise<Probe | null> {
-    const id = await this.idAt(x, y, true);
-    if (id === null || !this.mesh || !this.surface) return null;
-    // Materials are swapped back on the objects they were taken from: the surface or the slice
-    // can be replaced while the pixel is read.
+    if (!this.mesh || !this.surface) return null;
+    // Both passes are drawn from the same scene before either is read back.
+    const origin = this.surface.origin;
+    const ids = this.renderId(x, y, true);
     const mesh = this.mesh;
     const materials = mesh.material;
     const sliceMesh = this.slice?.mesh;
     const sliceMaterial = sliceMesh?.material;
-    const origin = this.surface.origin;
     mesh.material = this.zones.map(() => this.probeMaterial);
     if (sliceMesh) sliceMesh.material = this.sliceProbeMaterial;
-    const pending = this.pixelAt(x, y, this.probeTarget);
+    const values = this.renderPixel(x, y, this.probeTarget);
     mesh.material = materials;
     if (sliceMesh && sliceMaterial) sliceMesh.material = sliceMaterial;
-    const pixel = (await pending) as Float32Array;
+    const [idPixel, pixel] = await Promise.all([ids, values]);
     this.requestRender();
+    const id = idPixel ? idOf(idPixel as Uint8Array) : null;
+    if (id === null) return null;
     return {
       zone: id === SLICE_ID ? null : id,
       point: [0, 1, 2].map((k) => (pixel[k] ?? 0) + (origin[k] ?? 0)),
@@ -264,8 +274,12 @@ export class SurfaceViewer {
     };
   }
 
-  // The id drawn at the pixel: zone index, SLICE_ID, or null for the background.
-  private async idAt(x: number, y: number, withSlice: boolean): Promise<number | null> {
+  // The id pass drawn at the pixel (the slice drawn or not), read back later.
+  private renderId(
+    x: number,
+    y: number,
+    withSlice: boolean,
+  ): Promise<Uint8Array | Float32Array> | null {
     if (!this.mesh) return null;
     const mesh = this.mesh;
     const materials = mesh.material;
@@ -276,20 +290,18 @@ export class SurfaceViewer {
       sliceMesh.visible = withSlice;
       sliceMesh.material = this.sliceIdMaterial;
     }
-    const pending = this.pixelAt(x, y, this.pickTarget);
+    const read = this.renderPixel(x, y, this.pickTarget);
     mesh.material = materials;
     if (sliceMesh && sliceMaterial) {
       sliceMesh.visible = true;
       sliceMesh.material = sliceMaterial;
     }
-    const pixel = (await pending) as Uint8Array;
-    this.requestRender();
-    const id = (pixel[0] ?? 0) + 256 * (pixel[1] ?? 0);
-    return id === 0 ? null : id - 1;
+    return read;
   }
 
-  // The scene's one pixel under (x, y) rendered into `target`, on a black background.
-  private async pixelAt(
+  // The scene's one pixel under (x, y) drawn now into `target`, on a black background; the
+  // promise reads it back.
+  private renderPixel(
     x: number,
     y: number,
     target: THREE.RenderTarget,
@@ -306,9 +318,15 @@ export class SurfaceViewer {
     this.renderer.setRenderTarget(null);
     this.camera.clearViewOffset();
     this.scene.background = background;
-    return (await this.renderer.readRenderTargetPixelsAsync(target, 0, 0, 1, 1)) as
-      | Uint8Array
-      | Float32Array;
+    return this.renderer.readRenderTargetPixelsAsync(target, 0, 0, 1, 1) as Promise<
+      Uint8Array | Float32Array
+    >;
+  }
+
+  /** Call `listener` whenever the camera moves; returns its removal. */
+  onCameraChange(listener: () => void): () => void {
+    this.controls.addEventListener("change", listener);
+    return () => this.controls.removeEventListener("change", listener);
   }
 
   // The colour the id pass draws id with: id + 1 in red and green, 0 being the background.
