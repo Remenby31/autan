@@ -654,7 +654,7 @@ function CaseEditor() {
           </fieldset>
         </form>
 
-        <div className="flex min-h-0 min-w-0">
+        <div className="relative flex min-h-0 min-w-0">
           {/* The mesh fills the stage; what concerns it lies over it. */}
           <section className="relative min-w-0 flex-1 overflow-hidden bg-bg-0" data-testid="stage">
             {form.mesh ? (
@@ -728,13 +728,26 @@ function CaseEditor() {
             </p>
             <div className="pointer-events-none absolute inset-x-4 bottom-4 flex flex-col items-stretch gap-2">
               <div className="min-w-0">
-                {rendered.data?.ok && rendered.data.plan && (
+                {rendered.data?.ok === false ? (
                   <div className="pointer-events-auto max-h-[40vh] w-fit max-w-2xl overflow-y-auto rounded-lg border border-line bg-glass px-3 py-2 backdrop-blur">
-                    <PlanSummary plan={rendered.data.plan} current={!rendered.isPlaceholderData} />
+                    <Refusal
+                      diagnostics={rendered.data.diagnostics}
+                      document={caseDocument(form, library)}
+                    />
                   </div>
+                ) : (
+                  rendered.data?.ok &&
+                  rendered.data.plan && (
+                    <div className="pointer-events-auto max-h-[40vh] w-fit max-w-2xl overflow-y-auto rounded-lg border border-line bg-glass px-3 py-2 backdrop-blur">
+                      <PlanSummary
+                        plan={rendered.data.plan}
+                        current={!rendered.isPlaceholderData}
+                      />
+                    </div>
+                  )
                 )}
               </div>
-              <div className="pointer-events-auto flex flex-none items-center gap-2 self-end">
+              <div className="pointer-events-auto flex flex-wrap items-center justify-end gap-2 self-end">
                 <CaseActions
                   name={form.name}
                   // Only the case shown, once it is the form's: an edit not yet rendered waits.
@@ -760,7 +773,8 @@ function CaseEditor() {
           </section>
           {codeOpen && (
             <aside
-              className="relative flex min-h-0 w-[min(30rem,40%)] min-w-[19rem] flex-none flex-col gap-4 overflow-y-auto border-line border-l bg-bg-1 px-5 py-5"
+              // Below 1280 px it lies over the stage as a drawer; wider, beside it.
+              className="absolute inset-y-0 right-0 z-10 flex w-[min(30rem,90%)] flex-col gap-4 overflow-y-auto border-line border-l bg-bg-1 px-5 py-5 shadow-tooltip xl:relative xl:inset-auto xl:z-auto xl:min-h-0 xl:w-[min(30rem,40%)] xl:min-w-[19rem] xl:flex-none xl:shadow-none"
               aria-label="The case's code"
             >
               <Button
@@ -773,10 +787,9 @@ function CaseEditor() {
                 onClick={() => toggleCode(false)}
               />
               {rendered.data?.ok === false ? (
-                <Refusal
-                  diagnostics={rendered.data.diagnostics}
-                  document={caseDocument(form, library)}
-                />
+                <p className="m-0 pr-10 text-fg-3 text-sm">
+                  No code while the SDK refuses the case.
+                </p>
               ) : (
                 <TabsRoot
                   value={codeTab}

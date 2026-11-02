@@ -451,11 +451,20 @@ test("the mesh fills the stage, and the code gives it its width", async ({ page 
   await page.getByRole("button", { name: "Code", exact: true }).click();
   await expect(page.getByTestId("case-toml")).toBeVisible();
 
-  // A narrow window starts with the mesh alone.
-  await page.setViewportSize({ width: 1024, height: 768 });
+  // What the SDK refuses shows on the stage, the code hidden or not.
+  await page.getByRole("button", { name: "Hide the code" }).click();
+  await page.getByLabel("Mach").fill("-1");
+  await expect(page.getByTestId("stage")).toContainText("E0304");
+
+  // A narrow window starts with the mesh alone; the code opens over it, the actions reachable.
+  await page.setViewportSize({ width: 960, height: 768 });
   await page.goto("/cases/new");
   await expect(page.getByRole("button", { name: "Code", exact: true })).toBeVisible();
   await expect(code).toHaveCount(0);
+  await page.getByRole("button", { name: "Code", exact: true }).click();
+  await expect(code).toBeVisible();
+  await page.getByRole("button", { name: "Hide the code" }).click();
+  await expect(page.getByRole("button", { name: "Copy case.py" })).toBeInViewport();
 });
 
 test("rules a new mesh does not have are offered for removal", async ({ page }) => {

@@ -134,9 +134,17 @@ export class SurfaceViewer {
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = true;
     this.controls.addEventListener("change", () => this.requestRender());
-    // Until the user moves the camera, a resize frames the surface again.
+    // Until the user moves the camera (a change while interacting; a plain click is no move), a
+    // resize frames the surface again.
+    let interacting = false;
     this.controls.addEventListener("start", () => {
-      this.framed = false;
+      interacting = true;
+    });
+    this.controls.addEventListener("end", () => {
+      interacting = false;
+    });
+    this.controls.addEventListener("change", () => {
+      if (interacting) this.framed = false;
     });
     this.resize = new ResizeObserver(() => this.fit());
     this.resize.observe(canvas);
