@@ -389,6 +389,8 @@ test("Analysis cuts a run's solution by a plane and keeps the cut in its link", 
   await expect(page).not.toHaveURL(/slice=/);
   await page.mouse.click(box.x + 20, box.y + box.height - 20);
   await expect(picked).toHaveCount(0);
+  // Off the view: no readout over it.
+  await page.mouse.move(0, 0);
   await expect.poll(async () => (await view.screenshot()).equals(walls)).toBe(true);
 
   // A link naming a field the slice does not carry shows its first field, in the legend and
@@ -396,6 +398,79 @@ test("Analysis cuts a run's solution by a plane and keeps the cut in its link", 
   await page.goto(`/viewer?run=${converged.run_id}&slice=y&sliceField=NotAField`);
   await expect(legend).toContainText(`slice · ${firstField}`);
   await expect(view).toHaveAttribute("data-slice-field", firstField);
+});
+
+// Density = x + 2y + 3z at each cell's centroid (the mean of its nodes, a hexahedron's centroid):
+// the manufactured field of a run's solution.cgns, written by h5py from its own connectivity.
+const MANUFACTURE = `
+import sys, h5py, numpy as np
+with h5py.File(sys.argv[1], "r+") as tree:
+    zone = tree["Base"]["Zone"]
+    coords = np.stack([zone["GridCoordinates"][f"Coordinate{a}"][" data"][()] for a in "XYZ"], 1)
+    fs = zone["NGonElements"]["ElementStartOffset"][" data"][()]
+    fn = zone["NGonElements"]["ElementConnectivity"][" data"][()] - 1
+    cs = zone["NFaceElements"]["ElementStartOffset"][" data"][()]
+    cf = np.abs(zone["NFaceElements"]["ElementConnectivity"][" data"][()]) - 1
+    values = []
+    for c in range(len(cs) - 1):
+        nodes = np.unique(np.concatenate([fn[fs[f]:fs[f + 1]] for f in cf[cs[c]:cs[c + 1]]]))
+        values.append(coords[nodes].mean(axis=0) @ [1.0, 2.0, 3.0])
+    zone["FlowSolution"]["Density"][" data"][...] = values
+`;
+
+test("hovering a slice reads the value drawn there and where it is", async ({ page }) => {
+  // A sample run's solution with the manufactured density, put back as it was afterwards; the
+  // last converged run, which no other test reads values from.
+  const run = (await runs(page)).filter((r) => r.status === "converged").at(-1) as Run;
+  const solution = join(RUNS, run.run_id, "solution.cgns");
+  // Kept with the runs (a dot directory, which the registry skips), so that putting it back is
+  // a rename on one file system.
+  const dir = mkdtempSync(join(RUNS, ".probe-"));
+  cpSync(solution, join(dir, "solution.cgns"));
+  try {
+    execFileSync("uv", [
+      ...["run", "--locked", "--project", "server", "python", "-c", MANUFACTURE, solution],
+    ]);
+    await page.goto(`/viewer?run=${run.run_id}&slice=y&at=0.4&sliceField=Density`);
+    await expect(page.getByTestId("slice-legend")).toContainText("slice · Density");
+    await expect(page.getByTestId("viewport")).toHaveAttribute("data-slice-field", "Density");
+    const box = await page.getByTestId("viewport").boundingBox();
+    if (!box) throw new Error("no viewport");
+
+    // Off the centre, away from the lines where cells meet in the default view.
+    await page.mouse.move(box.x + box.width * 0.47, box.y + box.height * 0.43);
+    const probe = page.getByTestId("probe");
+    await expect(probe).toContainText("slice ·");
+    await expect(probe).toContainText("Density");
+    const point = ((await probe.getAttribute("data-point")) ?? "").split(",").map(Number);
+    const value = Number(await probe.getAttribute("data-value"));
+    // On the plane, inside the unit cube; the value is that of a cell holding the point (one
+    // of two where it lies on a face between cells, to FP32 rounding).
+    const tolerance = 64 * 2 ** -23;
+    expect(Math.abs((point[1] ?? 0) - 0.4)).toBeLessThan(1e-3);
+    const cells = (v: number) =>
+      [v - 1e-4, v + 1e-4].map((u) => (Math.min(7, Math.max(0, Math.floor(u * 8))) + 0.5) / 8);
+    const expected = cells(point[0] ?? 0).flatMap((x) =>
+      cells(point[1] ?? 0).flatMap((y) => cells(point[2] ?? 0).map((z) => x + 2 * y + 3 * z)),
+    );
+    expect(expected.some((e) => Math.abs(value - e) < tolerance * 6)).toBe(true);
+
+    // A zoom moves what is under the pointer: the reading goes.
+    await page.mouse.wheel(0, 200);
+    await expect(probe).toHaveCount(0);
+
+    await page.mouse.move(box.x + 4, box.y + 4);
+    await expect(probe).toHaveCount(0);
+    // From the keyboard, the focused view reads what is at its centre.
+    await page.getByTestId("viewport").focus();
+    await expect(probe).toContainText("Density");
+    await page.keyboard.press("Tab");
+    await expect(probe).toHaveCount(0);
+  } finally {
+    cpSync(join(dir, "solution.cgns"), join(dir, "restored.cgns"));
+    renameSync(join(dir, "restored.cgns"), solution);
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("a run page states what it computed and how far its coefficients go", async ({ page }) => {
@@ -681,6 +756,32 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
       b as string,
     );
   }
+});
+
+test("views of results carry no renderer figures, and codes explain themselves", async ({
+  page,
+}) => {
+  const all = await runs(page);
+  const converged = all.find((r) => r.status === "converged") as Run;
+  await page.goto(`/viewer?run=${converged.run_id}`);
+  await expect(page.getByTestId("zones")).toBeVisible();
+  await expect(page.getByTestId("viewer-status")).toHaveText("");
+  await page.goto("/viewer?bench=1");
+  await expect(page.getByTestId("viewer-status")).toContainText("triangles");
+
+  const diverged = all.find((r) => r.status === "diverged") as Run;
+  const diagnostic = diverged.diagnostics[0];
+  await page.goto("/");
+  const code = page
+    .locator(`a[data-run="${diverged.run_id}"]`)
+    .getByText(diagnostic?.code ?? "")
+    .first();
+  // The message is part of the row's text for a screen reader, and shows on hover.
+  await expect(page.locator(`a[data-run="${diverged.run_id}"]`)).toContainText(
+    diagnostic?.message ?? "",
+  );
+  await code.hover();
+  await expect(page.getByText(diagnostic?.message ?? "", { exact: true })).toBeVisible();
 });
 
 test("Compare is reachable on its own: from ⌘K and from its empty state", async ({ page }) => {

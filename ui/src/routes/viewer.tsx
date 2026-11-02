@@ -13,7 +13,7 @@ import { RelativeTime } from "../components/ui/RelativeTime";
 import { Status } from "../components/ui/Status";
 import { TabList, TabsRoot } from "../components/ui/Tabs";
 import { colormapFor, cssGradient, displayRange } from "../viewer/colormap";
-import { type Backend, SurfaceViewer } from "../viewer/SurfaceViewer";
+import { type Backend, type Probe, SurfaceViewer } from "../viewer/SurfaceViewer";
 import { slicePlane } from "../viewer/slice";
 
 interface Search {
@@ -149,6 +149,47 @@ function shownField(surface: Surface, name: string): string {
 
 const format = (v: number) =>
   Math.abs(v) >= 1e4 || (v !== 0 && Math.abs(v) < 1e-2) ? v.toExponential(2) : v.toFixed(3);
+
+/** The field's value at the probed point, beside the pointer: what is drawn there, with the
+ * point and the zone (or the slice) it lies on. */
+function ProbeReadout({
+  probed,
+  name,
+  where,
+}: {
+  probed: { x: number; y: number; probe: Probe; width: number; height: number };
+  name: string;
+  where: string;
+}) {
+  const { x, y, probe, width, height } = probed;
+  // Beside the pointer, on the side where it fits in the view.
+  const left = x > width - 280;
+  const up = y > height - 64;
+  const unit = UNITS[name];
+  return (
+    <div
+      className="pointer-events-none absolute rounded-md border border-line bg-glass px-2 py-1 font-mono text-xs backdrop-blur"
+      role="status"
+      aria-live="polite"
+      style={{
+        left: left ? x - 14 : x + 14,
+        top: up ? y - 14 : y + 14,
+        transform: `translate(${left ? "-100%" : "0"}, ${up ? "-100%" : "0"})`,
+      }}
+      data-testid="probe"
+      data-value={probe.value}
+      data-point={probe.point.join(",")}
+    >
+      <div className="text-fg-1">
+        {name} {format(probe.value)}
+        {unit ? ` ${unit}` : ""}
+      </div>
+      <div className="text-fg-3">
+        {where} · {probe.point.map((v, k) => `${"xyz"[k]} ${format(v)}`).join(" ")}
+      </div>
+    </div>
+  );
+}
 
 /** A field's colour scale and its range, or "uniform" and its value when the field is. */
 function Legend({
@@ -336,6 +377,73 @@ function Viewer() {
     setSelected(zone ?? null);
   };
 
+  // The value under the pointer: one probe at a time, the latest position when it ends; none
+  // while a button is held (the camera is moving).
+  const [probed, setProbed] = useState<{
+    x: number;
+    y: number;
+    probe: Probe;
+    width: number;
+    height: number;
+  } | null>(null);
+  const pending = useRef<{ x: number; y: number } | null>(null);
+  const probing = useRef(false);
+  const hovering = useRef(false);
+  // Bumped whenever what was read stops holding: a probe started before shows nothing.
+  const generation = useRef(0);
+  const probeNext = async () => {
+    probing.current = true;
+    try {
+      while (pending.current) {
+        const { x, y } = pending.current;
+        pending.current = null;
+        const started = generation.current;
+        const probe = await viewer.current?.probe(x, y);
+        const current = started === generation.current && hovering.current;
+        const view = canvas.current;
+        setProbed(
+          probe && current && view
+            ? { x, y, probe, width: view.clientWidth, height: view.clientHeight }
+            : null,
+        );
+      }
+    } catch {
+      setProbed(null);
+    } finally {
+      probing.current = false;
+    }
+  };
+  const probeAt = (x: number, y: number) => {
+    pending.current = { x, y };
+    if (!probing.current) void probeNext();
+  };
+  const forget = () => {
+    generation.current += 1;
+    setProbed(null);
+  };
+  const stopProbing = () => {
+    hovering.current = false;
+    pending.current = null;
+    forget();
+  };
+  // What was read no longer holds once the camera, the field or the slice changes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the viewer exists once a surface is shown
+  useEffect(() => viewer.current?.onCameraChange(forget), [surface]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: clears on each change of these
+  useEffect(() => forget(), [fieldName, sliceField, cut]);
+  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.buttons !== 0) return stopProbing();
+    hovering.current = true;
+    const rect = e.currentTarget.getBoundingClientRect();
+    probeAt(e.clientX - rect.left, e.clientY - rect.top);
+  };
+  // From the keyboard: the focused view reads what is at its centre.
+  const onFocus = (e: React.FocusEvent<HTMLCanvasElement>) => {
+    if (!e.currentTarget.matches(":focus-visible")) return;
+    hovering.current = true;
+    probeAt(e.currentTarget.clientWidth / 2, e.currentTarget.clientHeight / 2);
+  };
+
   const field = surface?.fields.find((f) => f.name === fieldName) ?? surface?.fields[0];
   return (
     <>
@@ -374,11 +482,26 @@ function Viewer() {
         <canvas
           ref={canvas}
           onClick={onClick}
+          onPointerMove={onPointerMove}
+          onPointerDown={stopProbing}
+          onPointerLeave={stopProbing}
+          onFocus={onFocus}
+          onBlur={stopProbing}
+          tabIndex={0}
           className="block h-full w-full touch-none"
-          aria-label="3D surface"
+          aria-label="3D surface: hover or focus it to read the value drawn"
           data-testid="viewport"
           data-slice-field={drawn ?? ""}
         />
+        {probed && (
+          <ProbeReadout
+            probed={probed}
+            name={probed.probe.zone === null ? (cutField?.name ?? "") : (field?.name ?? "")}
+            where={
+              probed.probe.zone === null ? "slice" : (surface?.zones[probed.probe.zone]?.name ?? "")
+            }
+          />
+        )}
         {error && <p className="absolute top-4 left-4 m-0 text-danger">{error}</p>}
         {surface && (
           <aside
@@ -492,8 +615,13 @@ function Viewer() {
           data-testid="viewer-status"
           data-backend={backend ?? ""}
         >
-          {backend ?? "…"} · {surface ? (surface.indices.length / 3).toLocaleString("en") : "–"}{" "}
-          triangles
+          {/* What renders and how much: the benchmark's business, not a run's. */}
+          {!run && (
+            <>
+              {backend ?? "…"} · {surface ? (surface.indices.length / 3).toLocaleString("en") : "–"}{" "}
+              triangles
+            </>
+          )}
         </div>
       </div>
     </>
