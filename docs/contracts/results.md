@@ -8,7 +8,7 @@ A run writes one directory. Its layout, the run metadata and the CGNS solution l
 <run_id>/
   run.json         run metadata, written at start and rewritten at every status change
   case.toml        the case document as run (case-schema.md), every default filled in
-  mesh-info.json   the MeshInfo of the mesh read (mesh-info.md)
+  mesh-info.json   the MeshInfo the run was planned with (mesh-info.md)
   history.jsonl    one line per recorded iteration, appended during the run
   log.jsonl        one line per event, appended during the run (see Log)
   manufactured.json  verification runs only: the manufactured solution, byte for byte

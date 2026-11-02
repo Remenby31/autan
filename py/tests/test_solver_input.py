@@ -52,6 +52,13 @@ def test_crm_hl_input_is_resolved_and_closed_in_si(
         "bytes_device": planned.memory.bytes_device,
     }
     assert document["reproducibility"] == "run"  # the case's default (case-schema.md#physics)
+    # solver-input.md: the MeshInfo the plan used travels with the input, for the same mesh.
+    mesh_info = autan.MeshInfo.load(FIXTURES / "crm-hl.meshinfo.json")
+    assert document["mesh_info"] == mesh_info.document()
+    document["mesh"]["sha256"] = "1" * 64
+    with pytest.raises(ValidationError):
+        autan.solver_input.SolverInput.model_validate(document)
+    document["mesh"]["sha256"] = mesh_info.source.sha256
 
     # The case hash is SHA-256 of the RFC 8785 form of the (fully defaulted) case document.
     canonical = rfc8785.dumps(tomllib.loads(document["case"]["toml"]))

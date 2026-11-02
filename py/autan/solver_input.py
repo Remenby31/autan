@@ -17,6 +17,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, 
 
 from autan.errors import CaseError, Location
 from autan.meshinfo import (
+    MeshInfo,
     PairZones,
     Translation,
     shared_zones,
@@ -50,7 +51,6 @@ from autan.units import metres_per, parse, si
 
 if TYPE_CHECKING:
     from autan.case import Case
-    from autan.meshinfo import MeshInfo
     from autan.restart import Start
     from autan.schema import State
 
@@ -361,6 +361,7 @@ class SolverInput(_Strict):
     schema_: Literal["autan.solver-input/1"] = Field(alias="schema")
     case: CaseRef
     mesh: MeshRef
+    mesh_info: MeshInfo
     precision: Literal["fp32+acc64", "fp64"]
     reproducibility: Literal["none", "run", "ranks"]
     devices: Devices
@@ -383,6 +384,9 @@ class SolverInput(_Strict):
         turbulence, fs = self.physics.turbulence, self.freestream
         if turbulence.model in ("ddes", "wmles") and self.time.kind != "unsteady":
             message = f"{turbulence.model} needs an unsteady time"
+            raise ValueError(message)
+        if self.mesh_info.source.sha256 != self.mesh.sha256:
+            message = "mesh_info describes another mesh than mesh.sha256"
             raise ValueError(message)
         if shared_zones(pair.zones for pair in self.periodic):
             message = "a zone is in two periodic pairs"
@@ -774,6 +778,7 @@ def build(
             sha256=mesh_info.source.sha256,
             scale=metres_per(spec.mesh_unit),
         ),
+        mesh_info=mesh_info,
         precision=spec.physics.precision,
         reproducibility=spec.physics.reproducibility,
         devices=devices,
