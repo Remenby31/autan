@@ -622,6 +622,15 @@ def json_schema() -> dict[str, Any]:
     def absent(*keys: str) -> dict[str, Any]:
         return {"not": {"anyOf": [{"required": [k]} for k in keys]}}
 
+    def opt_in(key: str, model: str) -> dict[str, Any]:
+        time = {"required": [key], "properties": {key: {"const": True}}}
+        turbulence = {"properties": {"model": {"const": model}}}
+        kind = {"kind": {"const": "compressible"}, "turbulence": turbulence}
+        return {
+            "if": {"required": ["time"], "properties": {"time": time}},
+            "then": {"properties": {"physics": {"properties": kind}}},
+        }
+
     def zone_states(rule: dict[str, Any]) -> dict[str, Any]:
         initial = {"properties": {"initial": {"anyOf": [{"type": "null"}, rule]}}}
         return {"properties": {"cell_zones": {"items": {"properties": {"medium": initial}}}}}
@@ -689,5 +698,7 @@ def json_schema() -> dict[str, Any]:
                 "properties": {"time": {"properties": {"kind": {"const": "unsteady"}}}},
             },
         },
+        opt_in("coupled_turbulence", "sa"),
+        opt_in("matrix_free", "laminar"),
     ]
     return {"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": SCHEMA_ID, **schema}
