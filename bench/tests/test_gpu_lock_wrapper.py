@@ -325,13 +325,13 @@ def test_a_docker_run_command_has_its_container_killed_with_it(lock, tmp_path):
 
 
 def test_waiters_on_memory_being_returned_start_one_at_a_time_once_it_is_back(lock, tmp_path):
-    # A process holds 3 GiB of real memory below the floor, as one the floor killed does while
+    # A process holds 6 GiB of real memory below the floor, as one the floor killed does while
     # the kernel reclaims it, and frees it only when the test says so, 4 s after two commands
     # queued (a wait shorter than that would refuse them). Each command then re-checks the
     # floor once it holds the lock: they run one after the other, never together.
     ready, release, log = tmp_path / "ready", tmp_path / "release", tmp_path / "log"
     hog = subprocess.Popen([sys.executable, "-c", (
-        "import os, sys, time\nchunks = [b'\\1' * (128 << 20) for _ in range(24)]\n"
+        "import os, sys, time\nchunks = [b'\\1' * (128 << 20) for _ in range(48)]\n"
         f"open({str(ready)!r}, 'w').write('x')\n"
         f"while not os.path.exists({str(release)!r}):\n    time.sleep(0.05)\n")])  # fmt: skip
     try:
@@ -340,7 +340,8 @@ def test_waiters_on_memory_being_returned_start_one_at_a_time_once_it_is_back(lo
                 break
             time.sleep(0.05)
         assert hog.poll() is None
-        # 1 GiB above what is left while it holds its 3 GiB: below the floor until it exits.
+        # 1 GiB above what is left while it holds its 6 GiB: below the floor until it exits,
+        # whatever else the host takes or frees meanwhile, up to 5 GiB.
         floor = f"{(mem_available() + (1 << 30)) >> 20}M"
         step = f"echo start $(date +%s.%N) >> {log}; sleep 1; echo end $(date +%s.%N) >> {log}"
         waiters = [wrapper(lock, "-m", "test", "-f", floor, "--", "sh", "-c", step)
@@ -370,7 +371,7 @@ def test_the_memory_wait_counts_in_the_hold_and_not_in_a_self_locking_command_s(
     # waiting for memory do not eat into the 3 s it is given.
     ready, release = tmp_path / "ready", tmp_path / "release"
     hog = subprocess.Popen([sys.executable, "-c", (
-        "import os, time\nchunks = [b'\\1' * (128 << 20) for _ in range(24)]\n"
+        "import os, time\nchunks = [b'\\1' * (128 << 20) for _ in range(48)]\n"
         f"open({str(ready)!r}, 'w').write('x')\n"
         f"while not os.path.exists({str(release)!r}):\n    time.sleep(0.05)\n")])  # fmt: skip
     try:

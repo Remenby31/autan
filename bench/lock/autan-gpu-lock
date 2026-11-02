@@ -341,8 +341,9 @@ def main() -> int:
         # before refusing (waiters would otherwise all be refused at once). Holding the lock,
         # the wait counts in the hold and ends before the hold's TERM time; with -n, where the
         # command takes the lock itself, the hold limit counts from the command's start.
-        recover_end = min(time.monotonic() + recover_s,
-                          taken + hold_s - min(10.0, hold_s / 2))  # fmt: skip
+        recover_end = time.monotonic() + recover_s
+        if not self_locking:
+            recover_end = min(recover_end, taken + hold_s - min(10.0, hold_s / 2))
         while memfloor.below(floor) and time.monotonic() < recover_end and not cancel:
             time.sleep(0.5)
         if cancel:
