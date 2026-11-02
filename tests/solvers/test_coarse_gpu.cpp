@@ -199,6 +199,75 @@ std::vector<double> host_solve(const Level& l, const Blocks& a, std::vector<doub
   return b;
 }
 
+// b = A x block by block over the level's nodes and edges (host numbering): the operator's
+// definition, independent of the dense assembly the solve uses.
+std::vector<double> apply_blocks(const Level& l, const Blocks& a, const std::vector<double>& x) {
+  const std::size_t n = l.n_nodes;
+  std::vector<double> b(5 * n, 0.0);
+  auto add = [&](std::size_t i, std::size_t j, const double* blk) {
+    for (std::size_t p = 0; p < 5; ++p) {
+      for (std::size_t q = 0; q < 5; ++q) b[p * n + i] += blk[5 * p + q] * x[q * n + j];
+    }
+  };
+  for (std::size_t i = 0; i < n; ++i) add(i, i, &a.diag[b2 * i]);
+  for (std::size_t e = 0; e < l.owner.size(); ++e) {
+    const auto o = static_cast<std::size_t>(l.owner[e]),
+               nb = static_cast<std::size_t>(l.neighbour[e]);
+    add(o, nb, &a.upper[b2 * e]);
+    add(nb, o, &a.lower[b2 * e]);
+  }
+  return b;
+}
+
+std::vector<double> to_device_vector(const std::vector<double>& v, std::span<const index_t> order) {
+  const std::size_t n = order.size();
+  std::vector<double> d(v.size());
+  for (std::size_t c = 0; c < 5; ++c) {
+    for (std::size_t j = 0; j < n; ++j)
+      d[c * n + j] = v[c * n + static_cast<std::size_t>(order[j])];
+  }
+  return d;
+}
+
+std::vector<double> to_host_vector(const std::vector<double>& d, std::span<const index_t> order) {
+  const std::size_t n = order.size();
+  std::vector<double> v(d.size());
+  for (std::size_t c = 0; c < 5; ++c) {
+    for (std::size_t j = 0; j < n; ++j)
+      v[c * n + static_cast<std::size_t>(order[j])] = d[c * n + j];
+  }
+  return v;
+}
+
+// Solves with the device and returns x in host numbering; checks that every value is finite and
+// that two solves give the same bits.
+std::vector<double> device_solve(const autan::solvers::gpu::CoarsestSolve& solve,
+                                 std::span<const index_t> order, const std::vector<double>& b) {
+  const std::size_t m = b.size();
+  const DeviceArray<double> d_b(to_device_vector(b, order));
+  const DeviceArray<double> d_x(std::vector<double>(m, 0.0)), d_x2(std::vector<double>(m, 0.0));
+  solve.solve(d_b.get(), d_x.get());
+  solve.solve(d_b.get(), d_x2.get());
+  const auto x = d_x.host(), x2 = d_x2.host();
+  CHECK(std::all_of(x.begin(), x.end(), [](double v) { return std::isfinite(v); }));
+  CHECK(std::equal(x.begin(), x.end(), x2.begin(), [](double p, double q) {
+    return std::bit_cast<std::uint64_t>(p) == std::bit_cast<std::uint64_t>(q);
+  }));
+  return to_host_vector(x, order);
+}
+
+double max_abs(const std::vector<double>& v) {
+  double s = 0.0;
+  for (const double x : v) s = std::max(s, std::abs(x));
+  return s;
+}
+
+double max_difference(const std::vector<double>& a, const std::vector<double>& b) {
+  double s = 0.0;
+  for (std::size_t k = 0; k < a.size(); ++k) s = std::max(s, std::abs(a[k] - b[k]));
+  return s;
+}
+
 }  // namespace
 
 TEST_CASE("device Galerkin products are bitwise the host multigrid's coarse operators",
@@ -224,41 +293,71 @@ TEST_CASE("the device coarsest solve matches the host dense LU within 1e-10", "[
   const auto orders = autan::solvers::gpu::device_orders(levels);
   const Level& l = levels.back();
   const auto& order = orders.back();
-  const std::size_t n = l.n_nodes, m = 5 * n;
+  const std::size_t m = 5 * l.n_nodes;
   const Blocks a = coarsest_blocks(l, 23);
   const autan::solvers::gpu::CoarsestSolve solve(l, order, a.diag, a.upper, a.lower);
   REQUIRE(solve.size() == m);
+  CHECK(solve.explicit_inverse());
 
   std::mt19937 rng(31);
   std::uniform_real_distribution<double> u(-1.0, 1.0);
   std::vector<double> b(m);
   for (double& v : b) v = u(rng);
   const std::vector<double> x_host = host_solve(l, a, b);
+  const std::vector<double> x = device_solve(solve, order, b);
+  REQUIRE(max_abs(x_host) > 0.0);
+  CHECK(max_difference(x, x_host) <= 1e-10 * max_abs(x_host));
 
-  // Device numbering: unknown c of device node j is host unknown c * n + order[j].
-  std::vector<double> b_device(m);
-  for (std::size_t c = 0; c < 5; ++c) {
-    for (std::size_t j = 0; j < n; ++j)
-      b_device[c * n + j] = b[c * n + static_cast<std::size_t>(order[j])];
-  }
-  const DeviceArray<double> d_b(b_device);
-  const DeviceArray<double> d_x(std::vector<double>(m, 0.0)), d_x2(std::vector<double>(m, 0.0));
-  solve.solve(d_b.get(), d_x.get());
-  solve.solve(d_b.get(), d_x2.get());
-  const auto x = d_x.host(), x2 = d_x2.host();
-  CHECK(std::equal(x.begin(), x.end(), x2.begin(), [](double p, double q) {
-    return std::bit_cast<std::uint64_t>(p) == std::bit_cast<std::uint64_t>(q);
-  }));
-  double scale = 0.0, worst = 0.0;
-  for (const double v : x_host) scale = std::max(scale, std::abs(v));
-  for (std::size_t c = 0; c < 5; ++c) {
-    for (std::size_t j = 0; j < n; ++j) {
-      worst = std::max(worst,
-                       std::abs(x[c * n + j] - x_host[c * n + static_cast<std::size_t>(order[j])]));
+  // Manufactured: x chosen, b = A x from the blocks. The diagonal of 80 against entries of at most
+  // 1 elsewhere keeps the condition number of these small coarsest levels low.
+  std::vector<double> x_true(m);
+  for (double& v : x_true) v = u(rng);
+  const std::vector<double> x_solved = device_solve(solve, order, apply_blocks(l, a, x_true));
+  CHECK(max_difference(x_solved, x_true) <= 1e-10 * max_abs(x_true));
+}
+
+TEST_CASE("a coarsest operator with large pivot growth is solved by the LU factors",
+          "[multigrid][gpu]") {
+  // 8 nodes, every pair an edge: the 40 x 40 matrix A(u, v) = 1 if u = v or v = 39, -1 if u > v,
+  // 0 otherwise (unknown c of node h at u = 8 c + h), whose LU with partial pivoting grows by
+  // 2^39: its explicit inverse misses 1e-10 of the LU solve.
+  Level l;
+  l.n_nodes = 8;
+  for (index_t i = 0; i < 8; ++i) {
+    for (index_t j = i + 1; j < 8; ++j) {
+      l.owner.push_back(i);
+      l.neighbour.push_back(j);
     }
   }
-  REQUIRE(scale > 0.0);
-  CHECK(worst <= 1e-10 * scale);
+  auto entry = [](std::size_t uu, std::size_t vv) {
+    return uu == vv || vv == 39 ? 1.0 : (uu > vv ? -1.0 : 0.0);
+  };
+  Blocks a;
+  a.diag.resize(b2 * 8);
+  a.upper.resize(b2 * l.owner.size());
+  a.lower.resize(b2 * l.owner.size());
+  auto block = [&](std::size_t i, std::size_t j, double* out) {
+    for (std::size_t p = 0; p < 5; ++p) {
+      for (std::size_t q = 0; q < 5; ++q) out[5 * p + q] = entry(8 * p + i, 8 * q + j);
+    }
+  };
+  for (std::size_t i = 0; i < 8; ++i) block(i, i, &a.diag[b2 * i]);
+  for (std::size_t e = 0; e < l.owner.size(); ++e) {
+    const auto o = static_cast<std::size_t>(l.owner[e]),
+               nb = static_cast<std::size_t>(l.neighbour[e]);
+    block(o, nb, &a.upper[b2 * e]);
+    block(nb, o, &a.lower[b2 * e]);
+  }
+  const std::vector<index_t> order = {3, 0, 7, 1, 6, 2, 5, 4};
+  const autan::solvers::gpu::CoarsestSolve solve(l, order, a.diag, a.upper, a.lower);
+  CHECK_FALSE(solve.explicit_inverse());
+
+  std::vector<double> b(40);
+  for (std::size_t k = 0; k < 40; ++k) b[k] = 1.0 / static_cast<double>(k + 1);
+  const std::vector<double> x_host = host_solve(l, a, b);
+  const std::vector<double> x = device_solve(solve, order, b);
+  REQUIRE(max_abs(x_host) > 0.0);
+  CHECK(max_difference(x, x_host) <= 1e-10 * max_abs(x_host));
 }
 
 TEST_CASE("a singular coarsest operator is refused as the host refuses it", "[multigrid][gpu]") {
