@@ -19,6 +19,21 @@ Vec cross(const Vec& a, const Vec& b) {
   return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
 }
 
+template <class Point>
+bool exactly_axis_aligned(std::size_t nn, const Point& point) {
+  const Vec p0 = point(0);
+  for (std::size_t a = 0; a < 3; ++a) {
+    bool same = true;
+    for (std::size_t i = 1; i < nn && same; ++i) {
+      same = point(i)[a] == p0[a];
+    }
+    if (same) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::array<double, 9> inverse3(const std::array<double, 9>& m) {
   const double c00 = m[4] * m[8] - m[5] * m[7];
   const double c01 = m[5] * m[6] - m[3] * m[8];
@@ -173,6 +188,9 @@ PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& g, const GlobalKe
   // Face moments over a fan of triangles (m, p_i, p_i+1), m the node mean. The fan starts at the
   // node of smallest (x, y, z) and runs in the face's global orientation (keys->reversed), and
   // the sum is signed for the local one: a face gives the same bits however it is numbered.
+  // M is zero on a planar face, where the fan sum leaves only round-off (#412). A face is planar
+  // here when that is exact: a triangle, or nodes sharing one coordinate bitwise. Any other face,
+  // planar or not, keeps its fan sum.
   const auto x = mesh.x(), y = mesh.y(), z = mesh.z();
   for (index_t f = 0; f < mesh.n_faces(); ++f) {
     const auto nodes = mesh.face_nodes(f);
@@ -182,6 +200,9 @@ PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& g, const GlobalKe
       const auto n = static_cast<std::size_t>(nodes[i]);
       return Vec{x[n], y[n], z[n]};
     };
+    if (nn == 3 || exactly_axis_aligned(nn, point)) {
+      continue;
+    }
     std::size_t start = 0;
     for (std::size_t i = 1; i < nn; ++i) {
       if (point(i) < point(start)) {
