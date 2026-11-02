@@ -8,11 +8,27 @@ TMR flat plate 69×49 (#395, `physics/ns-sa` c3966068): once the SER raises the 
 
 ## Why
 
-*(CFD - Euler.)*
+The second-order face state is w_f = w_c + φ_c ⊙ (∇w_c · r_cf), with ∇w_c = Σ_j W_cj (w_j − w_c) the least-squares fit over the cell's stencil (`stencil_lsq_weight`, face neighbours and their neighbours) and φ the limiter, componentwise. J̃ differentiates F(w_L,f, w_R,f) with respect to w_L and w_R only through the first term: ∂w_f/∂w_c = I. The fit adds ∂w_f/∂w_j = diag(φ_c) (W_cj · r_cf) for every stencil cell j and −diag(φ_c) Σ_j (W_cj · r_cf) on w_c. On an isotropic cell |W_cj · r_cf| is of order ½ for the cell across the face, so the omission is a fraction of the term kept. In a wall cell stretched 10³–10⁴, the fit's weights along the wall normal fall on the cells above and below a cell of height h, while the faces' r runs along the wall over lengths up to 10³–10⁴ h. Then |W_cj · r_cf| is no longer bounded by ½, and the omitted part can exceed the kept one. That is what #395 measures: 38–70 % of J v missing on the wall cells' continuity and energy rows, which carry no viscous flux.
+
+Two choices keep this from becoming #397:
+- **The operator stays the assembled J̃**: the solve's operator and the preconditioner, with these entries added. It is not the matrix-free Jacobian, and nothing depends on a perturbed state.
+- **φ and the reconstruction's positivity fallback stay held at U**, exactly as J̃ already holds them. This note adds the gradients' dependence only: no derivative through the limiter's minimum and maximum, or through the fallback's branch.
+
+#397's loss on the limited Euler cases came with a model that changed both the operator (matrix-free) and how much of the true derivative it followed. This one only fills in a smooth part of the linear model, the least-squares fit, which is linear in w. There is still no a priori guarantee that the step stays as robust. The new entries move weight off the diagonal and can reduce the blocks' diagonal dominance, which the multigrid and the line smoother rely on. Hence the gate reports the linear drops, cycles and failures before and after, and the Euler cases stay bit for bit (Scope).
 
 ## Form
 
-*(CFD - Euler: the chain dF/dW_face · dW_face/d(∇W_c) · d(∇W_c)/dW_j through the stored least-squares weights, φ and the reconstruction's fallback held as in today's J̃; the explicit parameter of the shared convective assembly (`Euler::Impl`, `kernels/euler.py`) that only `NavierStokes` sets; the pattern constraint — only face-neighbour entries enter the 5 × 5 block matrix — and the share of least-squares weight it drops, measured on the 69×49 plate mesh as a geometric quantity before any run.)*
+**The chain.** For an interior face f = (L, R) and each side s ∈ {L, R} whose reconstruction is not the cell value (the fallback held as in J̃), the generated face Jacobian already gives A_s = ∂F/∂w_s,f (5 × 5, the `*_faces_jacobian` loops, gradients and φ held). The added blocks, times dW/dU of the columns' cells as J̃'s blocks are, are:
+- for every column cell j of the side's gradient: A_s diag(φ_s) (Ŵ_sj · r_sf), into row L with the face's sign (+) and row R with its sign (−);
+- on column s: −A_s diag(φ_s) Σ_j (Ŵ_sj · r_sf).
+
+Boundary faces add the same terms to their owner's row, A from `*_boundaries_jacobian`. These are assembly-time products of stored blocks: no residual evaluation, no generated loop changes.
+
+**Which weights.** The block matrix has a 5 × 5 block for a cell and each of its face neighbours, and nothing else. The stencil's own weights W reach the face neighbours' neighbours. Truncating them to the pattern drops 42 % of Σ |W_sj · r_sf| over the wall ring's faces and 52 % over the domain. It also leaves a gradient that no longer reproduces a linear field (Σ_j W_cj (x_j − x_c) ≠ I once entries are removed). The chain therefore uses its own fit Ŵ, a least-squares gradient over the cell's face neighbours only, with the same determinacy rule as the stencil's (a cell whose face neighbours cannot determine a direction leaves it out). Ŵ is exact for linear fields and lies entirely in row s's pattern. What it still cannot place are the cross terms: row t (the other side) of a face receives column j only when j is t or one of t's face neighbours. Measured on the 69×49 plate mesh, as a geometric quantity before any run (Σ over faces and both rows of |Ŵ_sj · r_sf| with the column outside the pattern, against all terms): 19 % on the wall ring's faces, 25 % over the domain. Ŵ is computed once at setup: 2D-or-3D like the stencil's (the plate is one cell thick: the offsets' components within 64 ulps are zero, euler.md), stored 3 per face incidence (3 × 2 F_interior doubles), freed with the matrix.
+
+**The parameter.** `Scheme::reconstruction_jacobian` (default false): `Euler::assemble` adds the blocks above when set. `NavierStokes` sets it, and `EulerPhysics` does not. The code is written once, in `Euler::Impl`, where the face blocks are assembled; #409 would set it for Euler.
+
+**Cost.** Setup: one 3 × 3 solve per cell and 3 doubles per face incidence. Per assembly: per face side, one 5 × 5 by diagonal-5 product per column, about the face neighbour count, added into existing blocks. Measured in the gate as CPU time per step against the branch without it.
 
 ## Scope
 
