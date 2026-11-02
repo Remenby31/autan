@@ -2124,16 +2124,24 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
     CHECK(memory["host_peak_bytes"] == by_rank.back());
     CHECK(memory["device_peak_bytes_by_rank"].size() == static_cast<std::size_t>(ranks));
   }
-  // Rank 0 logged the partition: every cell owned once.
-  std::int64_t owned = 0;
+  // Rank 0 logged the partition: every cell owned once, and each rank's owned and ghost cells
+  // those autan-mesh-info --ranks gives for the mesh (mesh-info.md, partition).
+  Json partitioned;
   std::ifstream log_in(many / "log.jsonl");
   for (std::string line; std::getline(log_in, line);) {
     const Json event = Json::parse(line);
-    if (event["source"] == "mpi") {
-      for (const auto& n : event["data"]["owned_cells"]) owned += n.get<std::int64_t>();
-    }
+    if (event["source"] == "mpi") partitioned = event["data"];
   }
-  CHECK(owned == autan::io::read_mesh(doc["mesh"]["path"].get<std::string>()).n_cells());
+  const autan::Mesh mesh = autan::io::read_mesh(doc["mesh"]["path"].get<std::string>());
+  std::int64_t owned = 0;
+  for (const auto& n : partitioned["owned_cells"]) owned += n.get<std::int64_t>();
+  CHECK(owned == mesh.n_cells());
+  const auto counts =
+      autan::io::run_counts(mesh, autan::compute_geometry(mesh), autan::io::CellOrder::rcm,
+                            autan::io::RanksRequest{.ranks = ranks, .groups = {}});
+  REQUIRE(counts.partition);
+  CHECK(partitioned["owned_cells"] == Json(counts.partition->cells));
+  CHECK(partitioned["ghost_cells"] == Json(counts.partition->ghosts));
 
   // Every cell from 7 on diverges, on several ranks: the least is reported,
   // as a single rank names it.

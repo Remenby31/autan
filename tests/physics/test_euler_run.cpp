@@ -897,6 +897,25 @@ TEST_CASE("a steady Gauss-Seidel or lines case on several ranks converges to the
   const fs::path many = run_on_ranks(doc, ranks);
   REQUIRE(!many.empty());
   CHECK(Json::parse(read(many / "run.json"))["status"] == "converged");
+  {
+    // Each rank owns the cells, and holds the ghosts, of autan-mesh-info --ranks N, with
+    // --groups lines when the case forms the lines (mesh-info.md, partition).
+    Json partitioned;
+    std::ifstream log_in(many / "log.jsonl");
+    for (std::string line; std::getline(log_in, line);) {
+      const Json event = Json::parse(line);
+      if (event["source"] == "mpi") partitioned = event["data"];
+    }
+    const autan::Mesh mesh = autan::io::read_mesh(mesh_path);
+    const auto groups =
+        std::string(linear) == "lines" ? autan::io::RankGroups::lines : autan::io::RankGroups::none;
+    const auto counts =
+        autan::io::run_counts(mesh, autan::compute_geometry(mesh), autan::io::CellOrder::rcm,
+                              autan::io::RanksRequest{.ranks = ranks, .groups = groups});
+    REQUIRE(counts.partition);
+    CHECK(partitioned["owned_cells"] == Json(counts.partition->cells));
+    CHECK(partitioned["ghost_cells"] == Json(counts.partition->ghosts));
+  }
   const auto vx = field(one.run, "VelocityX"), vy = field(one.run, "VelocityY"),
              vz = field(one.run, "VelocityZ");
   double speed = 0.0;
