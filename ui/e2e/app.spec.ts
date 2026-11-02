@@ -339,6 +339,7 @@ test("Analysis cuts a run's solution by a plane and keeps the cut in its link", 
   await expect(picked).toHaveCount(1);
 
   const field = page.getByLabel("Slice field");
+  const firstField = (await field.locator("option").first().textContent()) ?? "";
   const other = (await field.locator("option").allTextContents()).find((f) => f !== "Pressure");
   if (!other) throw new Error("the slice carries one field only");
   await field.selectOption(other);
@@ -357,6 +358,14 @@ test("Analysis cuts a run's solution by a plane and keeps the cut in its link", 
   await page.mouse.click(box.x + 20, box.y + box.height - 20);
   await expect(picked).toHaveCount(0);
   await expect.poll(async () => (await view.screenshot()).equals(walls)).toBe(true);
+
+  // A link naming a field the slice does not carry shows its first field, legend and colours.
+  await page.goto(`/viewer?run=${converged.run_id}&slice=y&sliceField=${firstField}`);
+  await expect(legend).toContainText(`slice · ${firstField}`);
+  const named = await view.screenshot();
+  await page.goto(`/viewer?run=${converged.run_id}&slice=y&sliceField=NotAField`);
+  await expect(legend).toContainText(`slice · ${firstField}`);
+  await expect.poll(async () => (await view.screenshot()).equals(named)).toBe(true);
 });
 
 test("a run page states what it computed and how far its coefficients go", async ({ page }) => {

@@ -141,6 +141,11 @@ const UNITS: Record<string, string> = {
 };
 
 // The box around a surface's nodes, in the mesh's own coordinates.
+/** The field of `surface` a link names, or its first when it has none of that name. */
+function shownField(surface: Surface, name: string): string {
+  return surface.fields.some((f) => f.name === name) ? name : (surface.fields[0]?.name ?? "");
+}
+
 function bounds(surface: Surface): { min: number[]; max: number[] } {
   const min = [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY];
   const max = [Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY];
@@ -308,7 +313,7 @@ function Viewer() {
         .then((s) => {
           setCut(s);
           setCutError(null);
-          viewer.current?.setSlice(s, sliceField, { origin, normal });
+          viewer.current?.setSlice(s, shownField(s, sliceField), { origin, normal });
         })
         .catch((e: unknown) => {
           if (abort.signal.aborted) return;
@@ -323,9 +328,9 @@ function Viewer() {
     };
   }, [run, axis, at, extent]);
   useEffect(() => {
-    if (cut) viewer.current?.setSliceField(sliceField);
+    if (cut) viewer.current?.setSliceField(shownField(cut, sliceField));
   }, [cut, sliceField]);
-  const cutField = cut?.fields.find((f) => f.name === sliceField) ?? cut?.fields[0];
+  const cutField = cut?.fields.find((f) => f.name === shownField(cut, sliceField));
 
   const theme = useResolvedTheme();
   // biome-ignore lint/correctness/useExhaustiveDependencies: runs when the displayed theme changes

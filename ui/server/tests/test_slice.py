@@ -125,3 +125,134 @@ def test_a_running_run_has_no_slice_yet(run: Path) -> None:
     )
     response = _client(run).get(f"/api/runs/{run.name}/slice?origin=0.4,0,0&normal=1,0,0")
     assert response.status_code == 409
+
+
+@pytest.mark.parametrize(
+    ("origin", "normal"),
+    [
+        ("0.5,0,0", "1,0,0"),
+        ("0.5,0,0", "-1,0,0"),
+        ("0,0,0", "1,0,0"),
+        ("1,0,0", "-1,0,0"),
+        ("0,0,0", "-1,0,0"),
+        ("1,0,0", "1,0,0"),
+    ],
+)
+def test_a_plane_along_mesh_faces_gives_each_face_once(run: Path, origin: str, normal: str) -> None:
+    # x = 0.5 is a plane of faces inside the 8x8x8 cube, x = 0 and x = 1 its boundary.
+    response = _client(run).get(f"/api/runs/{run.name}/slice?origin={origin}&normal={normal}")
+
+    assert response.status_code == 200
+    positions, triangles, _ = _decode(response.content)
+    tolerance = 64 * float(np.finfo(np.float32).eps)
+    np.testing.assert_allclose(
+        positions[:, 0], float(origin.split(",", maxsplit=1)[0]), atol=tolerance
+    )
+    assert _areas(positions, triangles).sum() == pytest.approx(1.0, rel=tolerance)
+
+
+def test_a_plane_through_mesh_nodes_leaves_no_empty_triangle(run: Path) -> None:
+    # x + y + z = 1.5 passes through the cube's nodes (multiples of 1/8): cells touching it at a
+    # node or along an edge have no section.
+    response = _client(run).get(f"/api/runs/{run.name}/slice?origin=0.5,0.5,0.5&normal=1,1,1")
+
+    positions, triangles, _ = _decode(response.content)
+    area = _areas(positions, triangles)
+    tolerance = 64 * float(np.finfo(np.float32).eps)
+    assert area.sum() == pytest.approx(3 * np.sqrt(3) / 4, rel=tolerance)
+    assert area.min() > 1e-3 / 64
+
+
+def _single_cell(run: Path, base: list[tuple[float, float]]) -> None:
+    # One prism over the polygon `base`, z from 0 to 1, as the run's whole solution mesh.
+    n = len(base)
+    coords = np.array([(x, y, z) for z in (0.0, 1.0) for x, y in base])
+    faces = [list(range(n))[::-1], list(range(n, 2 * n))]
+    faces += [[k, (k + 1) % n, n + (k + 1) % n, n + k] for k in range(n)]
+    face_start = np.cumsum([0] + [len(f) for f in faces])
+    with h5py.File(run / "solution.cgns", "r+") as tree:
+        zone = tree["Base"]["Zone"]
+        arrays = {
+            ("GridCoordinates", f"Coordinate{a}"): coords[:, k] for k, a in enumerate("XYZ")
+        } | {
+            ("NGonElements", "ElementStartOffset"): face_start,
+            ("NGonElements", "ElementConnectivity"): np.concatenate(faces) + 1,
+            ("NFaceElements", "ElementStartOffset"): np.array([0, len(faces)]),
+            ("NFaceElements", "ElementConnectivity"): np.arange(1, len(faces) + 1),
+        }
+        for name, group in zone["FlowSolution"].items():
+            if isinstance(group, h5py.Group) and name != "GridLocation":
+                arrays[("FlowSolution", name)] = np.array([1.0])
+        for (parent, name), values in arrays.items():
+            group = zone[parent][name]
+            dtype = group[" data"].dtype
+            del group[" data"]
+            group.create_dataset(" data", data=np.asarray(values).astype(dtype))
+
+
+def test_a_concave_cell_is_cut_along_its_notch(run: Path) -> None:
+    # An L-shaped prism: its section at z = 0.5 is the L, area 3; a fan from one corner would
+    # cover the notch too (area 4).
+    _single_cell(run, [(0, 0), (2, 0), (2, 1), (1, 1), (1, 2), (0, 2)])
+    response = _client(run).get(f"/api/runs/{run.name}/slice?origin=0,0,0.5&normal=0,0,1")
+
+    assert response.status_code == 200
+    positions, triangles, _ = _decode(response.content)
+    tolerance = 64 * float(np.finfo(np.float32).eps)
+    assert _areas(positions, triangles).sum() == pytest.approx(3.0, rel=tolerance)
+    assert len(triangles) == 4
+
+
+def test_a_slice_is_read_only_from_the_solution_file(run: Path, tmp_path: Path) -> None:
+    secret = tmp_path / "secret.bin"
+    with h5py.File(run / "solution.cgns", "r+") as tree:
+        density = tree["Base"]["Zone"]["FlowSolution"]["Density"]
+        values = density[" data"][()]
+        del density[" data"]
+        secret.write_bytes(values.astype("<f8").tobytes())
+        density.create_dataset(
+            " data", shape=values.shape, dtype="<f8", external=[(str(secret), 0, values.nbytes)]
+        )
+
+    response = _client(run).get(f"/api/runs/{run.name}/slice?origin=0.4,0,0&normal=1,0,0")
+
+    assert response.status_code == 422
+
+
+def test_slices_asked_while_one_is_cut_leave_only_the_newest(
+    run: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A plane dragged across the view: requests pile up while the first is cut. Only the newest
+    # waiting one is cut next; the ones it superseded are refused without cutting.
+    import threading  # noqa: PLC0415
+    import time  # noqa: PLC0415
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+    import autan_ui.app  # noqa: PLC0415
+
+    started, release = threading.Event(), threading.Event()
+    cut = autan_ui.app.slice_surface
+    calls: list[float] = []
+
+    def held(folder: Any, origin: Any, normal: Any) -> bytes:
+        calls.append(float(origin[0]))
+        started.set()
+        release.wait(10)
+        return cut(folder, origin, normal)
+
+    monkeypatch.setattr(autan_ui.app, "slice_surface", held)
+    client = _client(run)
+    url = f"/api/runs/{run.name}/slice?normal=1,0,0&origin="
+    with ThreadPoolExecutor(4) as pool:
+        first = pool.submit(client.get, url + "0.1,0,0")
+        assert started.wait(10)
+        waiting = [pool.submit(client.get, url + f"0.{k},0,0") for k in (2, 3)]
+        # Both have taken their turn (the server's count of slices asked) before the first ends.
+        while client.app.state.slices_asked.get(run.name, 0) < 3:  # type: ignore[attr-defined]
+            time.sleep(0.01)
+        release.set()
+        codes = [first.result().status_code] + [w.result().status_code for w in waiting]
+
+    assert codes[0] == 200
+    assert sorted(codes[1:]) == [200, 409]
+    assert len(calls) == 2
