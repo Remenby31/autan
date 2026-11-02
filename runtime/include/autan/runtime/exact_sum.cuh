@@ -106,10 +106,13 @@ __device__ inline void exact_add_warp(ExactWords& acc, double term, bool active)
 namespace detail {
 
 // K exact sums over n items, term(i, k) the k-th term of item i; each block
-// adds its normalized sums into `out` (zeroed beforehand).
+// adds its normalized sums into `out` (zeroed beforehand). Nothing when
+// `active` is given and holds 0: every thread leaves before any barrier.
 template <int K, class Term>
 __global__ void __launch_bounds__(block_size) exact_sums_kernel(std::int64_t n, Term term,
-                                                                ExactWords* out) {
+                                                                ExactWords* out,
+                                                                const int* active) {
+  if (active != nullptr && *active == 0) return;
   constexpr int max_warps = block_size / 32;
   __shared__ ExactWords acc[max_warps][K];
   const int warps = static_cast<int>(blockDim.x) / warpSize;
@@ -161,6 +164,14 @@ __global__ void __launch_bounds__(block_size) exact_sums_kernel(std::int64_t n, 
   }
 }
 
+template <int K>
+__global__ void clear_if_kernel(ExactWords* out, const int* active) {
+  if (*active == 0) return;
+  for (int t = static_cast<int>(threadIdx.x); t < K * ExactSum::words;
+       t += static_cast<int>(blockDim.x))
+    out[t / ExactSum::words].w[t % ExactSum::words] = 0;
+}
+
 inline void check(
 #if defined(__HIPCC__)
     hipError_t e,
@@ -180,16 +191,27 @@ inline void check(
 /// K exact sums over n items: `out[k]` (device memory, K entries, zeroed
 /// here) receives the sum over i of term(i, k), a __device__ functor
 /// returning double. Asynchronous on `stream`; `blocks` 0 picks 4 per
-/// multiprocessor. Up to 2^30 items per block and 2^31 blocks.
+/// multiprocessor. Up to 2^30 items per block and 2^31 blocks. With
+/// `active` (device memory), the work is done only when `*active` is not 0;
+/// otherwise `out` is left as it was and no term is evaluated, so that a
+/// branch decided on the device needs no host read. `*active` must be written
+/// by work ordered before this call (on `stream`, or by an event) and stay
+/// unchanged until it completes: two kernels read it. A captured graph reads
+/// it at each replay.
 template <int K, class Term>
-void exact_sums(std::int64_t n, Term term, ExactWords* out, stream_t stream, int blocks = 0) {
+void exact_sums(std::int64_t n, Term term, ExactWords* out, stream_t stream, int blocks = 0,
+                const int* active = nullptr) {
   static_assert(K >= 1 && K * ExactSum::words * 8 * (detail::block_size / 32) <= 48 * 1024,
                 "K sums per warp must fit in 48 KB of shared memory");
+  if (active != nullptr) {
+    detail::clear_if_kernel<K><<<1, detail::block_size, 0, stream>>>(out, active);
+  } else {
 #if defined(__HIPCC__)
-  detail::check(hipMemsetAsync(out, 0, K * sizeof(ExactWords), stream), "hipMemsetAsync");
+    detail::check(hipMemsetAsync(out, 0, K * sizeof(ExactWords), stream), "hipMemsetAsync");
 #else
-  detail::check(cudaMemsetAsync(out, 0, K * sizeof(ExactWords), stream), "cudaMemsetAsync");
+    detail::check(cudaMemsetAsync(out, 0, K * sizeof(ExactWords), stream), "cudaMemsetAsync");
 #endif
+  }
   if (blocks <= 0) {
     int device = 0, units = 0;
 #if defined(__HIPCC__)
@@ -203,12 +225,64 @@ void exact_sums(std::int64_t n, Term term, ExactWords* out, stream_t stream, int
 #endif
     blocks = 4 * units;
   }
-  detail::exact_sums_kernel<K><<<blocks, detail::block_size, 0, stream>>>(n, term, out);
+  detail::exact_sums_kernel<K><<<blocks, detail::block_size, 0, stream>>>(n, term, out, active);
 #if defined(__HIPCC__)
   detail::check(hipGetLastError(), "exact_sums");
 #else
   detail::check(cudaGetLastError(), "exact_sums");
 #endif
+}
+
+/// The sum the words hold, rounded once to the nearest double (ties to even),
+/// on the device: the bits of ExactSum::value() on the host over the same
+/// words. One thread; +inf, -inf and NaN terms as on the host.
+__device__ inline double exact_value(const ExactWords& words) {
+  using detail::ull;
+  constexpr int limbs = ExactSum::limbs;
+  const double inf = __longlong_as_double(0x7ff0000000000000LL);
+  const long long* in = words.w;
+  if (in[detail::nan_count] > 0 || (in[detail::pos_inf] > 0 && in[detail::neg_inf] > 0))
+    return __longlong_as_double(0x7ff8000000000000LL);
+  if (in[detail::pos_inf] > 0) return inf;
+  if (in[detail::neg_inf] > 0) return -inf;
+  // As ExactSum::value(): carry every limb into [0, 2^32), take the
+  // magnitude, then round its 64 leading bits to 53.
+  long long w[limbs];
+  for (int i = 0; i < limbs; ++i) w[i] = in[i];
+  const auto normalize = [&w] {
+    for (int i = 0; i + 1 < limbs; ++i) {
+      const long long carry = w[i] >> 32;  // floor division by 2^32
+      w[i] -= carry * (1LL << 32);
+      w[i + 1] += carry;
+    }
+  };
+  normalize();
+  const bool negative = w[limbs - 1] < 0;
+  if (negative) {
+    for (int i = 0; i < limbs; ++i) w[i] = -w[i];
+    normalize();
+  }
+  int t = limbs - 1;
+  while (t >= 0 && w[t] == 0) --t;
+  if (t < 0) return 0.0;
+  const auto limb = [&w](int k) { return k < 0 ? ull{0} : static_cast<ull>(w[k]); };
+  const ull top = limb(t);
+  if (top > 0xffffffffULL) return negative ? -inf : inf;    // >= 2^1056
+  const int b = 64 - __clzll(static_cast<long long>(top));  // 1..32
+  const ull below = (limb(t - 1) << 32) | limb(t - 2);
+  const ull lead = (top << (64 - b)) | (below >> b);
+  bool sticky = (below & ((ull{1} << b) - 1)) != 0;
+  for (int k = t - 3; k >= 0 && !sticky; --k) sticky = limb(k) != 0;
+  ull mantissa = lead >> 11;
+  const ull rest = lead & 0x7ff;
+  if (rest > 0x400 || (rest == 0x400 && (sticky || (mantissa & 1) != 0))) ++mantissa;
+  int exponent = 32 * (t - 2) - detail::offset + b + 11;
+  if (mantissa == (ull{1} << 53)) {
+    mantissa >>= 1;
+    ++exponent;
+  }
+  const double magnitude = ldexp(static_cast<double>(mantissa), exponent);
+  return negative ? -magnitude : magnitude;
 }
 
 /// The K sums of `out` on the host, after the work queued on `stream`, ready
