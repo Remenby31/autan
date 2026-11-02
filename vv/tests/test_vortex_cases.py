@@ -29,11 +29,14 @@ def test_every_level_solves_one_case_from_its_own_initial_state(tmp_path: Path) 
         case = autan.load(path)
         spec = case.spec
         assert spec.time.kind == "unsteady"
+        assert spec.time.dt is not None
         assert math.isclose(spec.time.steps * spec.time.dt.to("s").magnitude, 40.0, rel_tol=1e-15)
         assert {r.zones for r in spec.boundaries} == {"zmin", "zmax"}
         assert {r.condition.kind for r in spec.boundaries} == {"symmetry"}
-        state = case.resolve(spec.initial_state.path)
-        assert spec.initial_state.sha256 == hashlib.sha256(state.read_bytes()).hexdigest()
+        start = spec.initial_state
+        assert start is not None
+        state = case.resolve(start.path)
+        assert start.sha256 == hashlib.sha256(state.read_bytes()).hexdigest()
         document = initial_state.parse(state.read_bytes())
         assert not isinstance(document, str), document
         assert document.mesh_sha256 == mesh_sha256(case.resolve(spec.mesh))
