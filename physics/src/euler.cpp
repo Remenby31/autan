@@ -509,6 +509,13 @@ void Euler<P>::release_frozen() {
 }
 
 template <class P>
+kernels::euler::Data<P> Euler<P>::frozen_data() const {
+  auto& m = *impl_;
+  if (!m.frozen) throw std::logic_error("Euler::frozen_data without a held state");
+  return m.frozen_data(*m.frozen);
+}
+
+template <class P>
 void Euler<P>::residual_and_jacobian(std::span<const State> s, std::span<Res> res) {
   auto& m = *impl_;
   if (m.dwdu.empty()) {

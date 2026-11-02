@@ -126,6 +126,11 @@ class Euler {
   void residual_frozen(std::span<const State> s, std::span<Res> res);
   /// Frees what freeze() allocated.
   void release_frozen();
+  /// The loops' data of the frozen workspace: the primitives, boundary states and gradients of
+  /// the state freeze() or residual_frozen() last evaluated, the held limiter and reconstruction
+  /// branches, for a physics that adds terms to the frozen residual. Throws std::logic_error
+  /// without a held state.
+  [[nodiscard]] kernels::euler::Data<P> frozen_data() const;
   /// After residual_and_jacobian: A = diag(shift) + dR/dU into `a`, shift_c per cell (V / dt).
   void assemble(std::span<const double> shift, BlockMatrix& a) const;
   /// First-order residual's tangent dR/dU du (no reconstruction): the preconditioning operator.
