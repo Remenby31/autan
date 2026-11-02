@@ -69,12 +69,16 @@ jobs:
           persist-credentials: false
       # The mesh is a pure function of the generator, its locked dependencies and its arguments:
       # cached under their hash, it is generated again only when one of them changes.
+      - name: The mesh's cache key (bench/ci/mesh-key.sh)
+        id: mesh-key
+        run: bench/ci/mesh-key.sh >> "$GITHUB_OUTPUT"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: mesh-cache
         with:
           path: meshes/
-          # What `autan-vv meshes` runs (mesh-cache.yml fills main's cache, the one pull requests read).
-          key: mesh-hex-n128-${{ hashFiles('vv/src/autan_vv/meshes/**', 'vv/src/autan_vv/oracles/**', 'vv/src/autan_vv/cli.py', 'vv/src/autan_vv/errors.py', 'vv/src/autan_vv/__init__.py', 'vv/pyproject.toml', 'vv/uv.lock', 'vv/.python-version') }}
+          # What the generator loads, listed (mesh-cache.yml fills main's cache, the one pull requests
+          # read, under the same key).
+          key: ${{ steps.mesh-key.outputs.key }}
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         if: steps.mesh-cache.outputs.cache-hit != 'true'
         with:
@@ -87,7 +91,11 @@ jobs:
           libglu1-mesa libxcursor1 libxft2 libxinerama1 libxrender1
       - name: Generate the hexahedral mesh, n = 128 (2.1 M cells)
         if: steps.mesh-cache.outputs.cache-hit != 'true'
-        run: uv run --project vv --locked autan-vv meshes hex --levels 128 --out meshes
+        # Generated through mesh-modules.py, which checks that the repository modules the
+        # generator loads are exactly bench/ci/measured-mesh-files.txt (the key, the filter).
+        run: >-
+          uv run --project vv --locked python bench/ci/mesh-modules.py
+          --check bench/ci/measured-mesh-files.txt -- meshes hex --levels 128 --out meshes
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mesh-hex-n128
@@ -97,8 +105,8 @@ jobs:
 
   bench:
     needs: [changes, mesh]
-    # One required check: it measures on the bench Spark, or, when only the harness or an image
-    # changed, runs the harness's GPU tests on the tests runner and leaves the bench Spark alone.
+    # One required check, on the bench Spark: it measures, or, when only the harness or an image
+    # changed, runs the harness's GPU tests, which need a GPU no other team uses.
     if: >-
       !cancelled() && needs.changes.result == 'success' &&
       (needs.mesh.result == 'success' || needs.mesh.result == 'skipped') &&
@@ -108,8 +116,8 @@ jobs:
     # `bench`: runners whose GPU is not shared with another team's long-running process. Main has
     # its own runner process on the same Spark (`bench-main`, its only label, so no other job can
     # take it), so it never queues behind pull requests in GitHub; on the machine the GPU lock
-    # orders them, main first. Harness-only changes run on the tests runner.
-    runs-on: ${{ fromJSON(needs.changes.outputs.bench != 'true' && '["self-hosted", "linux", "ARM64", "gpu", "gb10", "tests"]' || github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && '["self-hosted", "linux", "ARM64", "bench-main"]' || '["self-hosted", "linux", "ARM64", "gpu", "gb10", "bench"]') }}
+    # orders them, main first.
+    runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && '["self-hosted", "linux", "ARM64", "bench-main"]' || '["self-hosted", "linux", "ARM64", "gpu", "gb10", "bench"]') }}
     # A bisection on main measures up to 8 commits in this job (bench/ci/bisect.py).
     timeout-minutes: ${{ github.event_name == 'pull_request' && 90 || 240 }}
     permissions:
@@ -118,9 +126,10 @@ jobs:
       results: ${{ steps.results.outputs.artifact-id }}
     env:
       AUTAN_BENCH_REQUIRE_GPU: "1"
-      # Every wait for the GPU lock fails clearly after 15 minutes instead of waiting forever
-      # behind other measurements on the shared Spark.
-      AUTAN_BENCH_LOCK_TIMEOUT: "900"
+      # Every wait for the GPU lock fails clearly after 25 minutes instead of waiting forever
+      # behind other measurements on the shared Spark: CI waits at most for the hold in
+      # progress and one agent's turn, 10 minutes each (docs/infra/bench.md).
+      AUTAN_BENCH_LOCK_TIMEOUT: "1500"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -140,7 +149,13 @@ jobs:
         run: uv sync --project bench --locked
       - name: Harness tests on the GPU (bench/ or docker/ changed)
         if: needs.changes.outputs.harness == 'true'
-        run: AUTAN_BENCH_STREAM="$PWD/build/bench/stream" uv run --project bench --locked pytest -rs bench/tests docker/runner/tests
+        # The GPU tests apart, with a report: skipped ones (another tenant on the GPU) must not
+        # leave the check green without a single GPU test run.
+        run: |
+          uv run --project bench --locked pytest -rs -m "not gpu" bench/tests docker/runner/tests
+          AUTAN_BENCH_STREAM="$PWD/build/bench/stream" uv run --project bench --locked pytest -rs \
+            -m gpu --junitxml="$RUNNER_TEMP/gpu-tests.xml" bench/tests docker/runner/tests
+          python3 bench/ci/require-ran.py "$RUNNER_TEMP/gpu-tests.xml"
       - name: Image smoke test on the GPU (bench/ or docker/ changed)
         if: needs.changes.outputs.harness == 'true'
         run: >-
@@ -166,6 +181,11 @@ jobs:
           bench/lock/autan-gpu-lock -m "gpu-bench: build the generated loops" -t 600 --
           bash -c 'cmake -S . -B build/autan -DAUTAN_ENABLE_CUDA=ON -DAUTAN_BUILD_TESTS=OFF
           -DCMAKE_CUDA_ARCHITECTURES=121 && cmake --build build/autan --target autan_loop_bench'
+      # changes.sh's measured directories are exactly those both benchmarks are built from, so
+      # that no change goes unmeasured and none waits for a measurement of nothing it changed.
+      - name: The measured paths are the benchmarks' build graph
+        if: needs.changes.outputs.bench == 'true'
+        run: python3 bench/ci/check-measured.py build/autan:codegen/autan_loop_bench build/bench:stream
       - name: Generated loops, hex n = 128, fp32, RCM order
         if: needs.changes.outputs.bench == 'true'
         run: >-

@@ -133,12 +133,13 @@ def _held(path: Path) -> bool:
         return False
 
 
-def ci_waiting(lock: Path) -> bool:
+def ci_waiting(lock: Path, bypass: bool = False) -> bool:
     """Whether a job with priority waits for or holds the GPU (docs/infra/bench.md): outside CI,
-    any CI job (it holds ``ci.lock`` shared); in a CI job that is not on main, a job on main
-    (``main.lock``). A job on main never yields."""
+    any CI job (it holds ``ci.lock`` shared), or during an agent's turn (``bypass``), a job on
+    main only (``main.lock``); in a CI job that is not on main, a job on main. A job on main
+    never yields."""
     if os.environ.get("GITHUB_ACTIONS") != "true":
-        return _held(lock.parent / "ci.lock")
+        return _held(lock.parent / ("main.lock" if bypass else "ci.lock"))
     if os.environ.get("GITHUB_REF") == "refs/heads/main":
         return False
     return _held(lock.parent / "main.lock")
@@ -162,15 +163,18 @@ def gpu_lock(path: Path = DEFAULT_LOCK, timeout_s: float | None = None) -> Itera
     with os.fdopen(fd) as handle:
         start = time.monotonic()
         warned = False
+        # A turn autan-gpu-lock -n took for this run (#360), bounded by its -t; autan-bench alone
+        # never takes one, since nothing bounds how long it holds the lock.
+        bypass = os.environ.get("AUTAN_GPU_LOCK_BYPASS") == "1"
         while True:
             # CI goes first; a lock taken just as CI announced itself is given back.
-            if not ci_waiting(path):
+            if not ci_waiting(path, bypass):
                 try:
                     fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     pass
                 else:
-                    if not ci_waiting(path):
+                    if not ci_waiting(path, bypass):
                         break
                     fcntl.flock(handle, fcntl.LOCK_UN)
             if not warned:
@@ -392,6 +396,72 @@ def runnable_threads(window_s: float = 1.0, samples: int = 10) -> float:
         counts.append(max(0, _runnable_now() - 1))
         time.sleep(window_s / samples)
     return float(statistics.median(counts))
+
+
+# Host-wide activity around a measurement (#400): pressure, reclaim and compaction, memory. Only
+# the host's own counters: no other tenant's container is read. Tests point PROC elsewhere.
+PROC = Path("/proc")
+VMSTAT = re.compile(r"^(pgscan|pgsteal|compact|pgmigrate|thp)_\w+$|^pgfault$|^pgmajfault$")
+MEMINFO = ("MemFree", "MemAvailable", "Cached", "Dirty", "Writeback", "AnonPages")
+
+
+def _lxcfs(path: str) -> bool:
+    """Whether path is LXCFS's view (a container's numbers labelled /proc), not the host's."""
+    with contextlib.suppress(OSError):
+        for line in (PROC / "self" / "mounts").read_text().splitlines():
+            fields = line.split()
+            if len(fields) > 2 and fields[1] == path and "lxcfs" in fields[2]:
+                return True
+    return False
+
+
+def host_activity() -> dict[str, object] | None:
+    """The host's load, pressure (PSI), reclaim and compaction counters and memory now, with the
+    monotonic time of the reading (so that counters give rates); None off Linux. A counter that
+    cannot be read or parsed is left out, so that a reading never fails a run; memory and pressure
+    served by LXCFS (a container's view) are left out too, and flagged."""
+    if sys.platform != "linux":
+        return None
+    out: dict[str, object] = {"monotonic_s": time.monotonic()}
+    with contextlib.suppress(OSError, ValueError):
+        load = [float(v) for v in (PROC / "loadavg").read_text().split()[:3]]
+        if len(load) == 3:
+            out["loadavg"] = load
+    with contextlib.suppress(OSError, ValueError):
+        for line in (PROC / "stat").read_text().splitlines():
+            key, _, value = line.partition(" ")
+            if key in ("procs_running", "procs_blocked"):
+                out[key] = int(value)
+    lxcfs = [p for p in ("/proc/meminfo", "/proc/pressure") if _lxcfs(p)]
+    if lxcfs:
+        out["lxcfs"] = lxcfs
+    pressure: dict[str, dict[str, dict[str, float]]] = {}
+    for resource in () if "/proc/pressure" in lxcfs else ("cpu", "memory", "io"):
+        with contextlib.suppress(OSError, ValueError):
+            lines = (PROC / "pressure" / resource).read_text().splitlines()
+            parsed = {
+                kind: {k: float(v) for k, v in (f.split("=", 1) for f in fields)}
+                for kind, *fields in (line.split() for line in lines)
+            }
+            if all(set(v) == {"avg10", "avg60", "avg300", "total"} for v in parsed.values()):
+                pressure[resource] = parsed
+    if pressure:
+        out["pressure"] = pressure
+    with contextlib.suppress(OSError, ValueError):
+        out["vmstat"] = {
+            k: int(v)
+            for k, v in (line.split() for line in (PROC / "vmstat").read_text().splitlines())
+            if VMSTAT.match(k)
+        }
+    if "/proc/meminfo" not in lxcfs:
+        with contextlib.suppress(OSError, ValueError, IndexError):
+            mem = {}
+            for line in (PROC / "meminfo").read_text().splitlines():
+                key, _, rest = line.partition(":")
+                if key in MEMINFO:
+                    mem[key] = int(rest.split()[0]) * 1024
+            out["meminfo_bytes"] = mem
+    return out
 
 
 def host_load() -> dict[str, float | int]:

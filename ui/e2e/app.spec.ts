@@ -282,6 +282,25 @@ test("polars keep each Mach number apart and every run, and say which runs are m
       await expect(row.locator("td").nth(2)).toHaveText((forces?.cl ?? Number.NaN).toFixed(4));
       await expect(row.locator("td").nth(3)).toHaveText((forces?.cd ?? Number.NaN).toFixed(4));
     }
+
+    // On Home these runs are one study whatever their case names (results.md#studies): its
+    // header names the newest run's case and counts the others, on one line.
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/");
+    await expect(page.getByRole("button", { name: "Group by study" })).toBeVisible();
+    const group = page.locator("li").filter({ has: page.locator(`a[data-run="${ids[0]}"]`) });
+    const name = group.getByTestId("study-name");
+    await expect(name).toHaveText(/^polar-\d+-\d \+\d+$/);
+    const box = await name.boundingBox();
+    expect(box?.height ?? 99).toBeLessThan(24);
+    // Every name is read out with the header, and focusing it from the keyboard lists them.
+    const header = group.locator("button[aria-expanded]").first();
+    for (const k of [0, 1, 2, 4]) {
+      await expect(header).toHaveAccessibleName(new RegExp(`polar-${tag}-${k}\\b`));
+    }
+    await page.keyboard.press("Tab");
+    await header.focus();
+    await expect(page.getByText(new RegExp(`polar-${tag}-\\d · .*polar-${tag}-\\d`))).toBeVisible();
   } finally {
     for (const id of ids) rmSync(join(RUNS, id), { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
@@ -466,6 +485,63 @@ test("hovering a slice reads the value drawn there and where it is", async ({ pa
     await expect(probe).toContainText("Density");
     await page.keyboard.press("Tab");
     await expect(probe).toHaveCount(0);
+  } finally {
+    cpSync(join(dir, "solution.cgns"), join(dir, "restored.cgns"));
+    renameSync(join(dir, "restored.cgns"), solution);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The wall pressure of a run's solution.cgns set so that Cp = (p − p∞)/q∞ is -0.42 on every
+// wall face, p∞ and q∞ from the SDK's freestream state of the run's case.
+const UNIFORM_CP = `
+import sys, h5py, autan
+from autan.solver_input import freestream_state
+run = sys.argv[1]
+state = freestream_state(autan.Results.open(run).case)
+q = 0.5 * state.density * state.speed**2
+with h5py.File(run + "/solution.cgns", "r+") as tree:
+    tree["Base"]["Zone"]["WallSolution"]["Pressure"][" data"][...] = state.pressure - 0.42 * q
+`;
+
+test("a slice plots the walls' Cp along the chord of their section", async ({ page }) => {
+  const run = (await runs(page)).filter((r) => r.status === "converged").at(-1) as Run;
+  const solution = join(RUNS, run.run_id, "solution.cgns");
+  const dir = mkdtempSync(join(RUNS, ".section-"));
+  cpSync(solution, join(dir, "solution.cgns"));
+  try {
+    execFileSync("uv", [
+      ...["run", "--locked", "--project", "server", "python", "-c", UNIFORM_CP],
+      join(RUNS, run.run_id),
+    ]);
+    await page.goto(`/viewer?run=${run.run_id}&field=Cp`);
+    await expect(page.getByTestId("zones")).toBeVisible();
+    await expect(page.getByTestId("wall-section")).toHaveCount(0);
+    await page.getByRole("button", { name: "Slice normal to y" }).click();
+    const chart = page.getByTestId("section-chart");
+    await expect(chart).toHaveAttribute("aria-label", /^−Cp along the chord/);
+    expect(Number(await chart.getAttribute("data-segments"))).toBeGreaterThan(0);
+    // −Cp, suction up: 0.42 wherever the walls are cut, to FP32 rounding.
+    for (const end of ["data-least", "data-greatest"]) {
+      expect(Number(await chart.getAttribute(end))).toBeCloseTo(0.42, 5);
+    }
+    // Each cut segment is drawn at the middle of the −Cp axis, whose ticks span 0.42 ± 0.5 for a
+    // uniform value.
+    const curve = chart.locator('line[stroke="var(--accent)"]');
+    await expect(curve).toHaveCount(Number(await chart.getAttribute("data-segments")));
+    const ticks = await chart
+      .locator('text[text-anchor="end"]')
+      .evaluateAll((texts) =>
+        texts.map((t) => Number(t.getAttribute("y")) - 3).sort((a, b) => a - b),
+      );
+    expect(ticks).toHaveLength(3);
+    const tick = ticks[1] as number;
+    for (const y of await curve.evaluateAll((lines) =>
+      lines.flatMap((l) => [Number(l.getAttribute("y1")), Number(l.getAttribute("y2"))]),
+    )) {
+      expect(y).toBeCloseTo(tick, 3);
+    }
+    await expect(page.getByTestId("wall-section")).toContainText("walls at y =");
   } finally {
     cpSync(join(dir, "solution.cgns"), join(dir, "restored.cgns"));
     renameSync(join(dir, "restored.cgns"), solution);
@@ -758,6 +834,27 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
   }
 });
 
+test("Runs, a run and Compare fill the window's width", async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  const all = await runs(page);
+  const run = all.find((r) => r.status === "converged") as Run;
+  const pair = all.slice(0, 2).map((r) => r.run_id);
+  // The content spans the window less the sidebar and its margins, not a centred column.
+  const spans = async (selector: string) => {
+    const box = await page.locator(selector).first().boundingBox();
+    return (box?.width ?? 0) > 1600;
+  };
+  await page.goto("/");
+  await expect(page.locator("a[data-row]").first()).toBeVisible();
+  expect(await spans("a[data-row]")).toBe(true);
+  await page.goto(`/runs/${run.run_id}`);
+  await expect(page.getByTestId("conditions")).toBeVisible();
+  expect(await spans("header:has([data-testid=conditions])")).toBe(true);
+  await page.goto(`/compare?runs=${encodeURIComponent(JSON.stringify(pair))}`);
+  await expect(page.getByTestId("compared")).toBeVisible();
+  expect(await spans("[data-testid=settings-diff]")).toBe(true);
+});
+
 test("views of results carry no renderer figures, and codes explain themselves", async ({
   page,
 }) => {
@@ -843,4 +940,66 @@ test("an unknown run or address says so, and outputs download as they are", asyn
   expect(readFileSync(await file.path(), "utf8")).toBe(
     readFileSync(join(RUNS, run.run_id, "case.toml"), "utf8"),
   );
+});
+
+test("at 390 px every page fits the width, and navigation sits behind a menu", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const all = await runs(page);
+  const run = all.find((r) => r.status === "converged") as Run;
+  const pair = encodeURIComponent(JSON.stringify(all.slice(0, 2).map((r) => r.run_id)));
+  // The page, and every box of it that scrolls sideways, but data tables, fit their width.
+  const fits = () =>
+    page.evaluate(() =>
+      [document.documentElement, ...document.querySelectorAll("main *")]
+        .filter((e) => !e.closest("table") && !e.querySelector("table"))
+        .every(
+          (e) =>
+            e.scrollWidth <= e.clientWidth + 1 ||
+            !["auto", "scroll"].includes(getComputedStyle(e).overflowX),
+        ),
+    );
+  for (const url of ["/", `/runs/${run.run_id}`, `/compare?runs=${pair}`, "/cases/new"]) {
+    await page.goto(url);
+    await expect(page.getByRole("button", { name: "Open navigation" })).toBeVisible();
+    expect(await fits(), url).toBe(true);
+  }
+
+  // The drawer opens from the menu and closes on a choice, and on Escape.
+  const nav = page.locator("#nav-drawer");
+  const menu = page.getByRole("button", { name: "Open navigation" });
+  await page.goto("/");
+  await expect(nav).toBeHidden();
+  await menu.click();
+  await expect(nav).toBeVisible();
+  await expect(menu).toHaveAttribute("aria-expanded", "true");
+  // The page behind takes no focus while the drawer is open.
+  await expect(page.locator("main")).toHaveAttribute("inert", "");
+  await nav.getByRole("link", { name: "Compare" }).click();
+  await expect(page).toHaveURL(/\/compare/);
+  await expect(nav).toBeHidden();
+  await menu.click();
+  await page.keyboard.press("Escape");
+  await expect(nav).toBeHidden();
+  await expect(menu).toBeFocused();
+  // ⌘K over the drawer: the drawer closes, and Escape closes the palette.
+  await menu.click();
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(nav).toBeHidden();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  // Widened past 768 px, an open drawer gives the page back.
+  await menu.click();
+  await page.setViewportSize({ width: 1024, height: 844 });
+  await expect(page.locator("main")).not.toHaveAttribute("inert");
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  // A run's actions fold behind one button; a row shows its run, state and drop.
+  await page.goto(`/runs/${run.run_id}`);
+  await page.getByRole("button", { name: "Actions" }).click();
+  await expect(page.getByRole("button", { name: "Open in Analysis" })).toBeVisible();
+  await page.goto("/");
+  const row = page.locator(`a[data-run="${run.run_id}"]`);
+  await expect(row.getByTestId("mach")).toBeHidden();
+  await expect(row).toContainText(run.run_id.slice(-8));
 });

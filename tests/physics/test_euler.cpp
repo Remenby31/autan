@@ -3,6 +3,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -20,9 +21,11 @@
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
 #include "autan/io/read_mesh.hpp"
+#include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/point_vortex.hpp"
+#include "euler_cpu.hpp"
 
 namespace {
 
@@ -313,6 +316,35 @@ TEST_CASE("the first-order tangent matches central differences of the first-orde
   }
   // Central differences: truncation O(h^2) and round-off O(eps / h) relative.
   CHECK(diff <= 1e-6 * norm);
+  // The tangent's arrays are allocated by its first call; residuals between calls leave them as
+  // they were: a second call gives the first one's bits.
+  std::vector<double> again(5 * nc);
+  e.first_order_tangent(u, du, again);
+  CHECK(std::memcmp(again.data(), jv.data(), jv.size() * sizeof(double)) == 0);
+}
+
+TEST_CASE("the stencil twins built on demand are those of the cell stencil", "[euler]") {
+  // Euler keeps no twins and no copy of the weights (no forward loop reads the twins, and the
+  // weights live in the loops' data): their memory is released, not only emptied. The adjoint
+  // asks for the twins: they must be kernels::cell_stencil's, bit for bit, and the topology the
+  // generated reverse reductions read must point at them, after every call.
+  using P = autan::kernels::fp32_acc64;
+  const char* file = GENERATE(from_range(meshes));
+  INFO(file);
+  const Case c(file);
+  Euler<P> e(c.mesh, c.geometry, air, second_order(Flux::roe, 0.5));
+  CHECK(e.stencil().twin.capacity() == 0);
+  CHECK(e.stencil().lsq_weight.capacity() == 0);
+  CHECK(e.data().topo.stencil_twin == nullptr);
+  const auto reference =
+      autan::kernels::cell_stencil(c.mesh, autan::kernels::pack_geometry(c.mesh, c.geometry),
+                                   autan::kernels::StencilKind::face2);
+  for (int call = 0; call < 2; ++call) {
+    const auto twin = e.stencil_twin();
+    REQUIRE(twin.size() == reference.twin.size());
+    CHECK(std::equal(twin.begin(), twin.end(), reference.twin.begin()));
+    CHECK(e.data().topo.stencil_twin == twin.data());
+  }
 }
 
 TEMPLATE_TEST_CASE("a linear velocity along slip walls has the exact mass divergence", "[euler]",
@@ -607,4 +639,71 @@ TEST_CASE("the point-vortex farfield state is the freestream plus the Prandtl-Gl
     CHECK(std::abs(b[4] / std::pow(b[0], gamma) - p / std::pow(rho, gamma)) <=
           64 * eps * p / std::pow(rho, gamma));
   }
+}
+
+TEMPLATE_TEST_CASE("the limited residual is that of the generated loops run one after another",
+                   "[euler]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // The reference runs the loops in the scheme's order on a second instance's arrays.
+  namespace ek = autan::kernels::euler;
+  using P = TestType;
+  const char* file = GENERATE(from_range(meshes));
+  INFO(file);
+  const Case c(file);
+  const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
+  const auto nc = static_cast<std::size_t>(c.mesh.n_cells());
+  const Prim w{1.2, {100.0, 30.0, 10.0}, 1e5};
+  std::vector<BoundaryKind> kind(nb, BoundaryKind::farfield);
+  std::vector<double> data(5 * nb);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const std::array<double, 5> v = {w.rho, w.v[0], w.v[1], w.v[2], w.p};
+    for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = v[j];
+  }
+  // Jumps across x = 0.5 in every primitive, which the limiter must clip there, and a source.
+  std::vector<double> u(5 * nc), source(5 * nc);
+  for (std::size_t i = 0; i < nc; ++i) {
+    const bool left = c.geometry.cell_centroid_x[i] < 0.5;
+    const double f = left ? 2.0 : 1.0;
+    const std::array<double, 3> v = {left ? 60.0 : w.v[0], left ? -20.0 : w.v[1],
+                                     left ? 40.0 : w.v[2]};
+    const auto q = conserved({f * w.rho, v, f * w.p});
+    for (std::size_t k = 0; k < 5; ++k) {
+      u[k * nc + i] = q[k];
+      source[k * nc + i] = 1e-3 * q[k];
+    }
+  }
+  Scheme s = second_order(Flux::roe, 0.3);
+  s.venkat_k = 0.5;
+  Euler<P> e(c.mesh, c.geometry, air, s);
+  e.set_boundary(kind, data);
+  e.set_source(source);
+  const auto input = stored(e, u);
+  auto state = input;
+  std::vector<typename P::residual> r(5 * nc, typename P::residual(7));
+  e.residual(state, r);
+  REQUIRE(state == input);
+  std::array<std::size_t, 5> limited{};
+  for (std::size_t k = 0; k < 5; ++k) {
+    for (std::size_t i = 0; i < nc; ++i) {
+      limited[k] += static_cast<double>(e.data().phi[k * nc + i]) < 1.0 ? 1U : 0U;
+    }
+    INFO("component " << k);
+    REQUIRE(limited[k] > 0);
+  }
+
+  Euler<P> f(c.mesh, c.geometry, air, s);
+  f.set_boundary(kind, data);
+  f.set_source(source);
+  auto d = f.data();
+  auto reference_state = input;
+  std::vector<typename P::residual> ref(5 * nc, typename P::residual(7));
+  d.u = reference_state.data();
+  d.res = ref.data();
+  ek::cpu::primitives(d);
+  ek::cpu::boundary_states(d);
+  ek::cpu::gradients(d);
+  ek::cpu::limiter(d);
+  ek::cpu::sources(d);
+  ek::cpu::roe_faces(d);
+  ek::cpu::roe_boundaries(d);
+  CHECK(std::memcmp(r.data(), ref.data(), r.size() * sizeof(r[0])) == 0);
 }

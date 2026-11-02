@@ -11,6 +11,7 @@
 #include "autan/core/error.hpp"
 #include "autan/io/cgns.hpp"
 #include "cgns_util.hpp"
+#include "self_contained.hpp"
 
 namespace autan::io {
 namespace {
@@ -27,6 +28,7 @@ void ok(int status, const std::string& what) {
 }  // namespace
 
 StoredSolution read_solution(const std::filesystem::path& file) {
+  reject_outside_data(file);  // E0134, before the library reads anything
   const CgnsFile in(file, CG_MODE_READ);
   const int fn = in.handle();
   StoredSolution out;

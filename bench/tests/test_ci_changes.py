@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -140,6 +141,11 @@ def test_without_a_readable_base_everything_runs(repo):
     [
         ("kernels/flux.cu", "true", "false"),
         ("io/gmsh.cpp", "true", "false"),
+        ("partition/metis.cpp", "true", "false"),
+        # Not built into any benchmark (bench/ci/check-measured.py): never measured.
+        ("runtime/src/run.cpp", "false", "false"),
+        ("physics/src/euler.cpp", "false", "false"),
+        ("solvers/src/gauss_seidel.cpp", "false", "false"),
         ("docker/dev/Dockerfile", "true", "true"),
         ("bench/src/autan_bench/stats.py", "true", "true"),
         ("bench/stream/stream.cu", "true", "true"),
@@ -152,7 +158,16 @@ def test_without_a_readable_base_everything_runs(repo):
         ("bench/ci/gate.sh", "true", "true"),
         ("bench/pyproject.toml", "true", "true"),
         ("bench/uv.lock", "true", "true"),
-        ("bench/ci/changes.sh", "false", "true"),
+        ("bench/ci/changes.sh", "true", "true"),
+        ("bench/ci/check-measured.py", "true", "true"),
+        ("vv/src/autan_vv/cli.py", "true", "false"),
+        # The generators of other meshes: not loaded by the measured mesh's (measured-mesh-files.txt).
+        ("vv/src/autan_vv/meshes/naca0012.py", "false", "false"),
+        ("vv/src/autan_vv/meshes/onera_m6.py", "false", "false"),
+        ("bench/ci/measured-mesh-files.txt", "true", "true"),
+        ("bench/ci/mesh-modules.py", "true", "true"),
+        ("vv/uv.lock", "true", "false"),
+        ("vv/src/autan_vv/report.py", "false", "false"),
         ("bench/lock/autan-gpu-lock", "false", "true"),
         ("bench/campaign/autan-campaign", "false", "true"),
         ("docker/runner/entrypoint.sh", "false", "true"),
@@ -162,8 +177,55 @@ def test_without_a_readable_base_everything_runs(repo):
 )
 def test_each_path_is_measured_tested_or_neither(repo, path, bench, harness):
     # Measured on the reference Spark: measured code, the image and the measurement method.
-    # The harness's GPU tests alone (tests runner): its tests, CI scripts, lock and campaign tools.
+    # The harness's GPU tests alone: its tests, CI scripts, lock and campaign tools.
     git(repo, "checkout", "-q", "-b", "change")
     commit(repo, path)
     pull_request_merge(repo, "change")
     assert decide(repo, "pull_request") == {"bench": bench, "harness": harness}
+
+
+ROOT = SCRIPT.parents[2]
+MESH_LIST = [line for line in (ROOT / "bench/ci/measured-mesh-files.txt").read_text().splitlines()
+             if line and not line.startswith("#")]  # fmt: skip
+# What bench/ci/mesh-key.sh hashes besides the listed modules.
+MESH_OTHERS = re.findall(
+    r"(vv/[\w./-]+|bench/ci/[\w.-]+\.(?:py|txt))", (ROOT / "bench/ci/mesh-key.sh").read_text()
+)
+
+
+def test_both_workflows_key_the_mesh_by_mesh_key_sh():
+    for workflow in ("gpu-bench.yml", "mesh-cache.yml"):
+        text = (ROOT / ".github" / "workflows" / workflow).read_text()
+        assert "key: ${{ steps.mesh-key.outputs.key }}" in text, workflow
+        assert "run: bench/ci/mesh-key.sh" in text, workflow
+    assert {
+        "vv/pyproject.toml",
+        "vv/uv.lock",
+        "vv/.python-version",
+        "bench/ci/mesh-modules.py",
+    } <= set(MESH_OTHERS)
+
+
+@pytest.mark.parametrize("path", sorted({*MESH_LIST, *MESH_OTHERS}))
+def test_every_input_of_the_measured_mesh_starts_the_bench(repo, path):
+    # Each file the mesh's key hashes, changed alone in a pull request, through changes.sh.
+    git(repo, "checkout", "-q", "-b", "change")
+    commit(repo, path)
+    pull_request_merge(repo, "change")
+    assert decide(repo, "pull_request")["bench"] == "true"
+
+
+@pytest.mark.parametrize(
+    ("path", "bench"),
+    [
+        ("vv/src/autan_vv/meshes/families/__init__.py", "true"),  # a package shadowing families.py
+        ("vv/src/autan_vv/oracles/riemann.cpython-312-x86_64-linux-gnu.so", "true"),
+        ("vv/src/autan_vv/meshes/onera_m6.py", "false"),  # another mesh's generator, beside them
+        ("vv/src/autan_vv/meshes/families_old.py", "false"),  # a name that only starts the same
+    ],
+)
+def test_an_entry_with_a_listed_module_s_name_starts_the_bench(repo, path, bench):
+    git(repo, "checkout", "-q", "-b", "change")
+    commit(repo, path)
+    pull_request_merge(repo, "change")
+    assert decide(repo, "pull_request")["bench"] == bench
