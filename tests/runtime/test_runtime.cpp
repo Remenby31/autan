@@ -652,9 +652,39 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
     Json other_scale = input();
     other_scale["mesh_info"]["quality"]["lines"]["scale"] = 0.0254;
     require_error(run(other_scale), "E0705");
-    Json no_lines = input();
-    no_lines["mesh_info"]["quality"].erase("lines");
-    require_error(run(no_lines), "E0705");
+    // The whole contract of mesh-info.md, which Results.open checks on the archived document:
+    // each of these breaks one of its members or rules.
+    const std::vector<std::function<void(Json&)>> breaks{
+        [](Json& m) { m["quality"].erase("lines"); },
+        [](Json& m) { m.erase("counts"); },
+        [](Json& m) { m["unknown"] = 1; },
+        [](Json& m) { m["counts"]["stencil_entries"] = -1; },
+        [](Json& m) {
+          m["counts"]["cells_by_type"]["hexa"] =
+              m["counts"]["cells_by_type"]["hexa"].get<int>() + 1;
+        },
+        [](Json& m) { m["cell_zones"][0]["cells"] = m["cell_zones"][0]["cells"].get<int>() + 1; },
+        [](Json& m) { m["boundary_zones"][0]["type"] = "outflow"; },
+        [](Json& m) { m["boundary_zones"].push_back(m["boundary_zones"][0]); },
+        [](Json& m) { m["bounds"]["min"][0] = 1e9; },
+        [](Json& m) { m["quality"]["lines"]["long_cells"] = m["counts"]["cells"].get<int>() + 1; },
+        [](Json& m) {
+          const int cells = m["counts"]["cells"].get<int>();
+          m["partition"] = {{"ranks", 2},
+                            {"groups", "none"},
+                            {"cells_by_rank", {cells, 0}},
+                            {"ghosts_by_rank", {0}},
+                            {"faces_by_rank", {0, 0}},
+                            {"interior_faces_by_rank", {0, 0}},
+                            {"stencil_entries_by_rank", {0, 0}}};
+        },
+    };
+    for (std::size_t k = 0; k < breaks.size(); ++k) {
+      CAPTURE(k);
+      Json d = input();
+      breaks[k](d["mesh_info"]);
+      require_error(run(d), "E0705");
+    }
   }
   SECTION("E0706 no physics in the build") {
     require_error(run(input(), autan::runtime::PhysicsRegistry{}), "E0706");
@@ -1654,7 +1684,8 @@ TEST_CASE("A run that needs more memory than its host can give is refused before
   const Json kept = refusal(run(input(), registry, {}, {.margin_bytes = huge}));
   CHECK(kept["code"] == "E0711");
   CHECK(kept["data"]["margin_bytes"] == huge);
-  // Started anyway on request, with W0712 and the same data in run.json and the log.
+  // Started anyway on request, with W0712 and the same data in run.json and the log, which is
+  // published with it: its second line, after the start (results.md).
   const Outcome over = run(input([&](Json& d) { d["memory"]["bytes_host"] = huge; }), registry, {},
                            {.allow_oversubscription = true});
   REQUIRE(over.status == ExitStatus::finished);
@@ -1662,13 +1693,15 @@ TEST_CASE("A run that needs more memory than its host can give is refused before
   REQUIRE(info["diagnostics"].size() == 1);
   CHECK(info["diagnostics"][0]["code"] == "W0712");
   CHECK(info["diagnostics"][0]["data"]["required_bytes"] == huge);
-  bool logged = false;
-  for (const auto& line : lines_of(over.run / "log.jsonl")) {
-    const Json event = Json::parse(line);
-    logged = logged || (event["code"] == "W0712" && event["level"] == "warning" &&
-                        event["data"] == info["diagnostics"][0]["data"]);
-  }
-  CHECK(logged);
+  const auto logged = lines_of(over.run / "log.jsonl");
+  REQUIRE(logged.size() >= 2);
+  const Json second = Json::parse(logged[1]);
+  CHECK(second["code"] == "W0712");
+  CHECK(second["level"] == "warning");
+  CHECK(second["data"] == info["diagnostics"][0]["data"]);
+  std::size_t w0712 = 0;
+  for (const auto& line : logged) w0712 += Json::parse(line)["code"] == "W0712" ? 1 : 0;
+  CHECK(w0712 == 1);
   // W0712 reaches stderr before the mesh is read, so before what may exhaust the host: here the
   // mesh does not exist, and its refusal follows the warning.
   const Outcome early = run(input([&](Json& d) {

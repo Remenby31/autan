@@ -4,6 +4,7 @@
 #include <cmath>
 #include <filesystem>
 #include <initializer_list>
+#include <map>
 #include <set>
 #include <span>
 #include <stdexcept>
@@ -144,6 +145,176 @@ std::string sha256(const Object& o, const std::string& key) {
 
 std::string indexed(const std::string& path, std::size_t i) {
   return path + "[" + std::to_string(i) + "]";
+}
+
+// solver-input.md, mesh_info: the MeshInfo the input was planned with, which the run archives as
+// its mesh-info.json, so the whole of mesh-info.md: its members, and the rules that tie them
+// (the SDK's MeshInfo checks the same). Sets the mesh_info members of `in`.
+void read_mesh_info(const Json& info, SolverInput& in) {
+  std::vector<std::string> keys{"schema",     "source",     "counts",   "bounds", "boundary_zones",
+                                "cell_zones", "interfaces", "periodic", "quality"};
+  if (info.is_object() && info.contains("partition")) keys.emplace_back("partition");
+  const Object root(info, "mesh_info", keys);
+  if (root.string("schema") != "autan.mesh-info/1")
+    invalid(root.at("schema"), "expected autan.mesh-info/1");
+  const auto count = [](const Object& o, const std::string& key) { return o.integer(key, 0); };
+  const auto list = [](const Object& o, const std::string& key) -> const Json& {
+    const Json& v = o.get(key);
+    if (!v.is_array()) invalid(o.at(key), "expected a list");
+    return v;
+  };
+  const auto name = [](const Object& o) {
+    std::string n = o.string("name");
+    if (n.empty()) invalid(o.at("name"), "expected a non-empty name");
+    return n;
+  };
+  const auto null_or_tag = [](const Object& o, const std::string& key,
+                              std::initializer_list<std::string_view> allowed) {
+    return o.is_null(key) ? std::string() : o.tag(key, allowed);
+  };
+
+  const Object source(root.get("source"), root.at("source"), {"path", "format", "sha256"});
+  (void)source.string("path");
+  (void)source.tag("format", {"cgns", "gmsh", "fluent", "polymesh"});
+  const std::string sha = sha256(source, "sha256");
+  if (sha != in.mesh_sha256) {
+    throw InputError(
+        Diagnostic{.code = "E0203",
+                   .message = "mesh_info describes another mesh than mesh.sha256",
+                   .path = source.at("sha256"),
+                   .data_json = Json{{"expected", in.mesh_sha256}, {"found", sha}}.dump()});
+  }
+
+  const Object counts(root.get("counts"), root.at("counts"),
+                      {"cells", "faces", "nodes", "face_nodes", "cells_by_type", "stencil_entries",
+                       "periodic_ghosts"});
+  const std::int64_t cells = counts.integer("cells", 1), faces = counts.integer("faces", 1);
+  (void)counts.integer("nodes", 1);
+  (void)counts.integer("face_nodes", 3 * faces);
+  (void)count(counts, "stencil_entries");
+  (void)count(counts, "periodic_ghosts");
+  const Object by_type(counts.get("cells_by_type"), counts.at("cells_by_type"),
+                       {"tetra", "pyramid", "prism", "hexa", "polyhedron"});
+  std::int64_t typed = 0;
+  for (const char* t : {"tetra", "pyramid", "prism", "hexa", "polyhedron"})
+    typed += count(by_type, t);
+  if (typed != cells) invalid(counts.at("cells_by_type"), "does not sum to counts.cells");
+
+  const Object bounds(root.get("bounds"), root.at("bounds"), {"min", "max"});
+  const auto low = bounds.vector3("min"), high = bounds.vector3("max");
+  for (std::size_t k = 0; k < 3; ++k) {
+    if (low[k] > high[k]) invalid(bounds.at("min"), "exceeds bounds.max");
+  }
+
+  std::set<std::string> boundary_names, periodic_zones;
+  std::map<std::string, std::int64_t> zone_faces;
+  std::int64_t boundary_faces = 0;
+  const Json& boundary = list(root, "boundary_zones");
+  for (std::size_t i = 0; i < boundary.size(); ++i) {
+    const Object z(boundary[i], indexed(root.at("boundary_zones"), i),
+                   {"name", "type", "native_type", "faces"});
+    const std::string n = name(z);
+    if (!boundary_names.insert(n).second) invalid(z.at("name"), "is not unique");
+    const std::string type = null_or_tag(
+        z, "type",
+        {"wall", "thermal-wall", "slip", "symmetry", "farfield", "inlet", "outlet", "periodic"});
+    if (!z.is_null("native_type")) (void)z.string("native_type");
+    zone_faces[n] = count(z, "faces");
+    boundary_faces += zone_faces[n];
+    if (type == "periodic") periodic_zones.insert(n);
+  }
+  if (boundary_faces > faces)
+    invalid(root.at("boundary_zones"), "hold more faces than counts.faces");
+
+  std::set<std::string> cell_names;
+  std::int64_t zoned = 0;
+  const Json& cell_zones = list(root, "cell_zones");
+  if (cell_zones.empty()) invalid(root.at("cell_zones"), "expected at least one cell zone");
+  for (std::size_t i = 0; i < cell_zones.size(); ++i) {
+    const Object z(cell_zones[i], indexed(root.at("cell_zones"), i),
+                   {"name", "type", "native_type", "cells"});
+    if (!cell_names.insert(name(z)).second) invalid(z.at("name"), "is not unique");
+    (void)null_or_tag(z, "type", {"fluid", "solid"});
+    if (!z.is_null("native_type")) (void)z.string("native_type");
+    zoned += z.integer("cells", 1);
+  }
+  if (zoned != cells) invalid(root.at("cell_zones"), "do not sum to counts.cells");
+
+  // Two names of `pool`, as a list of two strings.
+  const auto pair_of = [](const Object& o, const std::set<std::string>& pool) {
+    const Json& v = o.get("zones");
+    if (!v.is_array() || v.size() != 2 || !v[0].is_string() || !v[1].is_string() ||
+        !pool.contains(v[0].get<std::string>()) || !pool.contains(v[1].get<std::string>()) ||
+        v[0] == v[1])
+      invalid(o.at("zones"), "expected two distinct zone names");
+    return std::pair{v[0].get<std::string>(), v[1].get<std::string>()};
+  };
+  std::set<std::pair<std::string, std::string>> shared;
+  std::int64_t interface_faces = 0;
+  const Json& interfaces = list(root, "interfaces");
+  for (std::size_t i = 0; i < interfaces.size(); ++i) {
+    const Object f(interfaces[i], indexed(root.at("interfaces"), i), {"zones", "faces"});
+    const auto zones = pair_of(f, cell_names);
+    if (!(zones.first < zones.second)) invalid(f.at("zones"), "expected the names sorted");
+    if (!shared.insert(zones).second) invalid(f.at("zones"), "lists a pair twice");
+    interface_faces += f.integer("faces", 1);
+  }
+  if (interface_faces > faces - boundary_faces)
+    invalid(root.at("interfaces"), "hold more faces than the interior faces");
+
+  std::multiset<std::string> paired;
+  const Json& periodic = list(root, "periodic");
+  for (std::size_t i = 0; i < periodic.size(); ++i) {
+    const Object pr(periodic[i], indexed(root.at("periodic"), i), {"zones", "transform", "faces"});
+    const auto [a, b] = pair_of(pr, periodic_zones);
+    const Object t(pr.get("transform"), pr.at("transform"), {"kind", "vector"});
+    (void)t.tag("kind", {"translation"});
+    (void)t.vector3("vector");
+    const std::int64_t n = pr.integer("faces", 1);
+    if (zone_faces[a] != n || zone_faces[b] != n)
+      invalid(pr.at("faces"), "differs from its zones' face counts");
+    paired.insert(a);
+    paired.insert(b);
+  }
+  if (!std::ranges::equal(paired, periodic_zones))
+    invalid(root.at("periodic"), "must hold each periodic zone in exactly one pair");
+
+  const Object quality(root.get("quality"), root.at("quality"),
+                       {"max_non_orthogonality_deg", "max_faces_per_cell", "lines"});
+  const double angle = quality.number("max_non_orthogonality_deg");
+  if (angle < 0.0 || angle > 180.0)
+    invalid(quality.at("max_non_orthogonality_deg"), "expected 0 to 180");
+  (void)quality.integer("max_faces_per_cell", 4);
+  const Object lines(quality.get("lines"), quality.at("lines"),
+                     {"order", "scale", "cells", "long_cells"});
+  in.mesh_info_order = lines.tag("order", {"rcm", "input"});
+  in.mesh_info_scale = lines.positive("scale");
+  const std::int64_t in_lines = count(lines, "cells"), long_lines = count(lines, "long_cells");
+  if (!(long_lines <= in_lines && in_lines <= cells))
+    invalid(lines.at("cells"), "must hold long_cells <= cells <= counts.cells");
+
+  if (info.contains("partition")) {
+    const Object part(root.get("partition"), root.at("partition"),
+                      {"ranks", "groups", "cells_by_rank", "ghosts_by_rank", "faces_by_rank",
+                       "interior_faces_by_rank", "stencil_entries_by_rank"});
+    const std::int64_t ranks = part.integer("ranks", 2);
+    (void)part.tag("groups", {"none", "lines"});
+    for (const char* key : {"cells_by_rank", "ghosts_by_rank", "faces_by_rank",
+                            "interior_faces_by_rank", "stencil_entries_by_rank"}) {
+      const Json& v = list(part, key);
+      if (static_cast<std::int64_t>(v.size()) != ranks)
+        invalid(part.at(key), "expected one value per rank");
+      std::int64_t sum = 0;
+      for (const Json& n : v) {
+        if (!n.is_number_integer() || n.get<std::int64_t>() < 0)
+          invalid(part.at(key), "expected integers >= 0");
+        sum += n.get<std::int64_t>();
+      }
+      if (std::string_view(key) == "cells_by_rank" && sum != cells)
+        invalid(part.at(key), "does not sum to counts.cells");
+    }
+  }
+  in.mesh_info = info.dump(2);
 }
 
 // A pointer, not a reference: GCC 13 flags references bound to the result of
@@ -419,48 +590,7 @@ SolverInput parse_solver_input(const std::string& text) {
     in.mesh_sha256 = sha256(m, "sha256");
     in.mesh_scale = m.positive("scale");
   }
-  {
-    // solver-input.md, mesh_info: the prepared document, written as the run's mesh-info.json.
-    // The SDK has validated it; the runtime ties it to the mesh it reads.
-    const Json& info = root.get("mesh_info");
-    // The member at `path` of `info`, or E0705 naming it.
-    const auto at_path = [&](std::initializer_list<const char*> path, const char* expected) {
-      const Json* v = &info;
-      std::string where = "mesh_info";
-      for (const char* key : path) {
-        where += std::string(".") + key;
-        if (!v->is_object() || !v->contains(key)) invalid(where, expected);
-        v = &(*v)[key];
-      }
-      return std::pair<const Json*, std::string>{v, where};
-    };
-    const auto member = [&](std::initializer_list<const char*> path) {
-      const auto [v, where] = at_path(path, "expected a string");
-      if (!v->is_string()) invalid(where, "expected a string");
-      return v->get<std::string>();
-    };
-    if (!info.is_object()) invalid("mesh_info", "expected an object");
-    if (member({"schema"}) != "autan.mesh-info/1")
-      invalid("mesh_info.schema", "expected autan.mesh-info/1");
-    const std::string sha = member({"source", "sha256"});
-    if (sha != in.mesh_sha256) {
-      throw InputError(
-          Diagnostic{.code = "E0203",
-                     .message = "mesh_info describes another mesh than mesh.sha256",
-                     .path = "mesh_info.source.sha256",
-                     .data_json = Json{{"expected", in.mesh_sha256}, {"found", sha}}.dump()});
-    }
-    in.mesh_info_order = member({"quality", "lines", "order"});
-    if (in.mesh_info_order != "rcm" && in.mesh_info_order != "input")
-      invalid("mesh_info.quality.lines.order", "expected rcm or input");
-    {
-      const auto [v, where] = at_path({"quality", "lines", "scale"}, "expected a positive number");
-      if (!v->is_number() || !(v->get<double>() > 0.0))
-        invalid(where, "expected a positive number");
-      in.mesh_info_scale = v->get<double>();
-    }
-    in.mesh_info = info.dump(2);
-  }
+  read_mesh_info(root.get("mesh_info"), in);
   if (!root.is_null("verification")) {
     const Object v(root.get("verification"), "verification", {"path", "sha256"});
     Verification verification;

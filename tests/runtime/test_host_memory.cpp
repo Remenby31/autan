@@ -89,6 +89,17 @@ TEST_CASE("The memory a host can still give is the least of MemAvailable and its
     write(cg / "job" / "memory.current", std::to_string(3 * gib) + "\n");
     CHECK(autan::runtime::host_available_bytes(proc) == gib);
   }
+  SECTION("cgroup v2 mounted at a path mountinfo escapes") {
+    // proc(5): a space in the mount point is written \040.
+    const fs::path cg = dir / "cgroup memory";
+    std::string escaped = cg.string();
+    escaped.replace(escaped.find(' '), 1, "\\040");
+    write(proc / "self" / "cgroup", "0::/job\n");
+    write(proc / "self" / "mountinfo", "24 1 0:22 / " + escaped + " rw - cgroup2 cgroup2 rw\n");
+    write(cg / "job" / "memory.max", std::to_string(4 * gib) + "\n");
+    write(cg / "job" / "memory.current", std::to_string(gib) + "\n");
+    CHECK(autan::runtime::host_available_bytes(proc) == 3 * gib);
+  }
   SECTION("cgroup v1, whose unlimited groups write the largest page-aligned count") {
     const fs::path cg = dir / "v1";
     write(proc / "self" / "cgroup", "5:memory:/docker/abc\n4:cpu,cpuacct:/docker/abc\n");
