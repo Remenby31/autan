@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Box } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { runsQuery } from "../api/runs";
 import { fetchSurface, type Surface } from "../api/surface";
+import { SectionChart } from "../components/SectionChart";
 import { TopBar } from "../components/shell/TopBar";
 import { useResolvedTheme } from "../components/shell/theme";
 import { Button } from "../components/ui/Button";
@@ -14,6 +15,7 @@ import { Status } from "../components/ui/Status";
 import { TabList, TabsRoot } from "../components/ui/Tabs";
 import { colormapFor, cssGradient, displayRange } from "../viewer/colormap";
 import { type Backend, type Probe, SurfaceViewer } from "../viewer/SurfaceViewer";
+import { section } from "../viewer/section";
 import { slicePlane } from "../viewer/slice";
 
 interface Search {
@@ -445,6 +447,13 @@ function Viewer() {
   };
 
   const field = surface?.fields.find((f) => f.name === fieldName) ?? surface?.fields[0];
+  // The walls cut by the slice's plane: the shown field along the section's chord.
+  const cutWalls = useMemo(() => {
+    if (!run || !axis || !surface || !field) return null;
+    const { origin } = slicePlane(surface, axis, at);
+    const cut = section(surface, field.values, axis, origin);
+    return cut.segments.length ? { ...cut, at: origin["xyz".indexOf(axis)] ?? 0 } : null;
+  }, [run, axis, at, surface, field]);
   return (
     <>
       <TopBar
@@ -609,6 +618,18 @@ function Viewer() {
             max={field.max}
             testId="legend"
           />
+        )}
+        {cutWalls && field && axis && (
+          <figure
+            className="absolute bottom-10 left-4 m-0 w-[min(24rem,calc(100%-2rem))] rounded-lg border border-line bg-glass p-2 backdrop-blur"
+            data-testid="wall-section"
+          >
+            <figcaption className="px-1 pb-1 font-mono text-fg-3 text-xs">
+              walls at {axis} = {format(cutWalls.at)} · chord {format(cutWalls.chord[0])} to{" "}
+              {format(cutWalls.chord[1])}
+            </figcaption>
+            <SectionChart segments={cutWalls.segments} name={field.name} />
+          </figure>
         )}
         <div
           className="pointer-events-none absolute bottom-3 left-4 font-mono text-fg-3 text-xs"
