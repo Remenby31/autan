@@ -185,6 +185,7 @@ class EulerPhysics final : public runtime::Physics {
   }
 
   StepReport step(std::int64_t /*iteration*/) override {
+    pressure_valid_ = false;
     if (device_) return device_step();
     StepReport report;
     // A state the kernels cannot evaluate (as stored, see first_invalid_cell) diverges here,
@@ -932,11 +933,21 @@ class EulerPhysics final : public runtime::Physics {
     return f;
   }
 
+  // The boundary pressure of the current state, evaluated once per state: every force monitor of
+  // an iteration reads the same values (one host residual, not one per monitor).
   void face_pressure(std::span<double> p, std::span<double> force) const {
-    sync();
     auto& self = const_cast<EulerPhysics&>(*this);
-    self.residual_of(u_);
-    euler_.boundary_pressure(p, force);
+    if (!pressure_valid_) {
+      sync();
+      self.residual_of(u_);
+      const auto nb = static_cast<std::size_t>(ctx_.mesh.n_boundary_faces());
+      self.pressure_.assign(nb, 0.0);
+      self.pressure_force_.assign(3 * nb, 0.0);
+      euler_.boundary_pressure(self.pressure_, self.pressure_force_);
+      self.pressure_valid_ = true;
+    }
+    std::copy(pressure_.begin(), pressure_.end(), p.begin());
+    if (!force.empty()) std::copy(pressure_force_.begin(), pressure_force_.end(), force.begin());
   }
 
   // Largest relative residual over the equations, of the order being solved.
@@ -1006,6 +1017,9 @@ class EulerPhysics final : public runtime::Physics {
 
   std::unique_ptr<DeviceStepper<P>> device_;  // devices.kind = cuda
   bool host_stale_ = false;
+  // face_pressure's values for the current state; a step invalidates them.
+  std::vector<double> pressure_, pressure_force_;
+  bool pressure_valid_ = false;
   bool device_checked_ = false;
 
   // The runtime's ghost exchange, on the host, for Euler<P>.
