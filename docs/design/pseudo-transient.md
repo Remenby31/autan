@@ -53,7 +53,7 @@ From Fidkowski and Ceze 2016, §IV.C, the parameters as published, none tuned on
 | β_CFL,decrease | 0.1 |
 | starting CFL number | 1.0 (Autan's first order keeps its start, unchanged) |
 
-The norm ‖·‖ is the one the SER uses: over the equations it does not exempt (the round-off exemption, #277), each scaled by its value at the start of the order, so that no equation dominates by its units (Ceze and Fidkowski 2013 require a drop in each equation's norm, Algorithm 4, for the same reason). R(U + ω ΔU) at ω = 1 is the next step's residual, so a step accepted at once costs no extra residual; each backtrack costs one. The rule applies from the second order on; the first-order phase is unchanged.
+The norm ‖·‖ is the one the SER uses: over the equations it does not exempt (the round-off exemption, #277), each scaled by its value at the start of the order, so that no equation dominates by its units (Ceze and Fidkowski 2013 require a drop in each equation's norm, Algorithm 4, for the same reason). Each trial costs one residual evaluation (Change, Cost). The rule applies from the second order on; the first-order phase is unchanged.
 
 Combined with #356 (an under-solved step lowers the next CFL number as a shortened one) and the SER as one rule: CFL_{n+1} = min(SER_{n+1}, c_n CFL_n, the shortened or under-solved cap), with c_n = β_CFL,increase after a full step, 1 after a partial one; a rejected step (3) sets CFL ← β_CFL,decrease CFL and solves again. These factors are declared here and not changed on the results; if the gate fails, the change closes with the measurement.
 
@@ -84,6 +84,6 @@ All runs fp64 unless stated, against `main` at the merge base (the reference), t
 - limited cases: NACA 0012 of #183 at 256² (M 0.5 α 1.25°, M 0.8 α 0°, M 0.8 α 1.25°) and Ni's bump 384: converged to ten orders, in at most `main`'s steps (tolerance 0: the runs are deterministic, the count is an integer);
 - smooth cases: Euler MMS hex, tet and poly (levels 16–48) and Ni's bump 96: steps at most 1.02 × `main`'s, the gain or loss recorded in the PR for every case;
 - forces at convergence on every case: within 10⁻⁸ |c| + 10⁻¹⁰ of `main`'s (the absolute term for the zero lift at α 0°);
-- `fp32+acc64`: NACA M 0.8 α 0° 256² ends with `main`'s status (its round-off floor) in at most `main`'s steps, its surface Cp within 0.001 of its `fp64` run outside the shocks, and its CL, CD and CM within 0.1 % of the `fp64` run's on the same mesh ([acceptance.md](../validation/acceptance.md); 10⁻⁶ absolute for the zero lift at α 0°).
+- `fp32+acc64`: NACA M 0.8 α 0° 256² ends with `main`'s status (its round-off floor) in at most `main`'s steps, its surface Cp within 0.001 of its `fp64` run outside the shocks, and its CL, CD and CM within 0.1 % of the `fp64` run's on the same mesh ([acceptance.md](../validation/acceptance.md); 10⁻⁶ absolute for the zero lift and pitching moment at α 0°).
 
 **Tests** (public seams): a steady run whose second-order phase backtracks and rejects (logged), continued right after a backtracked step and right after a rejected one, repeats the uninterrupted run bit for bit (histories and solution arrays); the same case with `"lines"` under `reproducibility = "ranks"` on 1, 2 and 4 ranks gives one history, byte for byte; a rejection at the smallest CFL number ends the run diverged.
