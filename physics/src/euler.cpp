@@ -10,6 +10,7 @@
 
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
+#include "autan/physics/face_fit.hpp"
 #include "euler_cpu.hpp"
 
 namespace autan::physics {
@@ -47,6 +48,278 @@ struct Euler<P>::Impl {
   kernels::GlobalOrder order;
   std::vector<std::uint8_t> reversed;
   bool gather = false;
+  // Scheme::reconstruction_jacobian: each cell's face neighbours, in Topology::cell_faces order
+  // (interior faces), and their face-neighbour fit weights (face_fit_weights).
+  std::vector<offset_t> fit_offsets;
+  std::vector<index_t> fit_cell;
+  std::vector<std::array<double, 3>> fit_weight;
+
+  void build_fit() {
+    const auto nc = static_cast<std::size_t>(topo.n_cells);
+    const auto ni = static_cast<std::size_t>(topo.n_interior_faces);
+    constexpr double coordinate_eps =
+        std::numeric_limits<typename decltype(cell_centroid)::value_type>::epsilon();
+    fit_offsets.assign(nc + 1, 0);
+    fit_cell.clear();
+    fit_weight.clear();
+    std::vector<std::array<double, 3>> offsets;
+    for (std::size_t c = 0; c < nc; ++c) {
+      offsets.clear();
+      for (auto k = topo.cell_face_offsets[c]; k < topo.cell_face_offsets[c + 1]; ++k) {
+        const auto f = static_cast<std::size_t>(topo.cell_faces[k]);
+        if (f >= ni) continue;
+        const auto o = static_cast<std::size_t>(topo.owner[f]);
+        const auto j = o == c ? static_cast<std::size_t>(topo.neighbour[f]) : o;
+        std::array<double, 3> dj{};
+        for (std::size_t u = 0; u < 3; ++u) {
+          const double xj = static_cast<double>(cell_centroid[u * nc + j]);
+          const double xc = static_cast<double>(cell_centroid[u * nc + c]);
+          // As the stencil's fit: offsets within 64 ulps of the coordinates are round-off.
+          dj[u] = xj - xc;
+          if (std::abs(dj[u]) <= 64 * coordinate_eps * std::max(std::abs(xj), std::abs(xc))) {
+            dj[u] = 0.0;
+          }
+        }
+        offsets.push_back(dj);
+        fit_cell.push_back(static_cast<index_t>(j));
+      }
+      const auto w = face_fit_weights(offsets);
+      fit_weight.insert(fit_weight.end(), w.begin(), w.end());
+      fit_offsets[c + 1] = static_cast<offset_t>(fit_cell.size());
+    }
+  }
+
+  // docs/design/reconstruction-jacobian.md: for each face side s whose reconstruction is linear
+  // (not the cell value), dW_s,f/dW_j = diag(phi_s) (W_sj . r_sf), W the face-neighbour fit, and
+  // -sum_j of it on W_s. Times the face's dF/dW_s,f, into the rows of the face's cells; summed per
+  // destination block in primitive variables, then times the column cell's dW/dU once. A column
+  // outside the row's block pattern is lumped onto W_s (its term and its share of the sum are
+  // both left out), so that a uniform perturbation still reconstructs to itself. Rows in
+  // Topology::cell_faces order.
+  void add_reconstruction(BlockMatrix& a) const {
+    const auto nc = static_cast<std::size_t>(topo.n_cells);
+    const auto nf = static_cast<std::size_t>(topo.n_faces);
+    const auto ni = static_cast<std::size_t>(topo.n_interior_faces);
+    auto jac_block = [](const std::vector<typename P::jac>& v, std::size_t n, std::size_t e,
+                        std::size_t k) {
+      std::array<double, 25> b{};
+      for (std::size_t q = 0; q < 25; ++q) b[q] = static_cast<double>(v[(25 * k + q) * n + e]);
+      return b;
+    };
+    auto left = [&](std::size_t f) {
+      const bool rev = topo.face_reversed != nullptr && topo.face_reversed[f] != 0;
+      return static_cast<std::size_t>(rev ? topo.neighbour[f] : topo.owner[f]);
+    };
+    const double pr = static_cast<double>(d.p_ref[0]);
+    // Whether side s of face f reconstructs linearly at the cached state (reconstruct's test,
+    // evaluated in FP64: where it rounds otherwise than the residual's at the threshold, only
+    // the approximate Jacobian differs).
+    auto linear = [&](std::size_t s, std::size_t f, std::array<double, 3>& r) {
+      for (std::size_t u = 0; u < 3; ++u) {
+        r[u] = static_cast<double>(face_centroid[u * nf + f]) -
+               static_cast<double>(cell_centroid[u * nc + s]);
+      }
+      auto face = [&](std::size_t k) {
+        double g = 0.0;
+        for (std::size_t u = 0; u < 3; ++u) {
+          g += static_cast<double>(grad[(3 * k + u) * nc + s]) * r[u];
+        }
+        return static_cast<double>(prim[k * nc + s]) + static_cast<double>(phi[k * nc + s]) * g;
+      };
+      return face(0) > 0.0 && face(4) + pr > 0.0;
+    };
+    std::vector<std::pair<std::size_t, std::array<double, 25>>> acc;
+    auto at = [&](std::size_t col) -> std::array<double, 25>& {
+      for (auto& [c, t] : acc) {
+        if (c == col) return t;
+      }
+      acc.push_back({col, {}});
+      return acc.back().second;
+    };
+    std::vector<std::size_t> pattern;
+    // PROBE: boundary samples (as W uses them) in the fit, dW_b/dW by central differences.
+    const bool bsample = std::getenv("AUTAN_BSAMPLE") != nullptr;
+    std::vector<std::vector<std::pair<std::size_t, double>>> bterm;  // per cell: (face, c index)
+    std::vector<std::vector<std::array<double, 3>>> bw;              // per cell: boundary weights
+    std::vector<std::vector<std::array<double, 3>>> iw;              // per cell: interior weights
+    std::vector<double> sampleB(25 * nf, 0.0);
+    if (bsample) {
+      auto& self = const_cast<Impl&>(*this);
+      bterm.resize(nc);
+      bw.resize(nc);
+      iw.resize(nc);
+      const auto nst = stencil.entries.size();
+      for (std::size_t c = 0; c < nc; ++c) {
+        std::vector<std::array<double, 3>> offs;
+        std::size_t nint = 0;
+        for (auto k = topo.cell_face_offsets[c]; k < topo.cell_face_offsets[c + 1]; ++k) {
+          const auto f = static_cast<std::size_t>(topo.cell_faces[k]);
+          if (f >= ni) continue;
+          ++nint;
+        }
+        for (auto e = fit_offsets[c]; e < fit_offsets[c + 1]; ++e) {
+          const auto j = static_cast<std::size_t>(fit_cell[static_cast<std::size_t>(e)]);
+          std::array<double, 3> dj{};
+          for (std::size_t u = 0; u < 3; ++u)
+            dj[u] = static_cast<double>(cell_centroid[u * nc + j]) -
+                    static_cast<double>(cell_centroid[u * nc + c]);
+          constexpr double ce = std::numeric_limits<double>::epsilon();
+          for (std::size_t u = 0; u < 3; ++u)
+            if (std::abs(dj[u]) <=
+                64 * ce *
+                    std::max(std::abs(static_cast<double>(cell_centroid[u * nc + j])),
+                             std::abs(static_cast<double>(cell_centroid[u * nc + c]))))
+              dj[u] = 0.0;
+          offs.push_back(dj);
+        }
+        (void)nint;
+        const std::size_t n_inner = offs.size();
+        for (auto k = static_cast<std::size_t>(stencil.offsets[c]);
+             k < static_cast<std::size_t>(stencil.offsets[c + 1]); ++k) {
+          const auto ent = stencil.entries[k];
+          if (ent >= 0) continue;
+          const double wl = std::abs(static_cast<double>(stencil_lsq_weight[k])) +
+                            std::abs(static_cast<double>(stencil_lsq_weight[nst + k])) +
+                            std::abs(static_cast<double>(stencil_lsq_weight[2 * nst + k]));
+          if (wl == 0.0) continue;
+          const auto f = static_cast<std::size_t>(-ent - 1);
+          if (static_cast<std::size_t>(topo.owner[f]) != c) continue;
+          std::array<double, 3> dj{};
+          constexpr double ce = std::numeric_limits<double>::epsilon();
+          for (std::size_t u = 0; u < 3; ++u) {
+            const double xf = static_cast<double>(face_centroid[u * nf + f]),
+                         xc = static_cast<double>(cell_centroid[u * nc + c]);
+            dj[u] = xf - xc;
+            if (std::abs(dj[u]) <= 64 * ce * std::max(std::abs(xf), std::abs(xc))) dj[u] = 0.0;
+          }
+          offs.push_back(dj);
+          bterm[c].push_back({f, 0.0});
+        }
+        const auto wgt = face_fit_weights(offs);
+        iw[c].assign(wgt.begin(), wgt.begin() + static_cast<std::ptrdiff_t>(n_inner));
+        bw[c].assign(wgt.begin() + static_cast<std::ptrdiff_t>(n_inner), wgt.end());
+      }
+      // dW_b/dW_owner by central differences of boundary_states, all cells at once per component.
+      const auto saved = self.prim;
+      const auto savedb = self.prim_b;
+      for (std::size_t k = 0; k < 5; ++k) {
+        std::vector<double> hk(nc);
+        for (std::size_t c = 0; c < nc; ++c)
+          hk[c] = 1e-6 * std::max(1.0, std::abs(static_cast<double>(saved[k * nc + c])));
+        std::vector<double> plus(5 * nf), minus(5 * nf);
+        for (int sg = -1; sg <= 1; sg += 2) {
+          self.prim = saved;
+          for (std::size_t c = 0; c < nc; ++c)
+            self.prim[k * nc + c] =
+                static_cast<State>(static_cast<double>(saved[k * nc + c]) + sg * hk[c]);
+          ek::cpu::boundary_states(self.d);
+          auto& out = sg > 0 ? plus : minus;
+          for (std::size_t i = 0; i < 5 * nf; ++i) out[i] = static_cast<double>(self.prim_b[i]);
+        }
+        for (std::size_t f = ni; f < nf; ++f) {
+          const auto c = static_cast<std::size_t>(topo.owner[f]);
+          for (std::size_t i = 0; i < 5; ++i)
+            sampleB[25 * f + 5 * i + k] = (plus[i * nf + f] - minus[i * nf + f]) / (2 * hk[c]);
+        }
+      }
+      self.prim = saved;
+      self.prim_b = savedb;
+    }
+    for (std::size_t row = 0; row < nc; ++row) {
+      acc.clear();
+      pattern.assign(1, row);
+      for (auto k = topo.cell_face_offsets[row]; k < topo.cell_face_offsets[row + 1]; ++k) {
+        const auto g = static_cast<std::size_t>(topo.cell_faces[k]);
+        if (g >= ni) continue;
+        const auto o = static_cast<std::size_t>(topo.owner[g]);
+        pattern.push_back(o == row ? static_cast<std::size_t>(topo.neighbour[g]) : o);
+      }
+      auto side = [&](std::size_t s, std::size_t f, const std::array<double, 25>& jf, double sign) {
+        std::array<double, 3> r{};
+        if (!linear(s, f, r)) return;
+        // jf diag(phi_s), the part every column shares.
+        std::array<double, 25> jp{};
+        for (std::size_t i = 0; i < 5; ++i) {
+          for (std::size_t k = 0; k < 5; ++k) {
+            jp[5 * i + k] = sign * jf[5 * i + k] * static_cast<double>(phi[k * nc + s]);
+          }
+        }
+        double total = 0.0;
+        if (bsample) {
+          auto& ts = at(s);
+          for (std::size_t b = 0; b < bterm[s].size(); ++b) {
+            const auto& w = bw[s][b];
+            const double c = w[0] * r[0] + w[1] * r[1] + w[2] * r[2];
+            total += c;
+            const auto fb = bterm[s][b].first;
+            for (std::size_t i = 0; i < 5; ++i)
+              for (std::size_t j = 0; j < 5; ++j) {
+                double v = 0.0;
+                for (std::size_t q = 0; q < 5; ++q)
+                  v += jp[5 * i + q] * sampleB[25 * fb + 5 * q + j];
+                ts[5 * i + j] += c * v;
+              }
+          }
+        }
+        for (auto e = fit_offsets[s]; e < fit_offsets[s + 1]; ++e) {
+          const auto& w = bsample ? iw[s][static_cast<std::size_t>(e - fit_offsets[s])]
+                                  : fit_weight[static_cast<std::size_t>(e)];
+          const double c = w[0] * r[0] + w[1] * r[1] + w[2] * r[2];
+          const auto col = static_cast<std::size_t>(fit_cell[static_cast<std::size_t>(e)]);
+          if (std::find(pattern.begin(), pattern.end(), col) == pattern.end()) continue;
+          total += c;
+          auto& t = at(col);
+          for (std::size_t q = 0; q < 25; ++q) t[q] += c * jp[q];
+        }
+        auto& t = at(s);
+        for (std::size_t q = 0; q < 25; ++q) t[q] -= total * jp[q];
+      };
+      for (auto k = topo.cell_face_offsets[row]; k < topo.cell_face_offsets[row + 1]; ++k) {
+        const auto f = static_cast<std::size_t>(topo.cell_faces[k]);
+        if (f >= ni) {
+          side(row, f, jac_block(bnd_jac, nf, f, 0), 1.0);
+          continue;
+        }
+        const auto l = left(f);
+        const auto rr = static_cast<std::size_t>(topo.owner[f]) == l
+                            ? static_cast<std::size_t>(topo.neighbour[f])
+                            : static_cast<std::size_t>(topo.owner[f]);
+        const double sign = l == row ? 1.0 : -1.0;
+        side(l, f, jac_block(face_jac, nf, f, 0), sign);
+        side(rr, f, jac_block(face_jac, nf, f, 1), sign);
+      }
+      for (const auto& [col, t] : acc) {
+        double* target = nullptr;
+        if (col == row) {
+          target = a.diagonal(row);
+        } else {
+          for (auto k = topo.cell_face_offsets[row]; k < topo.cell_face_offsets[row + 1]; ++k) {
+            const auto g = static_cast<std::size_t>(topo.cell_faces[k]);
+            if (g >= ni) continue;
+            const auto o = static_cast<std::size_t>(topo.owner[g]);
+            const auto n = static_cast<std::size_t>(topo.neighbour[g]);
+            if (o == row && n == col) {
+              target = a.upper(g);
+              break;
+            }
+            if (n == row && o == col) {
+              target = a.lower(g);
+              break;
+            }
+          }
+        }
+        if (target == nullptr) continue;
+        const auto dm = jac_block(dwdu, nc, col, 0);
+        for (std::size_t i = 0; i < 5; ++i) {
+          for (std::size_t j = 0; j < 5; ++j) {
+            double v = 0.0;
+            for (std::size_t q = 0; q < 5; ++q) v += t[5 * i + q] * dm[5 * q + j];
+            target[5 * i + j] += v;
+          }
+        }
+      }
+    }
+  }
 
   // Fills the ghost values of `n` components of an array laid out c * n_cells + i.
   // The exchange takes at most 16 components a call.
@@ -125,6 +398,7 @@ struct Euler<P>::Impl {
     fill(face_moment, packed.face_moment);
     fill(cell_centroid, packed.cell_centroid);
     fill(cell_volume, packed.cell_volume);
+    if (s.reconstruction_jacobian) build_fit();
     const auto nc = static_cast<std::size_t>(topo.n_cells);
     const auto nf = static_cast<std::size_t>(topo.n_faces);
     bc_kind.assign(nf, 0.0);
@@ -489,6 +763,7 @@ void Euler<P>::assemble(std::span<const double> shift, BlockMatrix& a) const {
     add_product(rev ? a.upper(f) : a.lower(f), block(m.face_jac, nf, f, 0),
                 block(m.dwdu, nc, rev ? n : o, 0), -1.0);
   }
+  if (m.scheme.reconstruction_jacobian && m.scheme.second_order) m.add_reconstruction(a);
 }
 
 template <class P>

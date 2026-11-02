@@ -55,6 +55,11 @@ struct Scheme {
   /// Reference conserved state (the freestream): cells store U - U_ref and fluxes use the gauge
   /// pressure p - p_ref, so that FP32 keeps the resolution of the variations. Density > 0.
   std::array<double, 5> reference{1.0, 0.0, 0.0, 0.0, 2.5};
+  /// The approximate Jacobian adds the face fluxes' dependence on the reconstruction's gradients,
+  /// through a least-squares fit over each cell's face neighbours, the limiter and the
+  /// reconstruction's fallback held (docs/design/reconstruction-jacobian.md). Only the
+  /// approximate Jacobian changes, not the residual.
+  bool reconstruction_jacobian = false;
 };
 
 /// Fills the ghost cells of a partitioned mesh from their owners: each pointer is one component

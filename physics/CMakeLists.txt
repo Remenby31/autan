@@ -42,6 +42,7 @@ add_library(
   autan_physics
   src/block_matrix.cpp
   src/euler.cpp
+  src/face_fit.cpp
   src/manufactured.cpp
   ${AUTAN_PHYSICS_GENERATED}/euler.hpp
   ${AUTAN_PHYSICS_GENERATED}/euler_cpu.hpp
