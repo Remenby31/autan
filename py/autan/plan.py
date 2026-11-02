@@ -173,7 +173,7 @@ def plan(
         )
 
     if spec.verification is not None:
-        _check_manufactured(case, spec, found)
+        _check_manufactured(case, spec, found, files)
         boundaries = _manufactured_boundaries(mesh)
     else:
         boundaries = _resolve_boundaries(case, spec, mesh, found, files)
@@ -273,7 +273,9 @@ def _matches(pattern: str, names: list[str]) -> list[str]:
     return [name for name in names if fnmatchcase(name, pattern)]
 
 
-def _check_manufactured(case: Case, spec: CaseSpec, found: list[Diagnostic]) -> None:
+def _check_manufactured(
+    case: Case, spec: CaseSpec, found: list[Diagnostic], files: list[StateFileLoad]
+) -> None:
     assert spec.verification is not None
     expected = spec.verification.manufactured.sha256
     source = case.resolve(spec.verification.manufactured.path)
@@ -296,21 +298,23 @@ def _check_manufactured(case: Case, spec: CaseSpec, found: list[Diagnostic]) -> 
                 path=str(source),
             )
         )
-    elif (document := _document(source)) is None or document.get("schema") != MMS_SCHEMA:
-        found.append(
-            diagnostic(
-                "E0208",
-                f"{str(source)!r} is not an {MMS_SCHEMA} document",
-                location=where,
-                path=str(source),
-            )
-        )
-
     else:
-        found.extend(
-            diagnostic("E0209", message, location=where, path=str(source))
-            for message in _mismatches(document, spec)
-        )
+        files.append(StateFileLoad(source.stat().st_size, 0, 0, 0, "manufactured"))
+        document = _document(source)
+        if document is None or document.get("schema") != MMS_SCHEMA:
+            found.append(
+                diagnostic(
+                    "E0208",
+                    f"{str(source)!r} is not an {MMS_SCHEMA} document",
+                    location=where,
+                    path=str(source),
+                )
+            )
+        else:
+            found.extend(
+                diagnostic("E0209", message, location=where, path=str(source))
+                for message in _mismatches(document, spec)
+            )
 
 
 def _document(path: Path) -> dict[str, Any] | None:
@@ -548,7 +552,7 @@ def _check_initial_state(
             "E0508", f"{str(source)!r} is not a valid {initial_state.SCHEMA} document: {document}"
         )
         return
-    files.append(StateFileLoad(size=len(data), rows=document.cells, faces=0, zones=0))
+    files.append(StateFileLoad(len(data), document.cells, 0, 0, "initial"))
     if document.mesh_sha256 != mesh.source.sha256:
         problem("E0509", "the initial state was written for another mesh")
     if fluid_cells is not None and document.cells != fluid_cells:
@@ -590,11 +594,7 @@ def _check_oracle(
         )
         return
     rows = sum(z.faces for z in document.zones.values())
-    files.append(
-        StateFileLoad(
-            size=len(data), rows=rows, faces=sum(zones.values()), zones=len(document.zones)
-        )
-    )
+    files.append(StateFileLoad(len(data), rows, sum(zones.values()), len(document.zones), "faces"))
     if document.mesh_sha256 != mesh.source.sha256:
         problem("E0422", "the face states were exported for another mesh")
     for zone, faces in zones.items():

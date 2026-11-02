@@ -17,13 +17,14 @@ StartMode = Literal["continue", "warm"]
 
 @dataclass(frozen=True)
 class StateFileLoad:
-    """A state file the runtime reads before the physics: its bytes, its rows, the faces of
-    the case's oracle zones it gives states for and its zones (both 0 for an initial state)."""
+    """A file of the case the runtime reads: its bytes, its rows, the faces of the case's
+    oracle zones it gives states for and its zones, and its kind."""
 
     size: int
     rows: int
     faces: int
     zones: int
+    kind: Literal["initial", "faces", "manufactured"]
 
 
 _CUDA_CONTEXT = 512 * 2**20
@@ -37,6 +38,10 @@ _DENSE_UNKNOWNS = 1000
 _CGNS_BLOCK = {"tetra": 48, "pyramid": 48, "prism": 64, "hexa": 80}
 _CGNS_FACE_BLOCK = 48  # quad, the larger boundary element
 _HDF5_CACHE = 2**20
+# A parsed JSON document (nlohmann) per byte of its text, at most: 16 B a value and 24 B an
+# array for at least 2 characters, 112 B an object member for at least 6, doubled for a
+# vector's growth.
+_JSON_DOCUMENT = 40
 # DeviceMesh stages each upload through at most this many values (device.cuh, upload_chunk).
 _UPLOAD_CHUNK = 2**20
 
@@ -188,18 +193,26 @@ def _rank(
     if start is not None:
         read = fields if start == "continue" else n + 1
         add("start", 8 * (cells + c) * read, transient=True)
-    # State files: an initial state's text twice at most, 1 KiB of document, 202 B a row read
-    # and paired, then 160 B per cell; a face-state file, as measured through the runtime's
-    # reader, at most 2 S + 140 B a row + 1 200 B a zone, then 40 B per face of its oracle
-    # zones, which a rank keeps.
-    if files:
-        loads = sum(
-            2 * x.size + (140 * x.rows + 1200 * x.zones if x.zones else 1024 + 202 * x.rows)
-            for x in files
-        )
-        paired = sum(40 * x.faces if x.zones else 160 * cells for x in files)
-        add("state files", loads + paired, transient=True)
-        add("face states", sum(40 * x.faces for x in files))
+    # Files of the case, each read once at its size S (runtime.md): an initial state holds its
+    # text, the document's strings (at most S), 1 KiB of members, its rows streamed into
+    # vectors (64 B a row, 128 B while one grows) and their pairing (138 B a row, 160 B per
+    # cell); face states the same with 1 200 B a zone, then 40 B per face of its oracle zones,
+    # which a rank keeps; a manufactured solution's text stays for the run, and the physics
+    # parses it once, at most 40 B of document per byte of text.
+    loads = 0
+    for x in files:
+        if x.kind == "initial":
+            loads += 2 * x.size + 1024 + 266 * x.rows + 160 * cells
+        elif x.kind == "faces":
+            loads += 2 * x.size + 1024 + 128 * x.rows + 1200 * x.zones + 40 * x.faces
+        else:
+            loads += _JSON_DOCUMENT * x.size
+    if loads:
+        add("state files", loads, transient=True)
+    if any(x.kind == "faces" for x in files):
+        add("face states", sum(40 * x.faces for x in files if x.kind == "faces"))
+    if any(x.kind == "manufactured" for x in files):
+        add("manufactured solution", sum(x.size for x in files if x.kind == "manufactured"))
 
     # The physics (Euler's inventory, scaled from its 5 equations to n): geometry, stencil
     # and state on the host, always; the same on the device for a device run.
@@ -312,34 +325,37 @@ def _linear_solver(
 
 def _reading(mesh: MeshInfo, interior: int, boundary: int) -> int:
     """What a mesh reader holds beyond the mesh it returns, at its peak (docs/sdk/plan.md,
-    the readers' inventory: io/src/gmsh.cpp, fluent.cpp, cgns_read.cpp, polymesh.cpp and
-    core/src/cellwise.cpp, mesh.cpp)."""
+    the readers' inventory: io/src/read_mesh.cpp, gmsh.cpp, fluent.cpp, cgns_read.cpp,
+    polymesh.cpp and core/src/cellwise.cpp, mesh.cpp). N_s counts the nodes the file holds,
+    unreferenced ones included; each text is read once at its size S."""
     counts = mesh.counts
     n, c, f, p, s = counts.nodes, counts.cells, counts.faces, counts.face_nodes, mesh.source.bytes
+    ns = counts.source_nodes
     k = 2 * interior + boundary
     if mesh.source.format == "gmsh":
-        # to_face_based, with the text, tags and points alive; out.face_nodes may double.
-        reading = s + 36 * n - 8 * c + 52 * f + 16 * p + 4 * p
+        # to_face_based, with the text, tags, points and order alive; face_nodes may double.
+        reading = s + 60 * ns - 24 * n - 8 * c + 52 * f + 16 * p + 4 * p
     elif mesh.source.format == "fluent":
         # The end of assemble, with the reader's members alive; face_nodes_ may double.
-        reading = s + 53 * n + 20 * c + 12 * p + 45 * f + 4 * p
+        reading = s + 53 * ns + 20 * c + 12 * p + 45 * f + 4 * p
     elif mesh.source.format == "cgns":
         by_type = counts.cells_by_type.model_dump()
         elements = sum((64 + _CGNS_BLOCK[t]) * m for t, m in by_type.items() if t in _CGNS_BLOCK)
         # Labelled cells (64 B each) when the sections carry a family: bounded by every cell.
         labels = 64 * boundary + 64 * c
-        standard = elements + (64 + _CGNS_FACE_BLOCK) * boundary + labels
-        standard += 24 * n + 4 * c + 52 * f + 16 * p
+        alive = 24 * ns + elements + (64 + _CGNS_FACE_BLOCK) * boundary + labels
+        standard = alive + 24 * ns - 24 * n + 4 * c + 52 * f + 16 * p
         # NGON_n/NFACE_n: a block per face and per cell, at most 32 B plus 4 B an entry.
-        blocks = 24 * n + (96 * f + 4 * p) + (96 * c + 4 * k) + labels
+        blocks = 24 * ns + (96 * f + 4 * p) + (96 * c + 4 * k) + labels
         ngon = blocks + 76 * f - 4 * interior - 4 * k - 8 * c
-        reading = max(standard, ngon) + _HDF5_CACHE
+        # Descriptors are read one at a time before those stages, each at most the file.
+        reading = max(standard, ngon, alive + s) + _HDF5_CACHE
     else:
         # polyMesh: the end of assemble, with the owner, neighbour and boundary texts (at most
         # the files' bytes) and the 64-bit owner and neighbour arrays alive.
-        reading = s + 28 * n + 33 * f + 8 * interior + 4 * p + 8 * c
+        reading = s + 52 * ns - 24 * n + 33 * f + 8 * interior + 4 * p + 8 * c
     if mesh.periodic and mesh.source.format in ("gmsh", "cgns"):
         # Periodic matching at the end of assemble, every node bounding the boundary ones.
         paired = sum(pair.faces for pair in mesh.periodic) * 2
-        reading += 21 * n + 128 * n + 113 * paired
+        reading += 21 * ns + 128 * ns + 113 * paired
     return reading
