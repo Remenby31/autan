@@ -139,10 +139,9 @@ struct Prepared {
   std::map<std::string, std::string> state_files;
   // initial_state: Density, VelocityX/Y/Z and Pressure of every cell, NaN in solid cells.
   std::optional<std::vector<io::Field>> initial;
-  // The mesh's geometry and, with the physics' groups, the groups and their
-  // colouring: formed on every rank before any collective, so that a rank that
-  // cannot form them refuses the run with the others (#334).
-  std::optional<Geometry> geometry = std::nullopt;  // computed once, by geometry_of
+  // Formed on every rank before the ranks agree to start, so that a rank that
+  // cannot form them refuses with the others.
+  std::optional<Geometry> geometry = std::nullopt;
   CellGroups cell_groups = {};
   std::vector<std::int32_t> group_colours = {};
   std::vector<std::int32_t> parts = {};  // each cell's rank on several ranks; empty on one
@@ -225,13 +224,13 @@ bool is_averaging(const Json& a) {
          a["from_time"].is_number() && a.contains("to_time") && a["to_time"].is_number();
 }
 
-// solver-input.md, `start`: the runtime checks the previous solution's hash,
-// mesh, precision and fields, and reads its state, before any directory exists.
 const Geometry& geometry_of(Prepared& p) {
   if (!p.geometry) p.geometry = compute_geometry(p.mesh);
   return *p.geometry;
 }
 
+// solver-input.md, `start`: the runtime checks the previous solution's hash,
+// mesh, precision and fields, and reads its state, before any directory exists.
 void load_start(Prepared& p) {
   const Start& start = *p.input.start;
   const fs::path file = fs::path(start.run) / "solution.cgns";
@@ -1067,7 +1066,7 @@ class Run final : public Log {
     const std::int32_t n = comm_.size();
     if (n == 1 && mesh.periodic_pairs().empty()) return std::nullopt;
     const std::vector<std::int32_t> parts =
-        n > 1 ? p_.parts : std::vector<std::int32_t>(at(mesh.n_cells()), 0);
+        n > 1 ? std::move(p_.parts) : std::vector<std::int32_t>(at(mesh.n_cells()), 0);
     LocalPartition part = extract_partition(mesh, geometry_, parts, n, comm_.rank());
     comm_.fill_ghosts(part);
     return part;
@@ -1138,6 +1137,7 @@ class Run final : public Log {
     of_physics(colour_cells(mesh), colours_, n_colours_);
     if (p_.groups == nullptr || !*p_.groups) return;
     of_physics(p_.group_colours, group_colours_, n_group_colours_);
+    p_.group_colours = {};
     std::vector<index_t> owned_at(at(mesh.n_cells()), -1);  // by global id
     for (index_t c = 0; c < physics_mesh().n_owned_cells(); ++c) owned_at[z(ids[at(c)])] = c;
     std::vector<std::pair<std::int64_t, std::size_t>> order;  // (least global id, group)

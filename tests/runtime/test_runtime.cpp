@@ -1746,11 +1746,10 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
         lined_one);
   if (!periodic) CHECK(lined_one == swept(autan::io::read_mesh(mesh_path), 12, 2, ranks));
   // Groups that cannot be formed or partitioned, on every rank or on rank 1
-  // alone, are refused by the ranks together before any directory (#334):
-  // the refusing rank's code reaches stderr, and the ranks return from main.
-  // An MPI_Abort ends every rank without its exit handlers; a normal return
-  // runs them, at least on the first rank to exit (the launcher may end the
-  // others once one has exited non-zero).
+  // alone, are refused by the ranks together before any directory: the
+  // refusing rank's code reaches stderr, and no rank ends in an abort. The
+  // launcher may end the other ranks once one has exited non-zero, so at
+  // least one rank, not every rank, is seen returning.
   const auto refused_together = [&](const char* groups, Json& diagnostic) {
     const fs::path exits = fresh_dir();
     CHECK(run_on_ranks(
