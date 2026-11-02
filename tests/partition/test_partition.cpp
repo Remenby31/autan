@@ -382,6 +382,56 @@ TEST_CASE("Image ghosts sit one cell across periodic faces; a z-linear field kee
   }
 }
 
+TEST_CASE("A part's geometry agrees with its own nodes across pairs matched within tolerance",
+          "[partition][periodic]") {
+  // The x pair's zone b moved by half the matching tolerance (1e-4 of the 1/4 side edges):
+  // every face of every part has the geometry its own nodes give, and every owned cell is
+  // closed, so a uniform state has a zero face sum, to round-off.
+  using autan::test::BoxFill;
+  const std::int32_t n_parts = GENERATE(1, 2);
+  autan::CellwiseMesh cells = autan::test::box(4, BoxFill::hexa, 0.2);
+  for (int k = 0; k < 2; ++k) {
+    cells.face_zones[at(2 * k)].kind = autan::BcKind::periodic;
+    cells.face_zones[at(2 * k + 1)].kind = autan::BcKind::periodic;
+    std::array<double, 3> t{};
+    t[at(k)] = 1.0;
+    cells.periodic.push_back({.zone_a = 2 * k, .zone_b = 2 * k + 1, .translation = t});
+  }
+  for (std::size_t i = 0; i < cells.x.size(); ++i) {
+    if (cells.x[i] == 1.0) cells.z[i] += 0.5 * 1e-4 / 4.0;
+  }
+  const autan::Mesh global = autan::assemble(autan::to_face_based(std::move(cells)));
+  const autan::Geometry gg = autan::compute_geometry(global);
+  const auto parts = slabs(gg, n_parts, 1.0);
+  for (std::int32_t r = 0; r < n_parts; ++r) {
+    const auto lp = autan::extract_partition(global, gg, parts, n_parts, r);
+    const autan::Geometry own = autan::compute_geometry(lp.mesh);
+    const double eps = 1e-14;
+    for (std::size_t f = 0; f < at(lp.mesh.n_faces()); ++f) {
+      CHECK_THAT(lp.geometry.face_area_x[f], Catch::Matchers::WithinAbs(own.face_area_x[f], eps));
+      CHECK_THAT(lp.geometry.face_area_y[f], Catch::Matchers::WithinAbs(own.face_area_y[f], eps));
+      CHECK_THAT(lp.geometry.face_area_z[f], Catch::Matchers::WithinAbs(own.face_area_z[f], eps));
+      CHECK_THAT(lp.geometry.face_centroid_x[f],
+                 Catch::Matchers::WithinAbs(own.face_centroid_x[f], eps));
+      CHECK_THAT(lp.geometry.face_centroid_y[f],
+                 Catch::Matchers::WithinAbs(own.face_centroid_y[f], eps));
+      CHECK_THAT(lp.geometry.face_centroid_z[f],
+                 Catch::Matchers::WithinAbs(own.face_centroid_z[f], eps));
+    }
+    const auto& m = lp.mesh;
+    for (index_t c = 0; c < m.n_owned_cells(); ++c) {
+      std::array<double, 3> sum{};
+      for (const index_t face : m.cell_faces(c)) {
+        const double sign = m.owner()[at(face)] == c ? 1.0 : -1.0;
+        sum[0] += sign * lp.geometry.face_area_x[at(face)];
+        sum[1] += sign * lp.geometry.face_area_y[at(face)];
+        sum[2] += sign * lp.geometry.face_area_z[at(face)];
+      }
+      CHECK(std::hypot(sum[0], sum[1], sum[2]) < eps);
+    }
+  }
+}
+
 TEST_CASE("Periodic sides split into several pairs share their direction",
           "[partition][periodic]") {
   // The unit box in 2^3 hexahedra, periodic in x, y and z, with each x side cut
