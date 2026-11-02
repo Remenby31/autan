@@ -102,9 +102,10 @@
   "quality": {
     "max_non_orthogonality_deg": 35.0,
     "max_faces_per_cell": 18,
-    "cells_in_lines": {
+    "lines": {
       "order": "rcm",
-      "cells": 0
+      "cells": 0,
+      "long_cells": 0
     }
   }
 }

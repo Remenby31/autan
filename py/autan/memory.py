@@ -15,10 +15,11 @@ DeviceKind = Literal["cpu", "cuda", "hip"]
 # combinatorial bound f² for pyramids, which were not measured).
 _STENCIL = {"tetra": 16, "pyramid": 25, "prism": 19, "hexa": 24, "polyhedron": 105}
 _CUDA_CONTEXT = 512 * 2**20
-# Multigrid levels below the finest, as a fraction of its cells: 0.6 on meshes whose stretched
-# cells form lines, which coarsen along them; 0.15 otherwise (measured 0.13 to 0.14 in 3D);
-# 7 coupled neighbours per coarse cell.
-_COARSE_STRETCHED, _COARSE_ISOTROPIC, _COARSE_DEGREE = 0.6, 0.15, 7
+# Multigrid levels below the finest: the cells of long lines (at least 4 cells) pair along
+# them, at most halving per level, so their levels sum to at most as many again; the others
+# agglomerate isotropically, by up to 8, summed to 0.142-0.144 of them on the calibration
+# meshes, bounded here at 0.15; 7 coupled neighbours per coarse cell.
+_COARSE_ALONG_LINES, _COARSE_ISOTROPIC, _COARSE_DEGREE = 1.0, 0.15, 7
 
 
 class Component(BaseModel):
@@ -132,8 +133,11 @@ def estimate(
             "jacobian",
             3 * n * n * f * s + n * n * c * s + block * c + 2 * block * fi + 8 * c + 4 * k + 8 * c,
         )
-        lines = -(-mesh.quality.cells_in_lines.cells // ranks)
-        name, persistent, setup = _linear_solver(spec.time.linear_solver, c, fi, block, lines)
+        lines = mesh.quality.lines
+        in_lines, in_long = (-(-x // ranks) for x in (lines.cells, lines.long_cells))
+        name, persistent, setup = _linear_solver(
+            spec.time.linear_solver, c, fi, block, in_lines, in_long
+        )
         add(name, persistent)
         add(f"{name} setup", setup, transient=True)
 
@@ -156,7 +160,7 @@ def estimate(
 
 
 def _linear_solver(
-    solver: str, cells: int, interior: int, block: int, lines: int
+    solver: str, cells: int, interior: int, block: int, lines: int, long_lines: int
 ) -> tuple[str, float, float]:
     scale = block / 200
     graph = 300 * cells + 60 * interior
@@ -165,9 +169,9 @@ def _linear_solver(
     if solver == "lines":
         # Persistent 1 700 n0 + 8 E0, and the lines built on the whole mesh at setup.
         return "lines", scale * 1700 * cells + 8 * interior, graph
-    coarse = (_COARSE_STRETCHED if lines else _COARSE_ISOTROPIC) * cells
+    coarse = _COARSE_ALONG_LINES * long_lines + _COARSE_ISOTROPIC * (cells - long_lines)
     # Line smoothing on every level: the finest level's cells in lines (MeshInfo
-    # cells_in_lines, the multigrid's own count); a coarse level has at most min(n_l, s_0) in
+    # quality.lines, the multigrid's own count); a coarse level has at most min(n_l, s_0) in
     # lines, bounded here by its cells whenever there are lines.
     finest = 1200 * cells + 400 * lines + 21 * interior
     levels = 1000 * coarse + 400 * (coarse if lines else 0) + 410 * _COARSE_DEGREE * coarse
