@@ -4,15 +4,15 @@ A case is a typed document that says what to compute on which mesh. Python code 
 
 ## Example
 
-The CRM-HL case of `docs/design/dx.html`, as Python and as the TOML it serializes to. The reference area is the HLPW-4/5 semispan value, 297 360 in²:
+The CRM-HL case of `docs/design/dx.html`, as Python and as the TOML it serializes to. The Python is in the canonical form `case.to_python()` writes, which `autan.load` reads back into the same case: only values that differ from their default, quantities in the unit the case carries, library materials by name, numbers in their shortest round-trip form. The reference area is the HLPW-4/5 semispan value, 297 360 in²:
 
 ```python
 import autan
 from autan.units import deg, m
 
 case = autan.Case("crm-hl", mesh="crm-hl.cgns")
-case.physics = autan.Compressible(turbulence=autan.SA(), precision="fp32+acc64")
-case.freestream(mach=0.20, aoa=19.57 * deg, re=5.49e6, ref_length=7.0 * m)
+case.physics = autan.Compressible(turbulence=autan.SA())
+case.freestream(mach=0.2, aoa=19.57 * deg, re=5490000.0, ref_length=7.0 * m)
 case.boundary("wing.*").wall()
 case.boundary("symmetry").symmetry()
 case.monitor(autan.forces("wing.*", ref_area=191.84 * m**2), every=10)
@@ -26,6 +26,7 @@ mesh = "crm-hl.cgns"
 [physics]
 kind = "compressible"
 precision = "fp32+acc64"
+reproducibility = "run"
 turbulence = { model = "sa", nu_tilde_ratio = 3.0 }
 gas = { kind = "ideal-gas", name = "air", molar_mass = "0.0289647 kg / mol", gamma = 1.4, prandtl = 0.72, viscosity = { law = "sutherland", mu_ref = "1.716e-05 Pa * s", t_ref = "273.15 K", s = "110.4 K" } }
 
@@ -63,7 +64,7 @@ ref_area = "191.84 m ** 2"
 
 A dimensional value is written as a string `"<number> <unit>"`, for example `"7.0 m"`, `"101325.0 Pa"`, `"1.716e-05 Pa * s"`. Units are parsed by [Pint](https://pint.readthedocs.io) with its default registry. Each field declares a dimension; a value of another dimension is rejected (`E0301`), a bare number in a dimensional field is rejected (`E0302`), an unknown unit is rejected (`E0303`). Angles need an angle unit (`deg`, `rad`): a bare `19.57` is ambiguous and rejected. Dimensionless fields (`mach`, `re`, `gamma`, `prandtl`) are plain numbers.
 
-Values keep the unit they were written in; consumers convert to SI. Fields marked *> 0* reject zero and negative values (`E0304`); temperatures are checked after conversion to kelvin.
+Values keep the unit they were written in; consumers convert to SI. The Python builders take a Pint quantity or its text. A quantity built in Python is held as its text reads back: a 64-bit float in Pint's short unit, so the case, its document and its hash agree. A unit whose text does not read back with the field's dimension (exponents are written with six significant digits) is rejected (`E0301`). Fields marked *> 0* reject zero and negative values (`E0304`); temperatures are checked after conversion to kelvin.
 
 ## Tree
 
@@ -93,6 +94,7 @@ Every table rejects unknown keys. Discriminated unions are tagged by `kind` (or 
 |---|---|---|
 | `turbulence` | [Turbulence](#turbulence) | required |
 | `precision` | `"fp32+acc64"` · `"fp64"` | `"fp32+acc64"` |
+| `reproducibility` | `"none"` · `"run"` · `"ranks"` | `"run"` |
 | `gas` | [IdealGas](#materials) | air |
 
 `kind = "incompressible"`: pressure-based solver.
@@ -101,9 +103,12 @@ Every table rejects unknown keys. Discriminated unions are tagged by `kind` (or 
 |---|---|---|
 | `turbulence` | [Turbulence](#turbulence) | required |
 | `precision` | `"fp32+acc64"` · `"fp64"` | `"fp32+acc64"` |
+| `reproducibility` | `"none"` · `"run"` · `"ranks"` | `"run"` |
 | `fluid` | [ConstantDensityFluid](#materials) | required |
 
 `precision = "fp32+acc64"` computes in FP32 and accumulates solution updates, norms and geometry in FP64 (see `docs/PLAN.md`). `"fp64"` computes everything in FP64.
+
+`reproducibility` sets which bits a run repeats ([results.md](results.md#runjson)). `"run"` repeats them from run to run on the same number of ranks. `"ranks"` also repeats them on any number of ranks, one included, and in any cell order, at the cost of gathering sums in a fixed order; a physics that cannot honour it refuses the case before any directory exists (`E1109`). `"none"` repeats nothing and allows floating-point atomics.
 
 `gas` and `fluid` are the default medium of every fluid cell zone.
 
@@ -154,7 +159,7 @@ In `fp32+acc64`, round-off stops the residuals before they can drop 8 orders. So
 
 With `average_from`, an unsteady run also writes the time average of every cell field over steps `average_from + 1` to `steps`, each step weighted by its time step (see [results.md](results.md#solutioncgns)).
 
-Numerical settings (flux scheme, limiter, CFL ramp, linear solver) are not part of `autan.case/1`: the solver version fixes them, and the solver commit recorded by every run identifies them.
+Other numerical settings (flux scheme, limiter, CFL ramp) are not part of `autan.case/1`: the solver version fixes them, and the solver commit recorded by every run identifies them.
 
 ### Boundaries
 

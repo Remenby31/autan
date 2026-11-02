@@ -30,7 +30,6 @@ export interface Run {
   mesh: { path: string; sha256: string };
   solver: { version: string; commit: string; backend: "cuda" | "hip" | "cpu" | "fake" };
   precision: "fp32+acc64" | "fp64";
-  deterministic: boolean;
   devices: { kind: "cuda" | "hip" | "cpu"; count: number };
   started: string;
   finished: string | null;
@@ -42,6 +41,14 @@ export interface Run {
   start: RunStart | null;
   /** Round-off floor of every equation of a steady fp32+acc64 run (case-schema.md#time). */
   convergence: { floor: Record<string, number> } | null;
+  /** Timing of this run alone, null while running, without iterations and for the fake backend
+   * (results.md#runjson); bench/ measures performance. */
+  timing: {
+    wall_seconds: number;
+    solve_seconds: number;
+    iterations: number;
+    ns_per_cell_iteration: number;
+  } | null;
   /** Every monitor's record on the final state, null while running and for diverged and
    * failed runs (results.md#runjson). */
   monitors: Record<string, Forces & { iteration: number }> | null;
@@ -85,6 +92,8 @@ export interface RunRegistry {
   rejected: { dir: string; reason: string }[];
   /** Per run id: last recorded iteration and residual drop, from history.jsonl. */
   summaries: Record<string, RunSummary>;
+  /** Runs that have ended and written solution.cgns, which Analysis shows. */
+  solutions: string[];
 }
 
 export interface RunSummary {

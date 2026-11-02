@@ -17,6 +17,7 @@ uv run autan-vv --help
 | [oracles.md](oracles.md) | Exact and reference solutions runs are verified against (MMS, Ringleb, vortex, shock tubes, Couette, Poiseuille, Blasius) |
 | [harness.md](harness.md) | `autan-vv verify`: runs against an oracle, errors, observed order, gate verdict |
 | [cases.md](cases.md) | Reference cases (TMR, ONERA M6, RAE 2822): pinned downloads, checksums, parsers |
+| [su2.md](su2.md) | The comparison with SU2: build, fairness protocol, mesh conversion, results |
 | [acceptance.md](acceptance.md) | The numbers each milestone gate must meet, with their sources |
 
 ## Typical use by a numerical PR

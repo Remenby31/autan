@@ -25,3 +25,7 @@ The two Sparks have no direct link: MPI runs over TCP on `tailscale0`, and Tails
 To run your own program, mount it at the same path on both hosts and replace the OSU commands. Remote ranks get only the environment `--prefix` sets; pass anything else with `-x VAR`.
 
 Last run (spark ↔ spark-5359, 2026-10-31): 3.0–3.1 ms latency up to 1 KiB and 2.85 MB/s at 1 MiB, identical with host and device buffers. Device buffers go through Open MPI's staging over TCP, which is what the check verifies.
+
+## Hangs in CI
+
+CI's "MPI ranks" job runs the tests labelled `mpi` under `bench/ci/ctest-watchdog.sh`: an MPI launcher alive past 120 s has the stacks of every process under it dumped with gdb (job log and the `mpi-hang-stacks-*` artifact), then is killed, so the job fails at once with the evidence. To chase an intermittent hang in that same environment, run the `MPI stress` workflow by hand (`gh workflow run mpi-stress.yml -f runs=50 -f tests='^Several ranks give the bits of one$'`): it repeats the selected tests under the watchdog, counts hangs and failures in the job summary and uploads every run's log and stacks.

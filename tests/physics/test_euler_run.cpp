@@ -581,7 +581,10 @@ fs::path run_on_ranks(const Json& doc, int ranks, int expected_status = 0,
   posix_spawn_file_actions_init(&actions);
   posix_spawn_file_actions_addopen(&actions, 2, err_file.c_str(), O_WRONLY | O_CREAT | O_TRUNC,
                                    0644);
-  std::ofstream(dir / "solver-input.json") << doc.dump();
+  // solver-input.md, `devices`: one rank per device, so the input counts the ranks.
+  Json with_count = doc;
+  if (with_count["devices"]["count"] == 1) with_count["devices"]["count"] = ranks;
+  std::ofstream(dir / "solver-input.json") << with_count.dump();
   std::vector<std::string> args{AUTAN_MPIEXEC,
                                 AUTAN_MPIEXEC_NUMPROC_FLAG,
                                 std::to_string(ranks),
@@ -711,6 +714,32 @@ TEST_CASE("a steady multigrid case on several ranks is refused before any direct
   CHECK(diagnostic["location"]["path"] == "time.linear_solver");
 }
 
+TEST_CASE("a steady run whose state is not physical on some ranks stops every rank",
+          "[euler][mpi]") {
+  // Zone `lower` at 1e-9 times the freestream density rounds to zero density in fp32+acc64. On 4
+  // ranks some parts hold none of it: they must take the divergence branch with the others, or the
+  // ranks enter different collectives and the run hangs instead of reporting D0107.
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, "fp32+acc64");
+    for (auto& z : d["cell_zones"]) {
+      if (z["zone"] == "lower")
+        z["initial"]["density"] = 1e-9 * d["freestream"]["density"].get<double>();
+    }
+    d["time"]["linear_solver"] = "gauss-seidel";
+    d["time"]["max_iterations"] = 5;
+  });
+  const fs::path many = run_on_ranks(doc, 4);
+  REQUIRE(!many.empty());
+  const Json info = Json::parse(read(many / "run.json"));
+  INFO(info["diagnostics"].dump());
+  CHECK(info["status"] == "diverged");
+  const auto& diagnostics = info["diagnostics"];
+  const auto d107 = std::find_if(diagnostics.begin(), diagnostics.end(),
+                                 [](const Json& g) { return g["code"] == "D0107"; });
+  REQUIRE(d107 != diagnostics.end());
+  CHECK((*d107)["data"]["zone"] == "lower");
+}
+
 TEST_CASE("a steady Gauss-Seidel or lines case on several ranks converges to the one-rank solution",
           "[euler][mpi]") {
   // Gauss-Seidel sweeps the runtime's colours by global id, and the step length, the worst cell
@@ -801,6 +830,82 @@ TEST_CASE("steady Gauss-Seidel steps through periodic pairs follow the one-rank 
   }
 }
 #endif
+
+TEST_CASE("an equation at the round-off floor does not set the steady CFL number", "[euler]") {
+  // tests/data/mesh/ringleb is one cell thick in z: the z-momentum is identically zero and its
+  // residual round-off. Two runs differ only by a uniform initial w of 1e-20 times the speed,
+  // which changes that round-off and the other equations by an ulp at most; the CFL law must
+  // ignore it (case-schema.md#time, the runtime's exemption), so over 40 steps the other
+  // equations' histories agree within 1e-6 (measured 8.5e-9; driven by the round-off, they
+  // differ by 3.4).
+  const fs::path mesh = data_dir / "mesh" / "ringleb" / "ringleb-n004.msh";
+  auto doc = [&](double w) {
+    return input("hybrid.solver-input.json", [&](Json& d) {
+      inviscid_along_x(d, "fp64");
+      d["mesh"]["path"] = fs::absolute(mesh).string();
+      d["mesh"]["sha256"] = autan::io::mesh_hash(mesh);
+      const double speed = d["freestream"]["speed"].get<double>();
+      Json zone = d["cell_zones"][0];
+      zone["zone"] = "fluid";
+      zone["initial"]["pressure"] = 1.3 * zone["initial"]["pressure"].get<double>();
+      zone["initial"]["velocity"] = {speed, 0.0, w * speed};
+      d["cell_zones"] = Json::array({zone});
+      Json boundaries = Json::array();
+      for (const char* name : {"k-min", "k-max", "inflow", "outflow", "back", "front"}) {
+        Json b = d["boundaries"][0];
+        for (auto& [key, value] : b.items()) {
+          if (key != "zone" && key != "kind") value = nullptr;
+        }
+        b["zone"] = name;
+        const bool side = std::string(name) != "back" && std::string(name) != "front";
+        b["kind"] = side ? "farfield" : "symmetry";
+        boundaries.push_back(b);
+      }
+      d["boundaries"] = boundaries;
+      d["monitors"] = Json::array();
+      d["time"]["max_iterations"] = 40;
+      d["time"]["residual_orders"] = 30.0;
+    });
+  };
+  const auto a = run(doc(0.0));
+  INFO(a.err);
+  REQUIRE(a.status == ExitStatus::finished);
+  const auto b = run(doc(1e-20));
+  REQUIRE(b.status == ExitStatus::finished);
+  const auto ha = history(a.run), hb = history(b.run);
+  REQUIRE(ha.size() == hb.size());
+  bool noisy = false;
+  double worst = 0.0;
+  for (std::size_t i = 0; i < ha.size(); ++i) {
+    for (const char* k : {"density", "momentum-x", "momentum-y", "energy"}) {
+      const double x = ha[i]["residuals"][k].get<double>();
+      const double y = hb[i]["residuals"][k].get<double>();
+      worst = std::max(worst, std::abs(x - y) / std::abs(x));
+    }
+    noisy = noisy || hb[i]["residuals"]["momentum-z"] != ha[i]["residuals"]["momentum-z"];
+  }
+  INFO("histories differ by " << worst);
+  CHECK(worst <= 1e-6);
+  // A continuation carries the exemption: from 20 steps, without `start.woken` it repeats the
+  // uninterrupted run; with the z-momentum woken, that equation's round-off sets the CFL again.
+  auto half = doc(1e-20);
+  half["time"]["max_iterations"] = 20;
+  const auto first = run(half);
+  REQUIRE(first.status == ExitStatus::finished);
+  auto rest = doc(1e-20);
+  rest["start"] = continue_from(first.run);
+  REQUIRE(rest["start"]["woken"] == Json::array());
+  const auto plain = run(rest);
+  INFO(plain.err);
+  REQUIRE(plain.status == ExitStatus::finished);
+  CHECK(read(first.run / "history.jsonl") + read(plain.run / "history.jsonl") ==
+        read(b.run / "history.jsonl"));
+  rest["start"]["woken"] = {"momentum-z"};
+  const auto woken = run(rest);
+  REQUIRE(woken.status == ExitStatus::finished);
+  CHECK(read(woken.run / "history.jsonl") != read(plain.run / "history.jsonl"));
+  CHECK(noisy);  // the injected noise did reach the z-momentum residual
+}
 
 TEST_CASE("a diverged run names the cell whose stored state is not physical", "[euler]") {
   // Zone `lower` starts at 1e-9 times the freestream density: FP32 stores it as a difference from

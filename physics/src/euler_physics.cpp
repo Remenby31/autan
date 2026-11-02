@@ -21,6 +21,7 @@
 #include "autan/physics/manufactured.hpp"
 #include "autan/physics/point_vortex.hpp"
 #include "autan/runtime/exact_sum.hpp"
+#include "autan/runtime/round_off.hpp"
 #include "autan/solvers/agglomeration.hpp"
 #include "autan/solvers/line_smoother.hpp"
 #include "autan/solvers/multigrid.hpp"
@@ -91,7 +92,10 @@ class EulerPhysics final : public runtime::Physics {
   using Res = typename P::residual;
 
   explicit EulerPhysics(const PhysicsContext& ctx)
-      : ctx_(ctx),
+      : exempt_(runtime::residual_names(ctx.input), ctx.input.start && ctx.input.start->woken
+                                                        ? *ctx.input.start->woken
+                                                        : std::vector<std::string>{}),
+        ctx_(ctx),
         gas_(gas_of(ctx.input)),
         n_(static_cast<std::size_t>(ctx.mesh.n_cells())),
         owned_(static_cast<std::size_t>(ctx.mesh.n_owned_cells())),
@@ -120,9 +124,10 @@ class EulerPhysics final : public runtime::Physics {
         // colouring of the lines by global id: the same sweeps on any number of ranks.
         // A mesh without lines has no groups: every cell is its own, coloured as cell_colours.
         const bool grouped = !ctx.cell_group_colours.empty();
+        // Each cell sums its couplings by global face id: the same sums on any partition.
         lines_.emplace(mesh, ctx.group_offsets, ctx.group_cells,
                        grouped ? ctx.cell_group_colours : ctx.cell_colours,
-                       grouped ? ctx.n_group_colours : ctx.n_colours);
+                       grouped ? ctx.n_group_colours : ctx.n_colours, ctx.face_global_id);
         ctx.log.write("info", "linear", "line-implicit block Gauss-Seidel", {},
                       nlohmann::json{{"colours", lines_->n_colours()},
                                      {"sweeps", gauss_seidel_sweeps},
@@ -159,6 +164,7 @@ class EulerPhysics final : public runtime::Physics {
     du_.assign(5 * n_, 0.0);
     mean_.assign(6 * n_, 0.0);
     if (ctx.start != nullptr) start_from(*ctx.start);
+    if (in.start && in.start->residual_reference) exempt_.reference(*in.start->residual_reference);
     apply_vortices();
     if (ctx.device >= 0) {
 #ifdef AUTAN_PHYSICS_CUDA
@@ -193,8 +199,9 @@ class EulerPhysics final : public runtime::Physics {
     if (device_) return device_step();
     StepReport report;
     // A state the kernels cannot evaluate (as stored, see first_invalid_cell) diverges here,
-    // before a solve turns it into an exception.
-    if (const auto bad = first_invalid_cell()) {
+    // before a solve turns it into an exception; on every rank, also those that own no such cell.
+    const auto bad = first_invalid_cell();
+    if (ctx_.ranks.max(bad ? 1.0 : 0.0) > 0.0) {
       residual_of(u_);
       record_norms(report);
       report.diverged_cell = bad;
@@ -670,7 +677,10 @@ class EulerPhysics final : public runtime::Physics {
     record_norms(report);
     if (!norms.empty()) std::swap(norms, report.residuals);
     euler_.spectral_radius(lambda_);
-    const double drop = relative_drop(norms.empty() ? report.residuals : norms);
+    // Largest relative residual over the equations, of the order being solved, leaving out the
+    // equations at the round-off floor (the runtime's rule, decided on the reported residuals):
+    // their ratio is round-off and would set the CFL number.
+    const double drop = relative_drop(norms.empty() ? report.residuals : norms, report.residuals);
     switch_order(drop);
     // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
     // after each step the admissibility check shortened and recovering by half otherwise.
@@ -713,7 +723,16 @@ class EulerPhysics final : public runtime::Physics {
                            std::span<const double> v) { return owned_dot(u, v); },
              .max_abs = [this](std::span<const double> u) { return owned_max_abs(u); }});
       } else {
-        matrix_->factor(owned_);
+        // Every rank sweeps, exchanging after each colour, or none does.
+        bool singular = false;
+        try {
+          matrix_->factor(owned_);
+        } catch (const std::domain_error&) {
+          singular = true;
+        }
+        if (ctx_.ranks.max(singular ? 1.0 : 0.0) > 0.0) {
+          throw std::domain_error("singular diagonal block");
+        }
         matrix_->gauss_seidel(rhs_, du_, gauss_seidel_sweeps, colours_,
                               [this](std::span<double> x) { fill_ghosts(x); });
         // A fixed number of sweeps: no residual is measured, only a singular block fails.
@@ -947,11 +966,14 @@ class EulerPhysics final : public runtime::Physics {
   }
 
   // Largest relative residual over the equations, of the order being solved.
-  double relative_drop(const std::vector<double>& current) {
+  double relative_drop(const std::vector<double>& current, const std::vector<double>& reported) {
+    note_exemptions(reported);
     double drop = 0.0;
     if (first_norms_.empty()) first_norms_ = current;
     for (std::size_t k = 0; k < 5; ++k) {
-      if (first_norms_[k] > 0.0) drop = std::max(drop, current[k] / first_norms_[k]);
+      if (first_norms_[k] > 0.0 && !exempt_.exempt(k)) {
+        drop = std::max(drop, current[k] / first_norms_[k]);
+      }
     }
     return drop;
   }
@@ -993,7 +1015,7 @@ class EulerPhysics final : public runtime::Physics {
     const auto r = steady ? device_->step(device_steady_cfl, std::nullopt, true)
                           : device_->step(t.cfl.value_or(0.0), t.cfl ? std::nullopt : t.dt, false);
     host_stale_ = true;
-    if (steady) switch_order(relative_drop(r.residuals));
+    if (steady) switch_order(relative_drop(r.residuals, r.residuals));
     if (report.residuals.empty()) report.residuals = r.residuals;
     if (!steady) report.time_step = r.time_step;
     report.diverged_cell = r.invalid;
@@ -1032,6 +1054,28 @@ class EulerPhysics final : public runtime::Physics {
     const auto begin = v.begin() + static_cast<std::ptrdiff_t>(k * n_);
     return {begin, begin + static_cast<std::ptrdiff_t>(owned_)};
   }
+
+  // The runtime's round-off exemption, kept in step with its decisions: fed the same reported
+  // residuals from the same reference, on every rank.
+  void note_exemptions(const std::vector<double>& reported) {
+    const bool first = !exempt_logged_;
+    exempt_.update(reported);
+    if (first) {
+      exempt_logged_ = true;
+      nlohmann::json names = nlohmann::json::array();
+      for (std::size_t k = 0; k < reported.size(); ++k) {
+        if (exempt_.exempt(k)) names.push_back(exempt_.name(k));
+      }
+      if (!names.empty()) {
+        ctx_.log.write("info", "solver",
+                       "equations at the round-off floor do not set the CFL number", {},
+                       nlohmann::json{{"equations", names}, {"floor", exempt_.floor()}}.dump());
+      }
+    }
+  }
+
+  runtime::RoundOffExemption exempt_;
+  bool exempt_logged_ = false;
 
   PhysicsContext ctx_;
   Gas gas_;
@@ -1078,6 +1122,15 @@ bool same_gas(const runtime::Medium& a, const runtime::Medium& b) {
 // What the Euler physics runs beyond its key: every cell zone of one ideal gas, boundary
 // conditions that apply to inviscid flow, and steady runs on one rank without periodic pairs.
 std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in, int ranks) {
+  // Its face loops still sum in local face order (#199): the same bits on any number of ranks
+  // are not yet the physics' to give.
+  if (in.reproducibility == "ranks") {
+    return runtime::PhysicsRefusal{
+        .message = "the Euler physics does not give the same bits on any number of ranks yet",
+        .path = "reproducibility",
+        .data_json = "{}",
+        .code = "E1109"};
+  }
   // The multigrid agglomerates one mesh's cells: on a partition, or with periodic image ghosts,
   // it would be another algorithm. Gauss-Seidel sweeps colours by global id, the same anywhere.
   if (in.time.kind == "steady" && in.time.linear_solver == "multigrid" &&

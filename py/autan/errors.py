@@ -739,7 +739,7 @@ _CODES = [
     Code(
         "E1013",
         "Policy not available on the backend",
-        "A precision policy is requested on a backend that cannot run it (`fp64` on Metal).",
+        "A precision policy is requested on a backend that cannot run it (`fp64` on Metal, a body computing in the accumulation type on Metal).",
         "Use fp32+acc64 or fp32 on Metal; run fp64 on the CPU, CUDA or HIP backends.",
     ),
     Code(
@@ -797,6 +797,12 @@ _CODES = [
         "Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.",
     ),
     Code(
+        "E1109",
+        "Strategy not rank-independent",
+        "A face or boundary loop on a rank-independent topology uses a strategy whose order follows the local numbering (scatter, atomic, warp-aggregated, coloured).",
+        "Use store-gather or gather-recompute, whose per-cell order is the global one, or build the topology without the global order.",
+    ),
+    Code(
         "W0801",
         "No NVIDIA GPU found",
         "`nvidia-smi` is missing or lists no GPU. CUDA runs are not possible on this machine.",
@@ -843,6 +849,14 @@ _CODES = [
         "the process sees no CUDA device (`data.visible`, `data.needed`).",
         "Run on a host with a GPU visible to the process (`docker --gpus`), or use "
         "`devices.kind = cpu`.",
+    ),
+    Code(
+        "E0808",
+        "No MPI launcher",
+        "A run on several devices starts one rank per device through an MPI launcher, found "
+        "through `$AUTAN_MPIEXEC`, or `mpiexec` then `mpirun` on the PATH.",
+        "Install a GPU-aware MPI (Open MPI or MPICH built with CUDA support), set "
+        "`$AUTAN_MPIEXEC`, or run on one device.",
     ),
 ]
 

@@ -85,14 +85,15 @@ struct Outcome {
   std::string err;
 };
 
-Outcome run(const Json& doc, const autan::runtime::PhysicsRegistry& registry) {
+Outcome run(const Json& doc, const autan::runtime::PhysicsRegistry& registry,
+            const fs::path& stop_file = {}) {
   const fs::path dir = fresh_dir();
   const fs::path input_file = dir / "solver-input.json";
   std::ofstream(input_file) << doc.dump();
   std::FILE* out = std::tmpfile();
   std::FILE* err = std::tmpfile();
   const ExitStatus status =
-      autan::runtime::run_case(input_file, dir / "runs", registry, build, out, err);
+      autan::runtime::run_case(input_file, dir / "runs", registry, build, out, err, stop_file);
   auto text = [](std::FILE* f) {
     std::rewind(f);
     std::string s;
@@ -105,8 +106,9 @@ Outcome run(const Json& doc, const autan::runtime::PhysicsRegistry& registry) {
   return Outcome{.status = status, .runs = dir / "runs", .run = printed, .err = text(err)};
 }
 
-Outcome run(const Json& doc, autan_test::RelaxationOptions options = {}) {
-  return run(doc, autan_test::relaxation_registry(options));
+Outcome run(const Json& doc, autan_test::RelaxationOptions options = {},
+            const fs::path& stop_file = {}) {
+  return run(doc, autan_test::relaxation_registry(options), stop_file);
 }
 
 // The hybrid input on periodic-box (Gmsh): xmin -> xmax by (tx, 0, 0), ymin
@@ -307,6 +309,17 @@ TEST_CASE("A converging run writes the run directory of results.md", "[runtime]"
   CHECK(info["schema"] == "autan.results/1");
   CHECK(info["status"] == "converged");
   CHECK(info["iterations"] == 28);
+  // results.md, timing: this run's 28 iterations, the loop within the
+  // process, and ns per cell and iteration by its definition.
+  const Json& t = info["timing"];
+  REQUIRE(t.is_object());
+  CHECK(t["iterations"] == 28);
+  CHECK(t["solve_seconds"].get<double>() > 0.0);
+  CHECK(t["solve_seconds"].get<double>() <= t["wall_seconds"].get<double>());
+  const double cells = static_cast<double>(autan::io::read_mesh(mesh_path).n_cells());
+  CHECK_THAT(
+      t["ns_per_cell_iteration"].get<double>(),
+      Catch::Matchers::WithinRel(t["solve_seconds"].get<double>() * 1e9 / (cells * 28), 1e-12));
   CHECK(std::regex_match(info["run_id"].get<std::string>(),
                          std::regex("run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}")));
   CHECK(o.run.filename() == info["run_id"].get<std::string>());
@@ -403,6 +416,7 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     const Json info = Json::parse(read(o.run / "run.json"));
     CHECK(info["status"] == "stopped");
     CHECK(info["iterations"] == 0);
+    CHECK(info["timing"].is_null());  // no iteration to time
     CHECK_FALSE(fs::exists(o.run / "history.jsonl"));
     const Json& f = info["monitors"]["forces"];
     CHECK(f["iteration"] == 0);
@@ -456,6 +470,7 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(info["status"] == "failed");
     CHECK(info["diagnostics"][0]["code"] == "E0704");
     CHECK(info["monitors"].is_null());
+    CHECK(info["timing"].is_null());
   }
   SECTION("diverged: D0107 with the iteration, cell and zone") {
     const Outcome o = run(input(), {.factor = 0.9, .diverge_at = 7, .diverge_cell = 3});
@@ -485,6 +500,7 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(info["diagnostics"][0]["code"] == "E0704");
     CHECK(history(o.run).size() == 3);
     CHECK(info["monitors"].is_null());
+    CHECK(info["timing"].is_null());  // a failed run is not timed
   }
   SECTION("unsteady with averaging: time, averaging and FlowSolutionMean") {
     // Written by `autan prepare` with time = Unsteady(steps=6, dt=0.01 s,
@@ -651,6 +667,16 @@ TEST_CASE("A CUDA run gives the physics its device and stream", "[runtime][gpu]"
 }
 #endif
 
+TEST_CASE("A scope's refusal carries its own code", "[runtime]") {
+  // E0706 unless the physics says more (E1109 for a reproducibility it cannot honour): any
+  // registered code goes through, here E0705.
+  autan_test::RelaxationOptions refusing;
+  refusing.refuse_code = "E0705";
+  const Outcome o = run(input(), refusing);
+  require_error(o, "E0705");
+  CHECK(Json::parse(o.err)["data"]["path"] == "physics");
+}
+
 TEST_CASE("A physics' scope refuses an input before any directory", "[runtime]") {
   const bool refuse = GENERATE(true, false);
   autan::runtime::PhysicsRegistry registry;
@@ -682,7 +708,7 @@ TEST_CASE("A physics' scope refuses an input before any directory", "[runtime]")
 }
 
 TEST_CASE("Deterministic runs produce identical history and solution arrays", "[runtime]") {
-  const Json doc = input([](Json& d) { d["deterministic"] = true; });
+  const Json doc = input([](Json& d) { d["reproducibility"] = "run"; });
   const Outcome a = run(doc);
   const Outcome b = run(doc);
   CHECK(read(a.run / "history.jsonl") == read(b.run / "history.jsonl"));
@@ -690,6 +716,32 @@ TEST_CASE("Deterministic runs produce identical history and solution arrays", "[
     CHECK(solution_field(a.run / "solution.cgns", "FlowSolution", field) ==
           solution_field(b.run / "solution.cgns", "FlowSolution", field));
   }
+}
+
+TEST_CASE("A stop file stops the run as SIGINT does", "[runtime]") {
+  // The relaxation physics creates the file during iteration 5: the run
+  // stops before iteration 6, with its solution, and exits 130.
+  const fs::path stop = fresh_dir() / "stop";
+  autan_test::RelaxationOptions options{.factor = 0.9};
+  options.touch_at = 5;
+  options.touch_file = stop.string();
+  const Outcome o = run(input([](Json& d) { d["time"]["max_iterations"] = 1000; }), options, stop);
+  CHECK(o.status == ExitStatus::signalled);
+  const Json info = Json::parse(read(o.run / "run.json"));
+  CHECK(info["status"] == "stopped");
+  CHECK(info["iterations"] == 5);
+  CHECK(fs::exists(o.run / "solution.cgns"));
+}
+
+TEST_CASE("solve_seconds leaves out the physics' log writes", "[runtime]") {
+  // Every step logs 10 MB: the log takes most of the run, which the solve
+  // time does not count (results.md, timing).
+  autan_test::RelaxationOptions options{.factor = 0.9};
+  options.log_bytes = 10'000'000;
+  const Outcome o = run(input([](Json& d) { d["time"]["max_iterations"] = 4; }), options);
+  REQUIRE(o.status == ExitStatus::finished);
+  const Json t = Json::parse(read(o.run / "run.json"))["timing"];
+  CHECK(t["solve_seconds"].get<double>() < 0.25 * t["wall_seconds"].get<double>());
 }
 
 TEST_CASE("SIGTERM stops a running process: stopped, solution written, exit 130", "[runtime]") {
@@ -826,6 +878,11 @@ TEST_CASE("The input reader enforces the solver-input rules", "[runtime]") {
                   })),
                   "E0705");
   }
+  SECTION("one rank per device: devices.count is the rank count") {
+    const Outcome o = run(input([](Json& d) { d["devices"]["count"] = 2; }));
+    require_error(o, "E0705");
+    CHECK(Json::parse(o.err)["location"]["path"] == "devices.count");
+  }
   SECTION("mesh path is absolute") {
     require_error(run(input([](Json& d) { d["mesh"]["path"] = "relative/polyMesh"; })), "E0705");
   }
@@ -914,7 +971,7 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
   const autan_test::RelaxationOptions options{.growth = 1e-3};
   const auto budget = [&](std::int64_t n) {
     return [steady, n](Json& d) {
-      d["deterministic"] = true;
+      d["reproducibility"] = "run";
       d["monitors"][0]["every"] = 1;
       if (steady)
         d["time"]["max_iterations"] = n;
@@ -960,6 +1017,9 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
   Json expected_start = second["start"];
   expected_start.erase("run");
   CHECK(info["start"] == expected_start);
+  // timing counts this run's iterations only.
+  CHECK(info["timing"]["iterations"] ==
+        info["iterations"].get<std::int64_t>() - second["start"]["iterations"].get<std::int64_t>());
   // identity: the seven parts, then the start's identity, mode, iterations
   // and solution hash, joined by "\n" (results.md).
   const auto& s = second["start"];
@@ -1396,7 +1456,7 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
   options.sleep_at = 15;
   const auto doc = [](std::int64_t n) {
     return input([n](Json& d) {
-      d["deterministic"] = true;
+      d["reproducibility"] = "run";
       d["time"]["max_iterations"] = n;
     });
   };
@@ -1580,10 +1640,14 @@ std::vector<double> swept(const autan::Mesh& mesh, int steps, int sweeps, int gr
 // directory (none for an invalid input), after checking its exit status;
 // `diagnostic`, when given, receives the JSON diagnostic line of stderr.
 fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>& options,
-                      int expected_status = 0, Json* diagnostic = nullptr, bool directory = true) {
+                      int expected_status = 0, Json* diagnostic = nullptr,
+                      const std::vector<std::string>& extra_args = {}, bool directory = true) {
   const fs::path dir = fresh_dir();
   const fs::path input_file = dir / "solver-input.json";
-  std::ofstream(input_file) << doc.dump();
+  // One device per rank (solver-input.md, `devices`), unless a test sets it.
+  Json with_count = doc;
+  if (with_count["devices"]["count"] == 1) with_count["devices"]["count"] = ranks;
+  std::ofstream(input_file) << with_count.dump();
   std::vector<std::string> args{AUTAN_MPIEXEC,
                                 AUTAN_MPIEXEC_NUMPROC_FLAG,
                                 std::to_string(ranks),
@@ -1592,6 +1656,7 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
                                 input_file.string(),
                                 "--runs",
                                 (dir / "runs").string()};
+  args.insert(args.end(), extra_args.begin(), extra_args.end());
   std::vector<char*> argv;
   for (auto& a : args) argv.push_back(a.data());
   argv.push_back(nullptr);
@@ -1636,7 +1701,7 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   const int ranks = GENERATE(2, 4);
   CAPTURE(periodic, ranks);
   const auto edit = [](Json& d) {
-    d["deterministic"] = true;
+    d["reproducibility"] = "run";
     d["monitors"][0]["every"] = 1;
     d["time"]["max_iterations"] = 12;
   };
@@ -1650,6 +1715,32 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
                                       "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
 
   CHECK(lines_of(many / "history.jsonl") == lines_of(one.run / "history.jsonl"));
+  // Reproducibility "ranks": a partition even on one rank, and face keys that
+  // match the mesh file on 1 and N ranks (the physics checks them); a run on
+  // several ranks in another mode says its results depend on the count.
+  Json keyed = doc;
+  keyed["reproducibility"] = "ranks";
+  autan_test::RelaxationOptions checking = options;
+  checking.check_keys = true;
+  const Outcome one_keyed = run(keyed, checking);
+  REQUIRE(one_keyed.status == ExitStatus::finished);
+  const fs::path many_keyed =
+      run_on_ranks(keyed, ranks,
+                   {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                    "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1", "AUTAN_TEST_CHECK_KEYS=1"});
+  CHECK(Json::parse(read(many_keyed / "run.json"))["status"] == "completed");
+  CHECK(lines_of(many_keyed / "history.jsonl") == lines_of(one_keyed.run / "history.jsonl"));
+  CHECK(solution_field(many_keyed / "solution.cgns", "FlowSolution", "Pressure") ==
+        solution_field(one_keyed.run / "solution.cgns", "FlowSolution", "Pressure"));
+  const auto has_event = [](const fs::path& run_dir) {
+    std::ifstream in(run_dir / "log.jsonl");
+    for (std::string line; std::getline(in, line);) {
+      if (Json::parse(line)["data"].contains("mode")) return true;
+    }
+    return false;
+  };
+  CHECK(has_event(many));
+  CHECK_FALSE(has_event(many_keyed));
   // A smoother sweeping the global colours (PhysicsContext::cell_colours),
   // the ghosts exchanged after each colour, and an argmin over the ranks:
   // the history of one rank.
@@ -1692,11 +1783,11 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   if (!periodic) CHECK(lined_one == swept(autan::io::read_mesh(mesh_path), 12, 2, ranks));
   // Groups the partition refuses end every rank before any directory, with their code.
   Json malformed;
-  CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_GROUPS=-1"}, 1, &malformed, false).empty());
+  CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_GROUPS=-1"}, 1, &malformed, {}, false).empty());
   CHECK(malformed["code"] == "E0140");
   // Rank 1 alone fails while the others go on into the partition: every rank ends.
   Json alone;
-  CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_GROUPS=-2"}, 1, &alone, false).empty());
+  CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_GROUPS=-2"}, 1, &alone, {}, false).empty());
   CHECK(alone["code"] == "E0140");
   CHECK(alone["data"]["rank"] == 1);
 #ifdef AUTAN_HAVE_CUDA
@@ -1804,6 +1895,17 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   CHECK(g["diagnostics"][0]["code"] == "E0704");
   CHECK(g["diagnostics"][0]["data"]["rank"] == ranks - 1);
 
+  // A stop file the last rank creates during iteration 5: rank 0 sees it, and
+  // all stop before iteration 6.
+  const fs::path stop_file = fresh_dir() / "stop";
+  const fs::path by_file = run_on_ranks(doc, ranks,
+                                        {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_TOUCH_AT=5",
+                                         "AUTAN_TEST_TOUCH_RANK=" + std::to_string(ranks - 1),
+                                         "AUTAN_TEST_TOUCH_FILE=" + stop_file.string()},
+                                        130, nullptr, {"--stop-file", stop_file.string()});
+  CHECK(Json::parse(read(by_file / "run.json"))["status"] == "stopped");
+  CHECK(Json::parse(read(by_file / "run.json"))["iterations"] == 5);
+
   // A signal reaching the last rank alone, after iteration 5, stops all of
   // them before iteration 6, with the solution written.
   const fs::path stopped = run_on_ranks(doc, ranks,
@@ -1822,10 +1924,12 @@ TEST_CASE("Several ranks average and continue as one", "[runtime][mpi]") {
   // rank: the start state is split among the ranks and the mean and restart
   // fields gathered back.
   const int ranks = GENERATE(2, 4);
-  CAPTURE(ranks);
-  const auto steps = [](std::int64_t n) {
-    return [n](Json& d) {
-      d["deterministic"] = true;
+  const std::string mode = GENERATE("run", "ranks");
+  CAPTURE(ranks, mode);
+  const auto steps = [mode](std::int64_t n) {
+    return [n, mode](Json& d) {
+      d["reproducibility"] = mode;
+      d["reproducibility"] = "run";
       d["monitors"][0]["every"] = 1;
       d["time"]["steps"] = n;
     };
