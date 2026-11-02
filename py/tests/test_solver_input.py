@@ -152,6 +152,9 @@ def _set_boundary(document: dict[str, Any], **values: Any) -> None:
         lambda d: d.update(extra=1),
         lambda d: d.pop("schema"),
         lambda d: d["time"].pop("kind"),
+        lambda d: d["mesh"].update(scale=True),
+        lambda d: d["mesh"].update(scale="1.0"),
+        lambda d: d["mesh"].update(scale=0.0),
         lambda d: d["monitors"][0].pop("kind"),
         lambda d: _set_boundary(d, kind="inlet"),
         lambda d: _set_boundary(d, static_pressure=1.0),
@@ -223,6 +226,38 @@ def test_each_published_schema_has_its_identifier(name: str) -> None:
     assert schema["properties"]["schema"]["const"] == autan.version.SCHEMAS[name]
 
 
+# Exact by definition: the international inch (1959) and foot.
+@pytest.mark.parametrize(("unit", "metres"), [("m", 1.0), ("in", 0.0254), ("ft", 0.3048)])
+def test_mesh_unit_scales_the_mesh_alone(
+    unit: str,
+    metres: float,
+    capsys: pytest.CaptureFixture[str],
+    write_case: Callable[..., Path],
+    crm_mesh: autan.MeshInfo,
+) -> None:
+    body = CRM_HL.replace('mesh="crm-hl.cgns"', f'mesh="crm-hl.cgns", mesh_unit="{unit}"')
+    path = write_case(body)
+    case = autan.load(path)
+    assert case.spec.document()["mesh_unit"] == unit
+    planned = case.plan(crm_mesh).mesh
+    assert planned["unit"] == unit
+    # The fixture's bounds are in its file's units; plan gives them in metres.
+    assert planned["bounds"]["max"] == [80.0 * metres, 50.0 * metres, 30.0 * metres]
+    status, document = prepare(capsys, path, "crm-hl.meshinfo.json")
+    assert status == 0
+    jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
+    assert document["mesh"]["scale"] == metres
+    autan.solver_input.SolverInput.model_validate(document)
+    with pytest.raises(ValidationError):  # a scale that is not the case's unit
+        autan.solver_input.SolverInput.model_validate(
+            document | {"mesh": document["mesh"] | {"scale": 2 * metres}}
+        )
+    # Every other length carries its own unit: the reference length stays 7 m.
+    assert document["monitors"][0]["ref_length"] == pytest.approx(7.0)
+    in_metres = autan.load(write_case(CRM_HL, "metres.py")).spec
+    assert (case.spec.hash() == in_metres.hash()) == (unit == "m")
+
+
 @pytest.mark.parametrize("mode", ["none", "run", "ranks"])
 def test_reproducibility_reaches_the_runtime_and_the_hash(
     mode: str,
@@ -256,10 +291,14 @@ def test_the_runtime_mode_is_the_case_s(
         autan.solver_input.SolverInput.model_validate(document)
 
 
+@pytest.mark.parametrize("linear_solver", ["multigrid", "gauss-seidel", "lines"])
 def test_the_linear_solver_is_a_steady_choice(
-    write_case: Callable[..., Path], capsys: pytest.CaptureFixture[str], tmp_path: Path
+    write_case: Callable[..., Path],
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    linear_solver: str,
 ) -> None:
-    body = CRM_HL + "case.time = autan.Steady(linear_solver='gauss-seidel')\n"
+    body = CRM_HL + f"case.time = autan.Steady(linear_solver='{linear_solver}')\n"
     case = write_case(body)
     copy = tmp_path / "copy.toml"
     copy.write_text(autan.load(case).to_toml())
@@ -268,7 +307,7 @@ def test_the_linear_solver_is_a_steady_choice(
     document = json.loads(capsys.readouterr().out)
     validator = jsonschema.Draft202012Validator(json_schema("solver-input"))
     validator.validate(document)
-    assert document["time"]["linear_solver"] == "gauss-seidel"
+    assert document["time"]["linear_solver"] == linear_solver
     unsteady = {"kind": "unsteady", "steps": 10, "dt": 1e-3, "cfl": None, "average_from": None}
     with pytest.raises(jsonschema.ValidationError):  # an unsteady run has no linear solver choice
         validator.validate(document | {"time": unsteady | {"linear_solver": "multigrid"}})

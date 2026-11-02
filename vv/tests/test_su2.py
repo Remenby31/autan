@@ -461,6 +461,7 @@ def test_study_reproduces_the_papers_extrapolation(tmp_path: Path) -> None:
     for run, cl, cd in zip(runs, FLO82_CL, FLO82_CD, strict=True):
         _write_run(run, cl, cd, converged=True)
     report = su2.study(runs)
+    assert report["precision"] == "fp64"
     assert all(lv["converged"] and lv["iterations"] == 37 for lv in report["levels"])
     assert report["continuum"]["cl"]["estimate"] == pytest.approx(0.356208937, abs=2e-9)
     assert report["continuum"]["cd"]["estimate"] == pytest.approx(0.022684938, abs=2e-9)

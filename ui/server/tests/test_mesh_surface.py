@@ -1,6 +1,7 @@
 import json
 import shutil
 import struct
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 from autan_ui.app import create_app
+from autan_ui.confine import Folder
 from fastapi.testclient import TestClient
 
 # Written by `autan-mesh-info --surface` and `--json` from tests/data/mesh/hybrid in four
@@ -219,3 +221,57 @@ def test_a_mesh_without_its_surface_is_404(tmp_path: Path) -> None:
 
     assert client.get("/api/meshes/polyMesh/surface").status_code == 404
     assert client.get("/api/meshes/missing/surface").status_code == 404
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["../outside", "..%2Foutside", "%2e%2e%2Foutside", "%2Ftmp%2Foutside", "..", "linked"],
+)
+def test_a_surface_is_read_only_from_the_meshes_folder(tmp_path: Path, name: str) -> None:
+    # A valid mesh and surface beside the folder, reachable by traversal or through links.
+    for suffix in (".meshinfo.json", ".surface"):
+        shutil.copy(DATA / f"polyMesh{suffix}", tmp_path / f"outside{suffix}")
+    client = _client(tmp_path, "polyMesh")
+    for suffix in (".meshinfo.json", ".surface"):
+        (tmp_path / "meshes" / f"linked{suffix}").symlink_to(tmp_path / f"outside{suffix}")
+
+    response = client.get(f"/api/meshes/{name}/surface")
+
+    assert response.status_code in (404, 422)
+    assert client.get("/api/meshes/polyMesh/surface").status_code == 200
+    assert "outside" not in [m["name"] for m in client.get("/api/meshes").json()]
+    with Folder(tmp_path / "meshes") as folder:
+        assert folder.stat("../outside.surface") is None
+        assert folder.stat(str(tmp_path / "outside.surface")) is None
+
+
+def test_a_surface_served_again_follows_its_file(tmp_path: Path) -> None:
+    client = _client(tmp_path, "polyMesh")
+    url = "/api/meshes/polyMesh/surface"
+    first = client.get(url)
+    assert first.status_code == 200
+    assert client.get(url).content == first.content
+
+    # The file replaced, even keeping its size: the new content is read, here refused.
+    path = tmp_path / "meshes" / "polyMesh.surface"
+    broken = _mutated("reversed face")
+    path.with_suffix(".new").write_bytes(broken)
+    path.with_suffix(".new").replace(path)
+
+    assert client.get(url).status_code == 422
+
+
+def test_surfaces_served_at_once_from_many_threads_all_arrive(tmp_path: Path) -> None:
+    # Five meshes for four kept messages: requests at once on the server's thread pool.
+    meshes = tmp_path / "meshes"
+    meshes.mkdir()
+    for name in FORMATS:
+        for suffix in (".meshinfo.json", ".surface"):
+            shutil.copy(DATA / f"{name}{suffix}", meshes / f"{name}{suffix}")
+    shutil.copy(DATA / "polyMesh.meshinfo.json", meshes / "again.meshinfo.json")
+    shutil.copy(DATA / "polyMesh.surface", meshes / "again.surface")
+    app = create_app(tmp_path / "runs", static=None, hosts=("testserver",), meshes_root=meshes)
+    names = [*FORMATS, "again"] * 20
+    with TestClient(app) as client, ThreadPoolExecutor(16) as pool:
+        codes = list(pool.map(lambda n: client.get(f"/api/meshes/{n}/surface").status_code, names))
+    assert codes == [200] * len(names)

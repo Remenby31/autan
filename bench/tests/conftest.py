@@ -89,3 +89,19 @@ def write_json(tmp_path: Path):
         return path
 
     return write
+
+
+@pytest.fixture
+def meminfo(tmp_path: Path, monkeypatch):
+    """The kernel's memory account, replaced by a file the test writes (AUTAN_MEMINFO): the
+    floor's decisions then depend on the test alone, not on what a shared host is doing."""
+    path = tmp_path / "meminfo"
+
+    def available(gib: float) -> None:
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(f"MemTotal: {128 << 20} kB\nMemAvailable: {int(gib * (1 << 20))} kB\n")
+        tmp.replace(path)  # never a half-written file, which would read as "unknown"
+
+    available(100)
+    monkeypatch.setenv("AUTAN_MEMINFO", str(path))
+    return available
