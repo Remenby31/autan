@@ -10,6 +10,7 @@ from typing import Any
 import h5py
 import numpy as np
 import numpy.typing as npt
+from autan import cgns
 from autan.errors import Location
 from autan.schema import CaseSpec
 from autan.solver_input import freestream_state
@@ -20,25 +21,10 @@ from autan_ui.surface import Zone, encode
 
 @contextmanager
 def solution(folder: Folder) -> Iterator[h5py.File]:
-    """The run's solution.cgns, open for reading. ValueError when any of its data lives in
-    another file (an external link, external raw storage or a virtual dataset): reading it would
-    leave the run directory."""
-    with os.fdopen(folder.open("solution.cgns"), "rb") as file, h5py.File(file, "r") as tree:
-        outside: list[str] = []
-
-        def link(name: str, value: object) -> None:
-            if isinstance(value, h5py.ExternalLink):
-                outside.append(name)
-
-        def stored(name: str, item: object) -> None:
-            if isinstance(item, h5py.Dataset) and (item.external or item.is_virtual):
-                outside.append(name)
-
-        tree.visititems_links(link)
-        tree.visititems(stored)
-        if outside:
-            msg = f"solution.cgns reads data from another file: {outside[0]}"
-            raise ValueError(msg)
+    """The run's solution.cgns, opened through the run's folder and read by the SDK's
+    `autan.cgns.open_file`, which refuses (`OutsideFileError`, a ValueError) a file whose data
+    lives in other files: reading it never leaves the run directory."""
+    with os.fdopen(folder.open("solution.cgns"), "rb") as file, cgns.open_file(file) as tree:
         yield tree
 
 

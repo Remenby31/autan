@@ -208,6 +208,8 @@ def study(runs: Sequence[Path]) -> dict[str, Any]:
         "condition": condition,
         "su2": levels[0].su2,
         "scheme": levels[0].scheme,
+        # The SU2 image is built without its mixed-precision option (vv/su2/Dockerfile): FP64.
+        "precision": "fp64",
         "image_id": levels[0].image_id,
         "levels": [asdict(lv) for lv in levels],
     }
