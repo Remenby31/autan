@@ -65,7 +65,7 @@ Boundaries boundaries(const Case& c, std::mt19937_64& rng) {
   const std::size_t nb = c.n_faces() - c.n_interior();
   Boundaries b{std::vector<BoundaryKind>(nb), std::vector<double>(5 * nb, 0.0)};
   for (std::size_t i = 0; i < nb; ++i) {
-    const auto kind = static_cast<BoundaryKind>(i % 5);
+    const auto kind = static_cast<BoundaryKind>(i % 6);
     b.kind[i] = kind;
     std::array<double, 5> v{};
     switch (kind) {
@@ -81,6 +81,7 @@ Boundaries boundaries(const Case& c, std::mt19937_64& rng) {
         v = {0.0, 0.0, 0.0, 0.0, 1e5};
         break;
       case BoundaryKind::slip:
+      case BoundaryKind::wall:  // adiabatic: T_wall = 0
         break;
     }
     for (std::size_t k = 0; k < 5; ++k) b.data[k * nb + i] = v[k];

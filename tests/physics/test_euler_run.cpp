@@ -11,6 +11,7 @@
 #include <fstream>
 #include <functional>
 #include <limits>
+#include <map>
 #include <random>
 #include <sstream>
 #include <string>
@@ -464,15 +465,16 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
           "[euler]") {
   // The multigrid agglomerates one mesh's cells and takes no image ghosts: E0706 at
   // `time.linear_solver`. The multigrid sums in local cell order: reproducibility "ranks" is
-  // E1109.
-  const bool periodic = GENERATE(true, false);
-  CAPTURE(periodic);
+  // E1109. The coupled turbulence step is SA's (case-schema.md#time): E0426 on inviscid flow.
+  const std::string reason = GENERATE("periodic", "ranks", "coupled");
+  CAPTURE(reason);
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
-    if (periodic) {
+    if (reason == "periodic") {
       periodic_box(d, "fp64");
     } else {
       inviscid_along_x(d, "fp64");
-      d["reproducibility"] = "ranks";
+      if (reason == "ranks") d["reproducibility"] = "ranks";
+      if (reason == "coupled") d["time"]["coupled_turbulence"] = true;
     }
   });
   const auto out = run(doc);
@@ -480,8 +482,12 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
   CHECK(out.status == ExitStatus::invalid_input);
   CHECK(!fs::exists(out.runs));
   const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
-  CHECK(diagnostic["code"] == (periodic ? "E0706" : "E1109"));
-  CHECK(diagnostic["location"]["path"] == (periodic ? "time.linear_solver" : "reproducibility"));
+  const std::map<std::string, std::pair<std::string, std::string>> expected = {
+      {"periodic", {"E0706", "time.linear_solver"}},
+      {"ranks", {"E1109", "reproducibility"}},
+      {"coupled", {"E0426", "time.coupled_turbulence"}}};
+  CHECK(diagnostic["code"] == expected.at(reason).first);
+  CHECK(diagnostic["location"]["path"] == expected.at(reason).second);
 }
 
 TEST_CASE("a Navier-Stokes case with periodic pairs is refused before any directory exists",

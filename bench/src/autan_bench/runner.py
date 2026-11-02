@@ -1,4 +1,5 @@
 import contextlib
+import dataclasses
 import datetime as dt
 import json
 import logging
@@ -7,6 +8,7 @@ import signal
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -289,3 +291,46 @@ def _measure(
     }
     result.validate(doc)
     return doc
+
+
+@dataclasses.dataclass(frozen=True)
+class Series:
+    """One paired series: the side of each run, its result, the lock's wait and hold."""
+
+    sides: list[str]
+    docs: list[dict[str, Any]]
+    lock_wait_s: float
+    hold_s: float
+
+
+def pair_series(
+    change: Path,
+    base: Path,
+    args: list[str],
+    sides: list[str],
+    *,
+    suite: str,
+    precision: str,
+    lock: Path = gpu.DEFAULT_LOCK,
+    lock_timeout_s: float | None = None,
+    max_load_per_cpu: float | None = None,
+    on_run: Callable[[int, str, dict[str, Any]], None] | None = None,
+) -> Series:
+    """Run the change's and the base's binaries with the same arguments, in the order of
+    ``sides``, all in one hold of the GPU lock (#403): each run is the measurement :func:`run`
+    makes, with its own campaign, idle and load checks, but the lock is never released between
+    runs, so no other job runs between the two sides. ``on_run(index, side, result)`` is called
+    after each run."""
+    binaries = {"change": change, "base": base}
+    with gpu.gpu_lock(lock, lock_timeout_s) as waited:
+        start = time.monotonic()
+        docs = []
+        for i, side in enumerate(sides):
+            # Only the first run waited for the lock; the others ran within the same hold.
+            doc = _measure(binaries[side], args, None, None, suite, precision, lock,
+                           waited if i == 0 else 0.0, max_load_per_cpu)  # fmt: skip
+            docs.append(doc)
+            # Kept as soon as measured: a later run that fails loses only itself.
+            if on_run:
+                on_run(i, side, doc)
+        return Series(sides, docs, waited, time.monotonic() - start)
