@@ -11,7 +11,7 @@ Compilez le runtime du solveur `autan-run` et l'outil de maillage `autan-mesh-in
 ## Prérequis
 
 - Linux, x86-64 ou arm64. Ces étapes sont vérifiées sur Ubuntu 24.04.
-- Un compilateur C++20 (GCC 13 ou Clang 18), CMake 3.28 ou plus récent, Git et Python 3.12. Sur Ubuntu 24.04 : `sudo apt-get install build-essential cmake git python3`.
+- Un compilateur C++20 : GCC 13, ou Clang 18 à 20 (la CI compile avec chacun, avertissements en erreurs ; un Clang plus récent, celui d'Apple compris, peut avertir là où ceux-ci ne le font pas), CMake 3.28 ou plus récent, Git et Python 3.12. Sur Ubuntu 24.04 : `sudo apt-get install build-essential cmake git python3`.
 - [uv](https://docs.astral.sh/uv/) pour le SDK Python.
 - [micromamba](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html) pour la bibliothèque CGNS : Autan lit et écrit du CGNS 4, que les paquets Ubuntu ne fournissent pas.
 
