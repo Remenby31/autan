@@ -26,9 +26,11 @@ inline nlohmann::json planned(nlohmann::json doc, const std::filesystem::path& r
   std::filesystem::path mesh = doc["mesh"]["path"].get<std::string>();
   if (!std::filesystem::exists(mesh)) mesh = readable;
   const autan::Mesh m = autan::io::read_mesh(mesh);
+  // An input whose scale the reader refuses is planned at 1: it fails at mesh.scale first.
+  const nlohmann::json given = doc["mesh"].value("scale", nlohmann::json());
+  const double scale = given.is_number() && given.get<double>() > 0.0 ? given.get<double>() : 1.0;
   const auto counts = autan::io::run_counts(
-      m, doc["mesh"]["scale"].get<double>(),
-      order == "input" ? autan::io::CellOrder::input : autan::io::CellOrder::rcm);
+      m, scale, order == "input" ? autan::io::CellOrder::input : autan::io::CellOrder::rcm);
   doc["mesh_info"] =
       nlohmann::json::parse(autan::io::mesh_info_json(m, autan::io::mesh_hash(mesh), counts));
   return doc;
