@@ -3,6 +3,8 @@
 import json
 import os
 import tomllib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import h5py
@@ -14,6 +16,30 @@ from autan.solver_input import freestream_state
 
 from autan_ui.confine import Folder
 from autan_ui.surface import Zone, encode
+
+
+@contextmanager
+def solution(folder: Folder) -> Iterator[h5py.File]:
+    """The run's solution.cgns, open for reading. ValueError when any of its data lives in
+    another file (an external link, external raw storage or a virtual dataset): reading it would
+    leave the run directory."""
+    with os.fdopen(folder.open("solution.cgns"), "rb") as file, h5py.File(file, "r") as tree:
+        outside: list[str] = []
+
+        def link(name: str, value: object) -> None:
+            if isinstance(value, h5py.ExternalLink):
+                outside.append(name)
+
+        def stored(name: str, item: object) -> None:
+            if isinstance(item, h5py.Dataset) and (item.external or item.is_virtual):
+                outside.append(name)
+
+        tree.visititems_links(link)
+        tree.visititems(stored)
+        if outside:
+            msg = f"solution.cgns reads data from another file: {outside[0]}"
+            raise ValueError(msg)
+        yield tree
 
 
 def _data(group: h5py.Group) -> npt.NDArray[Any]:
@@ -40,7 +66,7 @@ def wall_surface(folder: Folder) -> bytes:
     q_inf = 0.5 * state.density * state.speed**2
     # An inviscid solution has no wall shear: its zero is not a skin friction to show.
     viscous = case.physics.turbulence.model != "inviscid"
-    with os.fdopen(folder.open("solution.cgns"), "rb") as file, h5py.File(file, "r") as tree:
+    with solution(folder) as tree:
         base = tree["Base"]
         zone = base["Zone"]
         names = json.loads(_text(base["ZoneNames"]))["boundary"]
