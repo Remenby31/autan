@@ -11,6 +11,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -162,6 +163,11 @@ class EulerPhysics final : public runtime::Physics {
                             "cfl",
                             device_steady_cfl
                           }}.dump());
+        if constexpr (std::is_same_v<P, kernels::fp32_acc64>) {
+          ctx.log.write("warning", "solver",
+                        "steady case on the device: the round-off floors are not evaluated, the "
+                        "run ends converged or completed, never floor");
+        }
       }
       if (!in.monitors.empty()) {
         ctx.log.write("warning", "solver",
@@ -614,6 +620,29 @@ class EulerPhysics final : public runtime::Physics {
     }
   }
 
+  // case-schema.md#time: the round-off floors c u sum_f T_f of the owned cells, against the
+  // second-order residual in res_, the one the history reports.
+  void record_floors(StepReport& report) {
+    floor_.resize(5 * n_);
+    euler_.floor_terms(state_, floor_);
+    const double unit = std::ldexp(1.0, -24);
+    constexpr double largest = std::numeric_limits<double>::max();
+    report.floor_ratio.assign(5, 0.0);
+    report.floor_cells.assign(5, 0);
+    for (std::size_t k = 0; k < 5; ++k) {
+      for (std::size_t c = 0; c < owned_; ++c) {
+        const double r = std::abs(static_cast<double>(res_[k * n_ + c]));
+        const double f = round_off_bound * unit * static_cast<double>(floor_[k * n_ + c]);
+        if (r <= f) ++report.floor_cells[k];
+        // 0 where both are 0; a residual above a zero floor, or not finite, is the largest ratio.
+        const double q = r == 0.0 ? 0.0 : r / f;
+        report.floor_ratio[k] =
+            std::max(report.floor_ratio[k], std::isnan(q) ? largest : std::min(q, largest));
+      }
+    }
+    report.floor_evaluated = static_cast<std::int64_t>(owned_);
+  }
+
   void steady_step(StepReport& report) {
     euler_.state(u_, state_);
     if (!second_order_) {
@@ -622,9 +651,13 @@ class EulerPhysics final : public runtime::Physics {
       euler_.set_second_order(true);
       euler_.residual(state_, res_);
       record_norms(report);
+      if constexpr (std::is_same_v<P, kernels::fp32_acc64>) record_floors(report);
       euler_.set_second_order(false);
     }
     euler_.residual_and_jacobian(state_, res_);
+    if constexpr (std::is_same_v<P, kernels::fp32_acc64>) {
+      if (second_order_) record_floors(report);
+    }
     measure_circulation();
     std::vector<double> norms = report.residuals;
     record_norms(report);
@@ -993,7 +1026,8 @@ class EulerPhysics final : public runtime::Physics {
   Euler<P> euler_;
   std::array<double, 5> reference_;  // the state the cells store differences from
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
-  std::optional<BlockMatrix> matrix_;              // steady runs only
+  std::vector<Res> floor_;             // fp32+acc64 steady: floor_terms of the last iteration
+  std::optional<BlockMatrix> matrix_;  // steady runs only
   std::optional<solvers::Multigrid> multigrid_;    // linear_solver = "multigrid"
   std::vector<std::vector<std::size_t>> colours_;  // linear_solver = "gauss-seidel": owned cells
   double cfl_cap_ = cfl_max;  // after a shortened or rejected step: half its CFL number

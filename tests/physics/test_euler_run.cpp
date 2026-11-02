@@ -215,8 +215,16 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   const auto& forces = lines.back()["monitors"]["forces"];
   for (const char* k : {"fx", "fy", "fz"}) CHECK(std::abs(forces[k].get<double>()) <= 64 * eps * p);
   if (!steady) CHECK(info["time"].get<double>() > 0.0);
-  // The Euler physics gives no round-off floors yet (case-schema.md#time).
-  CHECK(info["convergence"].is_null());
+  // case-schema.md#time: a uniform flow's residual is round-off, so a steady fp32+acc64 run is at
+  // its floor in every cell; no other run evaluates floors.
+  if (steady && std::string(precision) == "fp32+acc64") {
+    CHECK(info["status"] == "floor");
+    const auto& c = info["convergence"];
+    for (const auto& [name, ratio] : c["max_ratio"].items()) CHECK(ratio.get<double>() <= 1.0);
+    for (const auto& [name, at] : c["cells_at_floor"].items()) CHECK(at.get<double>() == 1.0);
+  } else {
+    CHECK(info["convergence"].is_null());
+  }
 }
 
 TEST_CASE("a verification case converges to its discrete solution", "[euler]") {
@@ -235,6 +243,33 @@ TEST_CASE("a verification case converges to its discrete solution", "[euler]") {
   const Json info = Json::parse(read(out.run / "run.json"));
   CHECK(info["status"] == "converged");
   CHECK(fs::exists(out.run / "manufactured.json"));
+}
+
+TEST_CASE("a steady fp32+acc64 case that cannot drop its orders ends at its round-off floor",
+          "[euler]") {
+  // case-schema.md#time: ten orders are below FP32's resolution, so the run ends at the first
+  // iteration where every cell's residual is at most its floor, with status `floor`.
+  const char* linear = GENERATE("multigrid", "gauss-seidel");
+  INFO(linear);
+  const auto doc = input("hybrid-verification.solver-input.json", [&](Json& d) {
+    d["precision"] = "fp32+acc64";
+    d["time"]["linear_solver"] = linear;
+    d["time"]["max_iterations"] = 20000;
+    d["time"]["residual_orders"] = 10.0;
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  const Json info = Json::parse(read(out.run / "run.json"));
+  CHECK(info["status"] == "floor");
+  CHECK(info["iterations"].get<int>() < 20000);
+  const auto& c = info["convergence"];
+  CHECK(c["iteration"] == info["iterations"]);
+  for (const auto& [name, ratio] : c["max_ratio"].items()) {
+    INFO(name);
+    CHECK(ratio.get<double>() <= 1.0);
+    CHECK(c["cells_at_floor"][name].get<double>() == 1.0);
+  }
 }
 
 TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[euler]") {

@@ -806,6 +806,245 @@ ausm_boundaries = boundary_loop(
     ausm_boundary, **BOUNDARY_ARGS, minf=mach_ref, out=Inc(res, left=+1)
 )
 
+# The round-off floor of fp32+acc64 (case-schema.md#time): each face flux is a combination of
+# terms that cancel near equilibrium, F = 1/2 (F_L + F_R) - 1/2 D for an upwind flux, so its FP32
+# error is bounded relative to the magnitudes of those terms, T = 1/2 (|F_L| + |F_R| + |D|) with
+# D = F_L + F_R - 2 F, not to |F|. floor_terms sums, per cell and equation, T over the cell's faces,
+# the warp correction's and the source's magnitudes: the residual's own terms.
+floor_terms = cells.field("floor_terms", Residual.Vec5)
+
+
+@pointwise
+def magnitude(a: State.Vec5) -> State.Vec5:
+    return Vec5(abs(a[0]), abs(a[1]), abs(a[2]), abs(a[3]), abs(a[4]))
+
+
+@pointwise
+def jump_terms(w: State.Vec5, n: Geom.Vec3, g: Param, pref: Param) -> State.Vec5:
+    v = velocity(w)
+    c = sqrt(g * (w[4] + pref) / w[0])
+    s = abs(dot(v, n)) + c
+    q = sqrt(dot(v, v)) + c
+    return s * w[0] * Vec5(1.0, q, q, q, total_enthalpy(w, g, pref))
+
+
+@pointwise
+def ausm_diffusion_terms(
+    wl: State.Vec5, wr: State.Vec5, n: Geom.Vec3, g: Param, minf: Param, pr: Param
+) -> State.Vec5:
+    # AUSM+-up's pressure diffusion divides the face pressures' difference by fa rho a^2: its
+    # rounding is K_p (p_L + p_R) / (fa a) in absolute pressures, measured to dominate the mass
+    # and energy fluxes' as fa -> 0 (docs/design/euler.md#precision).
+    vnl, vnr = dot(velocity(wl), n), dot(velocity(wr), n)
+    hl, hr = total_enthalpy(wl, g, pr), total_enthalpy(wr, g, pr)
+    csl = sqrt(2.0 * (g - 1.0) / (g + 1.0) * hl)
+    csr = sqrt(2.0 * (g - 1.0) / (g + 1.0) * hr)
+    a = min(csl * csl / max(csl, vnl), csr * csr / max(csr, -vnr))
+    mbar2 = 0.5 * (vnl * vnl + vnr * vnr) / (a * a)
+    mo = sqrt(min(1.0, max(mbar2, minf * minf)))
+    m = AUSM_KP / (mo * (2.0 - mo) * a) * (wl[4] + wr[4] + 2.0 * pr)
+    return m * Vec5(1.0, 0.0, 0.0, 0.0, max(hl, hr))
+
+
+@pointwise
+def flux_terms(
+    fl: State.Vec5, fr: State.Vec5, f: State.Vec5, n: Geom.Vec3, g: Param, pref: Param
+) -> State.Vec5:
+    left = physical_flux(fl, n, g, pref)
+    right = physical_flux(fr, n, g, pref)
+    return 0.5 * (
+        magnitude(left)
+        + magnitude(right)
+        + magnitude(left + right - 2.0 * f)
+        + jump_terms(fl, n, g, pref)
+        + jump_terms(fr, n, g, pref)
+    )
+
+
+@pointwise
+def roe_face_terms(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    wr: State.Vec5,
+    gr: Grad.Mat53,
+    pr: State.Vec5,
+    xr: Geom.Vec3,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    m: Geom.Mat3,
+    g: Param,
+    pref: Param,
+) -> Residual.Vec5:
+    fl = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    fr = reconstruct(wr, gr, pr, rel(xf, xr), pref)
+    f = roe(fl, fr, n, g, pref)
+    return area * flux_terms(fl, fr, f, n, g, pref) + magnitude(
+        warp(0.5 * (fl + fr), gl, pl, gr, pr, m, g, pref)
+    )
+
+
+@pointwise
+def hllc_face_terms(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    wr: State.Vec5,
+    gr: Grad.Mat53,
+    pr: State.Vec5,
+    xr: Geom.Vec3,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    m: Geom.Mat3,
+    g: Param,
+    pref: Param,
+) -> Residual.Vec5:
+    fl = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    fr = reconstruct(wr, gr, pr, rel(xf, xr), pref)
+    f = hllc(fl, fr, n, g, pref)
+    return area * flux_terms(fl, fr, f, n, g, pref) + magnitude(
+        warp(0.5 * (fl + fr), gl, pl, gr, pr, m, g, pref)
+    )
+
+
+@pointwise
+def ausm_face_terms(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    wr: State.Vec5,
+    gr: Grad.Mat53,
+    pr: State.Vec5,
+    xr: Geom.Vec3,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    m: Geom.Mat3,
+    g: Param,
+    pref: Param,
+    minf: Param,
+) -> Residual.Vec5:
+    fl = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    fr = reconstruct(wr, gr, pr, rel(xf, xr), pref)
+    f = ausm_up(fl, fr, n, g, minf, pref)
+    t = flux_terms(fl, fr, f, n, g, pref) + ausm_diffusion_terms(fl, fr, n, g, minf, pref)
+    return area * t + magnitude(warp(0.5 * (fl + fr), gl, pl, gr, pr, m, g, pref))
+
+
+@pointwise
+def boundary_terms(
+    wf: State.Vec5,
+    wb: State.Vec5,
+    f: State.Vec5,
+    kind: Geom,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    n: Geom.Vec3,
+    area: Geom,
+    m: Geom.Mat3,
+    g: Param,
+    pref: Param,
+) -> Residual.Vec5:
+    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
+        t = area * magnitude(wall_flux(wf, n)) + magnitude(wall_warp(gl, pl, m))
+    else:
+        t = area * flux_terms(wf, wb, f, n, g, pref)
+    return t
+
+
+@pointwise
+def roe_boundary_terms(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    kind: Geom,
+    data: State.Vec5,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    m: Geom.Mat3,
+    g: Param,
+    pref: Param,
+    rgas: Param,
+) -> Residual.Vec5:
+    wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    wb = boundary_value(wf, kind, data, n, g, rgas, pref)
+    return boundary_terms(wf, wb, roe(wf, wb, n, g, pref), kind, gl, pl, n, area, m, g, pref)
+
+
+@pointwise
+def hllc_boundary_terms(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    kind: Geom,
+    data: State.Vec5,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    m: Geom.Mat3,
+    g: Param,
+    pref: Param,
+    rgas: Param,
+) -> Residual.Vec5:
+    wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    wb = boundary_value(wf, kind, data, n, g, rgas, pref)
+    return boundary_terms(wf, wb, hllc(wf, wb, n, g, pref), kind, gl, pl, n, area, m, g, pref)
+
+
+@pointwise
+def ausm_boundary_terms(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    kind: Geom,
+    data: State.Vec5,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    m: Geom.Mat3,
+    g: Param,
+    pref: Param,
+    rgas: Param,
+    minf: Param,
+) -> Residual.Vec5:
+    wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    wb = boundary_value(wf, kind, data, n, g, rgas, pref)
+    f = ausm_up(wf, wb, n, g, minf, pref)
+    t = boundary_terms(wf, wb, f, kind, gl, pl, n, area, m, g, pref)
+    if kind < BC_SLIP - 0.5 or kind > BC_SLIP + 0.5:
+        t = t + area * ausm_diffusion_terms(wf, wb, n, g, minf, pref)
+    return t
+
+
+@pointwise
+def source_terms(s: State.Vec5, vol: Geom) -> Residual.Vec5:
+    return vol * magnitude(s)
+
+
+FLOOR = Inc(floor_terms, left=+1, right=+1)
+floor_sources = cell_loop(source_terms, s=source, vol=geometry.cell_volume, out=Write(floor_terms))
+roe_faces_floor = face_loop(roe_face_terms, **FACE_ARGS, out=FLOOR)
+hllc_faces_floor = face_loop(hllc_face_terms, **FACE_ARGS, out=FLOOR)
+ausm_faces_floor = face_loop(ausm_face_terms, **FACE_ARGS, minf=mach_ref, out=FLOOR)
+roe_boundaries_floor = boundary_loop(
+    roe_boundary_terms, **BOUNDARY_ARGS, out=Inc(floor_terms, left=+1)
+)
+hllc_boundaries_floor = boundary_loop(
+    hllc_boundary_terms, **BOUNDARY_ARGS, out=Inc(floor_terms, left=+1)
+)
+ausm_boundaries_floor = boundary_loop(
+    ausm_boundary_terms, **BOUNDARY_ARGS, minf=mach_ref, out=Inc(floor_terms, left=+1)
+)
+
 bnd_jac = faces.field("bnd_jac", Jac.shape(5, 5))
 BOUNDARY_JAC = [Inc(res, left=+1), Jacobian(bnd_jac, wrt="wl")]
 roe_boundaries_jacobian = boundary_loop(roe_boundary, **BOUNDARY_ARGS, out=BOUNDARY_JAC)
