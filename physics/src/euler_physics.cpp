@@ -849,7 +849,17 @@ class EulerPhysics final : public runtime::Physics {
   // R(u) of the FP64 solution, through the policy's state type.
   void residual_of(const std::vector<double>& u) {
     euler_.state(u, state_);
+    eddy_viscosity_of_state();
     euler_.residual(state_, res_);
+  }
+
+  // With SA, the eddy viscosity the flow reads is that of state_ and the current rho nt, from the
+  // primitives of a flow evaluation at state_: the residual is a function of the state alone,
+  // which a continued run rebuilds.
+  void eddy_viscosity_of_state() {
+    if (!sa_) return;
+    euler_.residual(state_, res_);
+    sa_->model.eddy_viscosity(sa_->stored(sa_->rnu));
   }
 
   // results.md#history: sqrt(sum R_i^2 / N) over the owned cells of every rank, summed exactly.
@@ -871,6 +881,7 @@ class EulerPhysics final : public runtime::Physics {
 
   void steady_step(StepReport& report) {
     euler_.state(u_, state_);
+    eddy_viscosity_of_state();
     if (!second_order_) {
       // The history reports the second-order residual from the first step on, so that the
       // runtime never judges convergence on the first-order one.
@@ -1010,7 +1021,6 @@ class EulerPhysics final : public runtime::Physics {
               alpha * std::clamp(t.dx[c], -nt_max_decrease * scale, nt_max_increase * scale);
         }
       }
-      t.model.eddy_viscosity(t.stored(t.rnu));
     }
   }
 
@@ -1193,16 +1203,16 @@ class EulerPhysics final : public runtime::Physics {
     return f;
   }
 
-  // Viscous traction -tau n on every boundary face (3 x n_boundary_faces), zero for inviscid flow;
-  // after face_pressure(), which evaluates the residual.
+  // Viscous traction -tau n on every boundary face (3 x n_boundary_faces) of the current state,
+  // zero for inviscid flow; from the evaluation face_pressure() caches.
   [[nodiscard]] std::vector<double> face_traction() const {
-    std::vector<double> t(3 * static_cast<std::size_t>(ctx_.mesh.n_boundary_faces()), 0.0);
-    if constexpr (is_viscous) euler_.viscous_traction(t);
-    return t;
+    std::vector<double> p(static_cast<std::size_t>(ctx_.mesh.n_boundary_faces()));
+    face_pressure(p, {});
+    return traction_;
   }
 
-  // The boundary pressure of the current state, evaluated once per state: every force monitor of
-  // an iteration reads the same values (one host residual, not one per monitor).
+  // The boundary pressure and traction of the current state, evaluated once per state: every force
+  // monitor of an iteration reads the same values (one host residual, not one per monitor).
   void face_pressure(std::span<double> p, std::span<double> force) const {
     auto& self = const_cast<EulerPhysics&>(*this);
     if (!pressure_valid_) {
@@ -1212,6 +1222,8 @@ class EulerPhysics final : public runtime::Physics {
       self.pressure_.assign(nb, 0.0);
       self.pressure_force_.assign(3 * nb, 0.0);
       euler_.boundary_pressure(self.pressure_, self.pressure_force_);
+      self.traction_.assign(3 * nb, 0.0);
+      if constexpr (is_viscous) euler_.viscous_traction(self.traction_);
       self.pressure_valid_ = true;
     }
     std::copy(pressure_.begin(), pressure_.end(), p.begin());
@@ -1286,7 +1298,7 @@ class EulerPhysics final : public runtime::Physics {
   std::unique_ptr<DeviceStepper<P>> device_;  // devices.kind = cuda
   bool host_stale_ = false;
   // face_pressure's values for the current state; a step invalidates them.
-  std::vector<double> pressure_, pressure_force_;
+  std::vector<double> pressure_, pressure_force_, traction_;
   bool pressure_valid_ = false;
   bool device_checked_ = false;
 

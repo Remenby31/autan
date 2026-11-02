@@ -1308,6 +1308,51 @@ TEST_CASE("a Spalart-Allmaras run steps its six equations", "[navier-stokes]") {
   }
 }
 
+TEST_CASE("a continued Spalart-Allmaras run repeats the uninterrupted one bit for bit",
+          "[navier-stokes]") {
+  // The residual is a function of the state: the eddy viscosity the flow reads is the current
+  // state's, which a restart rebuilds. Continued one step before and one after the switch to
+  // second order (SolverSecondOrder in the restart state), where the SA update starts.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  CAPTURE(precision);
+  auto doc = [&](int budget) {
+    return input("hybrid.solver-input.json", [&](Json& d) {
+      d["precision"] = precision;
+      d["time"]["max_iterations"] = budget;
+      d["time"]["residual_orders"] = 30.0;
+    });
+  };
+  auto finished = [&](const Json& d) {
+    const auto r = run(d);
+    INFO(r.err);
+    REQUIRE(r.status == ExitStatus::finished);
+    return r.run;
+  };
+  constexpr int budget = 230;
+  const auto whole = finished(doc(budget));
+  const auto steps = static_cast<int>(history(whole).size());
+  auto second_order = [&](int n) {
+    return field(finished(doc(n)), "SolverSecondOrder", "RestartState").front() == 1.0;
+  };
+  REQUIRE(second_order(steps));
+  int lo = 0, s = steps;  // after s steps the run is at second order, after lo it is not
+  while (s - lo > 1) {
+    const int mid = (lo + s) / 2;
+    (second_order(mid) ? s : lo) = mid;
+  }
+  INFO("switch at step " << s);
+  REQUIRE(s >= 2);
+  REQUIRE(steps >= s + 2);
+  const auto all = read(whole / "history.jsonl");
+  for (const int at : {s - 1, s + 1}) {
+    const auto first = finished(doc(at));
+    auto next = doc(budget);
+    next["start"] = continue_from(first);
+    const auto rest = finished(next);
+    CHECK(read(first / "history.jsonl") + read(rest / "history.jsonl") == all);
+  }
+}
+
 TEST_CASE("a point vortex takes the Kutta-Joukowski circulation of its surfaces' lift", "[euler]") {
   // tests/data/mesh/hybrid with y halved (span 0.5); the slip walls xmin and zmin carry the
   // vortex of every other side. Uniform at p1 = 1.3 p_inf, the walls carry (p1 - p_inf) A on
