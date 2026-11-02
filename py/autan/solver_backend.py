@@ -159,7 +159,7 @@ class SolverBackend:
         return [f"{key} differs" for key in expected if expected[key] != found[key]]
 
 
-FINISHED = frozenset({"converged", "completed", "stopped", "diverged"})
+FINISHED = frozenset({"converged", "floor", "completed", "stopped", "diverged"})
 # Seconds the runtime has to finalize a stopped run before it is terminated, then killed.
 GRACE = 60.0
 # Seconds left to read the pipes once the process group has been killed.
