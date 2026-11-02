@@ -8,6 +8,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 from autan_ui.app import create_app
+from autan_ui.confine import Folder
 from fastapi.testclient import TestClient
 
 # Written by `autan-mesh-info --surface` and `--json` from tests/data/mesh/hybrid in four
@@ -219,3 +220,25 @@ def test_a_mesh_without_its_surface_is_404(tmp_path: Path) -> None:
 
     assert client.get("/api/meshes/polyMesh/surface").status_code == 404
     assert client.get("/api/meshes/missing/surface").status_code == 404
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["../outside", "..%2Foutside", "%2e%2e%2Foutside", "%2Ftmp%2Foutside", "..", "linked"],
+)
+def test_a_surface_is_read_only_from_the_meshes_folder(tmp_path: Path, name: str) -> None:
+    # A valid mesh and surface beside the folder, reachable by traversal or through links.
+    for suffix in (".meshinfo.json", ".surface"):
+        shutil.copy(DATA / f"polyMesh{suffix}", tmp_path / f"outside{suffix}")
+    client = _client(tmp_path, "polyMesh")
+    for suffix in (".meshinfo.json", ".surface"):
+        (tmp_path / "meshes" / f"linked{suffix}").symlink_to(tmp_path / f"outside{suffix}")
+
+    response = client.get(f"/api/meshes/{name}/surface")
+
+    assert response.status_code in (404, 422)
+    assert client.get("/api/meshes/polyMesh/surface").status_code == 200
+    assert "outside" not in [m["name"] for m in client.get("/api/meshes").json()]
+    with Folder(tmp_path / "meshes") as folder:
+        assert folder.stat("../outside.surface") is None
+        assert folder.stat(str(tmp_path / "outside.surface")) is None
