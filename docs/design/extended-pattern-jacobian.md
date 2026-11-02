@@ -138,8 +138,11 @@ Total about 4–5 weeks, then Euler's chain (1 week, it needs (1)), then the dev
 #397's operator: the outer Krylov product is the frozen-limiter J by finite differences of the residual, and today's ring-1 J̃ with its multigrid or line sweeps is the preconditioner.
 
 **Memory.** It is the only way to the true J at DPW4's scale.
-- The extra memory is the GCR basis: at most 10 directions and their products, 2 × 10 × 5 FP64 values a cell, so 800 B a cell, about 7.8 GB on DPW4.
-- Then the frozen state of #402: the primitives, gradients, φ and fallback flags at U, a fraction of the residual's own arrays.
+- The extra memory, per cell (CFD - Multigrille, from #397's product as it was written):
+  - the GCR basis: at most 10 directions and their products, 2 × 10 × 5 FP64 values, 800 B;
+  - the product's workspace: the perturbed state, the residual at U, its own residual, the shift and the assembled rows' product, about 210 B;
+  - #402's frozen workspace: primitives, φ, the bounds and the gradients per cell, the boundary primitives and fallback flags per face, about 400 B on a hybrid mesh.
+  - Together about 1.4 KB a cell, about 14 GB on DPW4.
 - Against that, the ring-3 matrix needs 78 GB, and ring 2 needs 34 GB that still leaves 15–17 % of the weights out.
 
 **Cost per step.** One residual evaluation per GCR iteration, at most 10, plus today's preconditioner. Measured with #397's product on the cases below.
@@ -157,7 +160,16 @@ Total about 4–5 weeks, then Euler's chain (1 week, it needs (1)), then the dev
    - It reacts to the model's error whatever its source: the limiter's switches, φ's variation, the fallback.
    - Cost: one trial residual per step, which becomes the next step's residual when accepted, plus one per backtrack. No memory.
    - It is already designed. Its check on #395's histories found it would act on the laminar plate (more than ×2 on a fifth of the steps) and not on the SA 2-cycle.
-   - What is not known is whether it fires on #397's limited cases. The same kind of check answers it before any code, on the histories #397 already has: the bump 384 and NACA 256² runs, the ratio ‖R_{n+1}‖ / ‖R_n‖ per step, with the reading declared first.
+   - Whether it fires on #397's limited cases was checked on the histories #397 already has (CFD - Multigrille), with the reading of the pseudo-transient note's own check on #395 (the rule acts on a case only if ‖R_{n+1}‖ / ‖R_n‖ exceeds 2 on its steps); the reading was not written into this note before the numbers were computed, which is stated here. From the first matrix-free step, in the SER's norm (non-exempt equations, scaled by that step's values, maximum):
+
+     | #397 run | Matrix-free from step | ‖R_{n+1}‖ / ‖R_n‖ | Steps above 2 |
+     |---|---|---|---|
+     | bump 384 (not converged in 1500) | 70 | 0.66 – 2.09 | 1 (step 86) |
+     | NACA M 0.5 α 1.25° 256² (+19 %) | 58 | 0.70 – 1.48 | 0 |
+     | NACA M 0.8 α 0° 256² (+21 %) | 202 | 0.49 – 11.1 | 1 (step 202, the first matrix-free step) |
+     | NACA M 0.8 α 1.25° 256² (+193 %) | 63 | 0.68 – 1.49 | 0 |
+
+     On two of the four lost cases the test never fires, and on the other two once: the published rule would have left #397's limited runs essentially as they were. It does not make the matrix-free path hold on the limited cases.
 2. **A smaller CFL number on the limited cells only.** For example, a local V/Δt raised where φ < 1 or where a selection switched (the record of note (iii)). No source read in full gives such a rule or its factor, so none is proposed here: its threshold would be fitted to the cases.
 3. **A limiter that is differentiable** (#244, blocked on its source's PDF).
    - With it, the finite-difference product through the unfrozen residual is the derivative of a C¹ residual, so the freezing error goes.
@@ -167,6 +179,6 @@ Total about 4–5 weeks, then Euler's chain (1 week, it needs (1)), then the dev
 **Reading for the decision, for the orchestrator.**
 - Ring 3 is exact but does not fit DPW4 on one GB10 (hierarchy 89–113 GB before the physics). Ring 2 fits on the host (44–54 GB) and on the device only with FP32 off-diagonal blocks, and is not argued to be enough.
 - The wider pattern costs about 11–14 weeks across four agents: host linear solver 4–5, Euler's chain 1, generator 3.5–4.5, device multigrid 2–3. Its steps cost 3–7 × today's, and the multigrid's convergence on the wider matrix is unknown before measuring.
-- The matrix-free path reaches the true J at any scale for about 8 GB.
+- The matrix-free path reaches the true J at any scale for about 14 GB.
 - Its known failure, the limited cases, is a globalisation failure, which ring 3 would share.
-- The cheapest next step that can falsify it is the declared check of (1) on #397's limited histories: hours, no code.
+- The check of (1) on #397's limited histories is done (above): the published residual test barely fires there, so it is not the remedy for the limited cases; (2) has no source and (3) is blocked. The matrix-free path's failure on the limited cases is therefore not answered by any designed rule today.
