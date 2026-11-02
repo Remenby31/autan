@@ -1548,7 +1548,7 @@ TEST_CASE("A run that needs more memory than its host can give is refused before
   CHECK(kept["code"] == "E0711");
   CHECK(kept["data"]["margin_bytes"] == huge);
   // Started anyway on request, with W0712 and the same data in run.json and the log.
-  const Outcome over = run(input([](Json& d) { d["memory"]["bytes_host"] = huge; }), registry, {},
+  const Outcome over = run(input([&](Json& d) { d["memory"]["bytes_host"] = huge; }), registry, {},
                            {.allow_oversubscription = true});
   REQUIRE(over.status == ExitStatus::finished);
   const Json info = Json::parse(read(over.run / "run.json"));
@@ -1749,7 +1749,7 @@ TEST_CASE("The ranks of a host share its memory", "[runtime][mpi]") {
   // solver-input.md, `memory` is one rank's: two ranks on one host need twice it.
   constexpr std::int64_t huge = std::int64_t{1} << 60;
   constexpr int ranks = 2;
-  const Json heavy = input([](Json& d) { d["memory"]["bytes_host"] = huge; });
+  const Json heavy = input([&](Json& d) { d["memory"]["bytes_host"] = huge; });
   Json refusal;
   CHECK(run_on_ranks(heavy, ranks, {}, 2, &refusal, {}, false).empty());
   CHECK(refusal["code"] == "E0711");
