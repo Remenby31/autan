@@ -29,7 +29,7 @@ class StateFileLoad:
 _CUDA_CONTEXT = 512 * 2**20
 # The multigrid factors its coarsest level densely up to this many unknowns (multigrid.cpp).
 _DENSE_UNKNOWNS = 1000
-_READING = {"gmsh": 3.25, "fluent": 3.25, "cgns": 3.25, "polymesh": 1.25}
+_READING = {"gmsh": 3.0, "fluent": 3.0, "cgns": 3.0, "polymesh": 1.25}
 # DeviceMesh stages each upload through at most this many values (device.cuh, upload_chunk).
 _UPLOAD_CHUNK = 2**20
 
@@ -160,8 +160,8 @@ def _rank(
     geometry = 56 * faces + 32 * cells
     add("mesh", mesh_bytes + geometry + 12 * cells)
     add("mesh setup", mesh_bytes + geometry)  # kept resident by the allocator: not transient
-    # Reading the file: beyond the mesh it returns, 3.25 times the mesh's arrays for the
-    # element readers (Gmsh, Fluent, CGNS; at most 2.99 measured) and 1.25 times for polyMesh
+    # Reading the file: beyond the mesh it returns, at most 3 times the mesh's arrays for the
+    # element readers (Gmsh, Fluent, CGNS; 2.94 at most measured) and 1.25 times for polyMesh
     # (1.19), plus the file's bytes for sections a reader skips.
     reading = _READING[mesh.source.format] * mesh_bytes + mesh.source.bytes
     add("mesh reading", reading, transient=True)
