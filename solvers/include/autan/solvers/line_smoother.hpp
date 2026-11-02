@@ -39,6 +39,9 @@ class LineSmoother {
                     std::span<const double> lower);
 
   [[nodiscard]] std::int32_t n_colours() const noexcept { return n_colours_; }
+  /// y = A x on the owned rows, each row summed in the order of its faces' global ids (ghost
+  /// rows of y untouched): the same bits on any partition.
+  void multiply(std::span<const double> x, std::span<double> y) const;
   /// Relaxes the lines and lone cells of one colour on A x = b, from the current x, ghosts
   /// included.
   void relax(std::int32_t colour, std::span<const double> b, std::span<double> x) const;

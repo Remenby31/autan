@@ -196,6 +196,27 @@ void LineSmoother::solve_unit(const Unit& unit, std::span<const double> b,
   }
 }
 
+void LineSmoother::multiply(std::span<const double> x, std::span<double> y) const {
+  const std::size_t n = n_cells_;
+  for (std::size_t c = 0; c < n_owned_; ++c) {
+    std::array<double, 5> s{};
+    const double* d = &diag_[b2 * c];
+    for (std::size_t q = 0; q < 5; ++q) {
+      for (std::size_t j = 0; j < 5; ++j) s[q] += d[5 * q + j] * x[j * n + c];
+    }
+    for (auto p = cell_offsets_[c]; p < cell_offsets_[c + 1]; ++p) {
+      const auto f = static_cast<std::size_t>(cell_faces_[static_cast<std::size_t>(p)]);
+      const bool own = static_cast<std::size_t>(owner_[f]) == c;
+      const auto m = static_cast<std::size_t>(own ? neighbour_[f] : owner_[f]);
+      const double* a = own ? &upper_[b2 * f] : &lower_[b2 * f];
+      for (std::size_t q = 0; q < 5; ++q) {
+        for (std::size_t j = 0; j < 5; ++j) s[q] += a[5 * q + j] * x[j * n + m];
+      }
+    }
+    for (std::size_t q = 0; q < 5; ++q) y[q * n + c] = s[q];
+  }
+}
+
 void LineSmoother::relax(std::int32_t colour, std::span<const double> b,
                          std::span<double> x) const {
   for (const std::size_t u : by_colour_[static_cast<std::size_t>(colour)]) {

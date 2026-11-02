@@ -628,6 +628,13 @@ TEST_CASE("one line sweep solves a block-tridiagonal system exactly", "[multigri
   const std::vector<std::int32_t> colours(n, 0);
   autan::solvers::LineSmoother ls(mesh, lines.offsets, lines.cells, colours, 1);
   ls.set_operator(s.diag, s.upper, s.lower);
+  // Its product is A x: b, to round-off.
+  std::vector<double> ax(5 * n, 0.0);
+  ls.multiply(x_exact, ax);
+  for (std::size_t k = 0; k < ax.size(); ++k) {
+    CHECK(std::abs(ax[k] - b[k]) <=
+          1e3 * std::numeric_limits<double>::epsilon() * std::abs(b[k]) + 1e-300);
+  }
   for (const bool distributed : {false, true}) {
     std::vector<double> x(5 * n, 0.0);
     if (distributed) {

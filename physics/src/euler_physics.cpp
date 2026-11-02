@@ -714,7 +714,7 @@ class EulerPhysics final : public runtime::Physics {
         auto exchange = [this](std::span<double> x) { fill_ghosts(x); };
         krylov_residual_ = rhs_;
         linear = gcr_.solve(
-            [&](std::span<const double> v, std::span<double> y) { matrix_->multiply(v, y); },
+            [&](std::span<const double> v, std::span<double> y) { lines_->multiply(v, y); },
             [&](std::span<const double> r, std::span<double> z) {
               lines_->sweep(r, z, gauss_seidel_sweeps, exchange);
             },
