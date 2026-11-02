@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -157,8 +158,11 @@ def test_without_a_readable_base_everything_runs(repo):
         ("bench/ci/gate.sh", "true", "true"),
         ("bench/pyproject.toml", "true", "true"),
         ("bench/uv.lock", "true", "true"),
-        ("bench/ci/changes.sh", "false", "true"),
-        ("bench/ci/check-measured.py", "false", "true"),
+        ("bench/ci/changes.sh", "true", "true"),
+        ("bench/ci/check-measured.py", "true", "true"),
+        ("vv/src/autan_vv/cli.py", "true", "false"),
+        ("vv/uv.lock", "true", "false"),
+        ("vv/src/autan_vv/report.py", "false", "false"),
         ("bench/lock/autan-gpu-lock", "false", "true"),
         ("bench/campaign/autan-campaign", "false", "true"),
         ("docker/runner/entrypoint.sh", "false", "true"),
@@ -173,3 +177,17 @@ def test_each_path_is_measured_tested_or_neither(repo, path, bench, harness):
     commit(repo, path)
     pull_request_merge(repo, "change")
     assert decide(repo, "pull_request") == {"bench": bench, "harness": harness}
+
+
+def test_every_input_of_the_measured_mesh_is_a_measured_path():
+    # The mesh job's cache key names what `autan-vv meshes` runs: a change to any of it changes
+    # the measured mesh, so it must start the bench.
+    workflow = (SCRIPT.parents[2] / ".github" / "workflows" / "gpu-bench.yml").read_text()
+    key = re.search(r"key: mesh-hex-n128-\$\{\{ hashFiles\((.*)\) \}\}", workflow)
+    assert key is not None
+    globs = re.findall(r"'([^']+)'", key.group(1))
+    pattern = subprocess.run(["bash", str(SCRIPT), "--measured"], capture_output=True,
+                             text=True, check=True).stdout.splitlines()[1]  # fmt: skip
+    for glob in globs:
+        sample = glob.replace("/**", "/x.py")
+        assert re.search(pattern, sample), glob

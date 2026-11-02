@@ -15,9 +15,11 @@ set -euo pipefail
 # (runtime/, physics/, solvers/ on 2026-11-02) does not wait hours for a measurement of nothing
 # it changed (#360). Then the image the benchmarks run in, and the measurement method itself
 # (bench/src: statistics, timing, protocol; the harness's dependencies; the STREAM binary; the
-# baselines; the gate), the build files, and the mesh generator, which feeds the loop benchmark.
+# baselines; the gate), the build files, the mesh generator, which feeds the loop benchmark (what
+# the mesh job's cache key hashes), and this filter and its check, so that a change to either
+# is checked against the real build graph.
 measured_dirs=(codegen core io kernels partition)
-measured_paths="^($(IFS='|'; echo "${measured_dirs[*]}"))/"'|^docker/dev/|^bench/(src|stream|cmake|baselines)/|^bench/(pyproject\.toml|uv\.lock|ci/gate\.sh)$|(^|/)CMakeLists\.txt$|\.cmake$|^vv/src/autan_vv/meshes/|^\.github/workflows/gpu-bench\.yml$'
+measured_paths="^($(IFS='|'; echo "${measured_dirs[*]}"))/"'|^docker/dev/|^bench/(src|stream|cmake|baselines)/|^bench/(pyproject\.toml|uv\.lock|ci/gate\.sh)$|(^|/)CMakeLists\.txt$|\.cmake$|^vv/src/autan_vv/(meshes|oracles)/|^vv/src/autan_vv/(cli|errors|__init__)\.py$|^vv/(pyproject\.toml|uv\.lock|\.python-version)$|^bench/ci/(changes\.sh|check-measured\.py)$|^\.github/workflows/gpu-bench\.yml$'
 if [[ ${1:-} == --measured ]]; then
   echo "${measured_dirs[*]}"; echo "$measured_paths"; exit 0
 fi
