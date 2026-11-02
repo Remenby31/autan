@@ -1,4 +1,5 @@
 import type { PolarPoint, PolarSeries } from "../api/polars";
+import { coefficient } from "../api/units";
 
 const W = 480;
 const H = 240;
@@ -134,7 +135,7 @@ export function PolarChart({
           stroke="var(--bg-0)"
           strokeWidth={1}
         >
-          <title>{`${p.role} · α ${exact.format(p.alpha)}° · CL ${exact.format(p.cl)} · CD ${exact.format(p.cd)}`}</title>
+          <title>{`${p.role} · α ${exact.format(p.alpha)}° · CL ${coefficient(p.cl)} · CD ${coefficient(p.cd)}`}</title>
         </circle>
       ))}
     </svg>
