@@ -115,10 +115,39 @@ net_kill() {  # launcher PID whose ranks have all ended
   kill -KILL "$launcher" 2>/dev/null
 }
 
+ticks() {  # PID: "STATE CPU_TICKS VOLUNTARY NONVOLUNTARY" (utime + stime; context switches)
+  local stat fields
+  stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+  read -ra fields <<<"${stat##*) }"  # after the command name, which may hold spaces
+  awk -v s="${fields[0]}" -v t=$((fields[11] + fields[12])) \
+    '/^voluntary_ctxt_switches/ {v = $2} /^nonvoluntary_ctxt_switches/ {n = $2}
+     END {print s, t, v + 0, n + 0}' "/proc/$1/status" 2>/dev/null
+}
+
+activity() {  # PIDS...: what each does over one second, from /proc alone (no ptrace needed): a
+  # rank busy-polling (CPU near 100 %, running) is starved or spinning, one sleeping in a wait
+  # with no CPU is blocked; the difference between oversubscription and a deadlock (#304).
+  local pid before=() after=() i=0 state t0 t1 v0 v1 n0 n1
+  for pid in "$@"; do before+=("$(ticks "$pid")"); done
+  sleep 1
+  for pid in "$@"; do after+=("$(ticks "$pid")"); done
+  for pid in "$@"; do
+    read -r _ t0 v0 n0 <<<"${before[$i]:-? 0 0 0}"
+    read -r state t1 v1 n1 <<<"${after[$i]:-gone 0 0 0}"
+    printf 'pid %s %s: state %s, CPU %d %% over 1 s, wchan %s, +%d voluntary +%d involuntary switches\n' \
+      "$pid" "$(cat "/proc/$pid/comm" 2>/dev/null || echo '?')" "$state" \
+      $(((t1 - t0) * 100 / clk_tck)) "$(cat "/proc/$pid/wchan" 2>/dev/null || echo '?')" \
+      $((v1 - v0)) $((n1 - n0))
+    i=$((i + 1))
+  done
+}
+
 dump_and_kill() {  # launcher PID
   local launcher=$1 pid tree debuggers=()
   tree=$(descendants "$launcher")
   echo "::group::watchdog: $(tr '\0' ' ' <"/proc/$launcher/cmdline") ran over ${limit} s; stacks"
+  # shellcheck disable=SC2086
+  activity $tree | tee "$dir/$launcher-activity.txt"
   if ! command -v "${gdb_cmd##* }" >/dev/null 2>&1; then
     echo "::warning::watchdog: no debugger ($gdb_cmd): stacks not collected"
   fi

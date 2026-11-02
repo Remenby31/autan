@@ -53,6 +53,28 @@ def test_a_hung_launcher_is_dumped_then_killed_and_the_command_fails(tmp_path):
     assert not running(pid)
 
 
+def test_a_hang_s_dump_tells_a_spinning_rank_from_a_blocked_one(tmp_path):
+    """Without a debugger (the runners have none, and no ptrace): /proc says whether each rank
+    burns CPU, as ranks busy-polling on an oversubscribed host do, or sleeps, as in a deadlock."""
+    spin, block = tmp_path / "spin.pid", tmp_path / "block.pid"
+    body = (f"sh -c 'echo $$ > {spin}; while :; do :; done' & "
+            f"sh -c 'echo $$ > {block}; exec sleep 300' & wait")  # fmt: skip
+    env = {**fake_tools(tmp_path, body), "AUTAN_WATCHDOG_GDB": "/nonexistent/gdb"}
+    stacks = tmp_path / "stacks"
+    proc = subprocess.run([str(WATCHDOG), "2", str(stacks), "--", "sh", "-c", "mpiexec"],
+                          check=False, env=env, capture_output=True, text=True, timeout=60)  # fmt: skip
+    assert proc.returncode != 0
+    (report,) = stacks.glob("*-activity.txt")
+    lines = {line.split()[1]: line for line in report.read_text().splitlines()}
+    spinning, blocked = lines[spin.read_text().strip()], lines[block.read_text().strip()]
+    assert "state R" in spinning
+    assert int(spinning.split("CPU ")[1].split()[0]) >= 50
+    assert "state S" in blocked
+    assert "CPU 0 %" in blocked
+    assert report.read_text() in proc.stdout  # in the job's log as well
+    assert "no debugger" in proc.stdout
+
+
 def test_a_launcher_that_finishes_in_time_is_left_alone(tmp_path):
     env = fake_tools(tmp_path, "sleep 1")
     stacks = tmp_path / "stacks"
