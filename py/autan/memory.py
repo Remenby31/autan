@@ -14,6 +14,8 @@ DeviceKind = Literal["cpu", "cuda", "hip"]
 _CUDA_CONTEXT = 512 * 2**20
 # The multigrid factors its coarsest level densely up to this many unknowns (multigrid.cpp).
 _DENSE_UNKNOWNS = 1000
+# DeviceMesh stages each upload through at most this many values (device.cuh, upload_chunk).
+_UPLOAD_CHUNK = 2**20
 
 
 class Component(BaseModel):
@@ -165,13 +167,13 @@ def _rank(
     packed = 8 * (25 * f + 4 * c + 4 * k)
     add("physics setup", packed + 32 * stencil, transient=True)
     if device_kind != "cpu":
-        # DeviceMesh keeps on the host the packed geometry, its FP64 stencil weights, a copy of
-        # the stencil and the face colourings. Its setup passes through three phases in turn:
-        # construction (a second packed copy, incidence twins, colouring work), the weights'
-        # upload (an FP64 copy, the limiter's unit field) and bind (one field converted, the
-        # face moments 72F at most).
-        add("device mesh host", packed + 24 * stencil + 8 * (c + 1) + 4 * stencil + 4 * f)
-        setup = max(packed + 8 * k + 8 * f, 24 * stencil + n * c * s, 72 * f)
+        # DeviceMesh keeps on the host the packed geometry moved into it, its FP64 stencil
+        # weights and the face colourings (the physics does not call release_host). Its setup
+        # passes through three phases in turn: construction (incidence twins, colouring work),
+        # the weights' upload (the physics' FP64 copy, the limiter's unit field) and bind (one
+        # staged chunk of 2^20 values).
+        add("device mesh host", packed + 24 * stencil + 4 * f)
+        setup = max(8 * k + 8 * f, 24 * stencil + n * c * s, 8 * _UPLOAD_CHUNK)
         add("device setup", setup, transient=True)
         device = (
             2 * n * c * 8
