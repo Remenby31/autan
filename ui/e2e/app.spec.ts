@@ -629,6 +629,32 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
   }
 });
 
+test("views of results carry no renderer figures, and codes explain themselves", async ({
+  page,
+}) => {
+  const all = await runs(page);
+  const converged = all.find((r) => r.status === "converged") as Run;
+  await page.goto(`/viewer?run=${converged.run_id}`);
+  await expect(page.getByTestId("zones")).toBeVisible();
+  await expect(page.getByTestId("viewer-status")).toHaveText("");
+  await page.goto("/viewer?bench=1");
+  await expect(page.getByTestId("viewer-status")).toContainText("triangles");
+
+  const diverged = all.find((r) => r.status === "diverged") as Run;
+  const diagnostic = diverged.diagnostics[0];
+  await page.goto("/");
+  const code = page
+    .locator(`a[data-run="${diverged.run_id}"]`)
+    .getByText(diagnostic?.code ?? "")
+    .first();
+  // The message is part of the row's text for a screen reader, and shows on hover.
+  await expect(page.locator(`a[data-run="${diverged.run_id}"]`)).toContainText(
+    diagnostic?.message ?? "",
+  );
+  await code.hover();
+  await expect(page.getByText(diagnostic?.message ?? "", { exact: true })).toBeVisible();
+});
+
 test("an unknown run or address says so, and outputs download as they are", async ({ page }) => {
   await page.goto("/runs/run-20200101T000000Z-deadbeef");
   await expect(page.getByRole("heading", { name: "No such run" })).toBeVisible();
