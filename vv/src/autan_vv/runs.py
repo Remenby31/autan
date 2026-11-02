@@ -280,9 +280,24 @@ def write_run(
             "monitors": {},
         }
     )
-    final = writer.info.model_copy(update={"status": status, "iterations": 1, "time": time})
+    # A `floor` run carries its floor test at its last iteration, every cell at its floor
+    # (results.md, run.json `convergence`).
+    floor = (
+        {
+            "convergence": autan.results.Convergence(
+                iteration=1,
+                max_ratio=dict.fromkeys(residual_names(spec), 0.5),
+                cells_at_floor=dict.fromkeys(residual_names(spec), 1.0),
+            )
+        }
+        if status == "floor"
+        else {}
+    )
+    final = writer.info.model_copy(
+        update={"status": status, "iterations": 1, "time": time, **floor}
+    )
     staging = writer.path / ".solution.cgns.tmp"
     _write_solution(staging, mesh, plan, final, {k: fields[k] for k in field_names(spec)})
     staging.rename(writer.path / "solution.cgns")
-    writer.finish(status=status, iterations=1, time=time)
+    writer.finish(status=status, iterations=1, time=time, **floor)
     return autan.Results.open(writer.path)
