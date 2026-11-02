@@ -616,7 +616,12 @@ test("views of results carry no renderer figures, and codes explain themselves",
   await page.goto("/");
   const code = page
     .locator(`a[data-run="${diverged.run_id}"]`)
-    .getByText(diagnostic?.code ?? "", { exact: true });
+    .getByText(diagnostic?.code ?? "")
+    .first();
+  // The message is part of the row's text for a screen reader, and shows on hover.
+  await expect(page.locator(`a[data-run="${diverged.run_id}"]`)).toContainText(
+    diagnostic?.message ?? "",
+  );
   await code.hover();
   await expect(page.getByText(diagnostic?.message ?? "", { exact: true })).toBeVisible();
 });

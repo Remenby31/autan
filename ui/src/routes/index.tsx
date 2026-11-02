@@ -503,7 +503,10 @@ function RunRow({
           <Status status={run.status} duration={duration(run)} />
           {run.diagnostics[0] && (
             <Tooltip content={run.diagnostics[0].message}>
-              <span className="font-mono text-danger text-xs">{run.diagnostics[0].code}</span>
+              <span className="font-mono text-danger text-xs">
+                {run.diagnostics[0].code}
+                <span className="sr-only">: {run.diagnostics[0].message}</span>
+              </span>
             </Tooltip>
           )}
         </span>
