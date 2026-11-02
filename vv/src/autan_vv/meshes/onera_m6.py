@@ -53,7 +53,9 @@ ZONES = ("wing", "symmetry", "farfield")
 GROWTH = 6.0
 EDGE_FACTOR = 1.0 / 3.0
 
-# AGARD AR-138 table B1-1 (Destarac and Dumont 2016, table 1): root section, upper half, x/c, z/c.
+# AGARD AR-138 table B1-1 as Destarac and Dumont (2016) reprint it in table 1 of
+# Onerawingnumerics_val/ONERA_M6_Test_Case_TMR.pdf, TMBWG/turbmodels (CC0-1.0): root section, upper
+# half, x/c, z/c.
 SECTION = np.array(
     [
         (0.0000000, 0.0000000), (0.0000165, 0.0006914), (0.0000696, 0.0014416),
