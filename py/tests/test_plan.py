@@ -220,7 +220,11 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
             "cell_zones": [{"name": "fluid", "type": None, "native_type": None, "cells": 10}],
             "interfaces": [],
             "periodic": [],
-            "quality": {"max_non_orthogonality_deg": 0.0, "max_faces_per_cell": 6},
+            "quality": {
+                "max_non_orthogonality_deg": 0.0,
+                "max_faces_per_cell": 6,
+                "cells_in_lines": {"order": "rcm", "cells": 0},
+            },
         },
         autan.Location(),
     )

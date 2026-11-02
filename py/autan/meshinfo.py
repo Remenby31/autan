@@ -127,9 +127,15 @@ def shared_zones(pairs: Iterable[tuple[str, str]]) -> set[str]:
     return {name for name in names if names.count(name) > 1}
 
 
+class CellsInLines(_Strict):
+    order: Literal["rcm", "input"]
+    cells: Annotated[int, Field(strict=True, ge=0)]
+
+
 class Quality(_Strict):
     max_non_orthogonality_deg: Annotated[float, Field(strict=True, ge=0, le=180)]
     max_faces_per_cell: Annotated[int, Field(strict=True, ge=4)]
+    cells_in_lines: CellsInLines
 
 
 class MeshInfo(_Strict):
@@ -148,6 +154,8 @@ class MeshInfo(_Strict):
     @model_validator(mode="after")
     def _consistent(self) -> Self:
         problems = []
+        if self.quality.cells_in_lines.cells > self.counts.cells:
+            problems.append("quality.cells_in_lines exceeds counts.cells")
         if self.counts.face_nodes < 3 * self.counts.faces:
             problems.append("counts.face_nodes is below 3 nodes per face")
         if any(low > high for low, high in zip(self.bounds.min, self.bounds.max, strict=True)):
