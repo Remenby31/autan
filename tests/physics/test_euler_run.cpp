@@ -1369,6 +1369,9 @@ TEST_CASE("a Spalart-Allmaras run solves the flow and nu-tilde together after th
   const auto [at, run_at] = second_order(s - 1);
   CHECK(before == 0.0);
   CHECK(at == 1.0);
+  // The switching step is the loose one: it updates rho nt by its own solve.
+  CHECK(field(run_at, "DensityNuTilde", "RestartState") !=
+        field(run_before, "DensityNuTilde", "RestartState"));
   const auto all = read(whole.run / "history.jsonl");
   for (const auto& [from, steps] : {std::pair{run_at, s - 1}, std::pair{fs::path{}, s + 1}}) {
     fs::path first = from;

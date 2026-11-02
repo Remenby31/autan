@@ -913,8 +913,10 @@ class EulerPhysics final : public runtime::Physics {
     // step after the switch to second order, the solve's operator is the true Jacobian applied
     // matrix-free; with SA, of the flow and rho nt together, when the case asks for it
     // (time.coupled_turbulence), the loose step with the assembled operator otherwise.
-    const bool coupled = sa_ != nullptr && ctx_.input.time.coupled_turbulence;
-    const bool matrix_free = is_viscous && second_order_ && multigrid_ && (!sa_ || coupled);
+    const bool requested = sa_ != nullptr && ctx_.input.time.coupled_turbulence;
+    const bool matrix_free = is_viscous && second_order_ && multigrid_ && (!sa_ || requested);
+    // The step that switches to second order is still the loose one, its rho nt solved alone.
+    const bool coupled = matrix_free && requested;
     switch_order(drop);
     // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
     // after each step the admissibility check shortened and recovering by half otherwise.
