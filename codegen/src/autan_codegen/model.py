@@ -25,7 +25,11 @@ ROLE_TYPE = {
     dsl.Role.PARAM: "param",
     dsl.Role.JAC: "jac",
     dsl.Role.JAC_ACCUM: "accum",
+    dsl.Role.FLAG: "flag",
 }
+
+# Loops that write face datasets: passive, no tangent or adjoint.
+FACE_WRITES = frozenset({"face_write", "boundary_write"})
 
 
 @dataclass
@@ -89,6 +93,10 @@ ALLOWED_VIA = {
     },
     "boundary_write": {
         dsl.MeshSet.CELLS: {"left"},
+        dsl.MeshSet.FACES: {"direct"},
+    },
+    "face_write": {
+        dsl.MeshSet.CELLS: {"left", "right"},
         dsl.MeshSet.FACES: {"direct"},
     },
     "cell": {dsl.MeshSet.CELLS: {"direct"}},
@@ -181,7 +189,7 @@ def _check_outputs(where: str, lm: LoopModel) -> None:
             )
     for t, o in zip(rets, loop.outputs, strict=True):
         ds = o.dataset
-        wanted = dsl.MeshSet.FACES if loop.kind == "boundary_write" else dsl.MeshSet.CELLS
+        wanted = dsl.MeshSet.FACES if loop.kind in FACE_WRITES else dsl.MeshSet.CELLS
         if ds.set is not wanted or ds.geometry:
             raise CodegenError(
                 Code.INVALID_BINDING, f"output {ds.name} must be a {wanted.value} dataset", where
@@ -294,7 +302,7 @@ def build_loop(name: str, loop: dsl.Loop) -> LoopModel:
         )
     lm.jac_fns = [(j, _jacobian_fn(where, lm, j)) for j in loop.jacobians]
     _check_outputs(where, lm)
-    if loop.kind == "boundary_write" and not loop.frozen:
+    if loop.kind in FACE_WRITES and not loop.frozen:
         active = [
             b.dataset.name
             for b in loop.bindings.values()
@@ -306,7 +314,7 @@ def build_loop(name: str, loop: dsl.Loop) -> LoopModel:
         if active:
             raise CodegenError(
                 Code.AD_UNSUPPORTED,
-                f"boundary loop writes face data from active {active}: derivatives would be "
+                f"loop writes face data from active {active}: derivatives would be "
                 "dropped; declare frozen=True to accept that",
                 where,
             )

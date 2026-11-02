@@ -17,6 +17,7 @@ faces.
 
 from autan_codegen.dsl import (
     STENCIL,
+    Flag,
     Geom,
     Grad,
     Inc,
@@ -28,6 +29,7 @@ from autan_codegen.dsl import (
     Residual,
     State,
     Sum,
+    Vec2,
     Vec3,
     Vec5,
     Write,
@@ -816,6 +818,248 @@ ausm_boundaries_jacobian = boundary_loop(
 
 
 lam = cells.field("lam", State)
+
+
+# ---------------------------------------------------------------------------- held reconstruction
+
+# The implicit step's matrix-free product (docs/design/matrix-free-step.md) evaluates the residual
+# with the limiter and the reconstruction's positivity fallback held at their values at U. keep
+# holds, per face side in the face's global orientation, 1 where the reconstruction at U kept the
+# cell value (`reconstruct`).
+keep = faces.field("keep", Flag.Vec2)
+
+
+@pointwise
+def reconstructs(
+    w: State.Vec5, gw: Grad.Mat53, lim: State.Vec5, r: Geom.Vec3, pref: Param
+) -> State:
+    d = gw @ r
+    wf = w + Vec5(lim[0] * d[0], lim[1] * d[1], lim[2] * d[2], lim[3] * d[3], lim[4] * d[4])
+    return 0.0 if wf[0] > 0.0 and wf[4] + pref > 0.0 else 1.0
+
+
+@pointwise
+def reconstruct_held(
+    w: State.Vec5, gw: Grad.Mat53, lim: State.Vec5, r: Geom.Vec3, kept: State
+) -> State.Vec5:
+    d = gw @ r
+    wf = w + Vec5(lim[0] * d[0], lim[1] * d[1], lim[2] * d[2], lim[3] * d[3], lim[4] * d[4])
+    return w if kept > 0.5 else wf
+
+
+@pointwise
+def face_fallbacks(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    wr: State.Vec5,
+    gr: Grad.Mat53,
+    pr: State.Vec5,
+    xr: Geom.Vec3,
+    xf: Geom.Vec3,
+    pref: Param,
+) -> Flag.Vec2:
+    return Vec2(
+        reconstructs(wl, gl, pl, rel(xf, xl), pref), reconstructs(wr, gr, pr, rel(xf, xr), pref)
+    )
+
+
+@pointwise
+def boundary_fallbacks(
+    wl: State.Vec5, gl: Grad.Mat53, pl: State.Vec5, xl: Geom.Vec3, xf: Geom.Vec3, pref: Param
+) -> Flag.Vec2:
+    return Vec2(reconstructs(wl, gl, pl, rel(xf, xl), pref), 0.0)
+
+
+FALLBACK_ARGS = {
+    "wl": prim.left,
+    "gl": grad.left,
+    "pl": phi.left,
+    "xl": geometry.cell_centroid.left,
+    "xf": geometry.face_centroid,
+    "pref": p_ref,
+}
+fallbacks_faces = face_loop(
+    face_fallbacks,
+    **FALLBACK_ARGS,
+    wr=prim.right,
+    gr=grad.right,
+    pr=phi.right,
+    xr=geometry.cell_centroid.right,
+    out=Write(keep),
+    frozen=True,
+)
+fallbacks_boundaries = boundary_loop(
+    boundary_fallbacks, **FALLBACK_ARGS, out=Write(keep), frozen=True
+)
+
+
+@pointwise
+def roe_face_held(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    wr: State.Vec5,
+    gr: Grad.Mat53,
+    pr: State.Vec5,
+    xr: Geom.Vec3,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    m: Geom.Mat3,
+    g: Param,
+    pref: Param,
+    k: Flag.Vec2,
+) -> Residual.Vec5:
+    fl = reconstruct_held(wl, gl, pl, rel(xf, xl), k[0])
+    fr = reconstruct_held(wr, gr, pr, rel(xf, xr), k[1])
+    return area * roe(fl, fr, n, g, pref) + warp(0.5 * (fl + fr), gl, pl, gr, pr, m, g, pref)
+
+
+@pointwise
+def hllc_face_held(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    wr: State.Vec5,
+    gr: Grad.Mat53,
+    pr: State.Vec5,
+    xr: Geom.Vec3,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    m: Geom.Mat3,
+    g: Param,
+    pref: Param,
+    k: Flag.Vec2,
+) -> Residual.Vec5:
+    fl = reconstruct_held(wl, gl, pl, rel(xf, xl), k[0])
+    fr = reconstruct_held(wr, gr, pr, rel(xf, xr), k[1])
+    return area * hllc(fl, fr, n, g, pref) + warp(0.5 * (fl + fr), gl, pl, gr, pr, m, g, pref)
+
+
+@pointwise
+def ausm_face_held(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    wr: State.Vec5,
+    gr: Grad.Mat53,
+    pr: State.Vec5,
+    xr: Geom.Vec3,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    m: Geom.Mat3,
+    g: Param,
+    pref: Param,
+    minf: Param,
+    k: Flag.Vec2,
+) -> Residual.Vec5:
+    fl = reconstruct_held(wl, gl, pl, rel(xf, xl), k[0])
+    fr = reconstruct_held(wr, gr, pr, rel(xf, xr), k[1])
+    return area * ausm_up(fl, fr, n, g, minf, pref) + warp(
+        0.5 * (fl + fr), gl, pl, gr, pr, m, g, pref
+    )
+
+
+@pointwise
+def roe_boundary_held(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    kind: Geom,
+    data: State.Vec5,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    m: Geom.Mat3,
+    g: Param,
+    pref: Param,
+    rgas: Param,
+    k: Flag.Vec2,
+) -> Residual.Vec5:
+    wf = reconstruct_held(wl, gl, pl, rel(xf, xl), k[0])
+    wb = boundary_value(wf, kind, data, n, g, rgas, pref)
+    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
+        f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
+    else:
+        f = area * roe(wf, wb, n, g, pref)
+    return f
+
+
+@pointwise
+def hllc_boundary_held(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    kind: Geom,
+    data: State.Vec5,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    m: Geom.Mat3,
+    g: Param,
+    pref: Param,
+    rgas: Param,
+    k: Flag.Vec2,
+) -> Residual.Vec5:
+    wf = reconstruct_held(wl, gl, pl, rel(xf, xl), k[0])
+    wb = boundary_value(wf, kind, data, n, g, rgas, pref)
+    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
+        f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
+    else:
+        f = area * hllc(wf, wb, n, g, pref)
+    return f
+
+
+@pointwise
+def ausm_boundary_held(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    kind: Geom,
+    data: State.Vec5,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    m: Geom.Mat3,
+    g: Param,
+    pref: Param,
+    rgas: Param,
+    minf: Param,
+    k: Flag.Vec2,
+) -> Residual.Vec5:
+    wf = reconstruct_held(wl, gl, pl, rel(xf, xl), k[0])
+    wb = boundary_value(wf, kind, data, n, g, rgas, pref)
+    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
+        f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
+    else:
+        f = area * ausm_up(wf, wb, n, g, minf, pref)
+    return f
+
+
+roe_faces_held = face_loop(roe_face_held, **FACE_ARGS, k=keep, out=Inc(res, left=+1, right=-1))
+hllc_faces_held = face_loop(hllc_face_held, **FACE_ARGS, k=keep, out=Inc(res, left=+1, right=-1))
+ausm_faces_held = face_loop(
+    ausm_face_held, **FACE_ARGS, k=keep, minf=mach_ref, out=Inc(res, left=+1, right=-1)
+)
+roe_boundaries_held = boundary_loop(
+    roe_boundary_held, **BOUNDARY_ARGS, k=keep, out=Inc(res, left=+1)
+)
+hllc_boundaries_held = boundary_loop(
+    hllc_boundary_held, **BOUNDARY_ARGS, k=keep, out=Inc(res, left=+1)
+)
+ausm_boundaries_held = boundary_loop(
+    ausm_boundary_held, **BOUNDARY_ARGS, k=keep, minf=mach_ref, out=Inc(res, left=+1)
+)
 
 
 @pointwise

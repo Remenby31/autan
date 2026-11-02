@@ -6,5 +6,6 @@ bench/results/
 bench/.runs/
 e2e/.runs/
 e2e/.meshes/
+e2e/.perf/
 *.tsbuildinfo
 e2e/.golden/
