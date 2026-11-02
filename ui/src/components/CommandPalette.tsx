@@ -121,9 +121,9 @@ export function CommandPalette({
               {offered.map((s) => (
                 <Item
                   key={s.key}
-                  // Its value ends with the study's key: the same as runs come, and another
-                  // study's never, even under the same case name; name and label are searched.
-                  value={`compare study ${JSON.stringify(s.name)} ${s.key}`}
+                  // Its value is the study's key: the same as runs come and go, another study's
+                  // never, even under the same case name; its names and label are searched.
+                  value={`compare study ${s.key}`}
                   keywords={["compare", s.name, s.label]}
                   icon={<GitCompareArrows className="size-4" />}
                   title={`${s.name} · ${s.label}`}
