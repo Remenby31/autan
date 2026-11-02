@@ -52,12 +52,12 @@ The tet restriction is limited by the fine cell order, not by the kernel. In RCM
 
 ## Galerkin coarse operator
 
-A_c = Pᵀ A P is a set of block sums. Per coarse level, the host builds once, from the fine `Level`, two gather lists in the host's summation order (`Multigrid::set_operator`):
+A_c = Pᵀ A P is a set of block sums. Per coarse level, `galerkin_lists` (`solvers/include/autan/solvers/galerkin_lists.hpp`) builds once, from the fine `Level` and each level's device numbering (`device_orders`), two gather lists in the host's summation order (`Multigrid::set_operator`):
 
 - **diagonal of coarse node I**: the diagonal blocks of its children in increasing fine index, then, for each fine edge inside I in increasing edge index, the owner's then the neighbour's `off` block;
 - **off-diagonal of coarse incidence (I, E)**: for each fine edge e with `coarse_edge[e] = E`, in increasing e, the `off` block of e's endpoint inside I (`coarse_flipped` decides which endpoint is the coarse owner).
 
-One thread per coarse entry and block component sums its list sequentially in FP64, from +0.0, straight into the coarse level's sliced `off` and `diag` (the host builds the lists against the coarse topology's incidence positions). Same terms, same order, additions only and FP64 on both sides: the coarse operator is bitwise the host's, under `fp64` and under `fp32+acc64` (FP32 fine blocks convert exactly). It runs once per Jacobian.
+`gpu::Galerkin` (`multigrid_gpu.hpp`) uploads the lists. On the device, one thread per coarse block sums its list's 25 entries sequentially in FP64, from +0.0, straight into the coarse level's `diag` and `off` arrays (structure of arrays). Blocks sit at the positions an `EdgeSlots` map gives for each level's edges, so the lists bind to any off-diagonal layout: they will bind to the generator's `graph_topology` once #324 lands, without a change to the kernel. Same terms, same order, additions only and FP64 on both sides: the coarse operator is bitwise the host's, under `fp64` and under `fp32+acc64` (FP32 fine blocks convert exactly). It runs once per Jacobian.
 
 Bitwise equality holds only for these sums. Any product may be contracted into a fused multiply-add differently by nvcc and the host compiler, so every piece below that multiplies is compared within a tolerance.
 
@@ -72,7 +72,7 @@ Within a colour, lines share no edge, so the two launches of a colour are indepe
 
 ## Coarsest level
 
-The host factors the coarsest level densely (LU with partial pivoting) when it has at most 1000 unknowns, and sweeps it `coarsest_sweeps` times otherwise; the device sweeps it the same way in the second case. In the dense case it changes the form: after the Galerkin product, the coarsest blocks (at most 1000 × 1000 FP64, 8 MB, usually 320 × 320) are copied to the host, factored by the host's LU, and inverted column by column with its triangular solves; the device then applies x = A⁻¹ b, one warp per row, a fixed butterfly per row.
+The host factors the coarsest level densely (LU with partial pivoting) when it has at most 1000 unknowns, and sweeps it `coarsest_sweeps` times otherwise; the device sweeps it the same way in the second case. In the dense case it changes the form. `gpu::CoarsestSolve` takes the coarsest blocks after the Galerkin product (at most 1000 × 1000 FP64, 8 MB, usually 320 × 320). It assembles the host's dense matrix in the host numbering and factors it with the host's `factor_dense`, so the factors are the host's own. It inverts the matrix column by column with `solve_dense` and permutes the inverse into the device numbering. The device then applies x = A⁻¹ b, one warp per row, a fixed butterfly per row.
 
 Why not triangular solves on the device: they run m sequential steps in one block, about m synchronisations per solve, and the K-cycle visits the coarsest level up to 2^(L−1) times per cycle. A dense product is one launch of at most 8 MB of reads. Why not Grace: a host solve per visit costs a device-to-host round trip each time and cannot sit inside a captured graph. The cost is one host transfer and an O(m³) factorisation per Jacobian, as on the host today.
 
