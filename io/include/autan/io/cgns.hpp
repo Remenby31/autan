@@ -41,8 +41,9 @@ struct Solution {
 
 /// Cell fields of a solution.cgns written by write_solution, to restart from:
 /// the zone's cell count, the RunMetadata text, and FlowSolution,
-/// FlowSolutionMean and RestartState (each empty when absent). Throws E0130
-/// to E0133 for a file outside that layout.
+/// FlowSolutionMean and RestartState (each empty when absent, the last two
+/// not read without `whole_state`: a warm start needs only FlowSolution).
+/// Throws E0130 to E0133 for a file outside that layout.
 struct StoredSolution {
   index_t cells = 0;
   std::string run_metadata;
@@ -50,7 +51,7 @@ struct StoredSolution {
   std::vector<Field> mean_fields;
   std::vector<Field> restart_fields;
 };
-StoredSolution read_solution(const std::filesystem::path& file);
+StoredSolution read_solution(const std::filesystem::path& file, bool whole_state = true);
 
 /// Writes `solution` and `mesh` (unpartitioned) as solution.cgns with the
 /// layout of docs/contracts/results.md. Throws E0101 when the arrays do not

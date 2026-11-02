@@ -44,7 +44,7 @@ TEST_CASE("The memory a host can still give is the least of MemAvailable and its
   const fs::path proc = dir / "proc";
   write(proc / "meminfo", "MemTotal: 134217728 kB\nMemAvailable: 67108864 kB\n");
   const std::int64_t host = std::int64_t{67108864} * 1024;  // 64 GiB
-  SECTION("no cgroup") { CHECK(autan::runtime::host_available_bytes(proc) == host); }
+  SECTION("no cgroup") { CHECK(autan::runtime::host_memory(proc).available == host); }
   SECTION("cgroup v2: the tightest of the group and its ancestors") {
     const fs::path cg = dir / "sys" / "cgroup";
     write(proc / "self" / "cgroup", "0::/tenant/job\n");
@@ -54,13 +54,13 @@ TEST_CASE("The memory a host can still give is the least of MemAvailable and its
     write(cg / "tenant" / "memory.current", std::to_string(gib) + "\n");
     write(cg / "tenant" / "job" / "memory.max", "max\n");
     write(cg / "tenant" / "job" / "memory.current", std::to_string(gib) + "\n");
-    CHECK(autan::runtime::host_available_bytes(proc) == 3 * gib);
+    CHECK(autan::runtime::host_memory(proc).available == 3 * gib);
     // A group above its limit has nothing left.
     write(cg / "tenant" / "job" / "memory.max", std::to_string(gib / 2) + "\n");
-    CHECK(autan::runtime::host_available_bytes(proc) == 0);
+    CHECK(autan::runtime::host_memory(proc).available == 0);
     // A limit that cannot be read is not taken for no limit.
     write(cg / "tenant" / "job" / "memory.max", "a lot\n");
-    CHECK_THROWS_AS(autan::runtime::host_available_bytes(proc), std::runtime_error);
+    CHECK_THROWS_AS(autan::runtime::host_memory(proc).available, std::runtime_error);
   }
   SECTION("cgroup v2 whose parent limits it through another mount") {
     // The root hierarchy at cg and the group /tenant/job also at job: the job has no limit, but
@@ -75,7 +75,20 @@ TEST_CASE("The memory a host can still give is the least of MemAvailable and its
     write(job / "memory.current", std::to_string(gib) + "\n");
     write(cg / "tenant" / "memory.max", std::to_string(4 * gib) + "\n");
     write(cg / "tenant" / "memory.current", std::to_string(gib) + "\n");
-    CHECK(autan::runtime::host_available_bytes(proc) == 3 * gib);
+    CHECK(autan::runtime::host_memory(proc).available == 3 * gib);
+  }
+  SECTION("cgroup v2 whose ancestors no mount shows") {
+    // Only the group /tenant/job is mounted: its own limit counts, /tenant's cannot be read and is
+    // reported (the root has none to read). The check then rests on what it could read.
+    const fs::path job = dir / "job";
+    write(proc / "self" / "cgroup", "0::/tenant/job\n");
+    write(proc / "self" / "mountinfo",
+          "31 24 0:22 /tenant/job " + job.string() + " rw - cgroup2 cgroup2 rw\n");
+    write(job / "memory.max", std::to_string(4 * gib) + "\n");
+    write(job / "memory.current", std::to_string(gib) + "\n");
+    const auto memory = autan::runtime::host_memory(proc);
+    CHECK(memory.available == 3 * gib);
+    CHECK(memory.unseen_cgroups == std::vector<std::string>{"/tenant"});
   }
   SECTION("cgroup v2 mounted from inside the hierarchy") {
     // /tenant is mounted at cg: the group /tenant/job is cg/job, and /tenant is cg itself.
@@ -87,7 +100,7 @@ TEST_CASE("The memory a host can still give is the least of MemAvailable and its
     write(cg / "memory.current", std::to_string(2 * gib) + "\n");
     write(cg / "job" / "memory.max", std::to_string(4 * gib) + "\n");
     write(cg / "job" / "memory.current", std::to_string(3 * gib) + "\n");
-    CHECK(autan::runtime::host_available_bytes(proc) == gib);
+    CHECK(autan::runtime::host_memory(proc).available == gib);
   }
   SECTION("cgroup v2 mounted at a path mountinfo escapes") {
     // proc(5): a space in the mount point is written \040.
@@ -98,7 +111,7 @@ TEST_CASE("The memory a host can still give is the least of MemAvailable and its
     write(proc / "self" / "mountinfo", "24 1 0:22 / " + escaped + " rw - cgroup2 cgroup2 rw\n");
     write(cg / "job" / "memory.max", std::to_string(4 * gib) + "\n");
     write(cg / "job" / "memory.current", std::to_string(gib) + "\n");
-    CHECK(autan::runtime::host_available_bytes(proc) == 3 * gib);
+    CHECK(autan::runtime::host_memory(proc).available == 3 * gib);
   }
   SECTION("cgroup v1, whose unlimited groups write the largest page-aligned count") {
     const fs::path cg = dir / "v1";
@@ -108,13 +121,13 @@ TEST_CASE("The memory a host can still give is the least of MemAvailable and its
               " rw - cgroup cgroup rw,memory\n41 24 0:36 / /cpu rw - cgroup cgroup rw,cpu\n");
     write(cg / "memory.limit_in_bytes", std::to_string(4 * gib) + "\n");
     write(cg / "memory.usage_in_bytes", std::to_string(gib) + "\n");
-    CHECK(autan::runtime::host_available_bytes(proc) == 3 * gib);
+    CHECK(autan::runtime::host_memory(proc).available == 3 * gib);
     write(cg / "memory.limit_in_bytes", "9223372036854771712\n");
-    CHECK(autan::runtime::host_available_bytes(proc) == host);
+    CHECK(autan::runtime::host_memory(proc).available == host);
   }
   SECTION("no MemAvailable") {
     write(proc / "meminfo", "MemTotal: 134217728 kB\n");
-    CHECK_THROWS_AS(autan::runtime::host_available_bytes(proc), std::runtime_error);
+    CHECK_THROWS_AS(autan::runtime::host_memory(proc).available, std::runtime_error);
   }
   fs::remove_all(dir);
 #endif
@@ -123,7 +136,8 @@ TEST_CASE("The memory a host can still give is the least of MemAvailable and its
 TEST_CASE("The ranks of a host fit its memory up to the margin, to the byte", "[runtime]") {
   // solver-input.md, `memory`: the need of the host's ranks against what a pool can give less the
   // margin; at exactly that, it fits.
-  const MemoryPools one{.host_available = 10 * gib, .device_free = {}, .devices = 1};
+  const MemoryPools one{
+      .host_available = 10 * gib, .device_free = {}, .devices = 1, .unseen_cgroups = {}};
   const std::int64_t margin = 2 * gib;
   CHECK_FALSE(memory_shortfall(4 * gib, 0, 2, one, margin));
   CHECK_FALSE(memory_shortfall(3 * gib, gib, 2, one, margin));  // one pool: host and device
@@ -132,7 +146,8 @@ TEST_CASE("The ranks of a host fit its memory up to the margin, to the byte", "[
   CHECK(over->required == 8 * gib + 2);
   CHECK(over->available == 10 * gib);
   // A discrete device holds the device shares of the ranks that run on it, the host the rest.
-  const MemoryPools split{.host_available = 10 * gib, .device_free = 6 * gib, .devices = 2};
+  const MemoryPools split{
+      .host_available = 10 * gib, .device_free = 6 * gib, .devices = 2, .unseen_cgroups = {}};
   CHECK_FALSE(memory_shortfall(2 * gib, 2 * gib, 4, split, margin));  // 2 ranks per device
   const auto device = memory_shortfall(gib, 2 * gib + 1, 3, split, margin);
   REQUIRE(device);

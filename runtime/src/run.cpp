@@ -123,6 +123,17 @@ std::string sha256_hex(const std::string& text) {
   return hash;
 }
 
+// The bytes of an open file in one string: its one copy in memory.
+std::string file_bytes(std::ifstream& in) {
+  in.seekg(0, std::ios::end);
+  const std::streamoff size = in.tellg();
+  in.seekg(0, std::ios::beg);
+  std::string bytes(static_cast<std::size_t>(std::max<std::streamoff>(size, 0)), '\0');
+  in.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  if (!in) bytes.clear();
+  return bytes;
+}
+
 std::string read_text(const fs::path& path) {
   const std::ifstream in(path, std::ios::binary);
   if (!in) {
@@ -166,9 +177,9 @@ struct Prepared {
   const PhysicsFactory* factory = nullptr;
   std::string cell_order;                   // "rcm" (default) or "input", from AUTAN_CELL_ORDER
   const PartitionGroups* groups = nullptr;  // the physics' groups; null or empty: none
-  std::optional<Diagnostic> memory_warning = std::nullopt;  // W0712: started beyond its memory
-  std::optional<StartState> start;                          // input.start, read and checked
-  Json start_averaging;  // `continue`: the previous run's averaging
+  std::vector<Diagnostic> memory_warnings = {};  // W0712, W0713: the memory check's warnings
+  std::optional<StartState> start;               // input.start, read and checked
+  Json start_averaging;                          // `continue`: the previous run's averaging
   // oracle-state: paired face states per face zone, and the files to archive (sha256, bytes).
   std::map<index_t, std::vector<double>> boundary_states;
   std::map<std::string, std::string> state_files;
@@ -285,7 +296,8 @@ void load_start(Prepared& p) {
   }
   io::StoredSolution stored;
   try {
-    stored = io::read_solution(snapshot->path());
+    // A warm start takes the fields alone (solver-input.md, `start`).
+    stored = io::read_solution(snapshot->path(), start.mode == "continue");
   } catch (const Error& e) {
     if (e.code() == ErrorCode::io_external_reference) {
       throw InputError(Diagnostic{
@@ -422,15 +434,13 @@ void load_states(Prepared& p) {
     }
     std::ifstream in(b.states->path, std::ios::binary);
     if (!in) fail("E0420", "cannot read '" + b.states->path + "'", ".path");
-    std::ostringstream text;
-    text << in.rdbuf();
-    const std::string bytes = text.str();
+    std::string bytes = file_bytes(in);
     const std::string found = sha256_hex(bytes);
     if (found != b.states->sha256) {
       fail("E0420", "the face-state file's SHA-256 differs from states.sha256", ".sha256",
            {{"expected", b.states->sha256}, {"found", found}});
     }
-    const nlohmann::json doc = nlohmann::json::parse(bytes, nullptr, false);
+    nlohmann::json doc = nlohmann::json::parse(bytes, nullptr, false);
     std::string why = doc.is_discarded() ? "not JSON" : "";
     const auto zones =
         why.empty() ? face_state_zones(doc, why) : std::map<std::string, ZoneStates>{};
@@ -442,6 +452,7 @@ void load_states(Prepared& p) {
       fail("E0422", "the face states were exported for another mesh", ".path",
            {{"expected", p.mesh_hash}, {"found", doc["mesh_sha256"]}});
     }
+    doc = nlohmann::json();  // its numbers are in zones: the pairing needs no more
     const auto it = zones.find(b.zone);
     if (it == zones.end()) {
       fail("E0423", "the face states do not cover zone '" + b.zone + "'", ".path",
@@ -504,7 +515,7 @@ void load_states(Prepared& p) {
       for (std::size_t k = 0; k < 5; ++k) paired[k * n + j] = z.values[5 * match + k];
     }
     p.boundary_states[zone] = std::move(paired);
-    p.state_files.emplace(found, bytes);
+    p.state_files.emplace(found, std::move(bytes));
   }
 }
 
@@ -522,15 +533,13 @@ void load_initial(Prepared& p) {
   if (!fs::is_regular_file(file.path, ec)) fail("E0508", "'" + file.path + "' is not a file");
   std::ifstream in(file.path, std::ios::binary);
   if (!in) fail("E0508", "cannot read '" + file.path + "'");
-  std::ostringstream text;
-  text << in.rdbuf();
-  const std::string bytes = text.str();
+  std::string bytes = file_bytes(in);
   const std::string found = sha256_hex(bytes);
   if (found != file.sha256) {
     fail("E0508", "the initial-state file's SHA-256 differs from initial_state.sha256",
          {{"expected", file.sha256}, {"found", found}});
   }
-  const nlohmann::json doc = nlohmann::json::parse(bytes, nullptr, false);
+  nlohmann::json doc = nlohmann::json::parse(bytes, nullptr, false);
   const auto invalid_document = [&](const std::string& why) {
     fail("E0508", "'" + file.path + "' is not an autan.initial-state/1 document: " + why,
          {{"problem", why}});
@@ -579,6 +588,7 @@ void load_initial(Prepared& p) {
     fail("E0509", "the initial state was written for another mesh",
          {{"expected", p.mesh_hash}, {"found", doc["mesh_sha256"]}});
   }
+  doc = nlohmann::json();  // its numbers are in centroids and values: the pairing needs no more
   // Fluid cells: those of zones whose initial state is a fluid's.
   std::map<std::string, bool> fluid_zone;
   for (const auto& z : p.input.cell_zones) fluid_zone[z.zone] = z.initial.kind == "fluid";
@@ -687,13 +697,17 @@ void load_initial(Prepared& p) {
     for (std::size_t k = 0; k < 5; ++k) fields[k].values[at(c)] = values[5 * match + k];
   }
   p.initial = std::move(fields);
-  p.state_files.emplace(found, bytes);
+  p.state_files.emplace(found, std::move(bytes));
 }
 
 // solver-input.md, `memory`: the pools of this rank's host, measured before any rank reads the
 // mesh. A device whose memory is the host's (GB10) is one pool with it, and gets no context here.
 MemoryPools memory_pools(const SolverInput& in, const Comm& comm) {
-  MemoryPools pools{.host_available = host_available_bytes(), .device_free = {}, .devices = 1};
+  HostMemory host = host_memory();
+  MemoryPools pools{.host_available = host.available,
+                    .device_free = {},
+                    .devices = 1,
+                    .unseen_cgroups = std::move(host.unseen_cgroups)};
   if (in.device_kind == "cuda" && visible_gpus() > 0 && !device_integrated(comm.local_rank())) {
     pools.device_free = device_free_bytes(comm.local_rank());
     pools.devices = visible_gpus();
@@ -701,32 +715,60 @@ MemoryPools memory_pools(const SolverInput& in, const Comm& comm) {
   return pools;
 }
 
+// The data of E0711 and W0712: what the check compared, and whether a cgroup limit above the
+// process could not be read (W0713), so that "available" may overstate what the host gives.
 Diagnostic memory_diagnostic(const char* code, const SolverInput& in, std::int64_t required,
-                             std::int64_t available, std::int64_t margin) {
+                             std::int64_t available, std::int64_t margin,
+                             const std::vector<std::string>& unseen) {
   return Diagnostic{.code = code,
                     .message = "the run needs " + std::to_string(required) + " bytes; " +
                                std::to_string(available) + " are available, less a margin of " +
                                std::to_string(margin),
                     .path = "memory",
-                    .data_json = Json{{"required_bytes", required},
-                                      {"available_bytes", available},
-                                      {"margin_bytes", margin},
-                                      {"device_kind", in.device_kind}}
-                                     .dump()};
+                    .data_json = Json{
+                        {"required_bytes", required},
+                        {"available_bytes", available},
+                        {"margin_bytes", margin},
+                        {"device_kind", in.device_kind},
+                        {"cgroup_limit", unseen.empty() ? "known" : "unknown"},
+                        {"unseen_cgroups",
+                         unseen}}.dump()};
 }
+
+// W0713: a memory cgroup above the process that no mount shows, whose limit the check could not
+// read; the check rests on MemAvailable and the limits it could read.
+Diagnostic unverifiable_memory(const std::vector<std::string>& unseen) {
+  std::string names;
+  for (const auto& u : unseen) names += (names.empty() ? "" : ", ") + u;
+  return Diagnostic{
+      .code = "W0713",
+      .message = "the memory limit of cgroup " +
+                 (names.empty() ? std::string("(on another rank)") : names) +
+                 " cannot be read: the memory check rests on MemAvailable",
+      .path = "memory",
+      .data_json = Json{{"cgroup_limit", "unknown"}, {"unseen_cgroups", unseen}}.dump()};
+}
+
+// What a rank's memory check found: W0712 when it starts beyond its memory, and the cgroups whose
+// limits it could not read.
+struct MemoryCheck {
+  std::optional<Diagnostic> beyond;
+  std::vector<std::string> unseen_cgroups;
+};
 
 // The memory check of every rank, before any reads the mesh: E0711 when the ranks of this host
 // need more than it can give less the margin, or with oversubscription allowed, W0712.
-std::optional<Diagnostic> check_memory(const fs::path& input_file, const Comm& comm,
-                                       const MemoryPolicy& memory) {
+MemoryCheck check_memory(const fs::path& input_file, const Comm& comm, const MemoryPolicy& memory) {
   const SolverInput in = parse_solver_input(read_text(input_file));
+  const MemoryPools pools = memory_pools(in, comm);
   const auto s = memory_shortfall(in.memory_bytes_host, in.memory_bytes_device, comm.local_size(),
-                                  memory_pools(in, comm), memory.margin_bytes);
-  if (!s) return std::nullopt;
+                                  pools, memory.margin_bytes);
+  if (!s) return {.beyond = std::nullopt, .unseen_cgroups = pools.unseen_cgroups};
   const char* code = memory.allow_oversubscription ? "W0712" : "E0711";
-  Diagnostic d = memory_diagnostic(code, in, s->required, s->available, memory.margin_bytes);
+  Diagnostic d = memory_diagnostic(code, in, s->required, s->available, memory.margin_bytes,
+                                   pools.unseen_cgroups);
   if (!memory.allow_oversubscription) throw InputError(std::move(d));
-  return d;
+  return {.beyond = std::move(d), .unseen_cgroups = pools.unseen_cgroups};
 }
 
 Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, int ranks) {
@@ -996,11 +1038,19 @@ class Run final : public Log {
     // The physics' cells and faces differ from the mesh's on a partition or
     // a renumbered mesh: their shares of the start, the initial state and
     // the face states, in its order.
+    // Each global copy goes once its share is taken.
     if (local_ || ordered_) {
-      if (p_.start) local_start_ = owned_start(*p_.start);
-      if (p_.initial) local_initial_ = owned_fields(*p_.initial);
+      if (p_.start) {
+        local_start_ = owned_start(*p_.start);
+        p_.start.reset();
+      }
+      if (p_.initial) {
+        local_initial_ = owned_fields(*p_.initial);
+        p_.initial.reset();
+      }
     }
     local_states_ = physics_boundary_states();
+    p_.boundary_states.clear();
     colour_cells_of_physics();
     face_keys();
     // Rank 0 names the run: its clock and its random suffix.
@@ -1061,8 +1111,8 @@ class Run final : public Log {
         {"monitors", nullptr},
         {"timing", nullptr},
         {"diagnostics", Json::array()}};
-    // W0712 is in the run.json the directory is published with.
-    if (p_.memory_warning) info_["diagnostics"].push_back(Json::parse(p_.memory_warning->json()));
+    // W0712 and W0713 are in the run.json the directory is published with.
+    for (const auto& w : p_.memory_warnings) info_["diagnostics"].push_back(Json::parse(w.json()));
     if (continued()) {
       info_["iterations"] = in.start->iterations;
       if (in.time.kind == "unsteady") info_["time"] = *in.start->time;
@@ -1081,10 +1131,9 @@ class Run final : public Log {
             Json{
                 {"cells", p_.mesh.n_cells()}, {"faces", p_.mesh.n_faces()}, {"ranks", comm_.size()}}
                 .dump());
-        if (p_.memory_warning) {
-          const auto& w = *p_.memory_warning;
+        for (const auto& w : p_.memory_warnings) {
           first_lines += "\n" + log_line("warning", "solver", w.message, w.code,
-                                         info_["diagnostics"][0]["data"].dump());
+                                         Json::parse(w.data_json).dump());
         }
         dir_ = std::make_unique<RunDirectory>(
             runs, info_["run_id"].get<std::string>(), info_.dump(2), p_.input.case_toml,
@@ -1101,6 +1150,7 @@ class Run final : public Log {
     path = comm_.broadcast(path);
     if (path.empty()) throw std::runtime_error("rank 0 could not create the run directory");
     if (comm_.rank() != 0) dir_ = std::make_unique<RunDirectory>(fs::path(path));
+    p_.state_files.clear();  // archived in the run directory
     if (ordered_) {
       note("info", "solver", "cells renumbered in reverse Cuthill-McKee order", "",
            Json{{"order", "rcm"}, {"seconds", renumber_seconds_}}.dump());
@@ -1128,10 +1178,10 @@ class Run final : public Log {
   void stop_on(fs::path file) { stop_file_ = std::move(file); }
 
   ExitStatus execute() {
-    const StartState* start = nullptr;
-    if (p_.start) start = local_start_ ? &*local_start_ : &*p_.start;
-    const std::vector<io::Field>* initial = nullptr;
-    if (p_.initial) initial = local_initial_ ? &*local_initial_ : &*p_.initial;
+    const StartState* start = local_start_ ? &*local_start_ : p_.start ? &*p_.start : nullptr;
+    const std::vector<io::Field>* initial = local_initial_ ? &*local_initial_
+                                            : p_.initial   ? &*p_.initial
+                                                           : nullptr;
     const PhysicsContext context{.mesh = physics_mesh(),
                                  .geometry = physics_geometry(),
                                  .input = p_.input,
@@ -1155,6 +1205,11 @@ class Run final : public Log {
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
       physics_ = (*p_.factory)(context);
+      // The physics has read the start and the initial state (runtime.md, PhysicsContext).
+      local_start_.reset();
+      p_.start.reset();
+      local_initial_.reset();
+      p_.initial.reset();
       host_after_setup_ = host_peak_bytes();
       if (gpu_) device_after_setup_ = gpu_->sample();
       set_floor();
@@ -1973,36 +2028,41 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
     }
     return -first % 2 == 1 ? ExitStatus::failed : ExitStatus::invalid_input;
   };
-  std::optional<Diagnostic> memory_warning;
-  if (const auto status =
-          refused([&] { memory_warning = check_memory(input_file, *comm, memory); }))
+  MemoryCheck checked;
+  if (const auto status = refused([&] { checked = check_memory(input_file, *comm, memory); }))
     return *status;
-  // W0712 when any rank starts beyond its memory, on every rank: the largest need and the least
-  // memory available of those ranks, written before any rank reads the mesh, which can be what
-  // exhausts the host.
-  std::optional<Diagnostic> beyond;
+  // The memory check's warnings on every rank, written by rank 0 before any rank reads the mesh,
+  // which can be what exhausts the host: W0712 when any rank starts beyond its memory (the
+  // largest need and the least memory available of those ranks), W0713 when any rank could not
+  // read a cgroup limit above it (rank 0's unseen cgroups).
+  std::vector<Diagnostic> warnings;
   {
-    const auto& warning = memory_warning;
+    const auto& warning = checked.beyond;
     const Json data = warning ? Json::parse(warning->data_json) : Json::object();
     const std::int64_t required =
         comm->max(warning ? data["required_bytes"].get<std::int64_t>() : std::int64_t{-1});
     const std::int64_t least = comm->max(warning ? -data["available_bytes"].get<std::int64_t>()
                                                  : std::numeric_limits<std::int64_t>::min());
+    const bool unverifiable = comm->max(std::int64_t{checked.unseen_cgroups.empty() ? 0 : 1}) != 0;
     if (required >= 0) {
-      beyond = memory_diagnostic("W0712", parse_solver_input(read_text(input_file)), required,
-                                 -least, memory.margin_bytes);
-      if (comm->rank() == 0) {
-        const std::string line = beyond->json() + "\n";
+      warnings.push_back(memory_diagnostic("W0712", parse_solver_input(read_text(input_file)),
+                                           required, -least, memory.margin_bytes,
+                                           checked.unseen_cgroups));
+    }
+    if (unverifiable) warnings.push_back(unverifiable_memory(checked.unseen_cgroups));
+    if (comm->rank() == 0) {
+      for (const auto& w : warnings) {
+        const std::string line = w.json() + "\n";
         std::fwrite(line.data(), 1, line.size(), err);
-        std::fflush(err);
       }
+      std::fflush(err);
     }
   }
   std::optional<Prepared> prepared;
   if (const auto status =
           refused([&] { prepared.emplace(prepare(input_file, registry, comm->size())); }))
     return *status;
-  prepared->memory_warning = beyond;
+  prepared->memory_warnings = std::move(warnings);
   stop_requested = 0;
   const SignalGuard signals;
   try {

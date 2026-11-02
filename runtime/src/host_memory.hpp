@@ -3,24 +3,32 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <string>
+#include <vector>
 
 namespace autan::runtime {
 
-/// The bytes this process can still allocate on its host. On Linux, the
-/// lower of MemAvailable and, for every memory cgroup above the process with
-/// a limit, the limit less its usage: cgroup v2 memory.max and
-/// memory.current, cgroup v1 memory.limit_in_bytes and memory.usage_in_bytes,
-/// found through `proc`/self/cgroup and the mounts of `proc`/self/mountinfo.
-/// On macOS, the free and inactive pages. Throws std::runtime_error when
-/// MemAvailable is missing or a limit file exists but cannot be read.
-std::int64_t host_available_bytes(const std::filesystem::path& proc = "/proc");
+/// What this process can still allocate on its host: `available` bytes and the memory cgroups
+/// whose limits it cannot see. On Linux, the lower of MemAvailable and, for every memory cgroup
+/// above the process with a limit, the limit less its usage: cgroup v2 memory.max and
+/// memory.current, cgroup v1 memory.limit_in_bytes and memory.usage_in_bytes, found through
+/// `proc`/self/cgroup and the mounts of `proc`/self/mountinfo. A cgroup of that chain that no
+/// mount shows (the root excepted, which has no limit) is in `unseen_cgroups`: its limit, if it
+/// has one, is not in `available`. On macOS, the free and inactive pages. Throws
+/// std::runtime_error when MemAvailable is missing or a limit file exists but cannot be read.
+struct HostMemory {
+  std::int64_t available = 0;
+  std::vector<std::string> unseen_cgroups;
+};
+HostMemory host_memory(const std::filesystem::path& proc = "/proc");
 
 /// What a host can still give the ranks it runs: one pool, or the host's and
 /// a discrete device's (`device_free`, shared by the ranks on that device).
 struct MemoryPools {
   std::int64_t host_available = 0;
   std::optional<std::int64_t> device_free;
-  std::int64_t devices = 1;  ///< the discrete devices the host's ranks share
+  std::int64_t devices = 1;                 ///< the discrete devices the host's ranks share
+  std::vector<std::string> unseen_cgroups;  ///< HostMemory::unseen_cgroups
 };
 
 /// The memory the ranks of a host need beyond what one of its pools can give
