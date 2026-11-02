@@ -903,6 +903,18 @@ test("at 390 px every page fits the width, and navigation sits behind a menu", a
   await page.keyboard.press("Escape");
   await expect(nav).toBeHidden();
   await expect(menu).toBeFocused();
+  // ⌘K over the drawer: the drawer closes, and Escape closes the palette.
+  await menu.click();
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect(nav).toBeHidden();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  // Widened past 768 px, an open drawer gives the page back.
+  await menu.click();
+  await page.setViewportSize({ width: 1024, height: 844 });
+  await expect(page.locator("main")).not.toHaveAttribute("inert");
+  await page.setViewportSize({ width: 390, height: 844 });
 
   // A run's actions fold behind one button; a row shows its run, state and drop.
   await page.goto(`/runs/${run.run_id}`);

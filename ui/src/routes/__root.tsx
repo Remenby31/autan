@@ -2,7 +2,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { createRootRouteWithContext, Link, Outlet } from "@tanstack/react-router";
 import { SearchX } from "lucide-react";
 import { MotionConfig } from "motion/react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRegistrySubscription } from "../api/runs";
 import { CommandPalette } from "../components/CommandPalette";
 import { NavDrawer } from "../components/shell/nav";
@@ -44,20 +44,34 @@ function Root() {
   const [find, setFind] = useState(false);
   const [nav, setNav] = useState(false);
   const closeNav = useCallback(() => setNav(false), []);
+  // The drawer exists below 768 px only: wider, it closes, and the page behind is live again.
+  useEffect(() => {
+    const wide = window.matchMedia("(min-width: 768px)");
+    const onChange = () => {
+      if (wide.matches) setNav(false);
+    };
+    wide.addEventListener("change", onChange);
+    return () => wide.removeEventListener("change", onChange);
+  }, []);
+  // ⌘K opens over everything: the drawer closes first, so Escape then closes the palette.
+  const openFind = useCallback((open: boolean) => {
+    if (open) setNav(false);
+    setFind(open);
+  }, []);
   return (
     <MotionConfig reducedMotion="user" transition={{ duration: 0.12 }}>
       <TooltipProvider delay={400}>
         <ToastProvider>
           <NavDrawer.Provider value={{ open: nav, openNav: () => setNav(true) }}>
             <div className="flex h-full">
-              <Sidebar onFind={() => setFind(true)} open={nav} onClose={closeNav} />
+              <Sidebar onFind={() => openFind(true)} open={nav} onClose={closeNav} />
               {/* Behind the open drawer, the page takes neither focus nor pointer. */}
               <main className="relative flex min-w-0 flex-1 flex-col bg-bg-1" inert={nav}>
                 <Outlet />
               </main>
             </div>
           </NavDrawer.Provider>
-          <CommandPalette open={find} onOpenChange={setFind} />
+          <CommandPalette open={find} onOpenChange={openFind} />
         </ToastProvider>
       </TooltipProvider>
     </MotionConfig>
