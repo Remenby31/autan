@@ -19,7 +19,7 @@ set -euo pipefail
 # the mesh job's cache key hashes), and this filter and its check, so that a change to either
 # is checked against the real build graph.
 measured_dirs=(codegen core io kernels partition)
-measured_paths="^($(IFS='|'; echo "${measured_dirs[*]}"))/"'|^docker/dev/|^bench/(src|stream|cmake|baselines)/|^bench/(pyproject\.toml|uv\.lock|ci/gate\.sh)$|(^|/)CMakeLists\.txt$|\.cmake$|^vv/src/autan_vv/(meshes|oracles)/|^vv/src/autan_vv/(cli|errors|__init__)\.py$|^vv/(pyproject\.toml|uv\.lock|\.python-version)$|^bench/ci/(changes\.sh|check-measured\.py)$|^\.github/workflows/gpu-bench\.yml$'
+measured_paths="^($(IFS='|'; echo "${measured_dirs[*]}"))/"'|^docker/dev/|^bench/(src|stream|cmake|baselines)/|^bench/(pyproject\.toml|uv\.lock|ci/gate\.sh)$|(^|/)CMakeLists\.txt$|\.cmake$|^bench/ci/(measured-mesh-files\.txt|mesh-modules\.py|mesh-key\.sh)$|^vv/(pyproject\.toml|uv\.lock|\.python-version)$|^bench/ci/(changes\.sh|check-measured\.py)$|^\.github/workflows/gpu-bench\.yml$'
 if [[ ${1:-} == --measured ]]; then
   echo "${measured_dirs[*]}"; echo "$measured_paths"; exit 0
 fi
@@ -42,5 +42,20 @@ printf 'changed files:\n%s\n' "$changed" >&2
 # The harness's own GPU tests and the image smoke test: whenever the harness or an image changed.
 # They run on the bench Spark too: the tests runner's GPU is shared with another team's process.
 harness='^(bench|docker)/'
-grep -q -E "$measured_paths" <<<"$changed" && say bench true || say bench false
+# The mesh's generator: exactly the repository modules it loads (bench/ci/mesh-modules.py checks
+# the list when the mesh job generates), as fixed strings on whole lines.
+mesh_files=$(dirname "$0")/measured-mesh-files.txt
+[[ -f $mesh_files ]] || { echo "error: $mesh_files is missing" >&2; exit 2; }
+mesh_list=$(grep -v -E '^(#|$)' "$mesh_files")
+# An entry with a listed module's name added beside it (a package families/, an extension
+# families.*.so) changes what Python imports without touching a listed file: measured too.
+shadows=$(while read -r f; do stem=${f%.py}; echo "$stem/"; echo "$stem."; done <<<"$mesh_list")
+moved=$(git diff --name-status "$base" HEAD -- | awk '$1 !~ /^M/ {for (i = 2; i <= NF; i++) print $i}')
+# The prefixes through the environment: awk -v cannot carry newlines everywhere (BSD awk).
+shadowed() { SHADOWS=$shadows awk 'BEGIN {n = split(ENVIRON["SHADOWS"], s, "\n")} {for (i = 1; i <= n; i++) if (s[i] != "" && index($0, s[i]) == 1) found = 1} END {exit !found}' <<<"$moved"; }
+if grep -q -E "$measured_paths" <<<"$changed" || grep -q -x -F -f <(echo "$mesh_list") <<<"$changed" || shadowed; then
+  say bench true
+else
+  say bench false
+fi
 grep -q -E "$harness" <<<"$changed" && say harness true || say harness false
