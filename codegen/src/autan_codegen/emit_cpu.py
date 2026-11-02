@@ -85,8 +85,8 @@ def _updates(accs: list[dsl.Accumulator], offs: list[int], src: str, indent: str
             if isinstance(o, dsl.Sum):
                 lines.append(f"{indent}acc[{k}] += A({src}[{k}]);")
                 continue
-            # Ties keep the first incidence in list order (section 4.3, reductions).
-            op = "lt" if isinstance(o, dsl.Min) else "gt"
+            # Ties keep the first incidence in list order (section 4.3, reductions); NaN propagates.
+            op = "min_takes" if isinstance(o, dsl.Min) else "max_takes"
             lines.append(f"{indent}if (::autan::kernels::{op}({src}[{k}], accm[{k}])) {{")
             lines.append(f"{indent}  accm[{k}] = {src}[{k}];")
             for f, foff in zip(accs, offs, strict=True):
@@ -264,7 +264,7 @@ def reduce_adjoint_body(lm: LoopModel, indent: str, scatter: str) -> list[str]:
             if isinstance(o, dsl.Sum):
                 lines.append(f"{i2}acc[{k}] += A(out[{k}]);")
             else:
-                op = "lt" if isinstance(o, dsl.Min) else "gt"
+                op = "min_takes" if isinstance(o, dsl.Min) else "max_takes"
                 lines.append(f"{i2}if (::autan::kernels::{op}(out[{k}], accm[{k}])) {{")
                 lines.append(f"{i2}  accm[{k}] = out[{k}];")
                 lines.append(f"{i2}  sel[{k}] = k;")

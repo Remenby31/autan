@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import autan_spike as s
 import meshes
 import numpy as np
@@ -47,19 +49,45 @@ def test_corrected_green_gauss_has_the_exact_gradient_as_fixed_point(
     assert np.abs(g - G).max() <= 400 * eps(policy) * 3.0 * 8
 
 
-def test_lsq_bounds_are_min_and_max_over_cell_and_face_neighbours(mesh: s.Mesh) -> None:
+def _pmin(a: float, b: float) -> float:
+    return a if (a <= b or math.isnan(a)) else b
+
+
+def _pmax(a: float, b: float) -> float:
+    return a if (a >= b or math.isnan(a)) else b
+
+
+WHERE = ["host", *(pytest.param(x, marks=pytest.mark.gpu) for x in s.STRATEGIES)]
+
+
+@pytest.mark.parametrize("where", WHERE)
+@pytest.mark.parametrize("policy", PRECISIONS)
+def test_lsq_bounds_are_min_and_max_over_cell_and_face_neighbours(
+    mesh: s.Mesh, backend: str, policy: str, where: str
+) -> None:
+    # One cell's value is NaN: the bounds of that cell and of its face neighbours are NaN, never a
+    # neighbour's value (#418); the others are the min and max as before. The bounds select stored
+    # values, so they are exact in every precision.
+    if where != "host" and backend == "metal" and policy == "fp64":
+        pytest.skip("Metal has no FP64 (E1013)")
     rng = np.random.default_rng(7)
-    q = rng.standard_normal(mesh.n_cells)
-    q_b = rng.standard_normal(mesh.n_faces)
-    _, lo, hi = s.gradients(mesh, "fp64", "lsq", q, q_b)
+    store = np.float64 if policy == "fp64" else np.float32
+    q = rng.standard_normal(mesh.n_cells).astype(store).astype(np.float64)
+    q[mesh.n_cells // 2] = np.nan
+    q_b = rng.standard_normal(mesh.n_faces).astype(store).astype(np.float64)
+    if where == "host":
+        _, lo, hi = s.gradients(mesh, policy, "lsq", q, q_b)
+    else:
+        _, lo, hi = s.gpu_gradients(mesh, policy, "lsq", where, 128, q, q_b)
     exp_lo, exp_hi = q.copy(), q.copy()
     ni = mesh.n_interior
     for f in range(mesh.n_faces):
         o = mesh.owner[f]
         other = q[mesh.neighbour[f]] if f < ni else q_b[f]
-        exp_lo[o], exp_hi[o] = min(exp_lo[o], other), max(exp_hi[o], other)
+        exp_lo[o], exp_hi[o] = _pmin(exp_lo[o], other), _pmax(exp_hi[o], other)
         if f < ni:
             nb = mesh.neighbour[f]
-            exp_lo[nb], exp_hi[nb] = min(exp_lo[nb], q[o]), max(exp_hi[nb], q[o])
+            exp_lo[nb], exp_hi[nb] = _pmin(exp_lo[nb], q[o]), _pmax(exp_hi[nb], q[o])
+    assert np.isnan(exp_lo).sum() > 1
     np.testing.assert_array_equal(lo, exp_lo)
     np.testing.assert_array_equal(hi, exp_hi)

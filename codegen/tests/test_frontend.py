@@ -123,13 +123,19 @@ def test_calls_are_inlined_and_vectors_scalarised() -> None:
     assert run(fn, (1.0, 2.0, 1.0), (2.0, 3.0, 0.0), (1.0, 2.0, 1.0), -3.0) == [-6.0, 2.0, 5.0, 4.0]
 
 
-def test_min_and_max_select_the_first_argument_on_ties() -> None:
+def test_min_and_max_select_the_first_argument_on_ties_and_propagate_nan() -> None:
+    # A NaN in either argument gives NaN (#418): a limiter must not read a NaN bound as no bound.
     fn, _ = parse(minmax_ties)
     a_min, a_max = fn.instrs[fn.outputs[0]], fn.instrs[fn.outputs[1]]
     assert a_min.op == a_max.op == "select"
     assert fn.instrs[a_min.args[1]].attr == (0, 0)  # first argument when the comparison holds
     assert fn.instrs[a_max.args[1]].attr == (0, 0)
     assert run(fn, 2.0, 2.0) == [2.0, 2.0]
+    for a, b in ((0.0, -0.0), (-0.0, 0.0)):
+        assert [np.signbit(v) for v in run(fn, a, b)] == [np.signbit(a)] * 2
+    for a, b in ((np.nan, 1.0), (1.0, np.nan), (np.nan, np.nan)):
+        assert all(np.isnan(v) for v in run(fn, a, b))
+    assert run(fn, 1.0, np.inf) == [1.0, np.inf]
 
 
 @pointwise
@@ -181,6 +187,11 @@ def guarded_sqrt(x: State) -> State:
     return sqrt(x) if x > 0.0 else x
 
 
+@pointwise
+def min_of_a_nan(x: State) -> State:
+    return min(sqrt(sqrt(x)), 1.0)
+
+
 def test_the_branch_not_taken_does_not_poison_the_adjoint() -> None:
     # d/dx at x = -1 is 1 (the else branch); the sqrt branch evaluates to NaN and must not leak.
     fn, _ = parse(guarded_sqrt)
@@ -190,6 +201,11 @@ def test_the_branch_not_taken_does_not_poison_the_adjoint() -> None:
         assert run(adj, -1.0, 1.0) == [1.0]
         assert run(tan, -1.0, 1.0) == [-1.0, 1.0]
         assert run(adj, 4.0, 1.0) == [0.25]
+    # The branch taken is NaN: its derivative is NaN in both modes, never a zeroed adjoint.
+    fn, _ = parse(min_of_a_nan)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        assert np.isnan(run(adjoint(fn, [0], [[1.0]]), -1.0, 1.0)[0])
+        assert np.isnan(run(tangent(fn, [0]), -1.0, 1.0)[1])
 
 
 @pytest.mark.parametrize(

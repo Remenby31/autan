@@ -201,8 +201,9 @@ def adjoint(fn: Function, active_args: Sequence[int], seeds: Sequence[Sequence[f
         if b not in masked:
             return product
         z = o.const(0.0)
-        nonzero = o.op("or", o.op("lt", b, z), o.op("gt", b, z))
-        r = o.op("select", nonzero, product, z)
+        # b == 0 as not-unordered: a NaN adjoint of the taken branch stays NaN (#418).
+        zero = o.op("and", o.op("le", b, z), o.op("ge", b, z))
+        r = o.op("select", zero, z, product)
         masked.add(r)
         return r
 

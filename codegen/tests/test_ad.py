@@ -6,6 +6,8 @@ Gap = |<y, J x> - <J^T y, x>| / (|y| |J x| + |J^T y| |x|), criteria of research 
 
 from __future__ import annotations
 
+import math
+
 import autan_spike as s
 import meshes
 import mms
@@ -138,13 +140,18 @@ def test_min_max_reductions_with_ties_pass_the_dot_product_test(mesh: s.Mesh, po
     assert gap(y, jx, jty, x) <= GAP[policy]
 
 
+def _takes(ordered: bool, v: float, m: float) -> bool:
+    return ordered or (math.isnan(v) and not math.isnan(m))
+
+
 def test_ties_select_the_first_incidence_in_list_order(mesh: s.Mesh) -> None:
-    # Every value is 0 or 1, so most minima and maxima tie. The specification (research section
-    # 4.3): the reduction keeps the first incidence of the cell's CSR list, boundary values are
-    # passive, and the finalise min(lo, q_c) keeps lo on a tie. Expected tangents are computed
-    # here from the topology alone.
+    # Every value is 0, 1 or NaN, so most minima and maxima tie. The specification (research
+    # section 4.3): the reduction keeps the first incidence of the cell's CSR list, boundary values
+    # are passive, and the finalise min(lo, q_c) keeps lo on a tie; a NaN replaces a number and
+    # the first NaN is kept, in the reduction as in min() (#418). Expected tangents are computed here from the topology alone.
     rng = np.random.default_rng(13)
     q = rng.integers(0, 2, mesh.n_cells).astype(float)
+    q[rng.random(mesh.n_cells) < 0.2] = np.nan
     q_b = rng.integers(0, 2, mesh.n_faces).astype(float)
     dq = rng.standard_normal(mesh.n_cells)
     jx = s.lsq_bounds_derivative(mesh, "fp64", "tangent", q, q_b, dq)
@@ -158,11 +165,11 @@ def test_ties_select_the_first_incidence_in_list_order(mesh: s.Mesh) -> None:
                 val, tan = q[nb], dq[nb]
             else:
                 val, tan = q_b[f], 0.0
-            if val < best["min"][0]:
+            if _takes(val < best["min"][0], val, best["min"][0]):
                 best["min"] = (val, tan)
-            if val > best["max"][0]:
+            if _takes(val > best["max"][0], val, best["max"][0]):
                 best["max"] = (val, tan)
-        lo = best["min"][1] if best["min"][0] <= q[c] else dq[c]
-        hi = best["max"][1] if best["max"][0] >= q[c] else dq[c]
+        lo = best["min"][1] if best["min"][0] <= q[c] or math.isnan(best["min"][0]) else dq[c]
+        hi = best["max"][1] if best["max"][0] >= q[c] or math.isnan(best["max"][0]) else dq[c]
         assert jx[c, 3] == lo
         assert jx[c, 4] == hi

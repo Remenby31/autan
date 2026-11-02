@@ -478,9 +478,11 @@ class _Builder:
         return Arr(tuple(self.real(m[i][n + j]) for i in range(n) for j in range(n)), (n, n))
 
     def _minmax(self, fname: str, a: int, b: int) -> int:
-        # min(a, b) = a if a <= b else b; ties select the first argument.
+        # min(a, b) = a if (a <= b or a is NaN) else b: ties select the first argument, and a NaN
+        # in either propagates (#418). NaN is the value that is not ordered with itself.
         cmp = self.emit("le" if fname == "min" else "ge", a, b)
-        return self.emit("select", cmp, a, b)
+        nan = self.emit("not", self.emit("le", a, a))
+        return self.emit("select", self.emit("or", cmp, nan), a, b)
 
     def rel(self, a: Val, b: Val) -> Val:
         def comps(v: Val) -> tuple[int, ...]:
