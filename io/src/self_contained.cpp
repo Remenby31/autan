@@ -39,7 +39,11 @@ struct Scan {
 herr_t visit(hid_t group, const char* name, const H5L_info2_t* info, void* data) {
   auto& scan = *static_cast<Scan*>(data);
   const auto found = [&] {
-    scan.outside = std::string("/") + name;
+    // CGNS keeps a link as an HDF5 external link named " link" in the node's
+    // group (CGNS ADFH): the node is that group.
+    std::string node = std::string("/") + name;
+    if (node.ends_with("/ link")) node.resize(node.size() - 6);
+    scan.outside = node;
     return 1;  // stops the iteration
   };
   if (info->type == H5L_TYPE_EXTERNAL || info->type >= H5L_TYPE_UD_MIN) return found();
