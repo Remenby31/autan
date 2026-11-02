@@ -871,6 +871,15 @@ class EulerPhysics final : public runtime::Physics {
 
   void steady_step(StepReport& report) {
     euler_.state(u_, state_);
+    if constexpr (std::is_same_v<Flow, NavierStokes<P>>) {
+      if (sa_ && second_order_ && multigrid_) {
+        // The coupled step's residual takes mu_t at the current state (the flow's primitives of
+        // this step, not the previous step's), so that it is the derivative's base and a
+        // continued run repeats the uninterrupted one.
+        euler_.residual(state_, res_);
+        sa_->model.eddy_viscosity(sa_->stored(sa_->rnu));
+      }
+    }
     if (!second_order_) {
       // The history reports the second-order residual from the first step on, so that the
       // runtime never judges convergence on the first-order one.
@@ -897,6 +906,11 @@ class EulerPhysics final : public runtime::Physics {
     // equations at the round-off floor (the runtime's rule, decided on the reported residuals):
     // their ratio is round-off and would set the CFL number.
     const double drop = relative_drop(norms.empty() ? report.residuals : norms, report.residuals);
+    // docs/design/matrix-free-step.md and coupled-sa.md: on the viscous multigrid step, from the
+    // step after the switch to second order, the solve's operator is the true Jacobian applied
+    // matrix-free; with SA, of the flow and rho nt together.
+    const bool matrix_free = is_viscous && second_order_ && multigrid_;
+    const bool coupled = matrix_free && sa_ != nullptr;
     switch_order(drop);
     // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
     // after each step the admissibility check shortened and recovering by half otherwise.
@@ -914,7 +928,11 @@ class EulerPhysics final : public runtime::Physics {
     try {
       if (multigrid_) {
         multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
-        linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
+        if (matrix_free) {
+          linear = matrix_free_solve(shift, coupled);
+        } else {
+          linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
+        }
       } else if (lines_) {
         // GCR preconditioned by the line sweeps, as the multigrid's outer iteration; its inner
         // products are exact sums over the owned cells of every rank.
@@ -960,6 +978,10 @@ class EulerPhysics final : public runtime::Physics {
     const bool failed = !(linear.residual_drop <= linear_failure);
     if (!(linear.residual_drop <= linear_tolerance)) {
       nlohmann::json data = {{"cycles", linear.cycles}, {"residual_drop", nullptr}};
+      if (matrix_free) {
+        data["halvings"] = probe_.halvings;
+        data["representation"] = probe_.representation;
+      }
       if (std::isfinite(linear.residual_drop)) data["residual_drop"] = linear.residual_drop;
       ctx_.log.write("warning", "linear",
                      failed ? "the implicit step's linear solve failed: step rejected"
@@ -975,7 +997,8 @@ class EulerPhysics final : public runtime::Physics {
       if (cfl_ <= cfl_min) report.diverged_cell = worst_cell();
       return;
     }
-    const double alpha = admissible_step();
+    const double alpha =
+        coupled ? std::min(admissible_step(), admissible_nt_step()) : admissible_step();
     shortened_ = alpha < 1.0;
     // The next step halves the penalty; starting from the CFL number actually used, so that the
     // CFL number halves also when it was clamped.
@@ -997,7 +1020,9 @@ class EulerPhysics final : public runtime::Physics {
       // The first-order start has no velocity gradients, hence no production: SA waits for the
       // second order.
       auto& t = *sa_;
-      if (second_order_) {
+      if (coupled) {
+        for (std::size_t c = 0; c < n_; ++c) t.rnu[c] += alpha * t.dx[c];
+      } else if (second_order_) {
         for (std::size_t c = 0; c < n_; ++c) t.rhs[c] = -static_cast<double>(t.res[c]);
         std::fill(t.dx.begin(), t.dx.end(), 0.0);
         t.model.assemble(shift, t.diag, t.upper, t.lower);
@@ -1049,6 +1074,272 @@ class EulerPhysics final : public runtime::Physics {
       alpha = std::min(alpha, a);
     }
     return ctx_.ranks.min(alpha);
+  }
+
+  // The coupled step's bound on rho nt (docs/design/coupled-sa.md): the largest fraction of its
+  // update (at most 1) that keeps its change within -nt_max_decrease ... +nt_max_increase of
+  // max(|rho nt|, rho nt_inf) in every owned cell; relative, as SA-neg allows rho nt < 0.
+  [[nodiscard]] double admissible_nt_step() const {
+    const auto& t = *sa_;
+    double alpha = 1.0;
+    for (std::size_t c = 0; c < owned_; ++c) {
+      const double scale = std::max(std::abs(t.rnu[c]), u_[c] * t.nt_inf);
+      const double d = t.dx[c];
+      if (d < 0.0) alpha = std::min(alpha, nt_max_decrease * scale / -d);
+      if (d > 0.0) alpha = std::min(alpha, nt_max_increase * scale / d);
+      if (std::isnan(d)) alpha = 0.0;
+    }
+    return ctx_.ranks.min(alpha);
+  }
+
+  // The matrix-free product's workspace (docs/design/matrix-free-step.md, coupled-sa.md): the
+  // perturbed state, its residual and the residual at the current state, all evaluated with
+  // the switches held at the current state, apart from state_ and res_. The unknowns are the
+  // flow's five (equations = 5) or the flow's and rho nt (6), equation-major.
+  struct Probe {
+    std::size_t equations = 5;
+    std::vector<double> current, u, base, shift, assembled, x, r;
+    std::vector<State> state, nt, nt_current;
+    std::vector<Res> res, res_nt;
+    std::array<double, 6> scale{};  // flow: freestream scale of each equation; rho nt: rms
+    double eps_storage = 0.0;
+    int halvings = 0;           // largest of the step's products
+    double representation = 0;  // largest |S^-1 (delta - eps v)| / |S^-1 eps v| of the step
+    bool failed = false;
+    bool announced = false;
+    bool announced_coupled = false;
+  };
+  Probe probe_;
+
+  // GCR on (V/dt + J) delta = -R with the matrix-free product, preconditioned by one multigrid
+  // cycle on the flow's assembled operator and, when coupled, then rho nt's own implicit solve
+  // on its assembled scalar operator: the two decoupled solves in consecutive order (Wang,
+  // Diskin, Nielsen and Liu 2021, AIAA 2021-0857, sec. II.D.1). Coupled, rho nt's update is
+  // left in sa_->dx.
+  solvers::Multigrid::Report matrix_free_solve(std::span<const double> shift, bool coupled) {
+    start_products(shift, coupled);
+    auto& q = probe_;
+    if (!coupled) {
+      krylov_residual_ = rhs_;
+      return gcr_.solve(
+          [this](std::span<const double> v, std::span<double> y) { product(v, y); },
+          [this](std::span<const double> r, std::span<double> z) { multigrid_->cycle(r, z); },
+          krylov_residual_, du_, linear_max_cycles, linear_tolerance);
+    }
+    if constexpr (std::is_same_v<Flow, NavierStokes<P>>) {
+      auto& t = *sa_;
+      t.model.assemble(shift, t.diag, t.upper, t.lower);
+      const std::size_t nf = 5 * n_;
+      q.r.assign(6 * n_, 0.0);
+      q.x.assign(6 * n_, 0.0);
+      for (std::size_t i = 0; i < nf; ++i) q.r[i] = rhs_[i];
+      for (std::size_t c = 0; c < n_; ++c) q.r[nf + c] = -static_cast<double>(t.res[c]);
+      const auto report = gcr_.solve(
+          [this](std::span<const double> v, std::span<double> y) { product(v, y); },
+          [&](std::span<const double> r, std::span<double> z) {
+            multigrid_->cycle(r.first(nf), z.first(nf));
+            t.model.solve(t.diag, t.upper, t.lower, r.subspan(nf), z.subspan(nf), nt_sweeps);
+          },
+          q.r, q.x, linear_max_cycles, linear_tolerance);
+      std::copy(q.x.begin(), q.x.begin() + static_cast<std::ptrdiff_t>(nf), du_.begin());
+      std::copy(q.x.begin() + static_cast<std::ptrdiff_t>(nf), q.x.end(), t.dx.begin());
+      return report;
+    } else {
+      throw std::logic_error("the coupled step needs the Navier-Stokes flow");
+    }
+  }
+
+  // Holds the switches at the current state and evaluates the residual there for the step's
+  // products.
+  void start_products(std::span<const double> shift, bool coupled) {
+    auto& q = probe_;
+    q.equations = coupled ? 6 : 5;
+    const std::size_t m = q.equations;
+    if (q.state.empty()) {
+      q.state.assign(5 * n_, State(0));
+      q.res.assign(res_.size(), Res(0));
+      // Knoll and Keyes (2004), J. Comput. Phys. 193:357-397, sec. 2.2: sqrt of the precision the
+      // state is stored in.
+      q.eps_storage = std::sqrt(static_cast<double>(std::numeric_limits<State>::epsilon()));
+      const auto& r = reference_;
+      const double rho = r[0];
+      const double m2 = r[1] * r[1] + r[2] * r[2] + r[3] * r[3];
+      const double p = (gas_.gamma - 1.0) * (r[4] - 0.5 * m2 / rho);
+      const double q_inf = std::sqrt(m2) / rho + std::sqrt(gas_.gamma * p / rho);
+      q.scale = {rho, rho * q_inf, rho * q_inf, rho * q_inf, r[4], 1.0};
+      for (auto& v : q.scale) {
+        if (!(v > 0.0)) v = 1.0;
+      }
+    }
+    if (!q.announced) {
+      q.announced = true;
+      ctx_.log.write("info", "linear", "matrix-free products of the residual from this step", {},
+                     "{}");
+    }
+    q.current.assign(m * n_, 0.0);
+    q.u.assign(m * n_, 0.0);
+    q.base.assign(m * n_, 0.0);
+    std::copy(u_.begin(), u_.begin() + static_cast<std::ptrdiff_t>(5 * n_), q.current.begin());
+    q.shift.assign(shift.begin(), shift.end());
+    q.halvings = 0;
+    q.representation = 0.0;
+    q.failed = false;
+    euler_.freeze(state_);
+    if (!coupled) {
+      euler_.residual_frozen(state_, q.res);
+    } else if constexpr (std::is_same_v<Flow, NavierStokes<P>>) {
+      auto& t = *sa_;
+      if (!q.announced_coupled) {
+        q.announced_coupled = true;
+        ctx_.log.write("info", "linear",
+                       "the flow and nu-tilde solved together, their products coupled, from this "
+                       "step",
+                       {}, "{}");
+      }
+      q.nt.assign(n_, State(0));
+      q.res_nt.assign(n_, Res(0));
+      q.nt_current.assign(n_, State(0));
+      for (std::size_t c = 0; c < n_; ++c) {
+        q.current[5 * n_ + c] = t.rnu[c];
+        q.nt_current[c] = State(t.rnu[c]);
+      }
+      // rho nt's scale: its root mean square over the owned cells (it reaches 1e3-1e4 times
+      // the freestream's in the boundary layer, which would weigh it wrongly).
+      std::array<runtime::ExactSum, 2> sums;
+      for (std::size_t c = 0; c < owned_; ++c) sums[0].add(t.rnu[c] * t.rnu[c]);
+      sums[1].add(static_cast<double>(owned_));
+      ctx_.ranks.sum(sums);
+      q.scale[5] = std::sqrt(sums[0].value() / sums[1].value());
+      if (!(q.scale[5] > 0.0)) q.scale[5] = reference_[0] * t.nt_inf;
+      if (!(q.scale[5] > 0.0)) q.scale[5] = 1.0;
+      t.model.freeze(q.nt_current);
+      euler_.residual_frozen(state_, q.res, [&] { t.model.eddy_viscosity_frozen(q.nt_current); });
+      t.model.residual_frozen(q.nt_current, q.res_nt);
+      for (std::size_t c = 0; c < n_; ++c) q.base[5 * n_ + c] = static_cast<double>(q.res_nt[c]);
+    }
+    for (std::size_t i = 0; i < 5 * n_; ++i) q.base[i] = static_cast<double>(q.res[i]);
+  }
+
+  // Root mean square of S^-1 x over the owned unknowns of every rank, exact.
+  double scaled_rms(std::span<const double> x) {
+    const std::size_t m = probe_.equations;
+    std::array<runtime::ExactSum, 2> sums;
+    for (std::size_t k = 0; k < m; ++k) {
+      for (std::size_t c = 0; c < owned_; ++c) {
+        const double a = x[k * n_ + c] / probe_.scale[k];
+        sums[0].add(a * a);
+      }
+    }
+    sums[1].add(static_cast<double>(m * owned_));
+    ctx_.ranks.sum(sums);
+    return std::sqrt(sums[0].value() / sums[1].value());
+  }
+
+  // y = (V/dt) v + [R(X + eps v) - R(X)] / eps, R with the switches held at X.
+  void product(std::span<const double> v, std::span<double> y) {
+    auto& q = probe_;
+    const std::size_t m = q.equations;
+    const std::size_t nf = 5 * n_;
+    std::fill(y.begin(), y.end(), 0.0);
+    if (q.failed) {
+      std::fill(y.begin(), y.end(), std::numeric_limits<double>::quiet_NaN());
+      return;
+    }
+    const double vn = scaled_rms(v);
+    if (vn == 0.0) return;
+    double eps = q.eps_storage * (1.0 + scaled_rms(q.current)) / vn;
+    for (int halving = 0;; ++halving) {
+      for (std::size_t i = 0; i < m * n_; ++i) q.u[i] = q.current[i] + eps * v[i];
+      // Admissible and small: density and pressure within 10 % of the current state's in every
+      // owned cell; rho nt within the step's bounds.
+      double worst = 0.0;
+      for (std::size_t c = 0; c < owned_; ++c) {
+        const double rho = u_[c];
+        const double rho_p = q.u[c];
+        const double p = pressure(c, 0.0);
+        double w[5];
+        for (std::size_t k = 0; k < 5; ++k) w[k] = q.u[k * n_ + c];
+        const double p_p =
+            (gas_.gamma - 1.0) * (w[4] - 0.5 * (w[1] * w[1] + w[2] * w[2] + w[3] * w[3]) / w[0]);
+        const double d = std::max(std::abs(rho_p - rho) / rho, std::abs(p_p - p) / p);
+        worst = std::isnan(d) ? std::numeric_limits<double>::infinity() : std::max(worst, d);
+        if (m == 6) {
+          const double nt = q.current[nf + c];
+          const double scale = std::max(std::abs(nt), rho * sa_->nt_inf);
+          const double dn = q.u[nf + c] - nt;
+          if (!(dn >= -nt_max_decrease * scale && dn <= nt_max_increase * scale)) {
+            worst = std::numeric_limits<double>::infinity();
+          }
+        }
+      }
+      euler_.state(std::span<const double>(q.u).first(nf), q.state);
+      for (std::size_t c = 0; c < n_ && m == 6; ++c) q.nt[c] = State(q.u[nf + c]);
+      // Representable: what the stored state received, against eps v.
+      std::array<runtime::ExactSum, 2> sums;
+      for (std::size_t k = 0; k < m; ++k) {
+        for (std::size_t c = 0; c < owned_; ++c) {
+          const std::size_t i = k * n_ + c;
+          const double want = eps * v[i] / q.scale[k];
+          const double got =
+              (k < 5 ? static_cast<double>(q.state[i]) - static_cast<double>(state_[i])
+                     : static_cast<double>(q.nt[c]) - static_cast<double>(q.nt_current[c])) /
+              q.scale[k];
+          sums[0].add((got - want) * (got - want));
+          sums[1].add(want * want);
+        }
+      }
+      ctx_.ranks.sum(sums);
+      const double ratio = std::sqrt(sums[0].value() / sums[1].value());
+      const bool admissible = ctx_.ranks.max(worst) <= 0.1;
+      if (admissible && ratio <= 1e-2) {
+        q.halvings = std::max(q.halvings, halving);
+        q.representation = std::max(q.representation, ratio);
+        break;
+      }
+      if (halving == 10) {
+        q.halvings = halving;
+        q.representation = std::max(q.representation, ratio);
+        q.failed = true;
+        std::fill(y.begin(), y.end(), std::numeric_limits<double>::quiet_NaN());
+        return;
+      }
+      eps *= 0.5;
+    }
+    if (m == 5) {
+      euler_.residual_frozen(q.state, q.res);
+    } else if constexpr (std::is_same_v<Flow, NavierStokes<P>>) {
+      auto& t = *sa_;
+      euler_.residual_frozen(q.state, q.res, [&] { t.model.eddy_viscosity_frozen(q.nt); });
+      t.model.residual_frozen(q.nt, q.res_nt);
+    }
+    // An equation at the round-off floor (the runtime's exemption: the span momentum of a
+    // one-cell-thick mesh) has no derivative a difference can resolve, only its round-off over
+    // eps: its rows take the assembled operator, so that the solve leaves it at the floor.
+    bool exempt = false;
+    for (std::size_t k = 0; k < m; ++k) exempt = exempt || exempt_.exempt(k);
+    if (exempt) {
+      q.assembled.assign(m * n_, 0.0);
+      matrix_->multiply(v.first(nf), std::span<double>(q.assembled).first(nf));
+      if (m == 6) {
+        const auto& t = *sa_;
+        const auto owner = ctx_.mesh.owner();
+        const auto neighbour = ctx_.mesh.neighbour();
+        for (std::size_t c = 0; c < n_; ++c) q.assembled[nf + c] = t.diag[c] * v[nf + c];
+        for (std::size_t f = 0; f < neighbour.size(); ++f) {
+          const auto o = static_cast<std::size_t>(owner[f]);
+          const auto n = static_cast<std::size_t>(neighbour[f]);
+          q.assembled[nf + o] += t.upper[f] * v[nf + n];
+          q.assembled[nf + n] += t.lower[f] * v[nf + o];
+        }
+      }
+    }
+    for (std::size_t k = 0; k < m; ++k) {
+      for (std::size_t c = 0; c < owned_; ++c) {
+        const std::size_t i = k * n_ + c;
+        const double r = k < 5 ? static_cast<double>(q.res[i]) : static_cast<double>(q.res_nt[c]);
+        y[i] = exempt_.exempt(k) ? q.assembled[i] : q.shift[c] * v[i] + (r - q.base[i]) / eps;
+      }
+    }
   }
 
   // Ghost cells take their owners' du (5 components).

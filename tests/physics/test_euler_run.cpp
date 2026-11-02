@@ -1308,6 +1308,66 @@ TEST_CASE("a Spalart-Allmaras run steps its six equations", "[navier-stokes]") {
   }
 }
 
+TEST_CASE("a Spalart-Allmaras run solves the flow and nu-tilde together after the switch",
+          "[navier-stokes]") {
+  // coupled-sa.md: the first coupled step is logged once, the step after the one that switched
+  // to second order (SolverSecondOrder in the restart state: 0 two steps before, 1 one step
+  // before); runs continued just before it and inside the coupled phase repeat the uninterrupted
+  // run bit for bit, so no product or held branch leaks into the reported state or residual.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  CAPTURE(precision);
+  auto doc = [&](int budget) {
+    return input("hybrid.solver-input.json", [&](Json& d) {
+      d["precision"] = precision;
+      d["time"]["max_iterations"] = budget;
+      d["time"]["residual_orders"] = 30.0;
+    });
+  };
+  constexpr int budget = 230;
+  const auto whole = run(doc(budget));
+  INFO(whole.err);
+  REQUIRE(whole.status == ExitStatus::finished);
+  std::vector<int> starts;
+  std::istringstream log(read(whole.run / "log.jsonl"));
+  for (std::string line; std::getline(log, line);) {
+    const auto e = Json::parse(line);
+    if (e["source"] == "linear" && e["level"] == "info" && e["iteration"].is_number() &&
+        e["message"].get<std::string>().starts_with("the flow and nu-tilde")) {
+      starts.push_back(e["iteration"].get<int>());
+    }
+  }
+  REQUIRE(starts.size() == 1);
+  const int s = starts.front();
+  INFO("first coupled step " << s);
+  REQUIRE(s >= 3);
+  // Continued at s + 1, the uninterrupted run takes at least one step more.
+  REQUIRE(static_cast<int>(history(whole.run).size()) >= s + 2);
+  auto second_order = [&](int steps) {
+    const auto r = run(doc(steps));
+    REQUIRE(r.status == ExitStatus::finished);
+    return std::pair{field(r.run, "SolverSecondOrder", "RestartState").front(), r.run};
+  };
+  const auto [before, run_before] = second_order(s - 2);
+  const auto [at, run_at] = second_order(s - 1);
+  CHECK(before == 0.0);
+  CHECK(at == 1.0);
+  const auto all = read(whole.run / "history.jsonl");
+  for (const auto& [from, steps] : {std::pair{run_at, s - 1}, std::pair{fs::path{}, s + 1}}) {
+    fs::path first = from;
+    if (first.empty()) {
+      const auto r = run(doc(steps));
+      REQUIRE(r.status == ExitStatus::finished);
+      first = r.run;
+    }
+    auto next = doc(budget);
+    next["start"] = continue_from(first);
+    const auto rest = run(next);
+    INFO(rest.err);
+    REQUIRE(rest.status == ExitStatus::finished);
+    CHECK(read(first / "history.jsonl") + read(rest.run / "history.jsonl") == all);
+  }
+}
+
 TEST_CASE("a point vortex takes the Kutta-Joukowski circulation of its surfaces' lift", "[euler]") {
   // tests/data/mesh/hybrid with y halved (span 0.5); the slip walls xmin and zmin carry the
   // vortex of every other side. Uniform at p1 = 1.3 p_inf, the walls carry (p1 - p_inf) A on
