@@ -8,10 +8,16 @@
 #              y = 0 outside the adiabatic wall (x 0 to 1.5); forces over the wall.
 #   naca0012   2DN00: M 0.15, Re 6e6 per chord, farfield 500 chords away, adiabatic airfoil.
 # T = 300 K throughout; the meshes are one layer of thickness $SPAN (default 1) between `sides`.
+# The flat plate with SA sets time.coupled_turbulence, the case docs/design/coupled-sa.md validated
+# (COUPLED=0: the loose step).
 set -euo pipefail
 kind=$1 meshes=$2 out=$3 precision=${4:-fp64} iterations=${5:-20000} alpha=${6:-0}
 turbulence=${TURBULENCE:-"{ model = \"sa\", nu_tilde_ratio = 3.0 }"}
 span=${SPAN:-1.0}
+coupled=""
+if [ "$kind" = flatplate ] && [[ $turbulence == *'"sa"'* ]] && [ "${COUPLED:-1}" = 1 ]; then
+  coupled="coupled_turbulence = true"
+fi
 top=$(git rev-parse --show-toplevel)
 build=${AUTAN_BUILD:-$top/build}
 export AUTAN_RUN=$build/runtime/autan-run
@@ -71,6 +77,7 @@ temperature = "300.0 K"
 kind = "steady"
 max_iterations = $iterations
 residual_orders = 10.0
+$coupled
 
 $(boundaries)
 

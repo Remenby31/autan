@@ -465,12 +465,16 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
           "[euler]") {
   // The multigrid agglomerates one mesh's cells and takes no image ghosts: E0706 at
   // `time.linear_solver`. The multigrid sums in local cell order: reproducibility "ranks" is
-  // E1109. The coupled turbulence step is SA's (case-schema.md#time): E0426 on inviscid flow.
-  const std::string reason = GENERATE("periodic", "ranks", "coupled");
+  // E1109. The coupled turbulence step is SA's (case-schema.md#time), in the host multigrid:
+  // E0426 on inviscid flow, E0427 with the line solver.
+  const std::string reason = GENERATE("periodic", "ranks", "coupled", "coupled-lines");
   CAPTURE(reason);
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     if (reason == "periodic") {
       periodic_box(d, "fp64");
+    } else if (reason == "coupled-lines") {
+      d["time"]["coupled_turbulence"] = true;
+      d["time"]["linear_solver"] = "lines";
     } else {
       inviscid_along_x(d, "fp64");
       if (reason == "ranks") d["reproducibility"] = "ranks";
@@ -485,7 +489,8 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
   const std::map<std::string, std::pair<std::string, std::string>> expected = {
       {"periodic", {"E0706", "time.linear_solver"}},
       {"ranks", {"E1109", "reproducibility"}},
-      {"coupled", {"E0426", "time.coupled_turbulence"}}};
+      {"coupled", {"E0426", "time.coupled_turbulence"}},
+      {"coupled-lines", {"E0427", "time.coupled_turbulence"}}};
   CHECK(diagnostic["code"] == expected.at(reason).first);
   CHECK(diagnostic["location"]["path"] == expected.at(reason).second);
 }
@@ -1316,10 +1321,11 @@ TEST_CASE("a Spalart-Allmaras run steps its six equations", "[navier-stokes]") {
 
 TEST_CASE("a Spalart-Allmaras run solves the flow and nu-tilde together after the switch",
           "[navier-stokes]") {
-  // coupled-sa.md: the first coupled step is logged once, the step after the one that switched
-  // to second order (SolverSecondOrder in the restart state: 0 two steps before, 1 one step
-  // before); runs continued just before it and inside the coupled phase repeat the uninterrupted
-  // run bit for bit, so no product or held branch leaks into the reported state or residual.
+  // coupled-sa.md, time.coupled_turbulence: the first coupled step is logged once with W0426,
+  // the step after the one that switched to second order (SolverSecondOrder in the restart
+  // state: 0 two steps before, 1 one step before); runs continued just before it and inside the
+  // coupled phase repeat the uninterrupted run bit for bit, so no product or held branch leaks
+  // into the reported state or residual.
   const char* precision = GENERATE("fp64", "fp32+acc64");
   CAPTURE(precision);
   auto doc = [&](int budget) {
@@ -1327,6 +1333,7 @@ TEST_CASE("a Spalart-Allmaras run solves the flow and nu-tilde together after th
       d["precision"] = precision;
       d["time"]["max_iterations"] = budget;
       d["time"]["residual_orders"] = 30.0;
+      d["time"]["coupled_turbulence"] = true;
     });
   };
   constexpr int budget = 230;
@@ -1336,7 +1343,7 @@ TEST_CASE("a Spalart-Allmaras run solves the flow and nu-tilde together after th
   // Finished also covers a diverged run: this one reaches its budget or converges.
   const auto status = Json::parse(read(whole.run / "run.json"))["status"];
   REQUIRE((status == "completed" || status == "converged"));
-  std::vector<int> starts;
+  std::vector<int> starts, warned;
   std::istringstream log(read(whole.run / "log.jsonl"));
   for (std::string line; std::getline(log, line);) {
     const auto e = Json::parse(line);
@@ -1344,9 +1351,11 @@ TEST_CASE("a Spalart-Allmaras run solves the flow and nu-tilde together after th
         e["message"].get<std::string>().starts_with("the flow and nu-tilde")) {
       starts.push_back(e["iteration"].get<int>());
     }
+    if (e["code"] == "W0426") warned.push_back(e["iteration"].get<int>());
   }
   REQUIRE(starts.size() == 1);
   const int s = starts.front();
+  CHECK(warned == std::vector<int>{s});
   INFO("first coupled step " << s);
   REQUIRE(s >= 3);
   // Continued at s + 1, the uninterrupted run takes at least one step more.

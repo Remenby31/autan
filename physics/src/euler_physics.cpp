@@ -911,9 +911,10 @@ class EulerPhysics final : public runtime::Physics {
     const double drop = relative_drop(norms.empty() ? report.residuals : norms, report.residuals);
     // docs/design/matrix-free-step.md and coupled-sa.md: on the viscous multigrid step, from the
     // step after the switch to second order, the solve's operator is the true Jacobian applied
-    // matrix-free; with SA, of the flow and rho nt together.
-    const bool matrix_free = is_viscous && second_order_ && multigrid_;
-    const bool coupled = matrix_free && sa_ != nullptr;
+    // matrix-free; with SA, of the flow and rho nt together, when the case asks for it
+    // (time.coupled_turbulence), the loose step with the assembled operator otherwise.
+    const bool coupled = sa_ != nullptr && ctx_.input.time.coupled_turbulence;
+    const bool matrix_free = is_viscous && second_order_ && multigrid_ && (!sa_ || coupled);
     switch_order(drop);
     // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
     // after each step the admissibility check shortened and recovering by half otherwise.
@@ -1147,6 +1148,9 @@ class EulerPhysics final : public runtime::Physics {
                        "the flow and nu-tilde solved together, their products coupled, from this "
                        "step",
                        {}, "{}");
+        ctx_.log.write("warning", "solver",
+                       "the coupled turbulence step is validated on the TMR flat plate only (#429)",
+                       "W0426", "{}");
       }
       if (!coupled_) {
         coupled_ = std::make_unique<CoupledProduct<P>>(euler_, t.model, gas_.gamma, flow_scales(),
