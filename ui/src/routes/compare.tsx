@@ -2,11 +2,12 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { GitCompareArrows, Plus, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Run } from "../api/contracts";
+import type { Run, RunSettings } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
 import { flatten, polars } from "../api/polars";
 import { runQuery, runsQuery, shownOrders, soleForces, useRunsHistory } from "../api/runs";
-import { coefficient } from "../api/units";
+import { shortName, studies } from "../api/studies";
+import { coefficient, degrees } from "../api/units";
 import { OverlayChart, type OverlaySeries } from "../components/OverlayChart";
 import { DASHES, PolarChart } from "../components/PolarChart";
 import { TopBar } from "../components/shell/TopBar";
@@ -113,6 +114,7 @@ function Compare() {
   }, [details]);
 
   const others = (registry.data?.runs ?? []).filter((r) => !ids.includes(r.run_id));
+  const available = studies(registry.data);
 
   return (
     <>
@@ -148,7 +150,11 @@ function Compare() {
             {ids.length < MAX_RUNS && others.length > 0 && (
               <Menu
                 label="Add a run"
-                trigger={<Button size="sm" variant="tertiary" icon={<Plus className="size-4" />} />}
+                trigger={
+                  <Button size="sm" variant="tertiary" icon={<Plus className="size-4" />}>
+                    Add a run
+                  </Button>
+                }
               >
                 {others.slice(0, 20).map((run) => (
                   <MenuItem
@@ -157,7 +163,10 @@ function Compare() {
                     onClick={() => setRuns([...ids, run.run_id])}
                   >
                     {run.case.name}{" "}
-                    <span className="font-mono text-fg-3">{run.run_id.slice(-8)}</span>
+                    <span className="font-mono text-fg-3">
+                      {conditions(registry.data?.summaries[run.run_id]?.settings)}{" "}
+                      {run.run_id.slice(-8)}
+                    </span>
                   </MenuItem>
                 ))}
               </Menu>
@@ -168,10 +177,29 @@ function Compare() {
             <EmptyState
               icon={<GitCompareArrows className="size-5" />}
               title="Pick two runs or more"
-              description="Select runs on the Runs page with x, then press c."
+              description={
+                available.length
+                  ? "Compare a study, or add runs above."
+                  : "Add runs above, or select them on the Runs page."
+              }
             >
+              {available.map((s) => (
+                <Button
+                  key={s.key}
+                  onClick={() => {
+                    setRuns(s.ids);
+                    // The chosen button leaves with the empty state: focus goes to the heading.
+                    requestAnimationFrame(() => heading.current?.focus());
+                  }}
+                  data-testid="study-choice"
+                  className="justify-start"
+                >
+                  {shortName(s.names)}
+                  <span className="font-mono text-fg-3 text-sm">{s.label}</span>
+                </Button>
+              ))}
               <Link to="/" className="self-center">
-                <Button>Go to Runs</Button>
+                <Button variant="tertiary">Go to Runs</Button>
               </Link>
             </EmptyState>
           ) : (
@@ -260,38 +288,40 @@ function Compare() {
                       />
                     </ChartCard>
                   </div>
-                  <table className="w-full border-collapse text-sm" data-testid="polar-table">
-                    <thead>
-                      <tr className="text-left text-fg-3">
-                        <th className="h-8 px-2 font-normal">Run</th>
-                        <th className="px-2 text-right font-normal">α (deg)</th>
-                        <th className="px-2 text-right font-normal">CL</th>
-                        <th className="px-2 text-right font-normal">CD</th>
-                        {polar.series.length > 1 && <th className="px-2 font-normal">Series</th>}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {plotted.map((p) => (
-                        <tr key={p.id} className="border-line border-t font-mono">
-                          <td className="h-8 px-2">
-                            <span className="inline-flex items-center gap-2">
-                              <i
-                                className="inline-block size-2 rounded-full"
-                                style={{ background: runColor(p) }}
-                              />
-                              {p.role}
-                            </span>
-                          </td>
-                          <td className="px-2 text-right">{p.alpha}</td>
-                          <td className="px-2 text-right">{coefficient(p.cl)}</td>
-                          <td className="px-2 text-right">{coefficient(p.cd)}</td>
-                          {polar.series.length > 1 && (
-                            <td className="px-2 font-sans text-fg-2">{p.series}</td>
-                          )}
+                  <div className="overflow-x-auto">
+                    <table className="w-full border-collapse text-sm" data-testid="polar-table">
+                      <thead>
+                        <tr className="text-left text-fg-3">
+                          <th className="h-8 px-2 font-normal">Run</th>
+                          <th className="px-2 text-right font-normal">α (deg)</th>
+                          <th className="px-2 text-right font-normal">CL</th>
+                          <th className="px-2 text-right font-normal">CD</th>
+                          {polar.series.length > 1 && <th className="px-2 font-normal">Series</th>}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {plotted.map((p) => (
+                          <tr key={p.id} className="border-line border-t font-mono">
+                            <td className="h-8 px-2">
+                              <span className="inline-flex items-center gap-2">
+                                <i
+                                  className="inline-block size-2 rounded-full"
+                                  style={{ background: runColor(p) }}
+                                />
+                                {p.role}
+                              </span>
+                            </td>
+                            <td className="px-2 text-right">{p.alpha}</td>
+                            <td className="px-2 text-right">{coefficient(p.cl)}</td>
+                            <td className="px-2 text-right">{coefficient(p.cd)}</td>
+                            {polar.series.length > 1 && (
+                              <td className="px-2 font-sans text-fg-2">{p.series}</td>
+                            )}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
               {polar.unplotted.length > 0 && (
@@ -381,6 +411,17 @@ function Compare() {
       </div>
     </>
   );
+}
+
+// "M 0.2 · α 11.29°": what tells a run of a study from the next, in a menu.
+function conditions(settings: RunSettings | undefined): string {
+  const alpha = degrees(settings?.aoa);
+  return [
+    settings?.mach != null && `M ${settings.mach}`,
+    alpha !== null && `α ${Number(alpha.toFixed(2))}°`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 function ChartCard({
