@@ -6,6 +6,7 @@ import type { Run } from "../api/contracts";
 import { devicesLabel } from "../api/devices";
 import { flatten, polars } from "../api/polars";
 import { runQuery, runsQuery, shownOrders, soleForces, useRunsHistory } from "../api/runs";
+import { coefficient } from "../api/units";
 import { OverlayChart, type OverlaySeries } from "../components/OverlayChart";
 import { DASHES, PolarChart } from "../components/PolarChart";
 import { TopBar } from "../components/shell/TopBar";
@@ -97,7 +98,6 @@ function Compare() {
                 devices: devicesLabel(d.data.run.devices),
                 backend: d.data.run.solver.backend,
                 solver: d.data.run.solver.commit,
-                deterministic: d.data.run.deterministic,
               },
             }),
           ])
@@ -283,8 +283,8 @@ function Compare() {
                             </span>
                           </td>
                           <td className="px-2 text-right">{p.alpha}</td>
-                          <td className="px-2 text-right">{p.cl}</td>
-                          <td className="px-2 text-right">{p.cd}</td>
+                          <td className="px-2 text-right">{coefficient(p.cl)}</td>
+                          <td className="px-2 text-right">{coefficient(p.cd)}</td>
                           {polar.series.length > 1 && (
                             <td className="px-2 font-sans text-fg-2">{p.series}</td>
                           )}

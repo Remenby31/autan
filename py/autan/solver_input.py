@@ -357,7 +357,7 @@ class SolverInput(_Strict):
     case: CaseRef
     mesh: MeshRef
     precision: Literal["fp32+acc64", "fp64"]
-    deterministic: bool
+    reproducibility: Literal["none", "run", "ranks"]
     devices: Devices
     physics: PhysicsInput
     freestream: FreestreamInput
@@ -410,6 +410,9 @@ class SolverInput(_Strict):
             raise ValueError(message)
         if self.mesh.scale != metres_per(case.mesh_unit):
             message = "mesh.scale is not the case's mesh_unit in metres"
+            raise ValueError(message)
+        if self.reproducibility != case.physics.reproducibility:
+            message = "reproducibility differs from the case's physics.reproducibility"
             raise ValueError(message)
         initial = case.initial_state.sha256 if case.initial_state else None
         if initial != (self.initial_state.sha256 if self.initial_state else None):
@@ -680,7 +683,6 @@ def build(
     mesh_info: MeshInfo,
     *,
     devices: Devices,
-    deterministic: bool,
     start: Start | None = None,
 ) -> SolverInput:
     """The solver input of ``case`` on ``mesh_info``; plan errors raise ``CaseError``."""
@@ -767,7 +769,7 @@ def build(
             scale=metres_per(spec.mesh_unit),
         ),
         precision=spec.physics.precision,
-        deterministic=deterministic,
+        reproducibility=spec.physics.reproducibility,
         devices=devices,
         physics=PhysicsInput(kind=spec.physics.kind, turbulence=turbulence),
         freestream=freestream,

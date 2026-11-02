@@ -684,6 +684,16 @@ TEST_CASE("A CUDA run gives the physics its device and stream", "[runtime][gpu]"
 }
 #endif
 
+TEST_CASE("A scope's refusal carries its own code", "[runtime]") {
+  // E0706 unless the physics says more (E1109 for a reproducibility it cannot honour): any
+  // registered code goes through, here E0705.
+  autan_test::RelaxationOptions refusing;
+  refusing.refuse_code = "E0705";
+  const Outcome o = run(input(), refusing);
+  require_error(o, "E0705");
+  CHECK(Json::parse(o.err)["data"]["path"] == "physics");
+}
+
 TEST_CASE("A physics' scope refuses an input before any directory", "[runtime]") {
   const bool refuse = GENERATE(true, false);
   autan::runtime::PhysicsRegistry registry;
@@ -715,7 +725,7 @@ TEST_CASE("A physics' scope refuses an input before any directory", "[runtime]")
 }
 
 TEST_CASE("Deterministic runs produce identical history and solution arrays", "[runtime]") {
-  const Json doc = input([](Json& d) { d["deterministic"] = true; });
+  const Json doc = input([](Json& d) { d["reproducibility"] = "run"; });
   const Outcome a = run(doc);
   const Outcome b = run(doc);
   CHECK(read(a.run / "history.jsonl") == read(b.run / "history.jsonl"));
@@ -985,7 +995,7 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
   const autan_test::RelaxationOptions options{.growth = 1e-3};
   const auto budget = [&](std::int64_t n) {
     return [steady, n](Json& d) {
-      d["deterministic"] = true;
+      d["reproducibility"] = "run";
       d["monitors"][0]["every"] = 1;
       if (steady)
         d["time"]["max_iterations"] = n;
@@ -1470,7 +1480,7 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
   options.sleep_at = 15;
   const auto doc = [](std::int64_t n) {
     return input([n](Json& d) {
-      d["deterministic"] = true;
+      d["reproducibility"] = "run";
       d["time"]["max_iterations"] = n;
     });
   };
@@ -1571,16 +1581,62 @@ std::map<std::string, std::vector<double>> wall_solution(const fs::path& file) {
 // The relaxation physics' colour sweeps redone on the whole mesh, from the
 // global colouring: each step, `sweeps` symmetric sweeps over the colours,
 // each cell of a colour taking the mean of itself and its face neighbours,
-// summed in increasing global id; the field starts at global id mod 7.
-std::vector<double> swept(const autan::Mesh& mesh, int steps, int sweeps) {
-  const auto colours = autan::colour_cells(mesh);
-  const std::int32_t n_colours = *std::ranges::max_element(colours) + 1;
+// summed in increasing global id; the field starts at global id mod 7. With
+// `groups` (RelaxationOptions::groups), a line smoother: a group is one node
+// of the colouring, greedy by increasing least global id, and its cells are
+// swept in decreasing id; this colouring is computed here, not by the code
+// under test.
+std::vector<double> swept(const autan::Mesh& mesh, int steps, int sweeps, int groups = 0) {
   const auto ids = mesh.cell_global_id();
-  std::vector<double> w(colours.size());
+  const auto z = [](auto i) { return static_cast<std::size_t>(i); };
+  const std::int64_t period = 2 * std::int64_t{groups};
+  const auto node = [&](autan::index_t c) -> std::int64_t {
+    return groups > 0 && ids[z(c)] % period < groups ? ids[z(c)] % period
+                                                     : std::int64_t{groups} + ids[z(c)];
+  };
+  std::map<std::int64_t, std::vector<autan::index_t>> members;  // node -> cells, by id
+  std::map<std::int64_t, std::set<std::int64_t>> around_node;
+  for (autan::index_t c = 0; c < mesh.n_cells(); ++c) members[node(c)].push_back(c);
+  for (autan::index_t f = 0; f < mesh.n_interior_faces(); ++f) {
+    const auto a = node(mesh.owner()[z(f)]), b = node(mesh.neighbour()[z(f)]);
+    if (a != b) {
+      around_node[a].insert(b);
+      around_node[b].insert(a);
+    }
+  }
+  std::vector<std::pair<std::int64_t, std::int64_t>> by_least;  // (least id, node)
+  for (const auto& [n, cells] : members) {
+    std::int64_t least = ids[z(cells.front())];
+    for (const auto c : cells) least = std::min(least, ids[z(c)]);
+    by_least.emplace_back(least, n);
+  }
+  std::ranges::sort(by_least);
+  std::map<std::int64_t, std::int32_t> node_colour;
+  for (const auto& [least, n] : by_least) {
+    std::set<std::int32_t> taken;
+    for (const auto m : around_node[n]) {
+      if (node_colour.contains(m)) taken.insert(node_colour[m]);
+    }
+    std::int32_t k = 0;
+    while (taken.contains(k)) ++k;
+    node_colour[n] = k;
+  }
+  std::int32_t n_colours = 0;
+  for (const auto& [n, k] : node_colour) n_colours = std::max(n_colours, k + 1);
+  std::vector<double> w(z(mesh.n_cells()));
   for (std::size_t c = 0; c < w.size(); ++c) w[c] = static_cast<double>(ids[c] % 7);
   const auto colour_sweep = [&](std::int32_t k) {
+    std::vector<autan::index_t> cells;
+    for (const auto& [least, n] : by_least) {
+      if (node_colour[n] != k || n >= groups) continue;
+      auto line = members[n];
+      std::ranges::sort(line, std::greater{}, [&](autan::index_t c) { return ids[z(c)]; });
+      cells.insert(cells.end(), line.begin(), line.end());
+    }
     for (autan::index_t c = 0; c < mesh.n_cells(); ++c) {
-      if (colours[static_cast<std::size_t>(c)] != k) continue;
+      if (node(c) >= groups && node_colour[node(c)] == k) cells.push_back(c);
+    }
+    for (const autan::index_t c : cells) {
       std::vector<std::pair<std::int64_t, double>> around{
           {ids[static_cast<std::size_t>(c)], w[static_cast<std::size_t>(c)]}};
       for (const autan::index_t f : mesh.cell_faces(c)) {
@@ -1609,7 +1665,7 @@ std::vector<double> swept(const autan::Mesh& mesh, int steps, int sweeps) {
 // `diagnostic`, when given, receives the JSON diagnostic line of stderr.
 fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>& options,
                       int expected_status = 0, Json* diagnostic = nullptr,
-                      const std::vector<std::string>& extra_args = {}) {
+                      const std::vector<std::string>& extra_args = {}, bool directory = true) {
   const fs::path dir = fresh_dir();
   const fs::path input_file = dir / "solver-input.json";
   // One device per rank (solver-input.md, `devices`), unless a test sets it.
@@ -1655,7 +1711,7 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
   if (fs::exists(dir / "runs")) {
     for (const auto& entry : fs::directory_iterator(dir / "runs")) run = entry.path();
   }
-  CHECK(run.empty() == (expected_status == 2));
+  CHECK(run.empty() == (expected_status == 2 || !directory));
   return run;
 }
 
@@ -1669,7 +1725,7 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   const int ranks = GENERATE(2, 4);
   CAPTURE(periodic, ranks);
   const auto edit = [](Json& d) {
-    d["deterministic"] = true;
+    d["reproducibility"] = "run";
     d["monitors"][0]["every"] = 1;
     d["time"]["max_iterations"] = 12;
   };
@@ -1683,6 +1739,32 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
                                       "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
 
   CHECK(lines_of(many / "history.jsonl") == lines_of(one.run / "history.jsonl"));
+  // Reproducibility "ranks": a partition even on one rank, and face keys that
+  // match the mesh file on 1 and N ranks (the physics checks them); a run on
+  // several ranks in another mode says its results depend on the count.
+  Json keyed = doc;
+  keyed["reproducibility"] = "ranks";
+  autan_test::RelaxationOptions checking = options;
+  checking.check_keys = true;
+  const Outcome one_keyed = run(keyed, checking);
+  REQUIRE(one_keyed.status == ExitStatus::finished);
+  const fs::path many_keyed =
+      run_on_ranks(keyed, ranks,
+                   {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                    "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1", "AUTAN_TEST_CHECK_KEYS=1"});
+  CHECK(Json::parse(read(many_keyed / "run.json"))["status"] == "completed");
+  CHECK(lines_of(many_keyed / "history.jsonl") == lines_of(one_keyed.run / "history.jsonl"));
+  CHECK(solution_field(many_keyed / "solution.cgns", "FlowSolution", "Pressure") ==
+        solution_field(one_keyed.run / "solution.cgns", "FlowSolution", "Pressure"));
+  const auto has_event = [](const fs::path& run_dir) {
+    std::ifstream in(run_dir / "log.jsonl");
+    for (std::string line; std::getline(in, line);) {
+      if (Json::parse(line)["data"].contains("mode")) return true;
+    }
+    return false;
+  };
+  CHECK(has_event(many));
+  CHECK_FALSE(has_event(many_keyed));
   // A smoother sweeping the global colours (PhysicsContext::cell_colours),
   // the ghosts exchanged after each colour, and an argmin over the ranks:
   // the history of one rank.
@@ -1703,6 +1785,35 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   CHECK(solution_field(many_swept / "solution.cgns", "FlowSolution", "TurbulentSANuTilde") ==
         swept_one);
   if (!periodic) CHECK(swept_one == swept(autan::io::read_mesh(mesh_path), 12, 2));
+  // A line smoother: the physics' groups (each spanning the mesh) stay whole
+  // on one rank, and it sweeps the colours of its groups, each in its order;
+  // on several ranks, the bits of one, and on one, those of an independent
+  // sweep of the whole mesh.
+  autan_test::RelaxationOptions lining = sweeping;
+  lining.groups = ranks;
+  const Outcome one_lined = run(doc, lining);
+  REQUIRE(one_lined.status == ExitStatus::finished);
+  const fs::path many_lined =
+      run_on_ranks(doc, ranks,
+                   {"AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
+                    "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1", "AUTAN_TEST_COLOUR_SWEEPS=2",
+                    "AUTAN_TEST_GROUPS=" + std::to_string(ranks)});
+  CHECK(lines_of(many_lined / "history.jsonl") == lines_of(one_lined.run / "history.jsonl"));
+  const auto lined_one =
+      solution_field(one_lined.run / "solution.cgns", "FlowSolution", "TurbulentSANuTilde");
+  CHECK(lined_one != swept_one);
+  CHECK(solution_field(many_lined / "solution.cgns", "FlowSolution", "TurbulentSANuTilde") ==
+        lined_one);
+  if (!periodic) CHECK(lined_one == swept(autan::io::read_mesh(mesh_path), 12, 2, ranks));
+  // Groups the partition refuses end every rank before any directory, with their code.
+  Json malformed;
+  CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_GROUPS=-1"}, 1, &malformed, {}, false).empty());
+  CHECK(malformed["code"] == "E0140");
+  // Rank 1 alone fails while the others go on into the partition: every rank ends.
+  Json alone;
+  CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_GROUPS=-2"}, 1, &alone, {}, false).empty());
+  CHECK(alone["code"] == "E0140");
+  CHECK(alone["data"]["rank"] == 1);
 #ifdef AUTAN_HAVE_CUDA
   // On CUDA devices, the ranks sharing the host's GPUs: the relaxation
   // physics checks at every step that the exchange fills its ghosts in
@@ -1837,10 +1948,12 @@ TEST_CASE("Several ranks average and continue as one", "[runtime][mpi]") {
   // rank: the start state is split among the ranks and the mean and restart
   // fields gathered back.
   const int ranks = GENERATE(2, 4);
-  CAPTURE(ranks);
-  const auto steps = [](std::int64_t n) {
-    return [n](Json& d) {
-      d["deterministic"] = true;
+  const std::string mode = GENERATE("run", "ranks");
+  CAPTURE(ranks, mode);
+  const auto steps = [mode](std::int64_t n) {
+    return [n, mode](Json& d) {
+      d["reproducibility"] = mode;
+      d["reproducibility"] = "run";
       d["monitors"][0]["every"] = 1;
       d["time"]["steps"] = n;
     };

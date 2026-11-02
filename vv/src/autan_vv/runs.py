@@ -232,7 +232,7 @@ def write_run(
 
     `fields` must hold exactly the fields results.md requires for the case's physics, one value per
     cell in mesh order. The history holds one line with unit residuals. Cases with monitors or time
-    averaging are refused (V0731); runs are marked non-deterministic, since their fields are given.
+    averaging are refused (V0731).
     """
     spec = case.spec
     if spec.monitors or getattr(spec.time, "average_from", None) is not None:
@@ -261,8 +261,6 @@ def write_run(
         mesh=MeshIdentity(path=str(case.mesh_path), sha256=info.source.sha256),
         solver=solver,
         precision=spec.physics.precision,
-        # The fields come from the caller, not from the identified configuration.
-        deterministic=False,
         devices=devices,
         started=iso(started),
         finished=None,

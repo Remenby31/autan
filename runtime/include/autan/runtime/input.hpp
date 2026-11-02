@@ -136,7 +136,8 @@ struct SolverInput {
   std::string mesh_path, mesh_sha256;
   double mesh_scale = 1.0;  ///< metres per mesh unit (solver-input.md, mesh.scale)
   std::string precision;    ///< "fp32+acc64" or "fp64"
-  bool deterministic = false;
+  /// "none", "run" or "ranks" (solver-input.md): which runs repeat the same bits.
+  std::string reproducibility = "run";
   std::string device_kind;  ///< cpu, cuda, hip
   std::int64_t device_count = 1;
   std::string physics_kind;  ///< compressible, incompressible
