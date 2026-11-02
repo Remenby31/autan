@@ -256,7 +256,7 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
 
 TEST_CASE("a verification case converges to its discrete solution", "[euler]") {
   const char* precision = GENERATE("fp64", "fp32+acc64");
-  const char* linear = GENERATE("multigrid", "gauss-seidel");
+  const char* linear = GENERATE("multigrid", "gauss-seidel", "lines");
   INFO(precision << " " << linear);
   const auto doc = input("hybrid-verification.solver-input.json", [&](Json& d) {
     d["precision"] = precision;
@@ -461,7 +461,7 @@ void unsteady_through_pairs(Json& d, int steps) {
 TEST_CASE("steady cases the steady solver cannot run are refused before any directory exists",
           "[euler]") {
   // The multigrid agglomerates one mesh's cells and takes no image ghosts: E0706 at
-  // `time.linear_solver`. The steady solvers sum in local cell order: reproducibility "ranks" is
+  // `time.linear_solver`. The multigrid sums in local cell order: reproducibility "ranks" is
   // E1109.
   const bool periodic = GENERATE(true, false);
   CAPTURE(periodic);
@@ -533,6 +533,46 @@ TEST_CASE("a case with an initial-state file starts from the file's states", "[e
   for (const double v : field(out.run, "VelocityX")) {
     CHECK(std::abs(v - speed) <= 64 * eps * speed);
   }
+}
+
+TEST_CASE("a force monitor records the forces of its own iteration, whatever its cadence",
+          "[euler]") {
+  // Two zones at different states evolve over four unsteady steps. Recorded every iteration by
+  // two monitors, or at the fourth only, the forces of iteration 4 are the same bits: the boundary
+  // pressure every monitor of an iteration reads belongs to that iteration's state.
+  auto doc = [](int every, int count) {
+    return input("hybrid.solver-input.json", [&](Json& d) {
+      inviscid_along_x(d, "fp64");
+      for (auto& b : d["boundaries"]) b["kind"] = "farfield";
+      auto& init = d["cell_zones"].back()["initial"];
+      init["density"] = 1.2 * init["density"].get<double>();
+      init["pressure"] = 1.3 * init["pressure"].get<double>();
+      d["time"] = {{"kind", "unsteady"},
+                   {"steps", 4},
+                   {"dt", nullptr},
+                   {"cfl", 0.8},
+                   {"average_from", nullptr}};
+      Json monitor = d["monitors"][0];
+      monitor["every"] = every;
+      d["monitors"] = Json::array();
+      for (int k = 0; k < count; ++k) {
+        monitor["name"] = "forces" + std::to_string(k);
+        d["monitors"].push_back(monitor);
+      }
+    });
+  };
+  const auto each = run(doc(1, 2));
+  const auto last = run(doc(4, 1));
+  INFO(each.err << last.err);
+  REQUIRE(each.status == ExitStatus::finished);
+  REQUIRE(last.status == ExitStatus::finished);
+  const auto a = history(each.run), b = history(last.run);
+  REQUIRE(a.size() == 4);
+  REQUIRE(b.size() == 4);
+  const Json& at4 = a[3]["monitors"];
+  CHECK(at4["forces0"] == at4["forces1"]);
+  CHECK(at4["forces0"] == b[3]["monitors"]["forces0"]);
+  CHECK(a[0]["monitors"]["forces0"] != at4["forces0"]);  // the forces do evolve
 }
 
 TEST_CASE("a uniform flow through periodic pairs stays uniform", "[euler]") {
@@ -825,22 +865,26 @@ TEST_CASE("a steady run whose state is not physical on some ranks stops every ra
   CHECK((*d107)["data"]["zone"] == "lower");
 }
 
-TEST_CASE("a steady Gauss-Seidel case on several ranks converges to the one-rank solution",
+TEST_CASE("a steady Gauss-Seidel or lines case on several ranks converges to the one-rank solution",
           "[euler][mpi]") {
   // Gauss-Seidel sweeps the runtime's colours by global id, and the step length, the worst cell
   // and the norms reduce over the ranks, so N ranks run the one-rank algorithm. The face sums
   // still follow local order (#199), so the bits differ: converged 10 orders, the fields agree
   // within 1e-9 of their magnitude (the largest speed for velocity components), and a fixed rank
   // count repeats bit for bit. Two zones at different states on the hybrid mesh, farfield around.
+  // "lines" sweeps the multigrid's fine lines, kept whole by the partition, over the runtime's
+  // colouring of the lines, sums faces in global order and reduces exactly: under
+  // reproducibility "ranks" it repeats the one-rank run bit for bit.
   const int ranks = GENERATE(2, 4);
-  CAPTURE(ranks);
+  const char* linear = GENERATE("gauss-seidel", "lines");
+  CAPTURE(ranks, linear);
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     inviscid_along_x(d, "fp64");
     for (auto& b : d["boundaries"]) b["kind"] = "farfield";
     auto& init = d["cell_zones"].back()["initial"];
     init["density"] = 1.2 * init["density"].get<double>();
     init["pressure"] = 1.3 * init["pressure"].get<double>();
-    d["time"]["linear_solver"] = "gauss-seidel";
+    d["time"]["linear_solver"] = linear;
     d["time"]["max_iterations"] = 2000;
     d["time"]["residual_orders"] = 10.0;
   });
@@ -871,6 +915,24 @@ TEST_CASE("a steady Gauss-Seidel case on several ranks converges to the one-rank
   }
   const fs::path again = run_on_ranks(doc, ranks);
   CHECK(read(again / "history.jsonl") == read(many / "history.jsonl"));
+  if (std::string(linear) == "lines") {
+    auto exact = doc;
+    exact["reproducibility"] = "ranks";
+    const auto exact_one = run(exact);
+    INFO(exact_one.err);
+    REQUIRE(exact_one.status == ExitStatus::finished);
+    const fs::path exact_many = run_on_ranks(exact, ranks);
+    REQUIRE(!exact_many.empty());
+    CHECK(read(exact_many / "history.jsonl") == read(exact_one.run / "history.jsonl"));
+    for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
+      INFO(name);
+      const auto a = field(exact_one.run, name), b = field(exact_many, name);
+      REQUIRE(a.size() == b.size());
+      CHECK(std::ranges::equal(a, b, [](double x, double y) {
+        return std::bit_cast<std::uint64_t>(x) == std::bit_cast<std::uint64_t>(y);
+      }));
+    }
+  }
 }
 
 TEST_CASE("steady Gauss-Seidel steps through periodic pairs follow the one-rank steps",
