@@ -25,7 +25,11 @@ class Gate:
     relative `norm` error of each field at most `upper` epsilons of the run precision, on every
     run). `fields` None means every field the run writes. `time` and `domain` are prerequisites:
     every run must reach that physical time, and the mesh must span `domain` (per axis, min and max).
-    With `upper_blocks` False, an order above `upper` is a warning, and above `investigate_above` the
+    `statuses` are the run statuses (results.md, run.json) the gate accepts: `converged` for a steady
+    gate, `completed` for an unsteady one that runs a fixed number of steps; `floor` (a steady
+    fp32+acc64 run stopped at its round-off floor, not converged) only where the gate measures
+    round-off itself. A run of another status fails the gate's `status` prerequisite. With
+    `upper_blocks` False, an order above `upper` is a warning, and above `investigate_above` the
     verdict asks for an explanation; neither fails the gate. With `monotone`, each field's error
     must decrease strictly from every level to the next finer one.
     """
@@ -43,6 +47,7 @@ class Gate:
     upper_blocks: bool = True
     investigate_above: float | None = None
     monotone: bool = False
+    statuses: tuple[str, ...] = ("converged",)
 
 
 PRESERVED = 64.0
@@ -51,7 +56,15 @@ GATES: dict[str, Gate] = {
     g.id: g
     for g in (
         Gate(
-            "freestream-preservation", ("freestream",), "max-error", "Linf", None, 0.0, 64.0, "M2"
+            "freestream-preservation",
+            ("freestream",),
+            "max-error",
+            "Linf",
+            None,
+            0.0,
+            64.0,
+            "M2",
+            statuses=("converged", "floor"),
         ),
         Gate(
             "euler-mms-order",
@@ -90,8 +103,19 @@ GATES: dict[str, Gate] = {
             "M2",
             time=40.0,
             domain=((-10.0, 10.0), (-10.0, 10.0)),
+            statuses=("completed",),
         ),
-        Gate("sod-order", ("sod",), "order", "L1", ("Density",), 0.6, 1.1, "M2"),
+        Gate(
+            "sod-order",
+            ("sod",),
+            "order",
+            "L1",
+            ("Density",),
+            0.6,
+            1.1,
+            "M2",
+            statuses=("completed",),
+        ),
         Gate(
             "ns-mms-order",
             ("mms-navier-stokes",),
@@ -127,6 +151,7 @@ GATES: dict[str, Gate] = {
             0.0,
             64.0,
             "M3",
+            statuses=("converged", "floor"),
         ),
         Gate(
             "couette-temperature-order",

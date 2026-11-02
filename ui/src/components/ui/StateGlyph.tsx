@@ -4,6 +4,8 @@ import type { RunStatus } from "../../api/contracts";
 const COLOR: Record<RunStatus, string> = {
   running: "var(--state-running)",
   converged: "var(--state-converged)",
+  // Stopped at the round-off floor: an end, not a convergence (case-schema.md#time).
+  floor: "var(--warning)",
   completed: "var(--state-completed)",
   stopped: "var(--state-stopped)",
   diverged: "var(--state-diverged)",
@@ -31,6 +33,7 @@ export function StateGlyph({ status }: { status: RunStatus }) {
       )}
       {status === "completed" && <span className="absolute h-px w-1.5 bg-bg-0" />}
       {status === "stopped" && <span className="size-2 rounded-[1px] bg-current" />}
+      {status === "floor" && <span className="size-2 rounded-full border-[1.5px] border-current" />}
       {status === "failed" && <span className="font-semibold text-[10px] leading-none">×</span>}
       {status === "diverged" && (
         <span className="grid size-2 place-items-center rounded-full border border-current font-semibold text-[6px] leading-none">

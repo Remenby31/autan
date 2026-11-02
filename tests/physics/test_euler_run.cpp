@@ -188,7 +188,6 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   INFO(precision << (steady ? " steady" : " unsteady"));
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     inviscid_along_x(d, precision);
-    // fp32+acc64 starts at its convergence floor (round-off only) and stops at iteration 1.
     d["monitors"][0]["every"] = 1;
     if (steady) {
       d["time"]["max_iterations"] = 20;
@@ -218,39 +217,15 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   const auto& forces = lines.back()["monitors"]["forces"];
   for (const char* k : {"fx", "fy", "fz"}) CHECK(std::abs(forces[k].get<double>()) <= 64 * eps * p);
   if (!steady) CHECK(info["time"].get<double>() > 0.0);
-  // case-schema.md#time: a steady fp32+acc64 run converges at 0.5 * 2^-23 * Phi_k at the
-  // latest, Phi_k = f_k sqrt(sum_i A_i^2 / N) from the freestream flux f_k and the cell surfaces.
-  if (!steady || std::string(precision) == "fp64") {
+  // case-schema.md#time: a uniform flow's residual is round-off, so a steady fp32+acc64 run is at
+  // its floor in every cell; no other run evaluates floors.
+  if (steady && std::string(precision) == "fp32+acc64") {
+    CHECK(info["status"] == "floor");
+    const auto& c = info["convergence"];
+    for (const auto& [name, ratio] : c["max_ratio"].items()) CHECK(ratio.get<double>() <= 1.0);
+    for (const auto& [name, at] : c["cells_at_floor"].items()) CHECK(at.get<double>() == 1.0);
+  } else {
     CHECK(info["convergence"].is_null());
-    return;
-  }
-  CHECK(info["status"] == "converged");
-  const auto mesh = autan::io::read_mesh(mesh_path);
-  const auto g = autan::compute_geometry(mesh);
-  std::vector<double> surface(static_cast<std::size_t>(mesh.n_cells()), 0.0);
-  for (std::size_t face = 0; face < static_cast<std::size_t>(mesh.n_faces()); ++face) {
-    surface[static_cast<std::size_t>(mesh.owner()[face])] += g.face_area[face];
-    if (face < static_cast<std::size_t>(mesh.n_interior_faces()))
-      surface[static_cast<std::size_t>(mesh.neighbour()[face])] += g.face_area[face];
-  }
-  double sum = 0.0;
-  for (const double a : surface) sum += a * a;
-  const double area = std::sqrt(sum / static_cast<double>(surface.size()));
-  const double gamma = doc["cell_zones"][0]["medium"]["gamma"].get<double>();
-  const double c = std::sqrt(gamma * p / rho);
-  const double q = speed + c;
-  const double h = c * c / (gamma - 1.0) + 0.5 * speed * speed;
-  const double unit = 0.5 * 0x1p-23 * area;
-  const Json expected = {{"density", unit * rho * q},
-                         {"momentum-x", unit * rho * q * q},
-                         {"momentum-y", unit * rho * q * q},
-                         {"momentum-z", unit * rho * q * q},
-                         {"energy", unit * rho * h * q}};
-  const auto& floor = info["convergence"]["floor"];
-  REQUIRE(floor.size() == expected.size());
-  for (const auto& [name, value] : expected.items()) {
-    INFO(name);
-    CHECK(std::abs(floor[name].get<double>() - value.get<double>()) <= 1e-12 * value.get<double>());
   }
 }
 
@@ -270,6 +245,102 @@ TEST_CASE("a verification case converges to its discrete solution", "[euler]") {
   const Json info = Json::parse(read(out.run / "run.json"));
   CHECK(info["status"] == "converged");
   CHECK(fs::exists(out.run / "manufactured.json"));
+}
+
+TEST_CASE("a steady fp32+acc64 case that cannot drop its orders ends at its round-off floor",
+          "[euler]") {
+  // case-schema.md#time: ten orders are below FP32's resolution, so the run ends at the first
+  // iteration where every cell's residual is at most its floor, with status `floor`.
+  const char* linear = GENERATE("multigrid", "gauss-seidel");
+  INFO(linear);
+  auto with = [&](const char* precision, int iterations) {
+    return input("hybrid-verification.solver-input.json", [&](Json& d) {
+      d["precision"] = precision;
+      d["time"]["linear_solver"] = linear;
+      d["time"]["max_iterations"] = iterations;
+      d["time"]["residual_orders"] = 10.0;
+    });
+  };
+  const auto doc = with("fp32+acc64", 20000);
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  const Json info = Json::parse(read(out.run / "run.json"));
+  CHECK(info["status"] == "floor");
+  CHECK(info["iterations"].get<int>() < 20000);
+  const auto& c = info["convergence"];
+  CHECK(c["iteration"] == info["iterations"]);
+  for (const auto& [name, ratio] : c["max_ratio"].items()) {
+    INFO(name);
+    CHECK(ratio.get<double>() <= 1.0);
+    CHECK(c["cells_at_floor"][name].get<double>() == 1.0);
+  }
+  // The floors are evaluated every 4 iterations: the run stops at the first multiple of 4 where
+  // every cell is at its floor, never before. Stopped 4 iterations earlier, it is not at its floor
+  // there.
+  const int stop = info["iterations"].get<int>();
+  CHECK(stop % 4 == 0);
+  const auto earlier = run(with("fp32+acc64", stop - 4));
+  INFO(earlier.err);
+  REQUIRE(earlier.status == ExitStatus::finished);
+  const Json before = Json::parse(read(earlier.run / "run.json"));
+  CHECK(before["status"] == "completed");
+  REQUIRE(before["convergence"]["iteration"] == stop - 4);
+  double largest = 0.0;
+  for (const auto& [name, ratio] : before["convergence"]["max_ratio"].items()) {
+    largest = std::max(largest, ratio.get<double>());
+  }
+  CHECK(largest > 1.0);
+  // The runtime also judges the final state of a run that reaches max_iterations
+  // (Physics::final_floors): one iteration short of that stop, the state the run ends with is
+  // already at its floor, between two evaluations, and the run ends `floor` there.
+  const auto shorter = run(with("fp32+acc64", stop - 1));
+  INFO(shorter.err);
+  REQUIRE(shorter.status == ExitStatus::finished);
+  const Json last = Json::parse(read(shorter.run / "run.json"));
+  CHECK(last["status"] == "floor");
+  CHECK(last["iterations"] == stop - 1);
+  CHECK(last["convergence"]["iteration"] == stop - 1);
+  // The solution the run saved, after the step of the iteration it judged, agrees with the fp64
+  // one converged ten orders within 256 eps32 of each field's magnitude (measured 1.9e-5 at most;
+  // with c = 64 the stop comes earlier and velocities differ by up to 1.2e-4).
+  const auto exact = run(with("fp64", 20000));
+  REQUIRE(Json::parse(read(exact.run / "run.json"))["status"] == "converged");
+  for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
+    const auto a = field(exact.run, name), b = field(out.run, name);
+    double diff = 0.0, scale = 0.0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      diff = std::max(diff, std::abs(a[i] - b[i]));
+      scale = std::max(scale, std::abs(a[i]));
+    }
+    INFO(name << " differs by " << diff / scale << " of its magnitude");
+    CHECK(diff <= 256 * std::numeric_limits<float>::epsilon() * scale);
+  }
+}
+
+TEST_CASE("a residual left at a slip wall keeps a steady fp32+acc64 run from its floor",
+          "[euler]") {
+  // case-schema.md#time: the floor is judged cell by cell. The freestream meets the slip wall
+  // ymin at 1e-4 rad: from the uniform start only the wall cells have a residual. One iteration,
+  // and the runtime judges the state it ends with: its wall cells are still 2.8 times their floor
+  // in density, while the residual's norm over all cells is 0.56 times the floors' (measured):
+  // a rule on norms would end it `floor`, with the flow still through the wall.
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, "fp32+acc64");
+    auto& f = d["freestream"];
+    const double speed = f["speed"].get<double>();
+    f["velocity"] = {speed, -1e-4 * speed, 0.0};
+    for (auto& z : d["cell_zones"]) z["initial"]["velocity"] = f["velocity"];
+    d["time"]["max_iterations"] = 1;
+    d["time"]["residual_orders"] = 10.0;
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  const Json info = Json::parse(read(out.run / "run.json"));
+  CHECK(info["status"] == "completed");
+  REQUIRE(info["convergence"]["iteration"] == 1);
+  CHECK(info["convergence"]["max_ratio"]["density"].get<double>() > 1.0);
 }
 
 TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[euler]") {

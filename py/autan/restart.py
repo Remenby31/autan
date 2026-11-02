@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from autan.schema import CaseSpec
 
 Mode = Literal["continue", "warm"]
-RESUMABLE = frozenset({"converged", "completed", "stopped"})
+RESUMABLE = frozenset({"converged", "floor", "completed", "stopped"})
 
 
 def _budget(spec: CaseSpec) -> int:
@@ -144,6 +144,8 @@ def woken(previous: Results, reference: dict[str, float]) -> list[str]:
     for name, first in reference.items():
         if first < floor and bool((history.residual(name) > floor).any()):
             found.add(name)
+    # The final state can wake one after the last history line (final_floors, runtime.md).
+    found.update(d.data["equation"] for d in previous.run.diagnostics if d.code == "W0710")
     return sorted(found)
 
 

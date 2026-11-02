@@ -275,7 +275,7 @@ function RunView() {
                 <div className="h-96 min-w-0">
                   <ResidualChart
                     history={history}
-                    floors={run?.convergence?.floor}
+                    floorCheck={run?.convergence}
                     reference={run?.start?.residual_reference}
                     steady={time?.kind === "steady"}
                   />
