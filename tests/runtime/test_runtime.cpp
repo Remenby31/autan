@@ -1536,7 +1536,7 @@ TEST_CASE("A run that needs more memory than its host can give is refused before
                                  }),
                                  registry));
   CHECK(heavy["code"] == "E0711");
-  CHECK(heavy["path"] == "memory");
+  CHECK(heavy["location"]["path"] == "memory");
   CHECK(heavy["data"]["required_bytes"] == huge);
   CHECK(heavy["data"]["margin_bytes"] == margin);
   CHECK(heavy["data"]["device_kind"] == "cpu");
