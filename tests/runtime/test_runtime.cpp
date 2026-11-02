@@ -1548,6 +1548,35 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
   const auto rest = lines_of(b.run / "history.jsonl");
   chain.insert(chain.end(), rest.begin(), rest.end());
   CHECK(chain == lines_of(whole.run / "history.jsonl"));
+  // A steady fp32+acc64 continuation stopped before its first step is judged on its final state
+  // against the original run's exemptions: an exempt equation awake there wakes (W0710).
+  autan_test::RelaxationOptions quiet;
+  quiet.silent_equation = 1;
+  quiet.floor = std::ldexp(1.0, -12);
+  const auto fp32 = [](std::int64_t n) {
+    return input([n](Json& d) {
+      d["precision"] = "fp32+acc64";
+      d["time"]["max_iterations"] = n;
+    });
+  };
+  const Outcome first = run(fp32(5), quiet);
+  REQUIRE(Json::parse(read(first.run / "run.json"))["status"] == "completed");
+  Json resumed = fp32(40);
+  resumed["start"] = start_from(first.run, "continue");
+  autan_test::RelaxationOptions waking = quiet;
+  waking.final_wakes = true;
+  const fs::path stop = fresh_dir() / "stop";
+  std::ofstream(stop).put('\n');
+  const Outcome stopped = run(resumed, autan_test::relaxation_registry(waking), stop);
+  const Json stopped_info = Json::parse(read(stopped.run / "run.json"));
+  CHECK(stopped_info["status"] == "stopped");
+  CHECK(stopped_info["iterations"] == 5);
+  CHECK(stopped_info["diagnostics"].size() == 1);
+  for (const Json& d : stopped_info["diagnostics"]) {
+    CHECK(d["code"] == "W0710");
+    CHECK(d["data"]["equation"] == "momentum-x");
+    CHECK(d["data"]["iteration"] == 5);
+  }
 }
 
 TEST_CASE("A steady fp32+acc64 run stops at its round-off floor, not converged", "[runtime]") {

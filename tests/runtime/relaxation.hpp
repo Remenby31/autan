@@ -259,6 +259,14 @@ class Relaxation final : public autan::runtime::Physics {
     if (options_.floor <= 0.0) return std::nullopt;
     autan::runtime::StepReport report;
     report.residuals = last_residuals_;
+    // A run that took no step (a continuation stopped at once): the state it started from.
+    if (report.residuals.empty()) {
+      const auto equations = autan::runtime::residual_names(context_.input).size();
+      for (std::size_t e = 0; e < equations; ++e)
+        report.residuals.push_back(static_cast<double>(e + 1) * rms_);
+      if (options_.silent_equation >= 0)
+        report.residuals[static_cast<std::size_t>(options_.silent_equation)] = 1e-15;
+    }
     if (options_.final_wakes)
       report.residuals[static_cast<std::size_t>(options_.silent_equation)] = 1e-3;
     if (options_.final_not_finite) report.residuals[0] = std::numeric_limits<double>::quiet_NaN();

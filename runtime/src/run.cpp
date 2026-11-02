@@ -1426,7 +1426,11 @@ class Run final : public Log {
     std::int64_t from = 1;
     if (continued()) {
       const Start& s = *in.start;
-      if (s.residual_reference) first = *s.residual_reference;
+      if (s.residual_reference) {
+        first = *s.residual_reference;
+        // The original run's exemptions, before any stop: the final state may wake one.
+        exempt.reference(first);
+      }
       if (s.time) time = *s.time;
       from = s.iterations + 1;
       if (!info_["averaging"].is_null()) average_start = info_["averaging"]["from_time"];
