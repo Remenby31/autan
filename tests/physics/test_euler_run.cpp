@@ -28,11 +28,13 @@
 extern char** environ;
 #endif
 
+#include "../runtime/planned.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/physics/euler_physics.hpp"
 #include "autan/physics/manufactured.hpp"
+#include "autan/runtime/physics.hpp"
 #include "autan/runtime/run.hpp"
 
 namespace {
@@ -59,7 +61,7 @@ Json input(const char* file, const std::function<void(Json&)>& edit) {
   if (doc["verification"].is_object())
     doc["verification"]["path"] = fs::absolute(mms_path).string();
   edit(doc);
-  return doc;
+  return autan_test::planned(doc, mesh_path);
 }
 
 struct Outcome {
@@ -895,6 +897,25 @@ TEST_CASE("a steady Gauss-Seidel or lines case on several ranks converges to the
   const fs::path many = run_on_ranks(doc, ranks);
   REQUIRE(!many.empty());
   CHECK(Json::parse(read(many / "run.json"))["status"] == "converged");
+  {
+    // Each rank owns the cells, and holds the ghosts, of autan-mesh-info --ranks N, with
+    // --groups lines when the case forms the lines (mesh-info.md, partition).
+    Json partitioned;
+    std::ifstream log_in(many / "log.jsonl");
+    for (std::string line; std::getline(log_in, line);) {
+      const Json event = Json::parse(line);
+      if (event["source"] == "mpi") partitioned = event["data"];
+    }
+    const autan::Mesh mesh = autan::io::read_mesh(mesh_path);
+    const auto groups =
+        std::string(linear) == "lines" ? autan::io::RankGroups::lines : autan::io::RankGroups::none;
+    const auto counts =
+        autan::io::run_counts(mesh, 1.0, autan::io::CellOrder::rcm,
+                              autan::io::RanksRequest{.ranks = ranks, .groups = groups});
+    REQUIRE(counts.partition);
+    CHECK(partitioned["owned_cells"] == Json(counts.partition->cells));
+    CHECK(partitioned["ghost_cells"] == Json(counts.partition->ghosts));
+  }
   const auto vx = field(one.run, "VelocityX"), vy = field(one.run, "VelocityY"),
              vz = field(one.run, "VelocityZ");
   double speed = 0.0;
@@ -976,12 +997,16 @@ TEST_CASE("steady Gauss-Seidel steps through periodic pairs follow the one-rank 
 #endif
 
 TEST_CASE("an equation at the round-off floor does not set the steady CFL number", "[euler]") {
-  // tests/data/mesh/ringleb is one cell thick in z: the z-momentum is identically zero and its
-  // residual round-off. Two runs differ only by a uniform initial w of 1e-20 times the speed,
-  // which changes that round-off and the other equations by an ulp at most; the CFL law must
-  // ignore it (case-schema.md#time, the runtime's exemption), so over 40 steps the other
-  // equations' histories agree within 1e-6 (measured 8.5e-9; driven by the round-off, they
-  // differ by 3.4).
+  // tests/data/mesh/ringleb is one cell thick in z: the z-momentum is zero and its residual
+  // round-off. Two runs differ only by a uniform initial w of 1e-20 times the speed, which
+  // changes that round-off and the other equations by an ulp at most; the CFL law must ignore
+  // it (case-schema.md#time, the runtime's exemption), so over 40 steps the other equations'
+  // residuals agree within 1e-6 of each other plus the round-off they converge to. A cell's
+  // residual sums its n_f = 6 face fluxes, whose order (the cell order) changes it by at most
+  // n_f ε Σ|F| (Higham 2002, §4.2), Σ|F| the cell's flux magnitude, which the physics' flux scale
+  // Φ_k bounds (runtime.md; read from run.json, convergence.floor / round_off_floor); the
+  // history's norm is an RMS over cells, as Φ_k, so it moves by as much: 2 n_f ε Φ_k with a
+  // margin of 2. Measured at 0.006 of that bound; with the exemption disabled, 3e4 times it.
   const fs::path mesh = data_dir / "mesh" / "ringleb" / "ringleb-n004.msh";
   auto doc = [&](double w) {
     return input("hybrid.solver-input.json", [&](Json& d) {
@@ -1018,18 +1043,26 @@ TEST_CASE("an equation at the round-off floor does not set the steady CFL number
   REQUIRE(b.status == ExitStatus::finished);
   const auto ha = history(a.run), hb = history(b.run);
   REQUIRE(ha.size() == hb.size());
+  Json scaled = doc(0.0);
+  scaled["precision"] = "fp32+acc64";
+  const auto c = run(scaled);
+  REQUIRE(c.status == ExitStatus::finished);
+  const Json floors = Json::parse(read(c.run / "run.json"))["convergence"]["floor"];
   bool noisy = false;
-  double worst = 0.0;
+  double worst = 0.0;  // the largest difference, in units of the bound
   for (std::size_t i = 0; i < ha.size(); ++i) {
     for (const char* k : {"density", "momentum-x", "momentum-y", "energy"}) {
       const double x = ha[i]["residuals"][k].get<double>();
       const double y = hb[i]["residuals"][k].get<double>();
-      worst = std::max(worst, std::abs(x - y) / std::abs(x));
+      const double flux = floors[k].get<double>() / autan::runtime::round_off_floor;  // Φ_k
+      const double bound =
+          1e-6 * std::abs(x) + 12.0 * std::numeric_limits<double>::epsilon() * flux;
+      worst = std::max(worst, std::abs(x - y) / bound);
     }
     noisy = noisy || hb[i]["residuals"]["momentum-z"] != ha[i]["residuals"]["momentum-z"];
   }
   INFO("histories differ by " << worst);
-  CHECK(worst <= 1e-6);
+  CHECK(worst <= 1.0);
   // A continuation carries the exemption: from 20 steps, without `start.woken` it repeats the
   // uninterrupted run; with the z-momentum woken, that equation's round-off sets the CFL again.
   auto half = doc(1e-20);

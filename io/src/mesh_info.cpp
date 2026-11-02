@@ -148,7 +148,7 @@ std::string mesh_hash(const fs::path& path) {
   return picosha2::get_hash_hex_string(hasher);
 }
 
-std::string mesh_info_json(const Mesh& mesh, const std::string& sha256) {
+std::string mesh_info_json(const Mesh& mesh, const std::string& sha256, const MeshInfoRun& run) {
   if (mesh.n_owned_cells() != mesh.n_cells()) {
     throw Error(ErrorCode::mesh_inconsistent_sizes, "MeshInfo describes an unpartitioned mesh");
   }
@@ -216,7 +216,7 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256) {
   const auto [x_low, x_high] = std::ranges::minmax(mesh.x());
   const auto [y_low, y_high] = std::ranges::minmax(mesh.y());
   const auto [z_low, z_high] = std::ranges::minmax(mesh.z());
-  const Json doc{
+  Json doc{
       {"schema", "autan.mesh-info/1"},
       {"source",
        {{"path", mesh.source().path}, {"format", mesh.source().format}, {"sha256", sha256}}},
@@ -230,14 +230,33 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256) {
           {"pyramid", by_shape[1]},
           {"prism", by_shape[2]},
           {"hexa", by_shape[3]},
-          {"polyhedron", by_shape[4]}}}}},
+          {"polyhedron", by_shape[4]}}},
+        {"stencil_entries", run.stencil_entries},
+        {"periodic_ghosts", run.periodic_ghosts}}},
       {"bounds", {{"min", {x_low, y_low, z_low}}, {"max", {x_high, y_high, z_high}}}},
       {"boundary_zones", boundary},
       {"cell_zones", cell_zones},
       {"interfaces", interfaces},
       {"periodic", periodic},
-      {"quality", {{"max_non_orthogonality_deg", max_angle}, {"max_faces_per_cell", max_faces}}},
+      {"quality",
+       {{"max_non_orthogonality_deg", max_angle},
+        {"max_faces_per_cell", max_faces},
+        {"lines",
+         {{"order", run.line_order},
+          {"scale", run.line_scale},
+          {"cells", run.line_cells},
+          {"long_cells", run.long_line_cells}}}}},
   };
+  if (run.partition) {
+    const auto& p = *run.partition;
+    doc["partition"] = {{"ranks", p.ranks},
+                        {"groups", p.groups},
+                        {"cells_by_rank", p.cells},
+                        {"ghosts_by_rank", p.ghosts},
+                        {"faces_by_rank", p.faces},
+                        {"interior_faces_by_rank", p.interior_faces},
+                        {"stencil_entries_by_rank", p.stencil_entries}};
+  }
   return doc.dump(2);
 }
 

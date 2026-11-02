@@ -399,10 +399,11 @@ SolverInput parse_solver_input(const std::string& text) {
   } catch (const Json::exception& e) {
     invalid("", std::string("not JSON: ") + e.what());
   }
-  const Object root(doc, "",
-                    {"schema", "case", "mesh", "verification", "start", "initial_state", "periodic",
-                     "precision", "reproducibility", "devices", "memory", "physics", "freestream",
-                     "boundaries", "cell_zones", "time", "monitors"});
+  const Object root(
+      doc, "",
+      {"schema", "case", "mesh", "mesh_info", "verification", "start", "initial_state", "periodic",
+       "precision", "reproducibility", "devices", "memory", "physics", "freestream", "boundaries",
+       "cell_zones", "time", "monitors"});
   if (root.string("schema") != "autan.solver-input/1")
     invalid("schema", "expected autan.solver-input/1");
   SolverInput in;
@@ -417,6 +418,48 @@ SolverInput parse_solver_input(const std::string& text) {
       invalid("mesh.path", "must be an absolute path");
     in.mesh_sha256 = sha256(m, "sha256");
     in.mesh_scale = m.positive("scale");
+  }
+  {
+    // solver-input.md, mesh_info: the prepared document, written as the run's mesh-info.json.
+    // The SDK has validated it; the runtime ties it to the mesh it reads.
+    const Json& info = root.get("mesh_info");
+    // The member at `path` of `info`, or E0705 naming it.
+    const auto at_path = [&](std::initializer_list<const char*> path, const char* expected) {
+      const Json* v = &info;
+      std::string where = "mesh_info";
+      for (const char* key : path) {
+        where += std::string(".") + key;
+        if (!v->is_object() || !v->contains(key)) invalid(where, expected);
+        v = &(*v)[key];
+      }
+      return std::pair<const Json*, std::string>{v, where};
+    };
+    const auto member = [&](std::initializer_list<const char*> path) {
+      const auto [v, where] = at_path(path, "expected a string");
+      if (!v->is_string()) invalid(where, "expected a string");
+      return v->get<std::string>();
+    };
+    if (!info.is_object()) invalid("mesh_info", "expected an object");
+    if (member({"schema"}) != "autan.mesh-info/1")
+      invalid("mesh_info.schema", "expected autan.mesh-info/1");
+    const std::string sha = member({"source", "sha256"});
+    if (sha != in.mesh_sha256) {
+      throw InputError(
+          Diagnostic{.code = "E0203",
+                     .message = "mesh_info describes another mesh than mesh.sha256",
+                     .path = "mesh_info.source.sha256",
+                     .data_json = Json{{"expected", in.mesh_sha256}, {"found", sha}}.dump()});
+    }
+    in.mesh_info_order = member({"quality", "lines", "order"});
+    if (in.mesh_info_order != "rcm" && in.mesh_info_order != "input")
+      invalid("mesh_info.quality.lines.order", "expected rcm or input");
+    {
+      const auto [v, where] = at_path({"quality", "lines", "scale"}, "expected a positive number");
+      if (!v->is_number() || !(v->get<double>() > 0.0))
+        invalid(where, "expected a positive number");
+      in.mesh_info_scale = v->get<double>();
+    }
+    in.mesh_info = info.dump(2);
   }
   if (!root.is_null("verification")) {
     const Object v(root.get("verification"), "verification", {"path", "sha256"});

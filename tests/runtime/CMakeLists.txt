@@ -11,6 +11,7 @@ target_link_libraries(
   PRIVATE
     autan::runtime
     autan::physics_runtime
+    autan::mesh_counts
     autan_cgns
     nlohmann_json::nlohmann_json
     Catch2::Catch2WithMain

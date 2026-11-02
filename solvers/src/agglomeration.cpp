@@ -11,6 +11,8 @@
 #include <tuple>
 #include <utility>
 
+#include "autan/core/lines.hpp"
+
 namespace autan::solvers {
 
 namespace {
@@ -32,9 +34,6 @@ struct Graph {
   std::vector<std::vector<double>> zone_area;
   std::vector<Normal> centroid;
   std::vector<double> volume;
-  // Level 0: weakest and strongest coupling of each cell through its interior faces (boundary faces
-  // included (A_f over twice the distance to the face: the distance to the mirror cell).
-  std::vector<double> weakest, strongest;
   std::vector<offset_t> line_offsets{0};
   std::vector<index_t> line_nodes;
 
@@ -171,96 +170,16 @@ Graph fine_graph(const Mesh& mesh, const Geometry& geometry) {
     }
   }
   g.build_adjacency();
-  // Weakest and strongest coupling of each cell to its neighbours, the faces it shares with one
-  // neighbour summed. Boundary faces join in only for a cell with at most two neighbours, whose
-  // anisotropy they alone show (a column of cells); they couple no unknowns, and the side planes
-  // of a one-cell-thick mesh, far weaker than any neighbour, would make every cell anisotropic.
-  g.weakest.assign(g.n, std::numeric_limits<double>::infinity());
-  g.strongest.assign(g.n, 0.0);
-  std::vector<std::size_t> neighbours(g.n, 0);
-  for (std::size_t c = 0; c < g.n; ++c) {
-    for (const auto& [m, w] : g.couplings(c)) {
-      g.weakest[c] = std::min(g.weakest[c], w);
-      g.strongest[c] = std::max(g.strongest[c], w);
-      ++neighbours[c];
-    }
-  }
-  for (std::size_t f = ni; f < nf; ++f) {
-    const auto c = static_cast<std::size_t>(mesh.owner()[f]);
-    if (neighbours[c] > 2) continue;
-    const double dx = gm.face_centroid_x[f] - gm.cell_centroid_x[c];
-    const double dy = gm.face_centroid_y[f] - gm.cell_centroid_y[c];
-    const double dz = gm.face_centroid_z[f] - gm.cell_centroid_z[c];
-    const double w = gm.face_area[f] / (2.0 * std::sqrt(dx * dx + dy * dy + dz * dz));
-    g.weakest[c] = std::min(g.weakest[c], w);
-    g.strongest[c] = std::max(g.strongest[c], w);
-  }
   return g;
 }
 
-// Lines of strong coupling (Mavriplis 1998, J. Comput. Phys. 145:141-165, sec. 4): seeds are
-// the anisotropic cells, those on the boundary first, then by decreasing anisotropy; a line
-// grows from its seed through the strongest face whose coupling is at least `ratio` times the
-// weakest coupling of both cells, in both directions.
-void make_lines(Graph& g, double ratio) {
-  const std::vector<double>& weakest = g.weakest;
-  const std::vector<double>& strongest = g.strongest;
-  std::vector<std::size_t> seeds;
-  for (std::size_t c = 0; c < g.n; ++c) {
-    if (strongest[c] >= ratio * weakest[c]) seeds.push_back(c);
-  }
-  std::stable_sort(seeds.begin(), seeds.end(), [&](std::size_t a, std::size_t b) {
-    const bool wa = !g.boundary[a].empty(), wb = !g.boundary[b].empty();
-    if (wa != wb) return wa;
-    return strongest[a] / weakest[a] > strongest[b] / weakest[b];
-  });
-  std::vector<int> in_line(g.n, 0);
-  auto grow = [&](std::size_t start, std::vector<index_t>& out) {
-    std::size_t cur = start;
-    for (;;) {
-      std::size_t best = g.n;
-      double best_w = 0.0;
-      for (const auto& [m, w] : g.couplings(cur)) {
-        if (in_line[m] != 0 || g.zone[m] != g.zone[cur]) continue;
-        if (w < ratio * weakest[cur] || w < ratio * weakest[m]) continue;
-        if (w > best_w || (w == best_w && m < best)) {
-          best_w = w;
-          best = m;
-        }
-      }
-      if (best == g.n) return;
-      in_line[best] = 1;
-      out.push_back(static_cast<index_t>(best));
-      cur = best;
-    }
-  };
-  std::vector<std::vector<index_t>> lines;
-  for (const std::size_t s : seeds) {
-    if (in_line[s] != 0) continue;
-    in_line[s] = 1;
-    std::vector<index_t> forward{static_cast<index_t>(s)}, backward;
-    grow(s, forward);
-    grow(s, backward);
-    if (forward.size() + backward.size() < 2) {
-      in_line[s] = 0;
-      continue;
-    }
-    std::vector<index_t> line(backward.rbegin(), backward.rend());
-    line.insert(line.end(), forward.begin(), forward.end());
-    // Lines start at the boundary when one end touches it, so that neighbouring wall lines run
-    // the same way.
-    if (g.boundary[static_cast<std::size_t>(line.front())].empty() &&
-        !g.boundary[static_cast<std::size_t>(line.back())].empty()) {
-      std::reverse(line.begin(), line.end());
-    }
-    lines.push_back(std::move(line));
-  }
-  g.line_offsets.assign(1, 0);
-  g.line_nodes.clear();
-  for (const auto& line : lines) {
-    g.line_nodes.insert(g.line_nodes.end(), line.begin(), line.end());
-    g.line_offsets.push_back(static_cast<offset_t>(g.line_nodes.size()));
-  }
+// Level 0's lines: the mesh's lines of strong coupling, then each remaining cell alone.
+void fine_lines(Graph& g, const Mesh& mesh, const Geometry& geometry, double ratio) {
+  const Lines lines = smoother_lines(mesh, geometry, ratio);
+  g.line_offsets = lines.offsets;
+  g.line_nodes = lines.cells;
+  std::vector<char> in_line(g.n, 0);
+  for (const index_t c : lines.cells) in_line[static_cast<std::size_t>(c)] = 1;
   for (std::size_t c = 0; c < g.n; ++c) {
     if (in_line[c] == 0) {
       g.line_nodes.push_back(static_cast<index_t>(c));
@@ -683,25 +602,6 @@ Level as_level(const Graph& g) {
 
 }  // namespace
 
-Lines smoother_lines(const Mesh& mesh, const Geometry& geometry,
-                     const AgglomerationOptions& options) {
-  if (mesh.n_owned_cells() != mesh.n_cells()) {
-    throw std::invalid_argument("lines of a mesh with ghost cells");
-  }
-  Graph g = fine_graph(mesh, geometry);
-  make_lines(g, options.line_ratio);
-  Lines lines;
-  for (std::size_t l = 0; l + 1 < g.line_offsets.size(); ++l) {
-    const auto b = static_cast<std::size_t>(g.line_offsets[l]);
-    const auto e = static_cast<std::size_t>(g.line_offsets[l + 1]);
-    if (e - b < 2) continue;
-    lines.cells.insert(lines.cells.end(), g.line_nodes.begin() + static_cast<std::ptrdiff_t>(b),
-                       g.line_nodes.begin() + static_cast<std::ptrdiff_t>(e));
-    lines.offsets.push_back(static_cast<offset_t>(lines.cells.size()));
-  }
-  return lines;
-}
-
 std::vector<std::vector<std::size_t>> line_colours(const Level& l) {
   std::vector<std::size_t> line_of(l.n_nodes);
   for (std::size_t li = 0; li < l.n_lines(); ++li) {
@@ -744,7 +644,7 @@ std::vector<Level> agglomerate(const Mesh& mesh, const Geometry& geometry,
     throw std::invalid_argument("agglomeration of a mesh with ghost cells");
   }
   Graph g = fine_graph(mesh, geometry);
-  make_lines(g, options.line_ratio);
+  fine_lines(g, mesh, geometry, options.line_ratio);
   std::vector<Level> levels;
   levels.push_back(as_level(g));
   while (g.n > options.coarsest_nodes && static_cast<int>(levels.size()) < options.max_levels) {

@@ -266,6 +266,7 @@ def write_run(
         solver=solver,
         precision=spec.physics.precision,
         devices=devices,
+        cell_order="input",
         started=iso(started),
         finished=None,
         iterations=0,
