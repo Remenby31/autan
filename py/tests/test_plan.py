@@ -299,6 +299,7 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     tiny = autan.load(write_case(TINY)).plan(tiny_mesh(20), device_kind="cpu").memory
     by_name = {c.name: c for c in tiny.components}
     assert by_name["mesh"].bytes_host == 720 + 640 + 640 + 240 + 80 + 200 + 2240 + 320 + 120
+    assert by_name["runtime"].bytes_host == 26 * 2**20  # measured, plan.md
     # The writer adds the coordinates 24N and 64-bit connectivity 8 max(F, C) + 8 max(P, K).
     assert by_name["solution output"].bytes_host == 2 * 34 * 80 + 24 * 30 + 8 * 41 + 8 * 160
     # RCM order keeps the renumbered mesh (the mesh terms without geometry) and its maps.

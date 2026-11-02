@@ -27,6 +27,10 @@ class StateFileLoad:
 
 
 _CUDA_CONTEXT = 512 * 2**20
+# The runtime process itself on every rank (binary, libraries, MPI, the hashing buffer): the
+# largest VmHWM of autan-run on the 27-cell hex/polyMesh case, 1 and 2 ranks, rounded up to
+# the next MiB (#358, round 8 protocol).
+_RUNTIME = 26 * 2**20
 # The multigrid factors its coarsest level densely up to this many unknowns (multigrid.cpp).
 _DENSE_UNKNOWNS = 1000
 # CGNS element sections: 64 B per element plus its connectivity block, by shape (glibc).
@@ -161,6 +165,7 @@ def _rank(
     mesh_bytes = 24 * nodes + 16 * faces + 4 * counts.face_nodes + 12 * interior + 4 * boundary
     mesh_bytes += 20 * cells
     geometry = 56 * faces + 32 * cells
+    add("runtime", _RUNTIME)
     add("mesh", mesh_bytes + geometry + 12 * cells)
     add("mesh setup", mesh_bytes + geometry)  # kept resident by the allocator: not transient
     add("mesh reading", _reading(mesh, interior, boundary), transient=True)

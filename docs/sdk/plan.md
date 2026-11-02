@@ -16,6 +16,7 @@ Each component counts what the code allocates, listed by the lane that owns it a
 
 | Component | Where | Bytes |
 |---|---|---|
+| `runtime` | host | the process itself on every rank (binary, libraries, MPI, the hashing buffer): 26 MiB, the largest `VmHWM` of `autan-run` on the 27-cell `tests/data/mesh/hex/polyMesh` case on 1 and 2 ranks (26 431 488 B, Release, spark-5359), rounded up to the next MiB |
 | `mesh` | host | the global mesh 24N + 16F + 4P + 12F_i + 4F_b + 20C, its FP64 geometry 56F + 32C, colourings 12C, all *global*: every rank keeps them |
 | `mesh setup` | host | the reader's form and the MeshInfo pass, about the mesh and its geometry again, which the allocator keeps resident |
 | `partition` | host | several ranks: the rank's share of the mesh and geometry, and 9F face keys |
