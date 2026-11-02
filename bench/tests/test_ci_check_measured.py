@@ -130,8 +130,20 @@ def load_check():
     return module
 
 
-@pytest.mark.skipif(not (shutil.which("cmake") and shutil.which("ninja") and shutil.which("cc")),
-                    reason="needs cmake, ninja and a C compiler")  # fmt: skip
+# A compilation: never beside a measurement on a Spark, where it would need the GPU lock; the
+# hosted "Bench harness" job and workstations run it.
+ON_SPARK = (
+    os.environ.get("RUNNER_ENVIRONMENT") == "self-hosted" or Path("/home/admin/autan-gpu").exists()
+)
+
+
+HOSTED_CI = os.environ.get("GITHUB_ACTIONS") == "true" and not ON_SPARK
+
+
+# Hosted CI must run it (a missing tool then fails it): elsewhere, without the tools, it skips.
+@pytest.mark.skipif(not HOSTED_CI and not (shutil.which("cmake") and shutil.which("ninja")
+                    and shutil.which("cc")), reason="needs cmake, ninja and a C compiler")  # fmt: skip
+@pytest.mark.skipif(ON_SPARK, reason="compiles: hosted CI and workstations only, not on a Spark")
 def test_each_target_s_graph_is_its_own_sources_and_headers(tmp_path, monkeypatch):
     # A real build: two measured targets and one that is not; each target's graph holds its
     # own sources and the headers they include, the other target's never.
