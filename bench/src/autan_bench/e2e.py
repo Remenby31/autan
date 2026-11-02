@@ -99,11 +99,16 @@ def _monitor(zone: str) -> str:
 
 def total_cd(monitors: dict[str, dict[str, float]]) -> float:
     """C_D of the aircraft: the sum over the per-zone force monitors of `dpw4_case`."""
-    return math.fsum(m["cd"] for name, m in monitors.items() if name.startswith("forces."))
+    return total(monitors, "cd")
+
+
+def total(monitors: dict[str, dict[str, float]], key: str) -> float:
+    """A coefficient of the aircraft: its sum over the per-zone force monitors of `dpw4_case`."""
+    return math.fsum(m[key] for name, m in monitors.items() if name.startswith("forces."))
 
 
 GB10_VENDOR_GBPS = 273.0  # LPDDR5X-8533 on a 256-bit bus (NVIDIA DGX Spark datasheet)
-GRID_LABEL = "different grid (public tetrahedra vs FUN3D's merged prisms)"
+GRID_LABEL = "different grid (DPW4 CellBase tetrahedra vs FUN3D's NodeBase merged into prisms), matched unknowns"
 
 
 def _density_drop(first: dict[str, Any], last: dict[str, Any]) -> float | None:
@@ -159,11 +164,17 @@ def report(chain: list[dict[str, Any]], mesh_info: dict[str, Any], stream_gbps: 
     ns_node = solve * 1e9 / (nodes * iterations)
     monitors = runs[-1]["monitors"] or {}
     cd = total_cd(monitors) if monitors else None
+    cl = total(monitors, "cl") if monitors else None
     turbulence = chain[-1]["case"]["physics"]["turbulence"]["model"]
     declared = reference["declared"]
     drop = _density_drop(chain[0]["first"], chain[-1]["last"])
-    # Only a converged RANS run is compared: Euler has no friction drag.
-    cd_compared = converged and turbulence == declared["cd_model"] and cd is not None
+    # Only a converged RANS run at the workshop's lift on its grid is compared: Euler has no
+    # friction drag, and C_D is the workshop's at C_L 0.500.
+    on_grid = mesh_info["source"]["sha256"] == reference["autan_grid"]["sha256"]
+    cl_in_band = cl is not None and abs(cl - declared["cl_target"]) <= declared["cl_band"]
+    cd_compared = (converged and turbulence == declared["cd_model"] and cd is not None
+                   and cl_in_band and on_grid)  # fmt: skip
+    cd_ref = declared["cd_reference"]
     result: dict[str, Any] = {
         "status": status,
         "converged": converged,
@@ -175,12 +186,21 @@ def report(chain: list[dict[str, Any]], mesh_info: dict[str, Any], stream_gbps: 
         # An upper bound of the uninterrupted run: every continuation re-reads the mesh and
         # writes its solution. The solve time is the lower bound.
         "time_to_solution_seconds": wall if converged else None,
+        "on_reference_grid": on_grid,
         "cd": cd,
-        "cd_reference": reference["cd"],
-        "cd_tolerance": declared["cd_tolerance"],
+        "cd_counts": cd * 1e4 if cd is not None else None,
+        "cl": cl,
+        "cl_in_band": cl_in_band,
+        "cd_reference_counts": cd_ref["median_counts"],
+        "cd_tolerance_counts": declared["cd_tolerance_counts"],
+        "cd_scope": cd_ref["scope"],
         "cd_within_tolerance": (
-            abs(cd - reference["cd"]) <= declared["cd_tolerance"] if cd_compared else None
+            abs(cd * 1e4 - cd_ref["median_counts"]) <= declared["cd_tolerance_counts"]
+            if cd_compared
+            else None
         ),
+        # Information only: its normalisation is not established (reference file).
+        "fun3d_cd": reference["fun3d_cd"]["value"],
     }
     per_unit = {
         "ns_per_cell_iteration": ns_cell,
@@ -341,7 +361,8 @@ def summary(doc: dict[str, Any]) -> str:
     reached = f"{tts:.0f} s (upper bound)" if tts is not None else "not reached"
     drop = r["residual_drop_orders"]
     drop_text = f"{drop:.2f} orders" if drop is not None else "an unmeasurable drop"
-    autan_cd = f"{r['cd']:.6f}" if r["cd"] is not None else "-"
+    autan_cd = f"{r['cd_counts']:.1f} counts" if r["cd_counts"] is not None else "-"
+    autan_cl = f"{r['cl']:.4f}" if r["cl"] is not None else "-"
     verdict = {True: "within", False: "outside", None: "not compared"}[r["cd_within_tolerance"]]
     lines = [
         "NOT COMPARABLE" if not doc["comparable"] else "comparable",
@@ -365,8 +386,10 @@ def summary(doc: dict[str, Any]) -> str:
             f"{best['ns_per_vertex_iteration']:.1f} ns/vertex/iter"
         ),
         (
-            f"C_D: Autan {autan_cd}, FUN3D {r['cd_reference']:.6f}, tolerance "
-            f"{r['cd_tolerance']} declared: {verdict}"
+            f"C_D: Autan {autan_cd} at C_L {autan_cl}; DPW4 core median "
+            f"{r['cd_reference_counts']:.0f} +/- {r['cd_tolerance_counts']} counts (2 sigma, "
+            f"{r['cd_scope']}): {verdict}; FUN3D's {r['fun3d_cd']:.6f} is not a target "
+            "(normalisation not established)"
         ),
     ]
     if doc["explicit"]:

@@ -12,8 +12,9 @@ MESH = {"source": {"sha256": "m" * 64}, "counts": {"cells": 1_000_000, "nodes": 
 
 
 def run_json(run_id: str, start: dict | None, status: str, wall: float, solve: float,
-             iterations: int, total: int, cd: float | None = None) -> dict:  # fmt: skip
-    monitors = {"forces.patch_7": {"cd": cd / 2}, "forces.patch_8": {"cd": cd / 2}} if cd else None
+             iterations: int, total: int, cd: float | None = None, cl: float = 0.5) -> dict:  # fmt: skip
+    halves = {"cd": (cd or 0.0) / 2, "cl": cl / 2}
+    monitors = {"forces.patch_7": halves, "forces.patch_8": dict(halves)} if cd else None
     return {
         "run_id": run_id,
         "status": status,
@@ -39,10 +40,14 @@ def case(model: str) -> dict:
     return {"physics": {"turbulence": {"model": model}}}
 
 
-def chain(model: str = "inviscid", cd: float = 0.02) -> list[dict]:
+def chain(
+    model: str = "inviscid", cd: float = 0.02, cl: float = 0.5, mesh: str = "m" * 64
+) -> list[dict]:
     first = run_json("a", None, "stopped", 15.0, 10.0, 100, 100)
     second = run_json("b", {"run_id": "a", "mode": "continue", "iterations": 100}, "converged",
-                      21.0, 20.0, 200, 300, cd=cd)  # fmt: skip
+                      21.0, 20.0, 200, 300, cd=cd, cl=cl)  # fmt: skip
+    for run in (first, second):
+        run["mesh"]["sha256"] = mesh
     return [
         {"run": first, "case": case(model), "first": line(1.0), "last": line(1e-3)},
         {"run": second, "case": case(model), "first": line(1e-3), "last": line(1e-8)},
@@ -86,13 +91,37 @@ def test_a_chain_is_reported_per_unit_and_against_fun3d_by_bandwidth():
     assert "ESTIMATE" in text
 
 
-def test_c_d_is_judged_only_for_a_converged_sa_run_with_the_declared_tolerance():
-    tol = REFERENCE["declared"]["cd_tolerance"]
-    near, far = REFERENCE["cd"] + 0.9 * tol, REFERENCE["cd"] + 1.1 * tol
-    assert e2e.report(chain(), MESH, 200.0, REFERENCE)["result"]["cd_within_tolerance"] is None
-    for cd, verdict in ((near, True), (far, False)):
-        doc = e2e.report(chain("sa", cd), MESH, 200.0, REFERENCE)
-        assert doc["result"]["cd_within_tolerance"] is verdict
+CELLBASE = REFERENCE["autan_grid"]["sha256"]
+ON_GRID = {"source": {"sha256": CELLBASE}, "counts": {"cells": 3_935_055, "nodes": 672_235}}
+
+
+def test_c_d_is_judged_against_the_workshop_scatter_only_when_comparable():
+    # Converged SA on the CellBase grid at C_L 0.500 +/- 0.005: within 2 sigma of the DPW4
+    # core median for coarse grids passes; anything else is not judged.
+    declared = REFERENCE["declared"]
+    median, tol = declared["cd_reference"]["median_counts"], declared["cd_tolerance_counts"]
+    near, far = (median + 0.9 * tol) / 1e4, (median + 1.1 * tol) / 1e4
+
+    def verdict(**kw):
+        mesh = ON_GRID if kw.pop("on_grid", True) else MESH
+        links = chain(mesh=mesh["source"]["sha256"], **kw)
+        return e2e.report(links, mesh, 200.0, REFERENCE)["result"]["cd_within_tolerance"]
+
+    assert verdict(model="sa", cd=near) is True
+    assert verdict(model="sa", cd=far) is False
+    assert verdict(model="sa", cd=(median - 0.9 * tol) / 1e4) is True
+    assert verdict(model="sa", cd=(median - 1.1 * tol) / 1e4) is False
+    assert verdict(model="inviscid", cd=near) is None  # Euler has no friction drag
+    assert verdict(model="sa", cd=near, cl=0.5 + 1.2 * declared["cl_band"]) is None
+    assert verdict(model="sa", cd=near, on_grid=False) is None  # not the reference grid
+
+
+def test_the_summary_says_what_the_c_d_comparison_is_and_is_not():
+    doc = e2e.report(chain("sa", 0.0279, mesh=CELLBASE), ON_GRID, 200.0, REFERENCE)
+    text = e2e.summary(doc)
+    assert "279.0 counts at C_L 0.5000" in text
+    assert "within the workshop scatter, not same-grid agreement" in text
+    assert "FUN3D's 0.014358 is not a target" in text
 
 
 def test_only_a_whole_continued_chain_on_the_meshinfo_s_mesh_is_reported():
