@@ -87,7 +87,7 @@ SU2-Roe's K_SU2 per level: 2.29 (32²), 1.44, 0.90, 0.57, 0.36, 0.23 (1024²). I
 
 ## Phase 1: SU2 on the NACA 0012 cases
 
-SU2 alone, on the six levels 32²–1024² of [the O-mesh family](meshes.md#naca-0012-o-meshes), each case prepared and studied as above (4 OpenMP threads on the shared DGX Spark; wall times are not measurements and are not reported). Reports: `vv/su2/results/naca0012/`. CL, CD and CM (nose-up, about c/4) at the iteration that meets the criterion; *it.* is that iteration's count. Continuum estimates come from the three finest levels.
+SU2 alone, on the six levels 32²–1024² of [the O-mesh family](meshes.md#naca-0012-o-meshes), each case prepared and studied as above (4 OpenMP threads on the shared DGX Spark; wall times are not measurements and are not reported). Reports: `vv/su2/results/naca0012/` (`autan.su2-study/1` per scheme and condition). CL, CD and CM (nose-up, about c/4) at the iteration that meets the criterion; *it.* is that iteration's count. Continuum estimates come from the three finest levels.
 
 ### SU2-JST, the accuracy reference
 
@@ -107,6 +107,22 @@ SU2 alone, on the six levels 32²–1024² of [the O-mesh family](meshes.md#naca
 - **M 0.8, α 1.25°:** CD converges at order 2.8 to 0.022464, 2.2 counts below the paper: the one-count gate fails. CL lies in the paper's band from 256² but changes direction between 512² and 1024², so it has no Richardson estimate (`V0107`) and its gate cannot be evaluated. Both are what a uniform-freestream far field gives at 148 c: the paper's lifting values come from point-vortex far-field runs, which raise the circulation the boundary sees; without the correction the effective incidence is slightly lower, and lift and drag with it. Autan has the same far field ([cases.md](cases.md#naca-0012-inviscid)), so this gate measures the far field until the correction exists, for both codes.
 
 **What this says about the cases.** SU2's reference scheme reproduces the two non-lifting gates of the paper at second order on these meshes and conditions, and the lifting case to within its far-field model: the meshes, the conditions, the boundaries and the force reference are right.
+
+### SU2-Roe, the closest scheme
+
+Roe with the matched limiter threshold, the controls of `inv_NACA0012_Roe.cfg` (`su2-roe/`); the [audit](#fairness-audit) gives the reasons for the differences from SU2-JST.
+
+| Level | M 0.8, α 0°: it. | CD | M 0.8, α 1.25°: it. | CL | CD | CM | M 0.5, α 1.25°: it. | CL | CD |
+|---|---|---|---|---|---|---|---|---|---|
+| 32² | 459 | −0.004477 | 455 | 0.249619 | 0.005854 | −0.014450 | 180 | 0.115582 | −0.020010 |
+| 64² | 451 | 0.008512 | 474 | 0.316844 | 0.021396 | −0.029516 | 195 | 0.152902 | −0.001639 |
+| 128² | 662 | 0.011083 | 683 | 0.344790 | 0.025040 | −0.036798 | 316 | 0.169238 | 0.002933 |
+| 256² | 916 | 0.010440 | 1 381 | 0.352372 | 0.024654 | −0.038565 | 515 | 0.175435 | 0.002505 |
+| 512² | 1 972 | 0.009574 | 2 072 | 0.352651 | 0.023760 | −0.038453 | 1 326 | 0.177912 | 0.001517 |
+| 1024² | stalls at 7.4 orders | 0.009005 | 8 235 | 0.353147 | 0.023198 | −0.038467 | 3 316 | 0.178959 | 0.000831 |
+| Continuum (order) | | — | | — | 0.022246 (0.67) | — | | 0.179728 (1.24) | −0.000732 (0.53) |
+
+No gate passes: at M 0.8, α 0° the 1024² run stalls and the three finest converged levels give no estimate (`V0108`); at M 0.5 the drag falls at order 0.53 and is still 8.3 counts at 1024². With SU2's published `inv_NACA0012_Roe.cfg` run as it is (`su2-published-roe/`, scheme `published:2592a85c…`), M 0.8, α 0° stalls below one order at 128²–512² and M 0.5 gives −14.0, +13.7 and +10.5 counts; the other upwind variants of the audit are in `upwind-variants.json` and the limiter study in `limiter-sensitivity.json`. A rerun of the SU2-Roe campaign from scratch gave the same forces and iteration counts at every level.
 
 ## Tests
 
