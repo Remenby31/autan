@@ -38,6 +38,7 @@ _DENSE_UNKNOWNS = 1000
 # CGNS element sections: 64 B per element plus its connectivity block, by shape (glibc).
 _CGNS_BLOCK = {"tetra": 48, "pyramid": 48, "prism": 64, "hexa": 80}
 _CGNS_FACE_BLOCK = 48  # quad, the larger boundary element
+_CGNS_SECTION_BUFFERS = 2**20 + 32 * 2**10
 # HDF5's defaults, which the CGNS library keeps (adfh/ADFH.c:64): a 4 MiB metadata cache
 # (H5Cprivate.h:85), an 8 MiB chunk cache (H5Pfapl.c:94) and a 64 KiB sieve (H5Pfapl.c:121).
 _HDF5_CACHE = 4 * 2**20 + 8 * 2**20 + 64 * 2**10
@@ -366,10 +367,14 @@ def _reading(mesh: MeshInfo, interior: int, boundary: int) -> int:
         elements = sum((64 + _CGNS_BLOCK[t]) * m for t, m in by_type.items() if t in _CGNS_BLOCK)
         # Labelled cells (64 B each) when the sections carry a family: bounded by every cell.
         labels = 64 * boundary + 64 * c
-        alive = 24 * ns + elements + (64 + _CGNS_FACE_BLOCK) * boundary + labels
+        # Sections are read through cgio in chunks (4 096 offsets and 2^17 entries, 1 MiB and
+        # 32 KiB of buffers); the points and edges a section skips are kept as runs, at most
+        # one more than its kept elements, 24 B each (io/src/cgns_read.cpp).
+        runs = 24 * (c + boundary + 1) + _CGNS_SECTION_BUFFERS
+        alive = 24 * ns + elements + (64 + _CGNS_FACE_BLOCK) * boundary + labels + runs
         standard = alive + 24 * ns - 24 * n + 4 * c + 52 * f + 16 * p
         # NGON_n/NFACE_n: a block per face and per cell, at most 32 B plus 4 B an entry.
-        blocks = 24 * ns + (96 * f + 4 * p) + (96 * c + 4 * k) + labels
+        blocks = 24 * ns + (96 * f + 4 * p) + (96 * c + 4 * k) + labels + runs
         ngon = blocks + 76 * f - 4 * interior - 4 * k - 8 * c
         # cg_open loads every descriptor and keeps it until close; one filtered dataset at a
         # time is inflated beside its destination (filtered_bytes, 2L + C, docs/contracts/

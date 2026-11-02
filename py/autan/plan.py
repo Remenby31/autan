@@ -189,6 +189,7 @@ def plan(
     _check_interfaces(case, mesh, cell_zones, found)
     _check_monitors(case, spec, mesh, found)
     _check_prepared(case, spec, mesh, gpus, device_kind, found)
+    _check_coupled(case, spec, gpus, found)
 
     scale = metres_per(spec.mesh_unit)
     return Plan(
@@ -320,6 +321,29 @@ def _check_prepared(
                 f"the run is on {gpus} with groups {groups!r}"
             )
     found.extend(diagnostic("E0210", problem, location=case.locate("mesh")) for problem in problems)
+
+
+def _check_coupled(case: Case, spec: CaseSpec, gpus: int, found: list[Diagnostic]) -> None:
+    """The coupled turbulence step: the host multigrid on one rank, validated on the TMR flat
+    plate only (case-schema.md#time). The runtime refuses it on a device (E0427)."""
+    if not (isinstance(spec.time, Steady) and spec.time.coupled_turbulence):
+        return
+    where = case.locate("time.coupled_turbulence")
+    if spec.time.linear_solver != "multigrid" or gpus > 1:
+        found.append(
+            diagnostic(
+                "E0427",
+                "the coupled turbulence step needs linear_solver='multigrid' on one rank",
+                location=where,
+            )
+        )
+    found.append(
+        diagnostic(
+            "W0426",
+            "the coupled turbulence step is validated on the TMR flat plate only (#429)",
+            location=where,
+        )
+    )
 
 
 def _matches(pattern: str, names: list[str]) -> list[str]:

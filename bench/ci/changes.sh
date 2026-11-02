@@ -19,7 +19,7 @@ set -euo pipefail
 # the mesh job's cache key hashes), and this filter and its check, so that a change to either
 # is checked against the real build graph.
 measured_dirs=(codegen core io kernels partition)
-measured_paths="^($(IFS='|'; echo "${measured_dirs[*]}"))/"'|^docker/dev/|^bench/(src|stream|cmake|baselines)/|^bench/(pyproject\.toml|uv\.lock|ci/gate\.sh)$|(^|/)CMakeLists\.txt$|\.cmake$|^bench/ci/(measured-mesh-files\.txt|mesh-modules\.py|mesh-key\.sh)$|^vv/(pyproject\.toml|uv\.lock|\.python-version)$|^bench/ci/(changes\.sh|check-measured\.py)$|^\.github/workflows/gpu-bench\.yml$'
+measured_paths="^($(IFS='|'; echo "${measured_dirs[*]}"))/"'|^docker/dev/|^bench/(src|stream|cmake|baselines)/|^bench/(pyproject\.toml|uv\.lock|ci/(gate|build-base)\.sh)$|(^|/)CMakeLists\.txt$|\.cmake$|^bench/ci/(measured-mesh-files\.txt|mesh-modules\.py|mesh-key\.sh)$|^vv/(pyproject\.toml|uv\.lock|\.python-version)$|^bench/ci/(changes\.sh|check-measured\.py)$|^\.github/workflows/gpu-bench\.yml$'
 if [[ ${1:-} == --measured ]]; then
   echo "${measured_dirs[*]}"; echo "$measured_paths"; exit 0
 fi
