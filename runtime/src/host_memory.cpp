@@ -55,7 +55,9 @@ HostMemory host_memory(const std::filesystem::path& /*proc*/) {
   }
   // Purgeable pages are counted among the free and inactive ones already.
   const auto pages = static_cast<std::int64_t>(vm.free_count) + vm.inactive_count;
-  return {.available = pages * static_cast<std::int64_t>(vm_page_size), .unseen_cgroups = {}};
+  return {.available = pages * static_cast<std::int64_t>(vm_page_size),
+          .unseen_cgroups = {},
+          .cgroup_scope = "host"};
 }
 
 #else
@@ -156,6 +158,18 @@ std::optional<std::int64_t> cgroup_available(const fs::path& proc, const fs::pat
 
 }  // namespace
 
+namespace {
+
+// Whether `proc`/self/ns/cgroup names a cgroup namespace other than the initial one, whose
+// inode is fixed (PROC_CGROUP_INIT_INO, include/linux/proc_ns.h). No link: no namespaces.
+bool private_cgroup_namespace(const fs::path& proc) {
+  std::error_code ec;
+  const fs::path link = fs::read_symlink(proc / "self" / "ns" / "cgroup", ec);
+  return !ec && link.string() != "cgroup:[4026531835]";
+}
+
+}  // namespace
+
 HostMemory host_memory(const std::filesystem::path& proc) {
   std::ifstream meminfo(proc / "meminfo");
   std::optional<std::int64_t> available;
@@ -167,6 +181,7 @@ HostMemory host_memory(const std::filesystem::path& proc) {
   }
   if (!available) throw std::runtime_error((proc / "meminfo").string() + " gives no MemAvailable");
   std::vector<std::string> unseen;
+  bool seen_limit = false;
   // proc(5), /proc/self/cgroup: "0::path" for cgroup v2, "id:controllers:path" for v1.
   std::ifstream self(proc / "self" / "cgroup");
   for (std::string line; std::getline(self, line);) {
@@ -178,10 +193,16 @@ HostMemory host_memory(const std::filesystem::path& proc) {
     const bool v2 = line.substr(0, first) == "0" && controllers.empty();
     const bool v1 = ("," + controllers + ",").find(",memory,") != std::string::npos;
     if (!v2 && !v1) continue;
-    if (const auto limited = cgroup_available(proc, group, v2, unseen))
+    if (const auto limited = cgroup_available(proc, group, v2, unseen)) {
       available = std::min(*available, *limited);
+      seen_limit = true;
+    }
   }
-  return {.available = *available, .unseen_cgroups = std::move(unseen)};
+  const bool private_namespace = private_cgroup_namespace(proc);
+  if (private_namespace && !seen_limit) unseen.emplace_back("(above the cgroup namespace root)");
+  return {.available = *available,
+          .unseen_cgroups = std::move(unseen),
+          .cgroup_scope = private_namespace ? "namespace_root" : "host"};
 }
 
 #endif

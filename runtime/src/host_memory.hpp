@@ -14,11 +14,16 @@ namespace autan::runtime {
 /// memory.current, cgroup v1 memory.limit_in_bytes and memory.usage_in_bytes, found through
 /// `proc`/self/cgroup and the mounts of `proc`/self/mountinfo. A cgroup of that chain that no
 /// mount shows (the root excepted, which has no limit) is in `unseen_cgroups`: its limit, if it
-/// has one, is not in `available`. On macOS, the free and inactive pages. Throws
+/// has one, is not in `available`. In a cgroup namespace other than the initial one
+/// (`proc`/self/ns/cgroup, whose initial inode is the kernel constant 4026531835), the root is the
+/// namespace's and the cgroups above it cannot be seen: `cgroup_scope` is "namespace_root", and
+/// when no limit is seen at all, "(above the cgroup namespace root)" is in `unseen_cgroups`;
+/// otherwise `cgroup_scope` is "host". On macOS, the free and inactive pages. Throws
 /// std::runtime_error when MemAvailable is missing or a limit file exists but cannot be read.
 struct HostMemory {
   std::int64_t available = 0;
   std::vector<std::string> unseen_cgroups;
+  std::string cgroup_scope = "host";
 };
 HostMemory host_memory(const std::filesystem::path& proc = "/proc");
 
@@ -29,6 +34,7 @@ struct MemoryPools {
   std::optional<std::int64_t> device_free;
   std::int64_t devices = 1;                 ///< the discrete devices the host's ranks share
   std::vector<std::string> unseen_cgroups;  ///< HostMemory::unseen_cgroups
+  std::string cgroup_scope = "host";        ///< HostMemory::cgroup_scope
 };
 
 /// The memory the ranks of a host need beyond what one of its pools can give

@@ -1464,6 +1464,16 @@ TEST_CASE("Face states that do not fit the case exit 2 before any directory", "[
     require_error(run(ringleb_input([](Json& s) { s["extra"] = 1; })), "E0420");
     require_error(run(ringleb_input([](Json& s) { s.erase("oracle"); })), "E0420");
     require_error(run(ringleb_input([](Json& s) { s["mesh_sha256"] = "abc"; })), "E0420");
+    // Rows, read as they stream: each an array of 3 (centroids) or 5 (values) finite numbers,
+    // one per face of the zone.
+    for (const auto& edit : std::vector<std::function<void(Json&)>>{
+             [](Json& rows) { rows["centroids"][0].push_back(0.0); },
+             [](Json& rows) { rows["values"][1][2] = "fast"; },
+             [](Json& rows) { rows["values"][0][0] = Json::array({1.0}); },
+             [](Json& rows) { rows["centroids"].erase(rows["centroids"].size() - 1); },
+             [](Json& rows) { rows["values"] = Json::object(); }}) {
+      require_error(run(ringleb_input([&](Json& s) { edit(s["zones"]["inflow"]); })), "E0420");
+    }
     require_error(run(ringleb_input([](Json& s) {
                     s["zones"]["unused"] =
                         Json{{"faces", "two"}, {"centroids", {}}, {"values", {}}};

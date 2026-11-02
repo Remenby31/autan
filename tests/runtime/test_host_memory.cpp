@@ -90,6 +90,40 @@ TEST_CASE("The memory a host can still give is the least of MemAvailable and its
     CHECK(memory.available == 3 * gib);
     CHECK(memory.unseen_cgroups == std::vector<std::string>{"/tenant"});
   }
+  SECTION("a private cgroup namespace: limits above its root cannot be seen") {
+    // Docker on cgroup v2: the namespace's root, "/", mounted at cg. Its inode differs from the
+    // initial namespace's (4026531835, checked on Linux 6.17).
+    const fs::path cg = dir / "ns";
+    fs::create_directories(proc / "self" / "ns");
+    write(proc / "self" / "cgroup", "0::/\n");
+    write(proc / "self" / "mountinfo",
+          "7575 7574 0:32 / " + cg.string() + " ro - cgroup2 cgroup rw,nsdelegate\n");
+    write(cg / "memory.current", std::to_string(gib) + "\n");
+    const auto link = proc / "self" / "ns" / "cgroup";
+    const auto namespace_link = [&](const std::string& target) {
+      std::error_code ec;
+      fs::remove(link, ec);
+      fs::create_symlink(target, link);
+    };
+    namespace_link("cgroup:[4026535872]");
+    // A limit at the root (docker --memory): it counts, scoped to the namespace.
+    write(cg / "memory.max", std::to_string(4 * gib) + "\n");
+    auto memory = autan::runtime::host_memory(proc);
+    CHECK(memory.available == 3 * gib);
+    CHECK(memory.unseen_cgroups.empty());
+    CHECK(memory.cgroup_scope == "namespace_root");
+    // No limit in sight: what is above the namespace root is unseen.
+    write(cg / "memory.max", "max\n");
+    memory = autan::runtime::host_memory(proc);
+    CHECK(memory.available == host);
+    CHECK(memory.unseen_cgroups == std::vector<std::string>{"(above the cgroup namespace root)"});
+    CHECK(memory.cgroup_scope == "namespace_root");
+    // The initial namespace sees the whole hierarchy.
+    namespace_link("cgroup:[4026531835]");
+    memory = autan::runtime::host_memory(proc);
+    CHECK(memory.unseen_cgroups.empty());
+    CHECK(memory.cgroup_scope == "host");
+  }
   SECTION("cgroup v2 mounted from inside the hierarchy") {
     // /tenant is mounted at cg: the group /tenant/job is cg/job, and /tenant is cg itself.
     const fs::path cg = dir / "mnt";
