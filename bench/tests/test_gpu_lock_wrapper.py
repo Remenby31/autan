@@ -196,70 +196,116 @@ def mem_available() -> int:
     pytest.fail("no MemAvailable")
 
 
-# Real host memory, touched page by page: what a GB10 device allocation also consumes. The
-# allocator and its parent ignore TERM; the allocator runs in a session of its own (as
-# autan-bench's gated binary does), and writes its pid, then "done" once it has allocated.
-ALLOCATE = """
+# A command that ignores TERM and leaves a worker in a session of its own (as autan-bench's
+# gated binary does): it writes the worker's pid to $1, then "started" lines to $2.
+SLEEPER = """
 import os, signal, subprocess, sys, time
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
-if sys.argv[-1] != "child":
-    sys.exit(subprocess.Popen([sys.executable, *sys.argv, "child"], start_new_session=True).wait())
-steps, out, linger, delay = int(sys.argv[1]), sys.argv[2], float(sys.argv[3]), float(sys.argv[4])
-open(out + ".pid", "w").write(str(os.getpid()))
-time.sleep(delay)
-chunks = []
-for _ in range(steps):
-    chunks.append(b"\\1" * (128 << 20))
-    time.sleep(0.05)
-open(out, "w").write("done")
-time.sleep(linger)
+if sys.argv[-1] != "worker":
+    sys.exit(subprocess.Popen([sys.executable, *sys.argv, "worker"], start_new_session=True).wait())
+open(sys.argv[1], "w").write(str(os.getpid()))
+with open(sys.argv[2], "a") as log:
+    log.write("started\\n")
+time.sleep(120)
 """
 
 
-def allocate(lock, floor, steps, out, linger, *, hold="60", delay="0"):
-    script = out.parent / "allocate.py"
-    script.write_text(ALLOCATE)
-    return wrapper(lock, "-m", "test", "-t", hold, "-f", floor, "--", sys.executable,
-                   str(script), str(steps), str(out), str(linger), delay)  # fmt: skip
+def sleeper(tmp_path: Path) -> list[str]:
+    script = tmp_path / "sleeper.py"
+    script.write_text(SLEEPER)
+    return [sys.executable, str(script), str(tmp_path / "worker.pid"), str(tmp_path / "log")]
 
 
-def test_the_host_memory_floor_kills_a_command_that_crosses_it_and_only_that(lock, tmp_path):
-    # Each floor is taken from what is available just before (a shared host's memory moves):
-    # 1 GiB below it, 4 GiB of allocation crosses it; 2 GiB below it, 256 MiB does not.
-    def below_now(gib: int) -> str:
-        return f"{(mem_available() - (gib << 30)) >> 20}M"
-
-    done = tmp_path / "done"
+def test_the_floor_kills_a_command_as_soon_as_memory_falls_below_it(lock, tmp_path, meminfo):
+    proc = wrapper(lock, "-m", "test", "-t", "60", "-f", "10G", "--", *sleeper(tmp_path))
+    worker = pid_from(tmp_path / "worker.pid")
+    time.sleep(1)
+    assert proc.poll() is None
     start = time.monotonic()
-    greedy = allocate(lock, below_now(1), 32, done, 60)
-    assert greedy.wait(timeout=60) == 71
-    # At once: no TERM grace, which the allocator would sit out.
-    assert time.monotonic() - start < 8
-    assert not done.exists()
-    assert not alive(pid_from(Path(f"{done}.pid")))
+    meminfo(5)
+    assert proc.wait(timeout=30) == 71
+    # At once, without the TERM grace the command would sit out.
+    assert time.monotonic() - start < 2
+    assert not alive(worker)
     assert [r[1] for r in events(lock)][-1] == "memory"
     assert free(lock)
-
-    # The floor still holds during the grace of another stop (here the hold limit's).
-    # (hold 20 s: TERM at 10 s, KILL at 20 s; the allocation crosses the floor at about 11.5 s)
-    start = time.monotonic()
-    late = allocate(lock, below_now(1), 32, done, 60, hold="20", delay="11")
-    assert late.wait(timeout=60) == 71
-    assert time.monotonic() - start < 17
-    assert [r[1] for r in events(lock)][-1] == "memory"
-
-    modest = allocate(lock, below_now(2), 2, done, 0)
-    assert modest.wait(timeout=60) == 0
-    assert done.exists()
+    # Above the floor, a command runs to its end.
+    meminfo(20)
+    assert wrapper(lock, "-m", "test", "-f", "10G", "--", "true").wait(timeout=30) == 0
     assert [r[1] for r in events(lock)][-1] == "release"
 
-    # Below the floor already: the command never starts.
-    done.unlink()
-    above = f"{(mem_available() >> 20) + 4096}M"
-    refused = wrapper(lock, "-m", "test", "-f", above, "-r", "1", "--", "touch", str(done))
+
+def test_the_floor_holds_during_the_grace_of_another_stop(lock, tmp_path, meminfo):
+    # Hold 6 s: TERM at 3 s (ignored), KILL at 6 s. Memory falls at 4 s, inside the grace.
+    start = time.monotonic()
+    proc = wrapper(lock, "-m", "test", "-t", "6", "-f", "10G", "--", *sleeper(tmp_path))
+    pid_from(tmp_path / "worker.pid")
+    time.sleep(max(0.0, 4 - (time.monotonic() - start)))
+    meminfo(5)
+    assert proc.wait(timeout=30) == 71
+    assert time.monotonic() - start < 5.5
+    assert [r[1] for r in events(lock)][-1] == "memory"
+
+
+def test_waiters_start_one_at_a_time_once_memory_is_back(lock, tmp_path, meminfo):
+    # Below the floor, as while the kernel reclaims a holder the floor killed: two commands
+    # queue; memory comes back 3 s later; each re-checks the floor once it holds the lock and
+    # they run one after the other, never together.
+    meminfo(5)
+    log = tmp_path / "log"
+    step = f"echo start >> {log}; sleep 1; echo end >> {log}"
+    waiters = [wrapper(lock, "-m", "test", "-f", "10G", "--", "sh", "-c", step)
+               for _ in range(2)]  # fmt: skip
+    time.sleep(3)
+    assert not log.exists()
+    assert all(w.poll() is None for w in waiters)
+    meminfo(20)
+    assert [w.wait(timeout=60) for w in waiters] == [0, 0]
+    assert log.read_text().split() == ["start", "end", "start", "end"]
+
+
+def test_the_memory_wait_is_bounded_by_the_hold_and_by_r(lock, meminfo):
+    meminfo(5)
+    start = time.monotonic()
+    # -t 4: TERM time at 2 s, before -r 30 runs out.
+    held = wrapper(lock, "-m", "test", "-t", "4", "-r", "30", "-f", "10G", "--", "true")
+    assert held.wait(timeout=30) == 71
+    assert time.monotonic() - start < 4
+    start = time.monotonic()
+    refused = wrapper(lock, "-m", "test", "-r", "1", "-f", "10G", "--", "true")
     assert refused.wait(timeout=30) == 71
-    assert not done.exists()
+    assert time.monotonic() - start < 3
     assert [r[1] for r in events(lock)][-2:] == ["take", "memory"]
+
+
+def test_a_self_locking_command_s_time_counts_from_its_start(lock, meminfo):
+    # With -n the command takes the lock itself, so the 3 s of waiting for memory are not
+    # taken from the 3 s it is given.
+    meminfo(5)
+    own = wrapper(lock, "-n", "-m", "test", "-t", "3", "-r", "30", "-f", "10G", "--",
+                  "flock", str(lock), "sleep", "1")  # fmt: skip
+    time.sleep(3)
+    meminfo(20)
+    assert own.wait(timeout=30) == 0
+
+
+# The one test on the host's real memory: a command really allocating past the floor is
+# killed. Its margin comes from a measurement: on spark-5512 at load 17-29 (2026-11-02, 5968
+# samples over 10 min) MemAvailable moved by at most 3.10 GiB within 5 s (p99 2.98, median
+# 0.45). The floor is set 1 GiB below what is available and the command takes 8 GiB, so the
+# test fails only if the host frees more than 7 GiB meanwhile, over twice that maximum.
+REAL_ALLOCATION_GIB = 8
+
+
+def test_a_command_really_allocating_past_the_floor_is_killed(lock, tmp_path):
+    out = tmp_path / "done"
+    floor = f"{(mem_available() - (1 << 30)) >> 20}M"
+    grow = (f"chunks = [b'\\1' * (128 << 20) for _ in range({REAL_ALLOCATION_GIB * 8})]\n"
+            f"open({str(out)!r}, 'w').write('x')\nimport time\ntime.sleep(60)\n")  # fmt: skip
+    proc = wrapper(lock, "-m", "test", "-t", "60", "-f", floor, "--", sys.executable, "-c", grow)
+    assert proc.wait(timeout=60) == 71
+    assert not out.exists()
+    assert [r[1] for r in events(lock)][-1] == "memory"
 
 
 @pytest.mark.parametrize("floor", ["24", "1.5G", "-1G", "24T", "0x10G"])
@@ -293,26 +339,28 @@ def containers(label: str) -> list[str]:
 
 
 @pytest.mark.skipif(not docker_works(), reason="needs a Docker daemon")
-def test_a_docker_run_command_has_its_container_killed_with_it(lock, tmp_path):
-    # A container lives outside the command's session: killing its docker client alone would
-    # leave it running, past the memory floor and past the hold limit.
+def test_a_docker_run_command_has_its_container_killed_with_it(lock, tmp_path, meminfo):
+    # A container lives outside the command's processes: killing its docker client alone would
+    # leave it running, past the memory floor and past the hold limit. PID 1 of each container
+    # is `sleep`, which ignores TERM.
     subprocess.run(["docker", "pull", "-q", PYTHON_IMAGE], capture_output=True, check=True)
     label = f"autan-gpu-lock-test={os.getpid()}-{time.monotonic_ns()}"
+    run = ["docker", "run", "--rm", "--label", label, PYTHON_IMAGE, "sleep", "120"]
     try:
-        floor = f"{(mem_available() - (1 << 30)) >> 20}M"
-        greedy = wrapper(lock, "-m", "test", "-t", "60", "-f", floor, "--", "docker", "run",
-                         "--rm", "--label", label, PYTHON_IMAGE, "python", "-c", ALLOCATE, "32",
-                         "/tmp/done", "60", "0", "child")  # fmt: skip
-        assert greedy.wait(timeout=90) == 71
+        floored = wrapper(lock, "-m", "test", "-t", "60", "-f", "10G", "--", *run)
+        for _ in range(300):
+            if containers(label):
+                break
+            time.sleep(0.1)
+        meminfo(5)
+        assert floored.wait(timeout=60) == 71
         assert [r[1] for r in events(lock)][-1] == "memory"
-        # PID 1 of the container ignores TERM: only `docker kill` stops it at the limit.
-        stuck = wrapper(lock, "-m", "test", "-t", "4", "--", "docker", "run", "--rm", "--label",
-                        label, PYTHON_IMAGE, "sleep", "120")  # fmt: skip
+        meminfo(100)
+        stuck = wrapper(lock, "-m", "test", "-t", "4", "--", *run)
         assert stuck.wait(timeout=60) == 124
         # The same with the caller's own --cidfile, which takes precedence over one injected.
         own = wrapper(lock, "-m", "test", "-t", "4", "--", "docker", "run", "--rm",
-                      "--cidfile", str(tmp_path / "cid"), "--label", label, PYTHON_IMAGE,
-                      "sleep", "120")  # fmt: skip
+                      "--cidfile", str(tmp_path / "cid"), *run[2:])  # fmt: skip
         assert own.wait(timeout=60) == 124
         for _ in range(100):
             if not containers(label):
@@ -322,69 +370,3 @@ def test_a_docker_run_command_has_its_container_killed_with_it(lock, tmp_path):
     finally:
         for cid in containers(label):
             subprocess.run(["docker", "rm", "-f", cid], capture_output=True, check=False)
-
-
-def test_waiters_on_memory_being_returned_start_one_at_a_time_once_it_is_back(lock, tmp_path):
-    # A process holds 6 GiB of real memory below the floor, as one the floor killed does while
-    # the kernel reclaims it, and frees it only when the test says so, 4 s after two commands
-    # queued (a wait shorter than that would refuse them). Each command then re-checks the
-    # floor once it holds the lock: they run one after the other, never together.
-    ready, release, log = tmp_path / "ready", tmp_path / "release", tmp_path / "log"
-    hog = subprocess.Popen([sys.executable, "-c", (
-        "import os, sys, time\nchunks = [b'\\1' * (128 << 20) for _ in range(48)]\n"
-        f"open({str(ready)!r}, 'w').write('x')\n"
-        f"while not os.path.exists({str(release)!r}):\n    time.sleep(0.05)\n")])  # fmt: skip
-    try:
-        for _ in range(400):
-            if ready.exists():
-                break
-            time.sleep(0.05)
-        assert hog.poll() is None
-        # 1 GiB above what is left while it holds its 6 GiB: below the floor until it exits,
-        # whatever else the host takes or frees meanwhile, up to 5 GiB.
-        floor = f"{(mem_available() + (1 << 30)) >> 20}M"
-        step = f"echo start $(date +%s.%N) >> {log}; sleep 1; echo end $(date +%s.%N) >> {log}"
-        waiters = [wrapper(lock, "-m", "test", "-f", floor, "--", "sh", "-c", step)
-                   for _ in range(2)]  # fmt: skip
-        time.sleep(4)
-        assert not log.exists()
-        assert all(w.poll() is None for w in waiters)
-        release.touch()
-        assert [w.wait(timeout=60) for w in waiters] == [0, 0]
-    finally:
-        release.touch()
-        hog.wait(timeout=30)
-    times = [line.split() for line in log.read_text().splitlines()]
-    assert [kind for kind, _ in times] == ["start", "end", "start", "end"]
-    assert float(times[2][1]) >= float(times[1][1])
-
-
-def test_the_memory_wait_counts_in_the_hold_and_not_in_a_self_locking_command_s(lock, tmp_path):
-    # Below the floor for good: the wait ends with the hold (-t 4: TERM time at 2 s), not after
-    # -r 30, and refuses.
-    above = f"{(mem_available() >> 20) + 4096}M"
-    start = time.monotonic()
-    held = wrapper(lock, "-m", "test", "-t", "4", "-r", "30", "-f", above, "--", "true")
-    assert held.wait(timeout=30) == 71
-    assert time.monotonic() - start < 6
-    # With -n the command takes the lock itself and its -t counts from its start: 3 s of
-    # waiting for memory do not eat into the 3 s it is given.
-    ready, release = tmp_path / "ready", tmp_path / "release"
-    hog = subprocess.Popen([sys.executable, "-c", (
-        "import os, time\nchunks = [b'\\1' * (128 << 20) for _ in range(48)]\n"
-        f"open({str(ready)!r}, 'w').write('x')\n"
-        f"while not os.path.exists({str(release)!r}):\n    time.sleep(0.05)\n")])  # fmt: skip
-    try:
-        for _ in range(400):
-            if ready.exists():
-                break
-            time.sleep(0.05)
-        floor = f"{(mem_available() + (1 << 30)) >> 20}M"
-        own = wrapper(lock, "-n", "-m", "test", "-t", "3", "-r", "30", "-f", floor, "--",
-                      "flock", str(lock), "sleep", "1")  # fmt: skip
-        time.sleep(3)
-        release.touch()
-        assert own.wait(timeout=30) == 0
-    finally:
-        release.touch()
-        hog.wait(timeout=30)
