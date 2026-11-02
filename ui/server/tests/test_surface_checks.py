@@ -1,14 +1,16 @@
+import json
+import struct
 from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 import pytest
-from autan_ui.mesh_surface import _broken, _check_polygons
+from autan_ui.mesh_surface import _broken, mesh_surface
 
 
-# The surface checks as they were before they were vectorised (#351), kept verbatim as the
-# reference: the current checks must give the same verdict, with the same message, on every
-# surface below.
+# A counting reference: the rules of mesh.md#boundary-surface written with a hash of the
+# directed edges and a loop over them. The reader must give the same verdict, with the same
+# message, on every surface below.
 def _previous_check_polygons(
     offsets: npt.NDArray[np.int64], nodes: npt.NDArray[np.int64], positions: npt.NDArray[Any]
 ) -> None:
@@ -152,14 +154,54 @@ def _mutate(
     return faces, positions
 
 
-def _verdict(check: Any, faces: list[list[int]], positions: npt.NDArray[np.float64]) -> str:
+def _surface(faces: list[list[int]], positions: npt.NDArray[np.float64]) -> bytes:
+    # One zone, as `autan-mesh-info --surface` writes it (mesh.md#boundary-surface).
+    offsets = np.concatenate([[0], np.cumsum([len(f) for f in faces])]).astype("<u4")
+    nodes = np.array([k for f in faces for k in f], dtype="<u4")
+    arrays = {
+        "positions": positions.astype("<f8").ravel(),
+        "face_offsets": offsets,
+        "face_nodes": nodes,
+    }
+    dtypes = {"positions": "f64", "face_offsets": "u32", "face_nodes": "u32"}
+    body, layout = b"", []
+    for name, array in arrays.items():
+        layout.append(
+            {"name": name, "dtype": dtypes[name], "offset": len(body), "length": array.size}
+        )
+        body += array.tobytes() + b"\0" * (-array.nbytes % 8)
+    header = {
+        "schema": "autan.surface/1",
+        "source": {"sha256": "0" * 64},
+        "nodes": len(positions),
+        "faces": len(faces),
+        "zones": [ZONE | {"faces": len(faces), "first_face": 0}],
+        "buffers": layout,
+    }
+    text = json.dumps(header).encode()
+    text += b" " * (-(4 + len(text)) % 8)
+    return struct.pack("<I", len(text)) + text + body
+
+
+ZONE = {"name": "box", "type": "wall", "native_type": None}
+
+
+def _verdicts(faces: list[list[int]], positions: npt.NDArray[np.float64]) -> tuple[str, str]:
+    # The reader's verdict, through its public function, and the reference's.
+    info = {"source": {"sha256": "0" * 64}, "boundary_zones": [ZONE | {"faces": len(faces)}]}
+    try:
+        mesh_surface(_surface(faces, positions), info)
+        read = "accepted"
+    except ValueError as error:
+        read = str(error)
     offsets = np.concatenate([[0], np.cumsum([len(f) for f in faces])]).astype(np.int64)
     nodes = np.array([k for f in faces for k in f], dtype=np.int64)
     try:
-        check(offsets, nodes, positions)
+        _previous_check_polygons(offsets, nodes, positions)
+        expected = "accepted"
     except ValueError as error:
-        return str(error)
-    return "accepted"
+        expected = str(error)
+    return read, expected
 
 
 @pytest.mark.parametrize("change", MUTATIONS)
@@ -169,8 +211,8 @@ def test_the_checks_judge_every_surface_as_before(change: str) -> None:
     for _ in range(25):
         faces, positions = _cube(int(rng.integers(1, 6)), rng)
         faces, positions = _mutate(faces, positions, change, rng)
-        expected = _verdict(_previous_check_polygons, faces, positions)
-        assert _verdict(_check_polygons, faces, positions) == expected, change
+        read, expected = _verdicts(faces, positions)
+        assert read == expected, change
         verdicts.add(expected)
     # The generated surfaces do exercise the change: a valid one is never refused, a breaking
     # one is refused at least once (collapsing a quad's node can leave a valid polygon).
@@ -178,3 +220,21 @@ def test_the_checks_judge_every_surface_as_before(change: str) -> None:
         assert verdicts == {"accepted"}, verdicts
     else:
         assert verdicts - {"accepted"}, verdicts
+
+
+def test_an_edge_shared_by_two_closed_parts_is_accepted_as_before() -> None:
+    # Two outward tetrahedra sharing the edge 0-1: each direction of it twice, balanced.
+    positions = np.array(
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0, -1, 0], [0, 0, -1]], dtype=np.float64
+    )
+    faces = [
+        [0, 2, 1],
+        [0, 1, 3],
+        [0, 3, 2],
+        [1, 2, 3],  # x, y, z ≥ 0
+        [0, 5, 4],
+        [0, 1, 5],
+        [0, 4, 1],
+        [1, 4, 5],  # y, z ≤ 0
+    ]
+    assert _verdicts(faces, positions) == ("accepted", "accepted")
