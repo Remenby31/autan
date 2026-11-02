@@ -385,7 +385,9 @@ test("a clipboard that refuses the copy says so", async ({ page }) => {
   await expect(page.getByRole("status").filter({ hasText: "clipboard" })).toBeVisible();
 });
 
-test("the plan sits below the code, and its status counts its errors", async ({ page }) => {
+test("the plan lies over the mesh, clear of the code, and its status counts its errors", async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/cases/new");
   await page.getByLabel("Name").fill("box");
@@ -402,8 +404,39 @@ test("the plan sits below the code, and its status counts its errors", async ({ 
   await expect(page.getByTestId("plan-status")).toHaveText(`refused: ${notes + uncovered} errors`);
   const code = await page.getByTestId("case-py").boundingBox();
   const status = await plan.boundingBox();
-  if (!code || !status) throw new Error("the code or the plan is not laid out");
-  expect(status.y).toBeGreaterThanOrEqual(code.y + code.height);
+  const stage = await page.getByTestId("stage").boundingBox();
+  if (!code || !status || !stage)
+    throw new Error("the code, the plan or the stage is not laid out");
+  expect(status.x + status.width).toBeLessThanOrEqual(code.x);
+  expect(status.x).toBeGreaterThanOrEqual(stage.x);
+  expect(status.y + status.height).toBeLessThanOrEqual(stage.y + stage.height);
+});
+
+test("the mesh fills the stage, and the code gives it its width", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/cases/new");
+  await expect(page.getByTestId("stage")).toContainText("Choose a mesh");
+  await page.getByLabel("Mesh", { exact: true }).selectOption("polyMesh");
+  const view = page.getByTestId("mesh-view");
+  await expect(view).toHaveAttribute("data-ready", "true");
+  const fills = async () => {
+    const stage = await page.getByTestId("stage").boundingBox();
+    const box = await view.boundingBox();
+    return { stage, box };
+  };
+  const before = await fills();
+  expect(before.box?.width).toBeCloseTo(before.stage?.width ?? 0, 0);
+  expect(before.box?.height).toBeCloseTo(before.stage?.height ?? 0, 0);
+
+  const code = page.getByRole("complementary", { name: "The case's code" });
+  await expect(code).toBeVisible();
+  await page.getByRole("button", { name: "Hide the code" }).click();
+  await expect(code).toHaveCount(0);
+  await expect
+    .poll(async () => (await fills()).box?.width ?? 0)
+    .toBeGreaterThan((before.box?.width ?? 0) + 200);
+  await page.getByRole("button", { name: "Code", exact: true }).click();
+  await expect(code).toBeVisible();
 });
 
 test("rules a new mesh does not have are offered for removal", async ({ page }) => {

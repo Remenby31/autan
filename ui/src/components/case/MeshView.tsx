@@ -117,7 +117,7 @@ export function MeshView({
   }, [theme]);
 
   return (
-    <div className="relative h-72 flex-none overflow-hidden rounded-lg border border-line bg-bg-0">
+    <div className="absolute inset-0 overflow-hidden bg-bg-0">
       <canvas
         ref={canvas}
         className="block size-full"
@@ -132,33 +132,35 @@ export function MeshView({
         }}
       />
       {error && (
-        <div className="absolute inset-0 flex flex-col gap-3 overflow-auto bg-bg-0 p-4">
-          <p className="m-0 text-fg-2 text-sm">
-            {error.includes("404")
-              ? "No 3D view of this mesh (autan-mesh-info --surface writes one). Its boundary zones:"
-              : `${error}. Its boundary zones:`}
-          </p>
-          <ul className="m-0 flex list-none flex-wrap gap-2 p-0" data-testid="zone-list">
-            {zones.map((zone) => (
-              <li key={zone}>
-                <button
-                  type="button"
-                  aria-pressed={selected === zone}
-                  onClick={() => onPick(zone)}
-                  className="rounded-sm px-2 py-1 font-mono text-sm shadow-[0_0_0_1px_var(--line)] hover:bg-bg-2 focus-visible:shadow-[var(--focus-ring)] aria-pressed:bg-accent-soft aria-pressed:text-accent"
-                >
-                  {zone}
-                  {conditions.has(zone) && (
-                    <span className="ml-2 font-sans text-fg-3">{conditions.get(zone)}</span>
-                  )}
-                </button>
-              </li>
-            ))}
-          </ul>
+        <div className="absolute inset-0 flex items-center justify-center overflow-auto bg-bg-0 p-16">
+          <div className="flex max-w-xl flex-col gap-3">
+            <p className="m-0 text-fg-2 text-sm">
+              {error.includes("404")
+                ? "No 3D view of this mesh (autan-mesh-info --surface writes one). Its boundary zones:"
+                : `${error}. Its boundary zones:`}
+            </p>
+            <ul className="m-0 flex list-none flex-wrap gap-2 p-0" data-testid="zone-list">
+              {zones.map((zone) => (
+                <li key={zone}>
+                  <button
+                    type="button"
+                    aria-pressed={selected === zone}
+                    onClick={() => onPick(zone)}
+                    className="rounded-sm px-2 py-1 font-mono text-sm shadow-[0_0_0_1px_var(--line)] hover:bg-bg-2 focus-visible:shadow-[var(--focus-ring)] aria-pressed:bg-accent-soft aria-pressed:text-accent"
+                  >
+                    {zone}
+                    {conditions.has(zone) && (
+                      <span className="ml-2 font-sans text-fg-3">{conditions.get(zone)}</span>
+                    )}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       )}
       {selected && surface?.zones.some((z) => z.name === selected) && (
-        <span className="absolute top-2 left-2 rounded-sm bg-bg-1/90 px-2 py-1 font-mono text-sm">
+        <span className="absolute top-4 right-4 rounded-sm bg-glass px-2 py-1 font-mono text-sm backdrop-blur">
           {selected}
         </span>
       )}

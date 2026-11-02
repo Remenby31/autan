@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { Plus, Trash2 } from "lucide-react";
+import { PanelRightClose, PanelRightOpen, Plus, Trash2 } from "lucide-react";
 import { type ReactNode, useDeferredValue, useEffect, useRef, useState } from "react";
 import {
   type BoundaryForm,
@@ -124,6 +124,8 @@ function CaseEditor() {
   const mesh = meshes.data?.find((m) => m.name === form.mesh);
   const zones = mesh?.boundary_zones.map((z) => z.name) ?? [];
   const [picked, setPicked] = useState<string | null>(null);
+  // The code beside the stage, which can give its width to the mesh.
+  const [codeOpen, setCodeOpen] = useState(true);
   // After a change of mesh, the rules whose pattern matches none of its zones, offered for
   // removal; rules typed afterwards are the user's own business (the plan reports them).
   const [inherited, setInherited] = useState<{ mesh: string; rules: Set<object> } | null>(null);
@@ -237,9 +239,9 @@ function CaseEditor() {
   return (
     <>
       <TopBar crumbs={[{ label: "New case" }]} />
-      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(0,1fr)] overflow-hidden">
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(22rem,30rem)_minmax(0,1fr)] overflow-hidden">
         <form
-          className="flex flex-col gap-8 overflow-auto px-8 py-6"
+          className="flex flex-col gap-8 overflow-auto border-line border-r px-6 py-6"
           onSubmit={(e) => e.preventDefault()}
           aria-label="Case"
         >
@@ -644,115 +646,155 @@ function CaseEditor() {
           </fieldset>
         </form>
 
-        <aside className="flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto border-line border-l bg-bg-1 px-6 py-6">
-          {form.mesh && (
-            <MeshView
-              mesh={form.mesh}
-              zones={zones}
-              conditions={conditions}
-              selected={picked}
-              onPick={pick}
-              webgl={webgl}
-            />
-          )}
-          {form.mesh && byKind.size > 0 && (
-            <ul
-              className="m-0 flex list-none flex-wrap gap-x-4 gap-y-1 p-0 text-fg-2 text-sm"
-              data-testid="condition-legend"
-            >
-              {[...byKind].map(([kind, zoneNames]) => (
-                <li
-                  key={kind}
-                  className="inline-flex items-center gap-2"
-                  aria-label={`${kind}: ${zoneNames.join(", ")}`}
+        <div className="flex min-h-0 min-w-0">
+          {/* The mesh fills the stage; what concerns it lies over it. */}
+          <section className="relative min-w-0 flex-1 overflow-hidden bg-bg-0" data-testid="stage">
+            {form.mesh ? (
+              <MeshView
+                mesh={form.mesh}
+                zones={zones}
+                conditions={conditions}
+                selected={picked}
+                onPick={pick}
+                webgl={webgl}
+              />
+            ) : (
+              <p className="absolute inset-0 m-0 grid place-items-center text-fg-3 text-sm">
+                Choose a mesh to see its boundary.
+              </p>
+            )}
+            <div className="pointer-events-none absolute inset-x-4 top-4 flex max-w-xl flex-col items-start gap-2 [&>*]:pointer-events-auto">
+              {form.mesh && byKind.size > 0 && (
+                <ul
+                  className="m-0 flex list-none flex-wrap gap-x-4 gap-y-1 rounded-lg border border-line bg-glass px-3 py-2 text-fg-2 text-sm backdrop-blur"
+                  data-testid="condition-legend"
                 >
-                  <i
-                    aria-hidden
-                    className="inline-block size-2.5 rounded-sm"
-                    style={{ background: `var(${conditionColor(kind)})` }}
-                  />
-                  {kind}
-                  <span className="font-mono text-fg-3">
-                    {zoneNames.length <= 3 ? zoneNames.join(" ") : `${zoneNames.length} zones`}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-          {stale.length > 0 && (
-            <Note
-              tone="warning"
-              title={`${stale.length} ${stale.length === 1 ? "rule matches" : "rules match"} no zone of ${form.mesh}`}
-              action={
-                <Button size="sm" onClick={removeStale}>
-                  Remove
-                </Button>
-              }
-            >
-              <span className="font-mono" data-testid="stale-rules">
-                {stale.map((r) => r.zones).join(" · ")}
-              </span>
-            </Note>
-          )}
-          {notice && (
-            <Note tone="info" title="Periodic zone">
-              {notice}
-            </Note>
-          )}
-          {rendered.isError && (
-            <Note tone="error" title="The SDK could not be reached">
-              The code below is from an earlier version of the case: {rendered.error.message}
-            </Note>
-          )}
-          {/* Mounted for good, so that a screen reader hears what blocks the case as it changes. */}
-          <p role="status" className="sr-only">
-            {announcement}
-          </p>
-          <div className="flex justify-end">
-            <CaseActions
-              name={form.name}
-              // Only the case shown, once it is the form's: an edit not yet rendered waits.
-              rendered={
-                rendered.data?.ok && !rendered.isPlaceholderData && settled === form
-                  ? rendered.data
-                  : null
-              }
-            />
-          </div>
-          {rendered.data?.ok === false ? (
-            <Refusal
-              diagnostics={rendered.data.diagnostics}
-              document={caseDocument(form, library)}
-            />
-          ) : (
-            <TabsRoot
-              defaultValue="python"
-              className={cn(
-                "flex min-w-0 flex-none flex-col gap-3 transition-opacity",
-                (rendered.isError || rendered.isPlaceholderData) && "opacity-60",
+                  {[...byKind].map(([kind, zoneNames]) => (
+                    <li
+                      key={kind}
+                      className="inline-flex items-center gap-2"
+                      aria-label={`${kind}: ${zoneNames.join(", ")}`}
+                    >
+                      <i
+                        aria-hidden
+                        className="inline-block size-2.5 rounded-sm"
+                        style={{ background: `var(${conditionColor(kind)})` }}
+                      />
+                      {kind}
+                      <span className="font-mono text-fg-3">
+                        {zoneNames.length <= 3 ? zoneNames.join(" ") : `${zoneNames.length} zones`}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
               )}
-            >
-              <div className="flex items-center gap-3">
-                <TabList
-                  tabs={[
-                    { value: "python", label: <span className="font-mono">case.py</span> },
-                    { value: "toml", label: <span className="font-mono">case.toml</span> },
-                  ]}
-                />
-                <span className="text-fg-3 text-sm">written by the SDK</span>
+              {stale.length > 0 && (
+                <Note
+                  tone="warning"
+                  title={`${stale.length} ${stale.length === 1 ? "rule matches" : "rules match"} no zone of ${form.mesh}`}
+                  action={
+                    <Button size="sm" onClick={removeStale}>
+                      Remove
+                    </Button>
+                  }
+                >
+                  <span className="font-mono" data-testid="stale-rules">
+                    {stale.map((r) => r.zones).join(" · ")}
+                  </span>
+                </Note>
+              )}
+              {notice && (
+                <Note tone="info" title="Periodic zone">
+                  {notice}
+                </Note>
+              )}
+              {rendered.isError && (
+                <Note tone="error" title="The SDK could not be reached">
+                  The code below is from an earlier version of the case: {rendered.error.message}
+                </Note>
+              )}
+            </div>
+            {/* Mounted for good, so that a screen reader hears what blocks the case as it changes. */}
+            <p role="status" className="sr-only">
+              {announcement}
+            </p>
+            <div className="pointer-events-none absolute inset-x-4 bottom-4 flex flex-col items-stretch gap-2 [&>*]:pointer-events-auto">
+              <div className="min-w-0">
+                {rendered.data?.ok && rendered.data.plan && (
+                  <div className="w-fit max-w-2xl rounded-lg border border-line bg-glass px-3 py-2 backdrop-blur">
+                    <PlanSummary plan={rendered.data.plan} current={!rendered.isPlaceholderData} />
+                  </div>
+                )}
               </div>
-              <TabPanel value="python" className="min-w-0 outline-none">
-                <Code testId="case-py" text={rendered.data?.ok ? rendered.data.python : ""} />
-              </TabPanel>
-              <TabPanel value="toml" className="min-w-0 outline-none">
-                <Code testId="case-toml" text={rendered.data?.ok ? rendered.data.toml : ""} />
-              </TabPanel>
-            </TabsRoot>
+              <div className="flex flex-none items-center gap-2 self-end">
+                <CaseActions
+                  name={form.name}
+                  // Only the case shown, once it is the form's: an edit not yet rendered waits.
+                  rendered={
+                    rendered.data?.ok && !rendered.isPlaceholderData && settled === form
+                      ? rendered.data
+                      : null
+                  }
+                />
+                {!codeOpen && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon={<PanelRightOpen className="size-4" />}
+                    onClick={() => setCodeOpen(true)}
+                  >
+                    Code
+                  </Button>
+                )}
+              </div>
+            </div>
+          </section>
+          {codeOpen && (
+            <aside
+              className="relative flex min-h-0 w-[min(30rem,40%)] flex-none flex-col gap-4 overflow-y-auto border-line border-l bg-bg-1 px-5 py-5"
+              aria-label="The case's code"
+            >
+              <Button
+                size="sm"
+                variant="tertiary"
+                className="absolute top-4 right-4"
+                icon={<PanelRightClose className="size-4" />}
+                aria-label="Hide the code"
+                onClick={() => setCodeOpen(false)}
+              />
+              {rendered.data?.ok === false ? (
+                <Refusal
+                  diagnostics={rendered.data.diagnostics}
+                  document={caseDocument(form, library)}
+                />
+              ) : (
+                <TabsRoot
+                  defaultValue="python"
+                  className={cn(
+                    "flex min-w-0 flex-none flex-col gap-3 transition-opacity",
+                    (rendered.isError || rendered.isPlaceholderData) && "opacity-60",
+                  )}
+                >
+                  <div className="flex items-center gap-3 pr-10">
+                    <TabList
+                      tabs={[
+                        { value: "python", label: <span className="font-mono">case.py</span> },
+                        { value: "toml", label: <span className="font-mono">case.toml</span> },
+                      ]}
+                    />
+                    <span className="truncate text-fg-3 text-sm">written by the SDK</span>
+                  </div>
+                  <TabPanel value="python" className="min-w-0 outline-none">
+                    <Code testId="case-py" text={rendered.data?.ok ? rendered.data.python : ""} />
+                  </TabPanel>
+                  <TabPanel value="toml" className="min-w-0 outline-none">
+                    <Code testId="case-toml" text={rendered.data?.ok ? rendered.data.toml : ""} />
+                  </TabPanel>
+                </TabsRoot>
+              )}
+            </aside>
           )}
-          {rendered.data?.ok && rendered.data.plan && (
-            <PlanSummary plan={rendered.data.plan} current={!rendered.isPlaceholderData} />
-          )}
-        </aside>
+        </div>
       </div>
     </>
   );

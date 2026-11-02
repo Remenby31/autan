@@ -510,7 +510,10 @@ export class SurfaceViewer {
   private frameAll(): void {
     const sphere = this.mesh?.geometry.boundingSphere;
     if (!sphere) return;
-    const distance = sphere.radius / Math.sin(THREE.MathUtils.degToRad(this.camera.fov / 2));
+    // The sphere fits the narrower of the two fields of view: a tall view frames by its width.
+    const vertical = THREE.MathUtils.degToRad(this.camera.fov / 2);
+    const horizontal = Math.atan(Math.tan(vertical) * this.camera.aspect);
+    const distance = sphere.radius / Math.sin(Math.min(vertical, horizontal));
     this.controls.target.copy(sphere.center);
     this.camera.position
       .copy(sphere.center)
