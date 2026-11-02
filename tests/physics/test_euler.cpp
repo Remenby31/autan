@@ -25,6 +25,7 @@
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/point_vortex.hpp"
+#include "euler_cpu.hpp"
 
 namespace {
 
@@ -323,20 +324,27 @@ TEST_CASE("the first-order tangent matches central differences of the first-orde
 }
 
 TEST_CASE("the stencil twins built on demand are those of the cell stencil", "[euler]") {
-  // Euler keeps no twins (no forward loop reads them); the adjoint asks for them: they must be
-  // kernels::cell_stencil's, bit for bit.
+  // Euler keeps no twins and no copy of the weights (no forward loop reads the twins, and the
+  // weights live in the loops' data): their memory is released, not only emptied. The adjoint
+  // asks for the twins: they must be kernels::cell_stencil's, bit for bit, and the topology the
+  // generated reverse reductions read must point at them, after every call.
   using P = autan::kernels::fp32_acc64;
   const char* file = GENERATE(from_range(meshes));
   INFO(file);
   const Case c(file);
   Euler<P> e(c.mesh, c.geometry, air, second_order(Flux::roe, 0.5));
-  CHECK(e.stencil().twin.empty());
+  CHECK(e.stencil().twin.capacity() == 0);
+  CHECK(e.stencil().lsq_weight.capacity() == 0);
+  CHECK(e.data().topo.stencil_twin == nullptr);
   const auto reference =
       autan::kernels::cell_stencil(c.mesh, autan::kernels::pack_geometry(c.mesh, c.geometry),
                                    autan::kernels::StencilKind::face2);
-  const auto twin = e.stencil_twin();
-  REQUIRE(twin.size() == reference.twin.size());
-  CHECK(std::equal(twin.begin(), twin.end(), reference.twin.begin()));
+  for (int call = 0; call < 2; ++call) {
+    const auto twin = e.stencil_twin();
+    REQUIRE(twin.size() == reference.twin.size());
+    CHECK(std::equal(twin.begin(), twin.end(), reference.twin.begin()));
+    CHECK(e.data().topo.stencil_twin == twin.data());
+  }
 }
 
 TEMPLATE_TEST_CASE("a linear velocity along slip walls has the exact mass divergence", "[euler]",

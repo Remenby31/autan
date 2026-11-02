@@ -98,8 +98,9 @@ struct Euler<P>::Impl {
     fill(stencil_lsq_weight, stencil.lsq_weight);
     // No forward loop reads the twins (the adjoint's reverse reductions do: stencil_twin() builds
     // them on demand), and set_boundary recomputes the weights: neither is kept.
-    stencil.twin = {};
-    stencil.lsq_weight = {};
+    // Swapped with empty vectors: clearing or assigning {} keeps the allocation.
+    decltype(stencil.twin)().swap(stencil.twin);
+    decltype(stencil.lsq_weight)().swap(stencil.lsq_weight);
     topo.stencil_twin = nullptr;
     fill(face_normal, packed.face_normal);
     fill(face_area_magnitude, packed.face_area_magnitude);
