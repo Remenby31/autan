@@ -198,13 +198,16 @@ def _rank(
     add("solution output", 2 * 8 * cells * fields + writer, transient=True)
     # A start reads the previous solution on every rank, every field for a continuation, the
     # n + 1 primitive fields for a warm start, then takes the rank's share and frees the rest;
-    # with them its run metadata (at most 64 KiB) and zone names (at most 25 600 B a zone and
-    # one more for the document), each held by the library and parsed once (io/cgns_solution).
+    # with them the descriptors its writer wrote, which cg_open holds at twice their bounds
+    # (E0707 above them, io/src/cgns_solution.cpp): run metadata of at most 64 KiB, also copied
+    # and parsed; zone names of at most 25 600 B a zone and one more; a translation of at most
+    # 4 096 B per periodic zone.
     if start is not None:
         read = fields if start == "continue" else n + 1
         zones = len(mesh.boundary_zones) + len(mesh.cell_zones)
-        metadata = 64 * 2**10 + 25_600 * (zones + 1)
-        add("start", 8 * (cells + c) * read + (1 + _JSON_DOCUMENT) * metadata, transient=True)
+        metadata = (2 + 1 + _JSON_DOCUMENT) * 64 * 2**10
+        descriptors = 2 * (25_600 * (zones + 1) + 4096 * 2 * len(mesh.periodic))
+        add("start", 8 * (cells + c) * read + metadata + descriptors, transient=True)
     # Files of the case, each read once at its size S (runtime.md): an initial state holds its
     # text, the document's strings (at most S), 1 KiB of members, its rows streamed into
     # vectors (64 B a row, 128 B while one grows) and their pairing (138 B a row, 160 B per
@@ -366,9 +369,13 @@ def _reading(mesh: MeshInfo, interior: int, boundary: int) -> int:
         # NGON_n/NFACE_n: a block per face and per cell, at most 32 B plus 4 B an entry.
         blocks = 24 * ns + (96 * f + 4 * p) + (96 * c + 4 * k) + labels
         ngon = blocks + 76 * f - 4 * interior - 4 * k - 8 * c
-        # Descriptors are read one at a time before those stages, each at most the file, and
-        # the CGNS library keeps its own copy beside the one it returns.
-        reading = max(standard, ngon, alive + 2 * s) + _HDF5_CACHE
+        # cg_open loads every descriptor and keeps it until close, holding twice one while it
+        # is read (cgns_internals.c cgi_read_string, adfh/ADFH.c H5Dread; a filtered dataset
+        # through its chunk buffer); the reader then copies the ones it uses beside them and
+        # parses ZoneNames, at most 40 B of document a byte.
+        source = mesh.source
+        texts = 2 * source.descriptor_bytes + _JSON_DOCUMENT * source.zone_names_bytes
+        reading = max(standard, ngon) + texts + _HDF5_CACHE
     else:
         # polyMesh: the end of assemble, with the owner, neighbour and boundary texts (at most
         # the files' bytes) and the 64-bit owner and neighbour arrays alive.

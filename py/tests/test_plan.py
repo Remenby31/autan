@@ -212,8 +212,8 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
                 "sha256": "0" * 64,
                 "bytes": 4096,
                 "logical_bytes": 4096,
-                "descriptor_bytes": 0,
-                "zone_names_bytes": 0,
+                "descriptor_bytes": 2048,
+                "zone_names_bytes": 512,
                 "filtered_bytes": 0,
             },
             "counts": {
@@ -344,12 +344,12 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     assert by_name["renumbered mesh"].bytes_host == renumbered
     # Reading a CGNS file (plan.md, the readers' inventory), 10 hexahedra, 20 boundary faces:
     # elements 144 B a hexahedron, 112 B a boundary face, labels 64 B per boundary face and per
-    # cell, then 24N + 4C + 52F + 16P, and the HDF5 chunk cache.
+    # cell, then 24N + 4C + 52F + 16P; the file's 2 048 B of descriptors twice (the library
+    # holds them from cg_open, two of one while it reads it), its 512 B of ZoneNames parsed
+    # (40 B a byte), and the HDF5 chunk cache.
     standard = 144 * 10 + 112 * 20 + 64 * 20 + 64 * 10 + 24 * 30 + 4 * 10 + 52 * 40 + 16 * 160
-    # A descriptor of the file's 4 096 B, twice (the library's copy), beside the reader's
-    # points, elements and labels, is larger here.
-    descriptor = 24 * 30 + 144 * 10 + 112 * 20 + 64 * 20 + 64 * 10 + 2 * 4096
-    assert by_name["mesh reading"].bytes_host == max(standard, descriptor) + 2**20
+    texts = 2 * 2048 + 40 * 512
+    assert by_name["mesh reading"].bytes_host == standard + texts + 2**20
     # The multigrid's levels from quality.multigrid: one coarse level of 2 nodes and 1 edge adds
     # 1000 per node and 410 per edge, and moves the dense LU from 5 x 10 to 5 x 2 unknowns.
     two_levels = tiny_mesh(20).document()
@@ -362,12 +362,13 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     assert multigrid - by_name["multigrid"].bytes_host == 1000 * 2 + 410 * 1 + dense[1] - dense[0]
     # A start reads the previous solution on every rank and takes the rank's share: 8 (C + C_r)
     # bytes per field, the 34 written fields for a continuation, the 6 primitives for a warm one;
-    # and its run metadata and zone names at their bounds, 64 KiB and 25 600 B for each of the
-    # 2 zones and the document, held and parsed (41 times).
+    # and its descriptors at their bounds, twice from cg_open: run metadata of 64 KiB, also
+    # copied and parsed (40 B a byte), and zone names of 25 600 B for each of the 2 zones and
+    # the document.
     for mode, fields in (("continue", 34), ("warm", 6)):
         started = autan.load(write_case(TINY)).plan(tiny_mesh(20), device_kind="cpu", start=mode)
         assert {c.name: c for c in started.memory.components}["start"].bytes_host == (
-            8 * (10 + 10) * fields + 41 * (64 * 2**10 + 25_600 * 3)
+            8 * (10 + 10) * fields + 43 * 64 * 2**10 + 2 * 25_600 * 3
         )
 
 
