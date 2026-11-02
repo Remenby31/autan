@@ -62,6 +62,10 @@ struct RelaxationOptions {
   /// each cell of a colour takes the mean of itself and its face neighbours, summed in increasing
   /// global id, then the ghosts are exchanged; the residuals scale by 1 + 1e-3 of the field's RMS.
   int colour_sweeps = 0;
+  /// Bytes of host memory the physics allocates, touches and keeps from its
+  /// construction on.
+  std::int64_t hold_bytes = 0;
+  int hold_rank = -1;  ///< the rank that holds them; -1: every rank
   /// An equation the flow does not excite: its residual stays at round-off
   /// (1e-15), except from iteration `wake_at` (0: never) to `sleep_at`
   /// (excluded; 0: never), where it is 1e-3.
@@ -95,6 +99,8 @@ struct RelaxationOptions {
     read("AUTAN_TEST_ONE_RANK", o.one_rank);
     read("AUTAN_TEST_CHECK_KEYS", o.check_keys);
     read("AUTAN_TEST_COLOUR_SWEEPS", o.colour_sweeps);
+    read("AUTAN_TEST_HOLD_BYTES", o.hold_bytes);
+    read("AUTAN_TEST_HOLD_RANK", o.hold_rank);
     read("AUTAN_TEST_EXPECT_RANKS", o.expect_ranks);
     read("AUTAN_TEST_THROW_RANK", o.throw_rank);
     read("AUTAN_TEST_THROW_IN_LOADS", o.throw_in_loads);
@@ -116,6 +122,8 @@ class Relaxation final : public autan::runtime::Physics {
  public:
   Relaxation(const autan::runtime::PhysicsContext& context, RelaxationOptions options)
       : context_(context), options_(options) {
+    if (options.hold_rank < 0 || options.hold_rank == context.ranks.rank())
+      held_.assign(static_cast<std::size_t>(options.hold_bytes), 1);
     const auto& mesh = context.mesh;
     std::map<std::string, const autan::runtime::CellZoneInput*> zones;
     for (const auto& z : context.input.cell_zones) zones[z.zone] = &z;
@@ -507,6 +515,7 @@ class Relaxation final : public autan::runtime::Physics {
   std::vector<autan::io::Field> state_;
   std::vector<autan::io::Field> mean_;
   double weight_ = 0.0;
+  std::vector<char> held_;  // hold_bytes
 };
 
 // The groups the runtime gives the physics (RelaxationOptions::groups): each
