@@ -195,6 +195,11 @@ jobs:
           merge-multiple: true
       - name: Give this job priority on the GPU lock
         run: bench/ci/priority.sh start 35
+      - name: Admit the GPU step (foreign tenants, host memory)
+        # A foreign tenant refuses it only on a host of timed benchmarks; elsewhere it waits, at
+        # most 10 minutes, for the memory floor plus 4 GiB declared for the install and its GPU
+        # probe (bench/ci/gpu-admit.sh). A transient out-of-memory beside a tenant stays possible.
+        run: bench/ci/gpu-admit.sh 4 600
       - name: Install with install.sh in an empty home, and require native GPU code on GB10
         # Jobs run in the runner container (no Docker); the GPU lock is mounted there.
         run: |
