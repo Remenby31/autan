@@ -195,13 +195,17 @@ def grid(nc: int) -> tuple[FloatArray, dict[str, IntArray], dict[str, IntArray]]
 def write_msh(
     points: FloatArray, hexes: IntArray, boundary: dict[str, IntArray], path: Path
 ) -> None:
-    """Write hexahedra and their labelled quadrilateral faces as MSH 4.1 ASCII.
+    """Write a level of this family as MSH 4.1 ASCII, without Gmsh (no linux-aarch64 build).
 
-    The file is byte for byte the one Gmsh 4.15 writes for the same discrete model (one volume
-    entity holding every node, one surface entity per zone, physical groups named after the zones,
-    then `fluid`), without Gmsh, which has no linux-aarch64 build. Coordinates are written to 16
-    significant digits, as Gmsh does.
+    For the slabs of `grid` the file is byte for byte the one Gmsh 4.15 writes for the same
+    discrete model (one volume entity holding every node, one surface entity per zone, physical
+    groups named after the zones, then `fluid`); the tests check it. It is not a general writer:
+    Gmsh's bounding-box arithmetic, empty zones and long names are not reproduced, so other zones
+    are refused (V0310).
     """
+    if list(boundary) != list(ZONES) or any(f.shape[0] == 0 for f in boundary.values()):
+        msg = f"write_msh writes NACA 0012 slabs only: zones {ZONES}, none empty"
+        raise VVError(msg, code="V0310")
 
     def g(v: float) -> str:
         return f"{v:.16g}"

@@ -52,7 +52,7 @@ Every generated mesh is closed to 10⁻¹² relative and has positive cell volum
 
 ## Platform
 
-Gmsh is GPL-2.0-or-later. It is a development-only dependency group of `vv/`, never imported by shipped code, approved by the lead for that use. Gmsh publishes no linux-aarch64 wheel: generate meshes on macOS or x86-64 CI and copy the files (with their manifest) to the DGX Spark machines, which only consume them. The generated meshes are data, not GPL code.
+Gmsh is GPL-2.0-or-later. It is a development-only dependency group of `vv/`, never imported by shipped code, approved by the lead for that use. Gmsh publishes no linux-aarch64 wheel: generate the families that use it on macOS or x86-64 CI and copy the files (with their manifest) to the DGX Spark machines. The NACA 0012 levels need no Gmsh and can be generated on the Sparks. The generated meshes are data, not GPL code.
 
 ## References
 

@@ -311,3 +311,14 @@ def test_python_writer_writes_the_file_gmsh_writes(nc: int, tmp_path: Path) -> N
     finally:
         gmsh.finalize()
     assert ours.read_bytes() == theirs.read_bytes()
+
+
+def test_python_writer_refuses_what_it_does_not_reproduce(tmp_path: Path) -> None:
+    points, cells, boundary = naca0012.grid(8)
+    for zones in (
+        {**boundary, "extra": boundary["back"]},
+        {**boundary, "back": boundary["back"][:0]},
+    ):
+        with pytest.raises(VVError) as err:
+            naca0012.write_msh(points, cells["hex"], zones, tmp_path / "x.msh")
+        assert err.value.code == "V0310"
