@@ -42,5 +42,6 @@ On `physics/ns-sa` with this change, fp64, against the same branch without it (t
 - **Euler bit for bit**: the Euler MMS (hex, tet, poly, 16–32), Ni's bump 96 and 384 and the NACA 0012 cases of #356 (M 0.5 α 1.25°, M 0.8 α 0°, M 0.8 α 1.25°; 128² and 256²): `history.jsonl` byte-identical to `main`'s (SHA-256), since the Euler physics never sets the parameter;
 - **reported, not gated**: per step, the linear solve's drop and cycles and the number of linear failures, before and after, on the laminar plate and SA 35×25 / 69×49 / 137×97 (the new entries can reduce the blocks' diagonal dominance: the multigrid's and line smoother's behaviour is reported); ‖(J − J̃) v‖ / ‖J v‖ at the same cycle state, before and after, by #395's protocol;
 - **accuracy** (AGENTS.md): the discretisation does not change (only J̃); the NS MMS observed orders of `ns-mms-order` unchanged.
+- **cost**, reported: CPU time per step and to convergence of the laminar plate with and without the change, measured alone under the GPU lock (Form, Cost).
 
 The SA plates (35×25, 69×49, 137×97) are note 2's gate, with this note's flow model; RAE 2822 (transonic, limited) joins when its grid exists.
