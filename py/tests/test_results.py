@@ -872,9 +872,13 @@ def test_a_floor_run_is_not_converged_and_carries_its_floor_test(
             assert error.value.codes == ["E0701"]
     # A final state at its floor in every equation is never completed, and a running run has
     # no floor test yet (results.md#runjson).
-    for status, iteration in (("completed", iterations), ("running", iterations - 1)):
-        document["status"], document["convergence"] = status, _floor_test(names, iteration)
-        assert autan.results.check_run_json(document, crm_run.case, crm_run.mesh_info)
+    document["status"], document["convergence"] = "completed", _floor_test(names, iterations)
+    assert autan.results.check_run_json(document, crm_run.case, crm_run.mesh_info)
+    running = document | {"status": "running", "finished": None, "monitors": None}
+    for convergence, accepted in ((None, True), (_floor_test(names, iterations - 1), False)):
+        running["convergence"] = convergence
+        found = autan.results.check_run_json(running, crm_run.case, crm_run.mesh_info)
+        assert (found == []) == accepted, found
     document["status"] = "completed"
     document["convergence"] = _floor_test(names, iterations - 1)
     assert autan.results.check_run_json(document, crm_run.case, crm_run.mesh_info) == []
