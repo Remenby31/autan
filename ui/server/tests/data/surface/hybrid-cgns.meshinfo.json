@@ -102,6 +102,16 @@
       "scale": 1.0,
       "cells": 64,
       "long_cells": 0
+    },
+    "multigrid": {
+      "cells_by_level": [
+        216,
+        29
+      ],
+      "edges_by_level": [
+        428,
+        87
+      ]
     }
   }
 }
