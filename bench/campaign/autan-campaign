@@ -263,6 +263,7 @@ class Host:
     unpause: Callable[[str], Op]
     publish: Callable[[str, str], None]
     request_stop: Callable[[Member], None]  # raises OSError when the request cannot be made
+    members: Callable[[], list[Member]]  # every live campaign, read again once exclusive
     ended: Callable[[str], bool]
     kill: Callable[[str], None]
     log: Callable[[str, str], None]
@@ -304,18 +305,34 @@ def lead(members: list[Member], floor: int, host: Host) -> None:
             host.sleep(POLL_S)
         return "done"
 
+    pauses: dict[str, Op] = {}
+    everyone, remaining = list(members), list(members)
+
+    # Every campaign paused, once the leader holds transitions.lock: no watcher's pause, thaw or
+    # start is then under way, and a campaign started since the election is read as a member.
+    def frozen() -> bool:
+        if pauses:
+            return True
+        if not held():
+            return False
+        known = {m.name for m in everyone}
+        newcomers = [m for m in host.members() if m.name not in known]
+        everyone.extend(newcomers)
+        remaining.extend(newcomers)
+        shown = memfloor.show(host.available())
+        for m in everyone:
+            pauses[m.name] = host.pause(m.name)
+            ops.append(pauses[m.name])
+            host.log(m.name, f"host memory available {shown}, below --free "
+                             f"{memfloor.show(floor)}: breach, every campaign frozen")  # fmt: skip
+        return True
+
     try:
         # A watcher's transition under way ends within its docker call's timeout. Until the
         # leader holds transitions.lock, only the last resort, which needs no exclusivity, acts.
-        wait(held, host.now() + DOCKER_TIMEOUT_S + 5)
-        shown = memfloor.show(host.available())
-        pauses = {m.name: host.pause(m.name) for m in members}
-        ops += pauses.values()
-        for m in members:
-            host.log(m.name, f"host memory available {shown}, below --free "
-                             f"{memfloor.show(floor)}: breach, every campaign frozen")  # fmt: skip
-        remaining = list(members)
+        wait(frozen, host.now() + DOCKER_TIMEOUT_S + 5)
         while remaining:
+            frozen()
             free = host.available()
             if free is not None and free >= floor + HYSTERESIS:
                 if all(op.done() for op in ops):
@@ -339,8 +356,8 @@ def lead(members: list[Member], floor: int, host: Host) -> None:
             # measurement to end; "running" is published first, then the GPU lock read again.
             deadline = host.now() + victim.stop_wait_s
             while True:
-                outcome = wait(lambda n=name: held() and pauses[n].done() and not host.gpu_busy(),
-                               deadline)  # fmt: skip
+                outcome = wait(lambda n=name: frozen() and pauses[n].done()
+                               and not host.gpu_busy(), deadline)  # fmt: skip
                 if outcome != "done":
                     break
                 host.publish(name, "running")
@@ -459,8 +476,8 @@ def real_host(transitions: object) -> Host:
 
     return Host(available=memfloor.available, exclusive=exclusive, gpu_busy=gpu_busy,
                 pause=pause, unpause=lambda name: Op(lambda: call("unpause", PREFIX + name)),
-                publish=publish, request_stop=request_stop, ended=ended, kill=kill,
-                log=log)  # fmt: skip
+                publish=publish, request_stop=request_stop, members=members_alive, ended=ended,
+                kill=kill, log=log)  # fmt: skip
 
 
 def handle_breach(floor: int, host: Callable[[object], Host] = real_host) -> bool:
@@ -552,12 +569,22 @@ def watch(name: str, floor: int) -> int:
         # cannot. Before the start a breach cancels the campaign; after it, a breach is led by
         # one watcher for every campaign (#455).
         breached = threading.Event()
+        # Read before this campaign can be a breach's member: any breach after it changes it.
+        generation = ""
+        with contextlib.suppress(OSError):
+            generation = BREACH_GENERATION.read_text()
 
         def guard() -> None:
+            next_kill = 0.0
             while not stopping:
                 if memfloor.below(floor):
                     if not started.is_set():
+                        # Its start may be under way: killed at once, again every second.
                         breached.set()
+                        if time.monotonic() >= next_kill:
+                            next_kill = time.monotonic() + 1.0
+                            with contextlib.suppress(subprocess.SubprocessError, OSError):
+                                docker("kill", container, check=False)
                     else:
                         with leading:
                             if stopping:
@@ -572,16 +599,31 @@ def watch(name: str, floor: int) -> int:
         started = threading.Event()
 
         threading.Thread(target=guard, daemon=True).start()
-        # "running" is published before the start, so that a measurement that takes the lock
-        # in between waits for the freeze instead of measuring beside the campaign.
-        publish(name, "running")
-        heartbeat.touch()
+        # The start is a transition: never under way once a breach's leader holds
+        # transitions.lock, which then counts this campaign among the members it freezes.
+        while True:
+            if stopping:
+                log(name, "stopped before it started")
+                return 0
+            if breached.is_set():
+                log(name, f"host memory available fell below --free {memfloor.show(floor)}: "
+                          "not started")  # fmt: skip
+                return 1
+            with transition_allowed() as allowed:
+                if allowed:
+                    # "running" is published before the start, so that a measurement that takes
+                    # the lock in between waits for the freeze instead of measuring beside it.
+                    publish(name, "running")
+                    heartbeat.touch()
+                    docker("start", container)
+                    started.set()
+                    break
+            heartbeat.touch()
+            time.sleep(POLL_S)
         if breached.is_set():
-            log(name, f"host memory available fell below --free {memfloor.show(floor)}: "
-                      "not started")  # fmt: skip
+            log(name, f"host memory available fell below --free {memfloor.show(floor)} during "
+                      "its start: removed")  # fmt: skip
             return 1
-        docker("start", container)
-        started.set()
         cgroup = cgroup_of(container)
         oom_kills = oom_kills_in(cgroup)
         (STATES / f"{name}.cgroup").write_text(f"{cgroup}\n")
@@ -593,9 +635,6 @@ def watch(name: str, floor: int) -> int:
         next_sample = time.monotonic()
         busy_since: float | None = None
         growth: list[tuple[float, int]] = []
-        generation = ""
-        with contextlib.suppress(OSError):
-            generation = BREACH_GENERATION.read_text()
         while not stopping:
             heartbeat.touch()
             if (STATES / f"{name}.victim").exists():

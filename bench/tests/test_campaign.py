@@ -213,7 +213,8 @@ def test_a_campaign_gives_way_when_host_memory_falls_below_its_floor(
     fake = tmp_path / "docker"
     # A stalled daemon: `docker pause` takes 20 s.
     fake.write_text(f'#!/bin/sh\necho "$*" >> {calls}\n'
-                    f'case "$1" in inspect) echo "running {os.getpid()}" ;; pause) sleep 20 ;; esac\n')  # fmt: skip
+                    f'case "$1" in inspect) echo "running {os.getpid()}" ;; pause) sleep 20 ;;\n'
+                    f'  start) if [ -e {tmp_path}/slow-start ]; then sleep 10; fi ;; esac\n')  # fmt: skip
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -251,6 +252,16 @@ def test_a_campaign_gives_way_when_host_memory_falls_below_its_floor(
         assert until(lambda: "rm -f autan-campaign-c2" in calls_of("c2"))
     finally:
         measurement.close()
+
+    # Its `docker start` stalls (10 s) when the host falls below half the floor: killed during
+    # the start, not once docker answers, then removed.
+    (tmp_path / "slow-start").touch()
+    meminfo(20)
+    assert campaign.main(["start", "c3", "--free", "10G", "--dir", str(tmp_path), "--", "x"]) == 0
+    assert until(lambda: "start autan-campaign-c3" in calls_of("c3"))
+    meminfo(4)
+    assert until(lambda: "kill autan-campaign-c3" in calls_of("c3"), timeout=3)
+    assert until(lambda: "rm -f autan-campaign-c3" in calls_of("c3"), timeout=20)
 
 
 @pytest.mark.parametrize(("given", "expected"), [([], 48 << 30), (["--memory", "20G"], 20 << 30)])
@@ -351,6 +362,8 @@ class FakeHost:
         self.free_before, self.free_after, self.critical = free_before, free_after, critical
         self.pause_delay, self.pause_fails = pause_delay, pause_fails
         self.history = []  # every state published, in order
+        self.newcomers = []  # campaigns started after the election
+        self.exclusive_from = 0.0  # transitions.lock is the leader's from this time.monotonic()
         self.gpu_until = 0.0  # the GPU lock is held until this time.monotonic()
         self.script = tmp_path / "solver.py"
         self.script.write_text(SOLVER)
@@ -379,7 +392,7 @@ class FakeHost:
                 self.procs[name].send_signal(signal.SIGSTOP)
                 self.paused.add(name)
                 self.published[name] = "frozen"
-                self.events.append(("paused", name))
+                self.events.append(("paused", name, time.monotonic()))
                 return True
 
             return campaign.Op(run)
@@ -400,7 +413,9 @@ class FakeHost:
             self.procs[name].wait()
 
         return campaign.Host(
-            available=self.available, exclusive=lambda: True,
+            available=self.available,
+            exclusive=lambda: time.monotonic() >= self.exclusive_from,
+            members=lambda: self.newcomers,
             gpu_busy=lambda: time.monotonic() < self.gpu_until, pause=pause, unpause=unpause,
             publish=lambda name, state: (self.published.__setitem__(name, state),
                                          self.history.append((name, state))), request_stop=campaign.request_stop,
@@ -439,16 +454,22 @@ def test_a_breach_freezes_all_then_stops_the_culprit_cleanly(breach):
     host = breach(free_before=20 * GIB, free_after=40 * GIB, pause_delay=0.5)
     mode_a, _ = host.spawn("a", "none")
     mode_b, out_b = host.spawn("b", "stop-file")
+    mode_c, _ = host.spawn("c", "none")
     members = [campaign.Member("a", 100.0, mode_a, 60, growth=0),
                campaign.Member("b", 50.0, mode_b, 60, growth=10 * GIB)]  # fmt: skip
+    # c started after the election, before the leader held transitions.lock: frozen too.
+    host.newcomers = [campaign.Member("c", 150.0, mode_c, 60)]
+    host.exclusive_from = time.monotonic() + 1.0
     campaign.lead(members, 24 * GIB, host.host())
     assert host.procs["b"].wait(timeout=10) == 130
     assert stopped_cleanly(out_b)
     assert host.killed == []
-    # The other is never removed, and left frozen for its own watcher to thaw.
-    assert host.paused == {"a"}
+    # The others are never removed, and left frozen for their own watchers to thaw; nothing is
+    # paused before the leader holds transitions.lock.
+    assert host.paused == {"a", "c"}
     assert host.published["a"] == "frozen"
     assert host.procs["a"].poll() is None
+    assert all(e[2] >= host.exclusive_from for e in host.events if e[0] == "paused")
     order = [e[:2] for e in host.events if e[1] == "b"]
     assert order == [("paused", "b"), ("thawed", "b")]
 
