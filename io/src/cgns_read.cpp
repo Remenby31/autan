@@ -135,7 +135,6 @@ bool is_ignored_type(CGNS_ENUMT(ElementType_t) type) {
 struct Element {
   CGNS_ENUMT(ElementType_t) type = CGNS_ENUMV(ElementTypeNull);
   std::vector<cgsize_t> connectivity;
-  std::string family;
 };
 
 class Reader {
@@ -281,12 +280,12 @@ class Reader {
                                 !referenced_sections_[static_cast<std::size_t>(s - 1)];
       if (is_ignored_type(type) || unused_faces) {
         // Points and edges the reader never uses: their ids resolve, their nodes are not read.
-        sections_.push_back(
-            Section{.start = start,
-                    .count = count,
-                    .elements = {},
-                    .skipped = {},
-                    .ignored = Element{.type = type, .connectivity = {}, .family = family}});
+        sections_.push_back(Section{.start = start,
+                                    .count = count,
+                                    .elements = {},
+                                    .skipped = {},
+                                    .ignored = Element{.type = type, .connectivity = {}},
+                                    .family = family});
         continue;
       }
 
@@ -321,13 +320,16 @@ class Reader {
       if (poly && tree.values(offsets) != static_cast<std::int64_t>(count) + 1) {
         inconsistent_offsets(name);
       }
-      Section& section = sections_.emplace_back(Section{
-          .start = start,
-          .count = count,
-          .elements = {},
-          .skipped = {},
-          .ignored = Element{.type = CGNS_ENUMV(BAR_2), .connectivity = {}, .family = family}});
+      Section& section = sections_.emplace_back(
+          Section{.start = start,
+                  .count = count,
+                  .elements = {},
+                  .skipped = {},
+                  .ignored = Element{.type = CGNS_ENUMV(BAR_2), .connectivity = {}},
+                  .family = family});
       if (type != CGNS_ENUMV(MIXED)) section.elements.resize(count);
+      const auto& bits = referenced_elements_[static_cast<std::size_t>(s - 1)];
+      current_referenced_ = bits.size() == count ? &bits : nullptr;
       // The section in chunks of at most chunk_elements elements and chunk_entries connectivity
       // entries, so that reading costs a constant beside what is kept; a larger element is read
       // into its own storage.
@@ -409,8 +411,11 @@ class Reader {
         malformed(path_, std::string("MIXED element of section '") + name + "' is invalid");
       }
       element_type = static_cast<CGNS_ENUMT(ElementType_t)>(code);
-      // Points and edges of a MIXED section: their index alone, as in a section of them.
-      if (is_ignored_type(element_type)) {
+      // Points and edges of a MIXED section, and its faces no family and no point set names (the
+      // faces come from the cells): their index alone, as in a section of them.
+      if (is_ignored_type(element_type) ||
+          (is_face_type(element_type) && family.empty() && current_referenced_ != nullptr &&
+           !(*current_referenced_)[e])) {
         section.skip(e);
         return;
       }
@@ -424,7 +429,6 @@ class Reader {
     } else {
       element.connectivity.assign(first, last);
     }
-    element.family = family;
     classify(element, name);
   }
 
@@ -436,6 +440,13 @@ class Reader {
     const cgsize_t index = id - section.start;
     if (!std::cmp_less(index, section.count)) return nullptr;
     return section.at(at(index));
+  }
+
+  // The family of the section holding element `id`, empty when it has none.
+  [[nodiscard]] const std::string& family_of(cgsize_t id) const {
+    static const std::string none;
+    const auto it = std::ranges::upper_bound(sections_, id, {}, &Section::start);
+    return it == sections_.begin() ? none : std::prev(it)->family;
   }
 
   void classify(const Element& element, const char* section) {
@@ -458,6 +469,7 @@ class Reader {
     int n = 0;
     ok(cg_nsections(fn_, 1, 1, &n), "count sections");
     std::vector<std::pair<cgsize_t, cgsize_t>> ranges;  // [start, end] of section s - 1
+    std::vector<bool> mixed;
     for (int s = 1; s <= n; ++s) {
       char name[33];
       CGNS_ENUMT(ElementType_t) type{};
@@ -466,8 +478,16 @@ class Reader {
       ok(cg_section_read(fn_, 1, 1, s, name, &type, &start, &end, &boundary, &parent_flag),
          "read section");
       ranges.emplace_back(start, end);
+      mixed.push_back(type == CGNS_ENUMV(MIXED));
     }
     referenced_sections_.assign(ranges.size(), false);
+    // A MIXED section's elements one bit each: which of its faces a point set names.
+    referenced_elements_.assign(ranges.size(), {});
+    for (std::size_t s = 0; s < ranges.size(); ++s) {
+      if (mixed[s] && ranges[s].second >= ranges[s].first) {
+        referenced_elements_[s].assign(at(ranges[s].second - ranges[s].first + 1), false);
+      }
+    }
     std::vector<std::size_t> by_start(ranges.size());
     std::iota(by_start.begin(), by_start.end(), std::size_t{0});
     std::ranges::sort(by_start, {}, [&](std::size_t s) { return ranges[s].first; });
@@ -477,7 +497,13 @@ class Reader {
                                          [&](std::size_t s) { return ranges[s].first; });
       if (it != by_start.begin()) --it;
       for (; it != by_start.end() && ranges[*it].first <= hi; ++it) {
-        if (ranges[*it].second >= lo) referenced_sections_[*it] = true;
+        if (ranges[*it].second < lo) continue;
+        referenced_sections_[*it] = true;
+        auto& bits = referenced_elements_[*it];
+        if (bits.empty()) continue;
+        const cgsize_t from = std::max(lo, ranges[*it].first),
+                       to = std::min(hi, ranges[*it].second);
+        for (cgsize_t id = from; id <= to; ++id) bits[at(id - ranges[*it].first)] = true;
       }
     };
     const CgioTree tree(fn_);
@@ -966,7 +992,7 @@ class Reader {
         zone[c] = it->second;
         continue;
       }
-      const std::string& family = element(cells[c])->family;
+      const std::string& family = family_of(cells[c]);
       if (!family.empty()) {
         add_cell_zone(group_of(family_key(family)), {cells[c]},
                       "CGNS family '" + family + "' of an element section");
@@ -1136,6 +1162,7 @@ class Reader {
     std::vector<Element> elements;
     std::vector<Run> skipped;  // ascending
     Element ignored;
+    std::string family;  // the section's FamilyName, once for all its elements
 
     void skip(std::size_t index) {
       if (!skipped.empty() && skipped.back().first + skipped.back().count == index) {
@@ -1157,6 +1184,8 @@ class Reader {
   };
   std::vector<Section> sections_;
   std::vector<bool> referenced_sections_;  // by section index - 1, mark_referenced_sections
+  std::vector<std::vector<bool>> referenced_elements_;     // a MIXED section's, by element index
+  const std::vector<bool>* current_referenced_ = nullptr;  // the section read_element reads
   bool has_ngon_ = false, has_nface_ = false, has_standard_cells_ = false;
   std::vector<FaceZone> face_zones_;
   std::map<std::string, index_t> face_zone_index_;

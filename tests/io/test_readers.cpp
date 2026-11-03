@@ -436,6 +436,21 @@ TEST_CASE("Gmsh $Periodic surface links become periodic pairs", "[io][periodic]"
   require_error(autan::ErrorCode::io_malformed, edited("2 2 1\n16 1 0 0 1", "4 2 1\n16 1 0 0 1"));
 }
 
+TEST_CASE("A Gmsh section name longer than 4096 bytes is E0122 before it is copied", "[io]") {
+  // mesh.md, E0122: an unknown section is skipped, its name read whole first.
+  for (const std::size_t bytes : {std::size_t{4096}, std::size_t{4097}}) {
+    CAPTURE(bytes);
+    const std::string name(bytes, 'S');
+    const fs::path file = write_temp("section-" + std::to_string(bytes) + ".msh",
+                                     gmsh_tet + "$" + name + "\nignored\n$End" + name + "\n");
+    if (bytes == 4096) {
+      CHECK(autan::io::read_mesh(file).n_cells() == 1);
+    } else {
+      require_error(autan::ErrorCode::mesh_text_too_long, file);
+    }
+  }
+}
+
 TEST_CASE("A zone name longer than 4096 bytes is E0122 in the text readers", "[io]") {
   // mesh.md, E0122: tests/data/mesh/hex with its zone xmin renamed to 4096 bytes (read) and to
   // 4097 (refused), in each format whose names are text: the Gmsh physical name, the Fluent
@@ -599,12 +614,52 @@ TEST_CASE("Records a reader does not use cost their text, not a copy each", "[io
     CHECK(mesh->cell_zones()[0].name == "block");
   }
 }
-TEST_CASE("A Fluent file holds at most 16 384 fluid or solid zone records", "[io]") {
+TEST_CASE("A Fluent file holds at most 16 384 fluid, solid or interior zone records", "[io]") {
   // mesh.md, Readers: a record each read again by offset for the cells that use it.
   std::string zones;
   for (int i = 0; i < 16383; ++i) zones += "(45 (" + std::to_string(100 + i) + " fluid f)())\n";
   CHECK(autan::io::read_mesh(write_temp("fluid-limit.msh", fluent_tet + zones)).n_cells() == 1);
   require_error(autan::ErrorCode::io_unsupported,
                 write_temp("fluid-over.msh", fluent_tet + zones + "(45 (99999 solid s)())\n"));
+}
+TEST_CASE("Fluent interior zones no face is in are not kept", "[io]") {
+  // mesh.md, Readers: 16 383 empty interior zones of 1024-byte names cost their text.
+  std::string zones;
+  for (int i = 0; i < 16383; ++i) {
+    zones += "(45 (" + std::to_string(100 + i) + " interior " + std::string(1024, 'i') + ")())\n";
+  }
+  const fs::path plain = write_temp("interior-plain.msh", fluent_tet);
+  const fs::path padded = write_temp("interior-padded.msh", fluent_tet + zones);
+  const auto added = static_cast<std::int64_t>(zones.size());
+  (void)autan::io::read_mesh(plain);
+  const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+  std::optional<autan::Mesh> mesh;
+  const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(padded); });
+  CAPTURE(before, after, added);
+  CHECK(after - before <= added + (std::int64_t{1} << 20));
+  CHECK(mesh->face_zones().size() == autan::io::read_mesh(plain).face_zones().size());
+}
+TEST_CASE("Sizes a text reader is told are checked before they are allocated", "[io]") {
+  SECTION("a polyMesh uniform list longer than the mesh's faces") {
+    // mesh.md, Readers: N{v} expands to N labels from a few bytes of text; owner holds as many
+    // as the faces file has faces. 2^28 is refused before the 2 GiB are allocated.
+    const fs::path dir = single_hex_polymesh();
+    write_temp("single-hex/owner", foam_header("ascii", "labelList", "owner") + "268435456{0}\n");
+    const std::int64_t peak = peak_of([&] { require_error(autan::ErrorCode::io_malformed, dir); });
+    CHECK(peak <= std::int64_t{1} << 20);
+  }
+  SECTION("a polyMesh header key longer than 4096 bytes") {
+    const fs::path dir = single_hex_polymesh();
+    write_temp("single-hex/owner", "FoamFile\n{\n    " + std::string(4097, 'k') +
+                                       " 1;\n    format ascii;\n    class labelList;\n"
+                                       "    object owner;\n}\n6{0}\n");
+    require_error(autan::ErrorCode::mesh_text_too_long, dir);
+  }
+  SECTION("a Fluent section header of more than 8 fields") {
+    // The node, cell and face headers hold five (Ansys Fluent legacy file formats).
+    require_error(autan::ErrorCode::io_malformed,
+                  write_temp("header.msh",
+                             replace(fluent_tet, "(10 (0 1 4 0 3))", "(10 (0 1 4 0 3 0 0 0 0))")));
+  }
 }
 #endif

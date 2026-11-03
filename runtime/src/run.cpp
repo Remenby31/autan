@@ -451,6 +451,10 @@ const Geometry& geometry_of(Prepared& p) {
   return *p.geometry;
 }
 
+// A start's RestartState: the Euler physics writes 5 conserved fields, 7 for averaging, 10 of
+// solver state and one per point vortex; 64 leaves room for 42 vortices (results.md).
+constexpr std::size_t max_restart_arrays = 64;
+
 // solver-input.md, `start`: the runtime checks the previous solution's hash,
 // mesh, precision and fields, and reads its state, before any directory exists.
 void load_start(Prepared& p) {
@@ -485,6 +489,25 @@ void load_start(Prepared& p) {
         snapshot->path(),
         {.zones = static_cast<std::int64_t>(zones.boundary.size() + zones.cell.size()),
          .periodic_pairs = static_cast<std::int64_t>(p.mesh.periodic_pairs().size())});
+    // results.md, Sizes a reader accepts: the arrays the run writes, checked by name before
+    // any is read, cells doubles each.
+    const auto arrays = io::solution_field_names(snapshot->path());
+    const auto named = [&](const char* solution) {
+      const auto it = arrays.find(solution);
+      return it == arrays.end() ? std::vector<std::string>{} : it->second;
+    };
+    if (named("FlowSolution") != field_names(p.input)) {
+      start_mismatch("E0708", "the previous run solved other variables", "start.run");
+    }
+    if (start.mode == "continue") {
+      if (const auto mean = named("FlowSolutionMean");
+          !mean.empty() && mean != field_names(p.input)) {
+        unusable("FlowSolutionMean holds other fields than the run averages");
+      }
+      if (named("RestartState").size() > max_restart_arrays) {
+        unusable("RestartState holds more than " + std::to_string(max_restart_arrays) + " arrays");
+      }
+    }
     stored = io::read_solution(snapshot->path(), start.mode == "continue");
   } catch (const Error& e) {
     if (e.code() == ErrorCode::io_external_reference) {
@@ -573,6 +596,7 @@ std::size_t ordinal(const StateDocument& object, std::string_view key) {
 // (case-schema.md#free-texts, face-states.md, initial-state.md); a number, at most 64 characters.
 constexpr std::size_t max_text_bytes = 4096;
 constexpr std::size_t max_number_chars = 64;
+constexpr std::size_t max_state_zones = 16384;
 
 // What a scan of a state file's text finds before it is parsed: the longest run of characters a
 // JSON number is made of, outside strings, which bounds every number token before the lexer,
@@ -581,13 +605,16 @@ constexpr std::size_t max_number_chars = 64;
 struct TextScan {
   std::size_t number = 0;
   std::size_t depth = 0;
+  std::size_t string = 0;  // the longest string's raw bytes, escapes included
+  std::size_t rows = 0;    // the strings "centroids" and "values": rows members at most
 };
 
 TextScan scan_text(std::string_view text) {
   TextScan out;
-  std::size_t run = 0, depth = 0;
+  std::size_t run = 0, depth = 0, start = 0;
   bool in_string = false, escaped = false;
-  for (const char ch : text) {
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    const char ch = text[i];
     if (in_string) {
       if (escaped) {
         escaped = false;
@@ -595,9 +622,13 @@ TextScan scan_text(std::string_view text) {
         escaped = true;
       } else if (ch == '"') {
         in_string = false;
+        const std::string_view s = text.substr(start, i - start);
+        out.string = std::max(out.string, s.size());
+        if (s == "centroids" || s == "values") ++out.rows;
       }
       continue;
     }
+    start = i + 1;
     const bool number =
         (ch >= '0' && ch <= '9') || ch == '-' || ch == '+' || ch == '.' || ch == 'e' || ch == 'E';
     run = number ? run + 1 : 0;
@@ -616,6 +647,14 @@ std::string beyond_bounds(std::string_view text, std::size_t depth) {
     return "a number of " + std::to_string(scan.number) + " characters (at most 64)";
   }
   if (scan.depth > depth) return "nested deeper than its structure";
+  // A string is at most 4096 bytes, each written in at most 6 (\\uXXXX).
+  if (scan.string > 6 * max_text_bytes) {
+    return "a string of " + std::to_string(scan.string) + " bytes (at most 4096)";
+  }
+  // A zone's centroids and values each, of at most 16 384 zones (mesh.md, Readers).
+  if (scan.rows > 2 * max_state_zones) {
+    return "more than " + std::to_string(max_state_zones) + " zones";
+  }
   return "";
 }
 

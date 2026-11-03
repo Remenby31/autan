@@ -1464,19 +1464,41 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
     require_error(from([](Json& d) { d["precision"] = "fp64"; }), "E0708");
   }
   SECTION("a solution holding what the writer does not write") {
-    // results.md, Sizes a reader accepts: a descriptor beside RunMetadata and ZoneNames, or one
-    // family more than the mesh has zones, is refused before the CGNS library loads the file.
+    // results.md, Sizes a reader accepts: a descriptor beside RunMetadata and ZoneNames, one
+    // family more than the mesh has zones, or a RestartState of more than 64 arrays (each as
+    // many doubles as cells) is refused before the CGNS library loads the file or any array.
     const fs::path solution = a.run / "solution.cgns";
-    const bool descriptor = GENERATE(true, false);
-    CAPTURE(descriptor);
+    const int kind = GENERATE(0, 1, 2);
+    CAPTURE(kind);
     int fn = 0;
     REQUIRE(cg_open(solution.string().c_str(), CG_MODE_MODIFY, &fn) == CG_OK);
-    if (descriptor) {
+    if (kind == 0) {
       REQUIRE(cg_goto(fn, 1, "end") == CG_OK);
       REQUIRE(cg_descriptor_write("About", "a note") == CG_OK);
-    } else {
+    } else if (kind == 1) {
       int family = 0;
       REQUIRE(cg_family_write(fn, 1, "Extra", &family) == CG_OK);
+    } else {
+      char name[33];
+      cgsize_t size[3] = {};
+      REQUIRE(cg_zone_read(fn, 1, 1, name, size) == CG_OK);
+      int solutions = 0, restart = 0;
+      REQUIRE(cg_nsols(fn, 1, 1, &solutions) == CG_OK);
+      for (int s = 1; s <= solutions; ++s) {
+        CGNS_ENUMT(GridLocation_t) location{};
+        REQUIRE(cg_sol_info(fn, 1, 1, s, name, &location) == CG_OK);
+        if (std::string_view(name) == "RestartState") restart = s;
+      }
+      REQUIRE(restart > 0);
+      int fields = 0;
+      REQUIRE(cg_nfields(fn, 1, 1, restart, &fields) == CG_OK);
+      const std::vector<double> zeros(static_cast<std::size_t>(size[1]), 0.0);
+      for (int f = fields; f <= 64; ++f) {
+        int field = 0;
+        REQUIRE(cg_field_write(fn, 1, 1, restart, CGNS_ENUMV(RealDouble),
+                               ("Extra" + std::to_string(f)).c_str(), zeros.data(),
+                               &field) == CG_OK);
+      }
     }
     REQUIRE(cg_close(fn) == CG_OK);
     require_error(from([](Json&) {}), "E0707");
@@ -1793,6 +1815,20 @@ TEST_CASE("Face states that do not fit the case exit 2 before any directory", "[
     const std::int64_t peak = peak_of([&] { require_error(run(deep), "E0420"); });
     CAPTURE(baseline, peak);
     CHECK(peak - baseline <= std::int64_t{1} << 20);
+    // A string longer than 4096 bytes written in 6 each: refused before the lexer, which holds
+    // a token twice, reads it; it costs what as long a number does.
+    const Json string = oracle_as("\"" + std::string(2 * levels - 2, 'o') + "\"");
+    const std::int64_t text = peak_of([&] { require_error(run(string), "E0420"); });
+    CAPTURE(text);
+    CHECK(text - baseline <= std::int64_t{1} << 20);
+    // More than 16 384 zones: refused as text (E0420), before any zone is matched (E0421).
+    require_error(run(ringleb_input([](Json& s) {
+                    for (int z = 0; z <= 16384; ++z) {
+                      s["zones"]["z" + std::to_string(z)] = {{"centroids", Json::array()},
+                                                             {"values", Json::array()}};
+                    }
+                  })),
+                  "E0420");
 #endif
     // Rows, read as they stream: each an array of 3 (centroids) or 5 (values) finite numbers,
     // one per face of the zone.

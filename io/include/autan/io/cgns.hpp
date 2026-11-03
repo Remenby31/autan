@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -74,6 +75,11 @@ struct StoredSolution {
   std::vector<Field> restart_fields;
 };
 StoredSolution read_solution(const std::filesystem::path& file, bool whole_state = true);
+
+/// The arrays of each FlowSolution_t of the zone of start solution `file`, by solution name, read
+/// through cgio without their values (after check_start_solution: the walk is bounded).
+std::map<std::string, std::vector<std::string>> solution_field_names(
+    const std::filesystem::path& file);
 
 /// The run's mesh a start solution was written for: its boundary and cell zones and its periodic
 /// pairs (results.md, Sizes a reader accepts).

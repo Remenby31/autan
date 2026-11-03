@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <map>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -71,12 +72,16 @@ class CgioTree {
   CgioTree(const CgioTree&) = delete;
   CgioTree& operator=(const CgioTree&) = delete;
   ~CgioTree() {
+    for (const double id : opened_) (void)cgio_release_id(cgio_, id);
     if (owned_) cgio_close_file(cgio_);
   }
   [[nodiscard]] double root() const { return root_; }
 
-  /// Closes the HDF5 object behind a node id `children` gave; the id is not used after.
-  void release(double node) const { (void)cgio_release_id(cgio_, node); }
+  /// Closes the HDF5 object behind a node id `children` or `child` gave; the id is not used after.
+  /// The ids not released are when the tree is destroyed, so a walk holds at most what it keeps.
+  void release(double node) const {
+    if (opened_.erase(node) != 0) (void)cgio_release_id(cgio_, node);
+  }
   [[nodiscard]] std::int64_t number_of_children(double node) const {
     int n = 0;
     check(cgio_number_children(cgio_, node, &n), "count children");
@@ -89,6 +94,7 @@ class CgioTree {
     int got = 0;
     if (n > 0) check(cgio_children_ids(cgio_, node, 1, n, &got, ids.data()), "list children");
     ids.resize(static_cast<std::size_t>(got));
+    opened_.insert(ids.begin(), ids.end());
     return ids;
   }
   [[nodiscard]] std::string name(double node) const {
@@ -101,13 +107,19 @@ class CgioTree {
     check(cgio_get_label(cgio_, node, text.data()), "read a node label");
     return text.data();
   }
-  /// The first child of `node` with this label (and name, when given).
+  /// The first child of `node` with this label (and name, when given); the other children's ids
+  /// are released at once.
   [[nodiscard]] std::optional<double> child(double node, std::string_view label_,
                                             std::string_view name_ = {}) const {
+    std::optional<double> found;
     for (const double id : children(node)) {
-      if (label(id) == label_ && (name_.empty() || name(id) == name_)) return id;
+      if (!found && label(id) == label_ && (name_.empty() || name(id) == name_)) {
+        found = id;
+      } else {
+        release(id);
+      }
     }
-    return std::nullopt;
+    return found;
   }
   /// The bytes of `node`'s data as stored uncompressed: its element count times the size of its
   /// data type, from the metadata only.
@@ -191,6 +203,7 @@ class CgioTree {
   int cgio_ = 0;
   double root_ = 0.0;
   bool owned_ = false;
+  mutable std::set<double> opened_;  // ids given out and not released
 };
 
 // The CGNS library allocates for every node of the tree when it opens a file, before the reader

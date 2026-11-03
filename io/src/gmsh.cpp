@@ -83,6 +83,7 @@ class GmshReader {
     while (c_.peek() != '\0') {
       const std::string_view name = c_.token();
       if (name.empty() || name.front() != '$') c_.fail("expected a section header");
+      check_text(c_.path(), "section name", name.size() - 1);  // before any copy (E0122)
       const std::string section(name.substr(1));
       if (section == "MeshFormat") {
         mesh_format();

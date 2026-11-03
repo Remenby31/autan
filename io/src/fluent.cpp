@@ -169,8 +169,13 @@ class FluentReader {
 
   std::vector<std::int64_t> header() {
     c_.expect('(');
+    // Node, cell and face headers hold five fields (zone, first, last, type and a dimension or
+    // element type, Ansys Fluent legacy file formats); more than eight is refused as read.
     std::vector<std::int64_t> values;
-    while (c_.peek() != ')') values.push_back(c_.integer<std::int64_t>(16, "()"));
+    while (c_.peek() != ')') {
+      if (values.size() == 8) c_.fail("section header has more than 8 fields");
+      values.push_back(c_.integer<std::int64_t>(16, "()"));
+    }
     c_.expect(')');
     if (values.size() < 4) c_.fail("section header has fewer than 4 fields");
     return values;
@@ -350,17 +355,18 @@ class FluentReader {
     return {id, std::move(info)};
   }
 
-  // Fluid and solid zones name cell zones only: their records are read again for the zones the
-  // cells use, so that a zone no cell takes is never kept (mesh.md, Readers).
+  // Fluid and solid zones name cell zones only, interior zones the interior faces only, neither a
+  // zone MeshInfo shows on its own: their records are read again for the zones the cells and
+  // faces use, so that a zone nothing takes is never kept (mesh.md, Readers).
   void zone() {
     const std::size_t at = c_.position();
     auto [id, info] = zone_record(c_);
     skip_rest();
-    if (info.type == "fluid" || info.type == "solid") {
-      // A cell zone each: real meshes have a few; at most 16 384 records, 256 KiB of offsets.
+    if (info.type == "fluid" || info.type == "solid" || info.type == "interior") {
+      // Real meshes have a few: at most 16 384 records, 256 KiB of offsets.
       if (cell_zone_records_.size() == max_cell_zone_records) {
         c_.unsupported("more than " + std::to_string(max_cell_zone_records) +
-                       " fluid or solid zone records");
+                       " fluid, solid or interior zone records");
       }
       cell_zone_records_.emplace_back(id, at);
     } else {
@@ -368,8 +374,8 @@ class FluentReader {
     }
   }
 
-  // The zone record of cell zone `id`, the last one given winning, as zones_ keeps them.
-  std::optional<ZoneInfo> cell_zone_info(std::int64_t id) const {
+  // The zone record of zone `id`, the last one given winning, as zones_ keeps them.
+  std::optional<ZoneInfo> zone_info(std::int64_t id) const {
     for (auto it = cell_zone_records_.rbegin(); it != cell_zone_records_.rend(); ++it) {
       if (it->first != id) continue;
       Cursor c(data_, c_.path());
@@ -415,11 +421,9 @@ class FluentReader {
     std::map<std::int64_t, index_t> face_zone_index;
     for (const FaceBlock& block : face_blocks_) {
       if (face_zone_index.contains(block.zone)) continue;
-      const auto it = zones_.find(block.zone);
-      const std::string type =
-          it != zones_.end() ? it->second.type : std::string(bc_type_from_code(block.bc_code));
-      const std::string name =
-          it != zones_.end() ? it->second.name : "zone-" + std::to_string(block.zone);
+      const auto info = zone_info(block.zone);
+      const std::string type = info ? info->type : std::string(bc_type_from_code(block.bc_code));
+      const std::string name = info ? info->name : "zone-" + std::to_string(block.zone);
       face_zone_index[block.zone] = static_cast<index_t>(in.face_zones.size());
       in.face_zones.push_back(FaceZone{
           .name = name,
@@ -464,7 +468,7 @@ class FluentReader {
     in.cell_zone.assign(n_cells, -1);
     std::map<std::int64_t, index_t> cell_zone_index;
     for (const std::int64_t zone : cell_zone_order_) {
-      const auto info = cell_zone_info(zone);
+      const auto info = zone_info(zone);
       const std::string type = info ? info->type : "";
       cell_zone_index[zone] = static_cast<index_t>(in.cell_zones.size());
       in.cell_zones.push_back(CellZone{

@@ -86,6 +86,23 @@ void check_start_solution(const std::filesystem::path& file, const StartLimits& 
   if (largest_filtered_bytes(file) > 0) refuse("a filtered (compressed) dataset");
 }
 
+std::map<std::string, std::vector<std::string>> solution_field_names(
+    const std::filesystem::path& file) {
+  const CgioTree tree(file);
+  const auto base = tree.child(tree.root(), "CGNSBase_t");
+  const auto zone = base ? tree.child(*base, "Zone_t") : std::nullopt;
+  std::map<std::string, std::vector<std::string>> out;
+  if (!zone) return out;
+  for (const double solution : tree.children(*zone)) {
+    if (tree.label(solution) != "FlowSolution_t") continue;
+    auto& names = out[tree.name(solution)];
+    for (const double array : tree.children(solution)) {
+      if (tree.label(array) == "DataArray_t") names.push_back(tree.name(array));
+    }
+  }
+  return out;
+}
+
 StoredSolution read_solution(const std::filesystem::path& file, bool whole_state) {
   reject_outside_data(file);  // E0134, before the library reads anything
   const CgnsFile in(file, CG_MODE_READ);

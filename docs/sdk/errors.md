@@ -208,7 +208,7 @@ Fix: Repair the cell in the meshing tool; it is inverted or flat.
 
 **Mesh text too long** (error)
 
-A name or text the reader keeps is longer than its cap: 4096 bytes for a zone, family, BC or patch name, a dictionary entry or `PeriodicTranslation`; (families + 1) x 25 600 bytes for `ZoneNames` (a CGNS name of at most 32 bytes and a zone name of at most 4096, each escaped up to 6 bytes per byte, and their framing, per family). It is refused before the text is allocated; `data` gives what, its bytes and the limit.
+A name or text the reader keeps is longer than its cap: 4096 bytes for a zone, family, BC or patch name, a dictionary entry, a Gmsh section name or `PeriodicTranslation`; (families + 1) x 25 600 bytes for `ZoneNames` (a CGNS name of at most 32 bytes and a zone name of at most 4096, each escaped up to 6 bytes per byte, and their framing, per family). It is refused before the text is allocated; `data` gives what, its bytes and the limit.
 
 Fix: Shorten the name in the meshing tool: names identify zones, they carry no data.
 

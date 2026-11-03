@@ -1336,4 +1336,77 @@ TEST_CASE("A CGNS file reads at most 1 MiB of other data when it opens", "[cgns]
   CHECK(autan::io::read_mesh(at).n_cells() == 1);
   require_error(autan::ErrorCode::io_unsupported, with_times("times-over.cgns", steps + 1));
 }
+TEST_CASE("Faces of a MIXED section nothing names are skipped, one named is kept", "[cgns]") {
+  // mesh.md, Readers: 2^20 triangles in a MIXED section, the first named by a BC: it labels its
+  // face, the others cost a bit each, not 92 bytes.
+  fs::create_directories(temp_dir());
+  constexpr cgsize_t triangles = cgsize_t{1} << 20;
+  const auto mixed = [&](const std::string& name, cgsize_t count) {
+    return cgns_file(name, [&](int fn, int base) {
+      unstructured_tet(fn, base, "Zone");
+      std::vector<cgsize_t> data, offsets{0};
+      for (cgsize_t t = 0; t < count; ++t) {
+        data.insert(data.end(), {CGNS_ENUMV(TRI_3), 1, 3, 2});
+        offsets.push_back(offsets.back() + 4);
+      }
+      int section = 0, bc = 0;
+      REQUIRE(cg_poly_section_write(fn, base, 1, "Faces", CGNS_ENUMV(MIXED), 2, count + 1, 0,
+                                    data.data(), offsets.data(), &section) == CG_OK);
+      const cgsize_t first = 2;
+      REQUIRE(cg_boco_write(fn, base, 1, "wall", CGNS_ENUMV(BCWall), CGNS_ENUMV(PointList), 1,
+                            &first, &bc) == CG_OK);
+      REQUIRE(cg_boco_gridlocation_write(fn, base, 1, bc, CGNS_ENUMV(FaceCenter)) == CG_OK);
+    });
+  };
+  const fs::path one = mixed("mixed-faces-1.cgns", 1);
+  const fs::path many = mixed("mixed-faces-many.cgns", triangles);
+  (void)autan::io::read_mesh(one);
+  const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(one); });
+  std::optional<autan::Mesh> mesh;
+  const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(many); });
+  CAPTURE(before, after);
+  CHECK(after - before <= std::int64_t{2} << 20);  // kept, the triangles would be 92 MiB
+  const auto zones = mesh->face_zones();
+  const auto wall = std::ranges::find(zones, std::string("wall"), &autan::FaceZone::name);
+  REQUIRE(wall != zones.end());
+  const auto z = static_cast<std::size_t>(wall - zones.begin());
+  CHECK(mesh->boundary_zone_offsets()[z + 1] - mesh->boundary_zone_offsets()[z] == 1);
+}
+
+TEST_CASE("Looking up many BCs among many families keeps no HDF5 handle", "[cgns]") {
+  // mesh.md, Memory of a CGNS read: 8000 unused families and 2000 BCs, each a point list of the
+  // one boundary face in a family: read within 1 MiB + 16 KiB a node, the walks releasing what
+  // they open.
+  fs::create_directories(temp_dir());
+  const fs::path plain =
+      cgns_file("handles-none.cgns", [](int fn, int base) { unstructured_tet(fn, base, "Zone"); });
+  const fs::path file = cgns_file("handles.cgns", [](int fn, int base) {
+    unstructured_tet(fn, base, "Zone");
+    const std::array<cgsize_t, 3> tri{1, 3, 2};
+    int section = 0, family = 0, bc = 0;
+    REQUIRE(cg_section_write(fn, base, 1, "Face", CGNS_ENUMV(TRI_3), 2, 2, 0, tri.data(),
+                             &section) == CG_OK);
+    REQUIRE(cg_family_write(fn, base, "wall", &family) == CG_OK);
+    for (int i = 0; i < 8000; ++i) {
+      REQUIRE(cg_family_write(fn, base, ("f" + std::to_string(i)).c_str(), &family) == CG_OK);
+    }
+    const cgsize_t face = 2;
+    for (int i = 0; i < 2000; ++i) {
+      REQUIRE(cg_boco_write(fn, base, 1, ("b" + std::to_string(i)).c_str(),
+                            CGNS_ENUMV(FamilySpecified), CGNS_ENUMV(PointList), 1, &face,
+                            &bc) == CG_OK);
+      REQUIRE(cg_boco_gridlocation_write(fn, base, 1, bc, CGNS_ENUMV(FaceCenter)) == CG_OK);
+      REQUIRE(cg_goto(fn, base, "Zone_t", 1, "ZoneBC_t", 1, "BC_t", bc, "end") == CG_OK);
+      REQUIRE(cg_famname_write("wall") == CG_OK);
+    }
+  });
+  const std::int64_t n0 = autan::io::cgns_logical_bytes(plain).nodes;
+  const std::int64_t nodes = autan::io::cgns_logical_bytes(file).nodes;
+  REQUIRE(nodes <= 16384);
+  (void)autan::io::read_mesh(plain);
+  const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+  const std::int64_t after = peak_of([&] { CHECK(autan::io::read_mesh(file).n_cells() == 1); });
+  CAPTURE(before, after, nodes);
+  CHECK(after - before <= (std::int64_t{1} << 20) + (std::int64_t{16} << 10) * (nodes - n0));
+}
 #endif

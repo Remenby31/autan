@@ -112,6 +112,10 @@ class FoamFile {
 
   Cursor& cursor() { return cursor_; }
   [[nodiscard]] const Header& header() const { return header_; }
+  // The most labels a uniform list `N{v}` of this file may expand to: N labels from a few bytes
+  // of text, so only a count the mesh fixes (faces for owner and neighbour, cells for a cell
+  // zone); 0, any uniform list but an empty one is refused.
+  void allow_uniform(std::uint64_t most) { uniform_most_ = most; }
   [[nodiscard]] std::string_view data() const { return data_; }
 
   void require_class(std::initializer_list<std::string_view> classes) {
@@ -153,6 +157,7 @@ class FoamFile {
     if (cursor_.accept('{')) {
       skip_blank(cursor_);
       if (*n == 0 && cursor_.accept('}')) return out;
+      if (*n > uniform_most_) cursor_.fail("a uniform list of more labels than the mesh has");
       const std::int64_t v = label();
       skip_blank(cursor_);
       cursor_.expect('}');
@@ -234,7 +239,9 @@ class FoamFile {
     for (;;) {
       skip_blank(cursor_);
       if (cursor_.accept('}')) break;
-      const std::string key(cursor_.token("{};/"));
+      const std::string_view key_text = cursor_.token("{};/");
+      check_text(cursor_.path(), "header key", key_text.size());
+      const std::string key(key_text);
       skip_blank(cursor_);
       if (cursor_.peek() == '{') {
         skip_sub_dict();
@@ -255,6 +262,7 @@ class FoamFile {
   }
 
   std::string data_;
+  std::uint64_t uniform_most_ = 0;
   Cursor cursor_;
   Header header_;
 };
@@ -408,9 +416,11 @@ Mesh read_polymesh(const fs::path& directory) {
 
   FoamFile owner_file(dir / "owner");
   owner_file.require_class({"labelList"});
+  owner_file.allow_uniform(n_faces);
   const auto owner = owner_file.labels();
   FoamFile neighbour_file(dir / "neighbour");
   neighbour_file.require_class({"labelList"});
+  neighbour_file.allow_uniform(n_faces);
   const auto neighbour = neighbour_file.labels();
   if (owner.size() != n_faces || neighbour.size() > n_faces) {
     owner_file.cursor().fail("owner and neighbour sizes do not match the faces");
@@ -491,6 +501,7 @@ Mesh read_polymesh(const fs::path& directory) {
   if (fs::exists(dir / "cellZones", ec)) {
     FoamFile zones_file(dir / "cellZones");
     zones_file.require_class({"regIOobject", "cellZoneList"});
+    zones_file.allow_uniform(static_cast<std::uint64_t>(n_cells));
     // A cell zone without cells labels nothing (MeshInfo omits it): dropped as it is read.
     index_t in_file = 0;
     read_dict_list(zones_file, "cellLabels", [&](const NamedDict& zone) {
