@@ -473,7 +473,7 @@ def load(path: str | Path) -> Case:
         try:
             text = path.read_text()
             document = tomllib.loads(text) if path.suffix == ".toml" else load_json(text)
-        except (tomllib.TOMLDecodeError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        except ValueError as error:  # TOML, JSON, UTF-8 and nesting errors alike
             raise CaseError([diagnostic("E0001", f"{path}: {error}", location=where)]) from None
         if not isinstance(document, dict):
             raise CaseError([diagnostic("E0003", f"{path}: not a table", location=where)])

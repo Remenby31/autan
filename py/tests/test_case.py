@@ -224,6 +224,17 @@ def test_missing_physics_is_reported_at_the_case_constructor(
     assert {d.location.line for d in error.value.diagnostics if d.location} == {3}
 
 
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [("case.json", "[" * 100_000 + "]" * 100_000), ("case.toml", "a = [[[")],
+)
+def test_an_unreadable_case_document_is_e0001(name: str, text: str, tmp_path: Path) -> None:
+    (tmp_path / name).write_text(text)
+    with pytest.raises(autan.CaseError) as error:
+        autan.load(tmp_path / name)
+    assert codes(error) == ["E0001"]
+
+
 def test_missing_case_file() -> None:
     with pytest.raises(autan.CaseError) as error:
         autan.load("no/such/case.py")
