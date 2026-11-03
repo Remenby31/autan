@@ -19,6 +19,15 @@ A temporary that grows with an intermediate count no class bounds, such as walks
 
 | Held | Grows with | Class |
 |---|---|---|
+| `pack_geometry`'s `PackedGeometry`: 25 doubles a face (area, centroid, normal, both centroid offsets, moment, magnitude), 4 a cell, 4 an incidence (LSQ weights, side) | faces, cells, incidences K | M: `physics setup` 8(25F + 4C + 4K); the physics keeps converted copies (`physics`) |
+| its offsets `d`, one a face of the cell being weighted | the faces of one cell | M |
+| under reproducibility `"ranks"` (`GlobalKeys`): `global_order`'s incidences 4K and twins 8K, built in `pack_geometry` and freed when it returns, then built again and kept by the physics with 1 byte a face of orientation | incidences, faces | M: **not charged**, 12K transient and 12K + F kept |
+| `incidence_twins`, 8K | incidences | M: `device setup`, construction 8K |
+| `cell_stencil`'s marks `listed` 4C and `bound_listed` 4F_b | cells, boundary faces | M: **not charged**, 4C + 4F_b |
+| a vertex stencil's node lists: offsets and cursors 16N + 8, and 2 entries of 4 bytes a face node | nodes, face nodes | M: **not charged**, 16N + 8P, vertex gradient only |
+| `cells`, `bfaces`: the row being built, each cell and boundary face once (the marks) however many faces or nodes reach it | one row of the final stencil | E |
+| the stencil: offsets 8(C + 1), entries 4E, twins 8E, FP64 weights 24E, and one row of offsets while weighting | cells, stencil entries | E: `physics` 8C + 4S, `physics setup` 32S |
+| `sliced`, `sliced_incidences`, `sliced_values`: every slice of rows padded to its longest | up to `slice` times the entries | none: the runtime builds no sliced layout (`DeviceMesh` options `stencil_slice` and `incidence_slice` 0 in `euler_device.cu`); benchmarks and the spike only, and a term before the runtime uses one |
 
 ## Partition and halos (`partition/`, `runtime/src/comm.cpp`; « CFD - Noyau maillage »)
 
@@ -60,8 +69,19 @@ The coarsening ratio is enforced for cells only (`cells_by_level[k+1]` ≤ 0.8 `
 
 | Held | Grows with | Class |
 |---|---|---|
+| `colour`, one a face of the range | faces | M: `device setup`, construction 8F |
+| `stamp`, one a colour: a face's colour is at most the faces of its two cells, already coloured | 2 × `quality.max_faces_per_cell` | M |
+| `offsets` and `next`, 8 bytes a colour each | colours | M |
+| `faces`, kept by `DeviceMesh` | faces | M: `device mesh host` 4F |
 
 ## Device packing (`codegen/`, `physics/src/euler_device.cu`; « CFD - Générateur kernels »)
 
 | Held | Grows with | Class |
 |---|---|---|
+| `geometry_`, the packed geometry moved in, until `release_host` after bind | faces, cells, incidences | M: `device setup` 8(25F + 4C + 4K) |
+| the twins of `incidence_twins` and the colourings above | incidences, faces | M: `device setup`, construction 8K + 8F |
+| the topology, colourings, stencil (no twins: Euler drops them) and geometry on the device | faces, cells, incidences, stencil entries | V: `physics device` |
+| the device face scratch, 5 values of 8 bytes a face (`face_scratch_width`) | faces | V: **not charged**, 40F on the device |
+| the weights' upload: the physics' FP64 weights and `DeviceMesh`'s copy, 24E each | stencil entries | E: `device setup` 48S |
+| `bind`'s staged chunk, at most `upload_chunk` values (2^20) in the device type | fixed | F: `device setup` 8 MiB |
+| a second-order run without limiter: the limiter's 5C ones, uploaded from a host vector in `s` | cells | M: **not charged**, 5Cs transient |
