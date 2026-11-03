@@ -5,6 +5,7 @@ import random
 import stat
 import subprocess
 import sys
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -220,7 +221,7 @@ factors = pathlib.Path({factors!r}).read_text().split()
 factor = factors[sum(1 for r in runs if r.startswith({side!r}))]
 if factor == "crash":
     raise SystemExit(1)
-factor = float(factor)
+factor = 0 if factor == "hang" else float(factor)
 def held():
     with open({lock!r}) as handle:
         try:
@@ -237,6 +238,9 @@ if {gated!r}:
     sys.stdin.readline()
 with log.open("a") as out:
     out.write(f"{side} {{held()}}{{setup}}\\n")
+if factor == 0:
+    pathlib.Path({log!r} + ".timed").write_text(str(__import__("os").getpid()))
+    time.sleep(60)
 busy = pathlib.Path({busy!r})
 busy.touch()
 time.sleep(0.3)
@@ -473,3 +477,64 @@ def test_a_tracked_benchmark_that_was_not_measured_is_an_error():
     with pytest.raises(BenchError) as err:
         pair.judge_all(runs, runs, names={"stream.triad", "stream.copy"})
     assert err.value.code == Code.MISSING_BENCHMARK
+
+
+def test_a_terminated_harness_leaves_no_gated_binary_running_after_the_lock(paired, tmp_path):
+    """Codex on #445: a TERM to the harness used to skip its cleanup, and a gated binary, in a
+    session of its own, kept timing with the lock released."""
+    argv = [*paired(["hang"] * 5, ["1.0"] * 5, gated=True), "--ready", "30"]
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).parents[1] / "src")}
+    code = "import sys; from autan_bench.cli import main; sys.exit(main(sys.argv[1:]))"
+    harness = subprocess.Popen([sys.executable, "-c", code, *argv], env=env)
+    timed = tmp_path / "log.timed"
+    for _ in range(300):
+        if timed.exists():
+            break
+        time.sleep(0.1)
+    child = int(timed.read_text())
+    harness.terminate()
+    assert harness.wait(timeout=30) == 143
+    time.sleep(0.5)
+    with pytest.raises(ProcessLookupError):
+        os.kill(child, 0)
+    summary = json.loads((tmp_path / "out" / "pair.json").read_text())
+    assert summary["state"] == "failed"
+
+
+def test_readiness_is_timed_from_each_process_s_launch(tmp_path):
+    """Codex on #445: two processes started together were timed from each wait in turn."""
+    script = tmp_path / "gated"
+    script.write_text(f"#!{sys.executable}\nimport sys, time\ntime.sleep(float(sys.argv[1]))\n"
+                      "print('autan-bench: ready', file=sys.stderr, flush=True)\n"
+                      "sys.stdin.readline()\n")  # fmt: skip
+    script.chmod(0o755)
+    first, second = runner._Gated(script, ["0.6"]), runner._Gated(script, ["0.6"])
+    try:
+        # Both set up in parallel for 0.6 s (plus the interpreter's start): the second, waited
+        # for after the first, still reads its own setup, not the few ms left after the first.
+        a, b = first.wait_ready(5), second.wait_ready(5)
+        assert a >= 0.6
+        assert b >= 0.6
+        assert abs(a - b) < 0.3
+    finally:
+        first.kill()
+        second.kill()
+    slow_a, slow_b = runner._Gated(script, ["0.2"]), runner._Gated(script, ["1.5"])
+    try:
+        slow_a.wait_ready(1)
+        with pytest.raises(BenchError) as err:
+            slow_b.wait_ready(1)
+        assert err.value.code == Code.BINARY_FAILED
+    finally:
+        slow_a.kill()
+        slow_b.kill()
+
+
+def test_a_bad_tracked_baseline_fails_this_run_s_record(paired, tmp_path):
+    """Codex on #445: a bad --tracked left an earlier run's ok pair.json in place."""
+    argv = paired([1.0] * 5, [1.0] * 5)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "pair.json").write_text('{"state": "complete", "outcome": "ok"}')
+    assert main([*argv, "--tracked", str(tmp_path / "absent.json")]) == 2
+    assert json.loads((out / "pair.json").read_text())["state"] == "failed"

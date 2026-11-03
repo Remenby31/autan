@@ -44,6 +44,9 @@ class _Gated:
     def __init__(self, binary: Path, args: list[str]) -> None:
         self.binary = binary
         self.ready = threading.Event()
+        # Setup is timed from the launch: processes started together are waited for in turn.
+        self.launched = time.monotonic()
+        self.ready_at: float | None = None
         self.stderr: list[str] = []
         self.stdout = ""
         self.readers: list[threading.Thread] = []
@@ -71,6 +74,7 @@ class _Gated:
         assert self.proc.stderr is not None
         for line in self.proc.stderr:
             if line.rstrip("\n") == READY:
+                self.ready_at = time.monotonic()
                 self.ready.set()
             else:
                 self.stderr.append(line)
@@ -80,7 +84,9 @@ class _Gated:
         self.stdout = self.proc.stdout.read()
 
     def wait_ready(self, timeout_s: float) -> float:
-        start = time.monotonic()
+        """Wait for the ready line, at most ``timeout_s`` from the launch; returns the setup's
+        duration, from the launch to the ready line."""
+        start = self.launched
         while not self.ready.wait(0.1):
             if self.proc.poll() is not None:
                 self._join()
@@ -94,7 +100,11 @@ class _Gated:
                 raise BenchError(
                     Code.BINARY_FAILED, f"{self.binary} not ready after {timeout_s:.0f} s"
                 )
-        return time.monotonic() - start
+        assert self.ready_at is not None
+        if self.ready_at - start > timeout_s:
+            self.kill()
+            raise BenchError(Code.BINARY_FAILED, f"{self.binary} not ready after {timeout_s:.0f} s")
+        return self.ready_at - start
 
     def go(self) -> dict[str, Any]:
         assert self.proc.stdin is not None
