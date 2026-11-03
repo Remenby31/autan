@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from autan import cgns
 from autan.errors import CaseError, Diagnostic, Location, diagnostic
 from autan.meshinfo import MeshInfo
-from autan.schema import DDES, SA, SST, CaseSpec, Compressible, Steady
+from autan.schema import DDES, SA, SST, CaseSpec, Compressible, Steady, Unsteady
 from autan.units import metres_per
 
 if TYPE_CHECKING:
@@ -1168,15 +1168,14 @@ def _checkpoint_state_problems(metadata: dict[str, Any], case: CaseSpec) -> list
     iteration = mark["iteration"]
     if type(iteration) is not int or iteration < 1:
         found.append("RunMetadata checkpoint.iteration must be an integer >= 1")
-    time = metadata.get("time", False)
-    if steady and time is not None:
-        found.append("RunMetadata time of a steady checkpoint must be null")
-    if not steady and not (type(time) in (int, float) and _finite(time) and time >= 0):
-        found.append("RunMetadata time of an unsteady checkpoint must be a number >= 0")
-    if not _is_averaging(metadata.get("averaging", False)) or (
-        steady and metadata.get("averaging") is not None
-    ):
-        found.append("RunMetadata averaging of a checkpoint must be valid, and null when steady")
+    time, averaging = metadata.get("time", False), metadata.get("averaging", False)
+    if steady:
+        if time is not None:
+            found.append("RunMetadata time of a steady checkpoint must be null")
+        if averaging is not None:
+            found.append("RunMetadata averaging of a steady checkpoint must be null")
+    elif isinstance(case.time, Unsteady) and type(iteration) is int and iteration >= 1:
+        found += _unsteady_state_problems(iteration, time, averaging, case.time)
     reference, woken = mark["residual_reference"], mark["woken"]
     if steady:
         equations = residual_names(case)
@@ -1192,6 +1191,38 @@ def _checkpoint_state_problems(metadata: dict[str, Any], case: CaseSpec) -> list
             found.append("RunMetadata checkpoint.woken must list sorted equations")
     elif reference is not None or woken is not None:
         found.append("RunMetadata checkpoint residual_reference and woken must be null")
+    return found
+
+
+def _unsteady_state_problems(
+    iteration: int, time: object, averaging: object, spec: Unsteady
+) -> list[str]:
+    """The time and averaging of an unsteady run after ``iteration`` steps (results.md#runjson):
+    a positive time, ``iteration`` x ``dt`` up to the round-off of its sum when ``dt`` is fixed,
+    and the interval from step ``average_from`` + 1 to ``iteration`` once past ``average_from``,
+    ending at that time."""
+    if not isinstance(time, (int, float)) or type(time) is bool or not _finite(time) or time <= 0:
+        return ["RunMetadata time of an unsteady checkpoint must be a number > 0"]
+    found = []
+    if spec.dt is not None:
+        expected = iteration * spec.dt.to("s").magnitude
+        if abs(time - expected) > 4 * iteration * np.finfo(np.float64).eps * expected:
+            found.append(f"RunMetadata time must be {iteration} steps of dt")
+    if spec.average_from is None or iteration <= spec.average_from:
+        if averaging is not None:
+            found.append("RunMetadata averaging must be null up to average_from")
+        return found
+    try:
+        interval = Averaging.model_validate(averaging)
+    except ValidationError:
+        return [*found, "RunMetadata averaging must be an interval past average_from"]
+    if (
+        interval.from_step != spec.average_from + 1
+        or interval.to_step != iteration
+        or interval.to_time != time
+        or not (_finite(interval.from_time) and 0 <= interval.from_time < interval.to_time)
+    ):
+        found.append("RunMetadata averaging must run from step average_from + 1 to the checkpoint")
     return found
 
 

@@ -287,7 +287,16 @@ class FakeBackend:
         inherited = None
         if start is not None:
             source = Results.open(start.run)
-            read = source.checkpoint_field if start.info.file == "checkpoint" else source.field
+            if start.info.file == "checkpoint":
+                sha256, read = source.checkpoint().sha256, source.checkpoint_field
+            else:
+                data = (start.run / "solution.cgns").read_bytes()
+                sha256, read = hashlib.sha256(data).hexdigest(), source.field
+            if sha256 != start.info.solution_sha256:
+                message = (
+                    f"the {start.info.file} of {start.run} changed after the input was written"
+                )
+                raise CaseError([diagnostic("E0709", message)])
             inherited = {name: read(name) for name in field_names(spec)}
         # A continued run goes on counting; its trajectory is that of an uninterrupted run.
         offset = start.info.iterations if start and start.info.mode == "continue" else 0

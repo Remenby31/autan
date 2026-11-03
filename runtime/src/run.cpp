@@ -1760,15 +1760,21 @@ class Run final : public Log {
       failure = comm_.broadcast(failure);
     }
     if (failure.empty()) return;
+    const Diagnostic warning{.code = "W0714",
+                             .message = "the checkpoint of iteration " + std::to_string(it) +
+                                        " was not written: " + failure,
+                             .path = "",
+                             .data_json = Json{{"iteration", it}}.dump()};
+    std::string unlogged;
     try {
-      add_diagnostic(Diagnostic{.code = "W0714",
-                                .message = "the checkpoint of iteration " + std::to_string(it) +
-                                           " was not written: " + failure,
-                                .path = "",
-                                .data_json = Json{{"iteration", it}}.dump()});
-    } catch (const std::exception&) {
-      // The log cannot take the warning either: run.json carries it at the end.
+      note("warning", "solver", warning.message, warning.code, warning.data_json);
+    } catch (const std::exception& e) {
+      unlogged = e.what();
     }
+    // run.json names only diagnostics the log holds (results.md, Log): a warning the log
+    // cannot take is recorded nowhere.
+    if (comm_.broadcast(unlogged).empty())
+      info_["diagnostics"].push_back(Json::parse(warning.json()));
   }
 
   // The mesh index of the least diverged cell over all ranks, from the cell
@@ -1803,6 +1809,36 @@ class Run final : public Log {
   // With `checkpoint`, the state after that iteration goes to checkpoint.cgns
   // (results.md#checkpointcgns), which names the iteration.
   void write_solution(bool diverged, const Json& checkpoint = nullptr) {
+    io::Solution s;
+    // A failure before the gathers end leaves other ranks inside them: it
+    // fails the run like a physics failure, which ends every rank.
+    try {
+      s = gathered_solution(checkpoint);
+    } catch (const PhysicsFailure&) {
+      throw;
+    } catch (const std::exception& e) {
+      throw PhysicsFailure(std::string("gathering the solution: ") + e.what());
+    }
+    if (comm_.rank() != 0) return;
+    // A diverged state may hold non-finite values; results.md asks for its
+    // solution only if one can be written, and readers require finite fields.
+    if (diverged) {
+      for (const auto& f : s.fields) {
+        if (!std::ranges::all_of(f.values, [](double v) { return std::isfinite(v); })) return;
+      }
+    }
+    if (!checkpoint.is_null()) {
+      io::write_solution(dir_->checkpoint_staging(), p_.mesh, s);
+      dir_->publish_checkpoint();
+      return;
+    }
+    io::write_solution(dir_->solution_staging(), p_.mesh, s);
+    dir_->publish_solution();
+  }
+
+  // The current state with `checkpoint` as RunMetadata `checkpoint`, every field gathered on
+  // rank 0. Collective.
+  io::Solution gathered_solution(const Json& checkpoint) {
     const auto& in = p_.input;
     io::Solution s;
     Json metadata = info_;
@@ -1865,33 +1901,11 @@ class Run final : public Log {
         f.values = comm_.gather(where, f.values, n);
       }
     };
-    // A failure before the gathers end leaves other ranks inside them: it
-    // fails the run like a physics failure, which ends every rank.
-    try {
-      gather(s.fields, ids, p_.mesh.n_cells());
-      gather(s.mean_fields, ids, p_.mesh.n_cells());
-      gather(s.restart_fields, ids, p_.mesh.n_cells());
-      gather(s.wall_fields, slots, static_cast<std::int64_t>(s.wall_faces.size()));
-    } catch (const PhysicsFailure&) {
-      throw;
-    } catch (const std::exception& e) {
-      throw PhysicsFailure(std::string("gathering the solution: ") + e.what());
-    }
-    if (comm_.rank() != 0) return;
-    // A diverged state may hold non-finite values; results.md asks for its
-    // solution only if one can be written, and readers require finite fields.
-    if (diverged) {
-      for (const auto& f : s.fields) {
-        if (!std::ranges::all_of(f.values, [](double v) { return std::isfinite(v); })) return;
-      }
-    }
-    if (!checkpoint.is_null()) {
-      io::write_solution(dir_->checkpoint_staging(), p_.mesh, s);
-      dir_->publish_checkpoint();
-      return;
-    }
-    io::write_solution(dir_->solution_staging(), p_.mesh, s);
-    dir_->publish_solution();
+    gather(s.fields, ids, p_.mesh.n_cells());
+    gather(s.mean_fields, ids, p_.mesh.n_cells());
+    gather(s.restart_fields, ids, p_.mesh.n_cells());
+    gather(s.wall_fields, slots, static_cast<std::int64_t>(s.wall_faces.size()));
+    return s;
   }
 
   // The forces of every monitor on the final state, whether or not its last

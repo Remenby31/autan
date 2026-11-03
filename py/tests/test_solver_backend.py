@@ -18,7 +18,9 @@ from typing import Any
 
 import autan
 import autan.initial_state
+import autan.restart
 import autan.solver_backend
+import h5py
 import numpy as np
 import pytest
 from autan import cgns
@@ -302,15 +304,18 @@ def test_continue_through_the_runtime_matches_the_uninterrupted_run(
 
 
 def _killed(
-    tmp_path: Path, name: str, every: int, ready: Callable[[dict[str, Any], list[str]], bool]
+    tmp_path: Path,
+    name: str,
+    every: int,
+    ready: Callable[[dict[str, Any], list[str]], bool],
+    time_spec: str = "autan.Steady(max_iterations=200, {checkpoint})",
 ) -> Path:
     """A run of the hybrid case with a checkpoint every ``every`` iterations, its runtime killed
-    with SIGKILL once ``ready(run.json document, history lines)`` holds: its run directory."""
+    with SIGKILL once ``ready(run.json document, history lines)`` holds: its run directory.
+    ``time_spec`` is the case's time, with ``{checkpoint}`` for the cadence."""
     case = tmp_path / f"{name}.py"
-    case.write_text(
-        CASE + f"case.time = autan.Steady(max_iterations=200, checkpoint=autan.Checkpoint("
-        f"iterations={every}))\n"
-    )
+    cadence = f"checkpoint=autan.Checkpoint(iterations={every})"
+    case.write_text(CASE + f"case.time = {time_spec.format(checkpoint=cadence)}\n")
     runs = tmp_path / name
     env = {**os.environ, "AUTAN_TEST_PAUSE_MS": "40", "AUTAN_TEST_FACTOR": "0.99"}
     process = subprocess.Popen(
@@ -401,6 +406,67 @@ def test_a_run_killed_before_its_first_checkpoint_has_nothing_to_continue(tmp_pa
     [found] = error.value.diagnostics
     assert found.code == "E0707"
     assert "no checkpoint" in found.message
+
+
+def _rewrite_metadata(path: Path, change: Callable[[dict[str, Any]], None]) -> None:
+    with h5py.File(path, "r+") as handle:
+        node = handle["Base/RunMetadata"]
+        metadata = json.loads(bytes(node[" data"][...]).decode())
+        change(metadata)
+        del node[" data"]
+        node.create_dataset(
+            " data", data=np.frombuffer(json.dumps(metadata).encode(), dtype=np.int8)
+        )
+
+
+@pytest.mark.usefixtures("hybrid")
+def test_a_checkpoint_holds_the_time_and_averaging_of_its_iteration(tmp_path: Path) -> None:
+    # results.md#checkpointcgns: an unsteady checkpoint's time is that of its iteration, and its
+    # averaging the interval from step average_from + 1 to it; any other state is refused.
+    killed = _killed(
+        tmp_path,
+        "unsteady",
+        4,
+        lambda info, _: (info["checkpoint"] or {}).get("iteration", 0) >= 8,
+        "autan.Unsteady(steps=200, dt=1e-3 * autan.units.s, average_from=5, {checkpoint})",
+    )
+    point = autan.Results.open(killed).checkpoint()
+    eps = np.finfo(np.float64).eps
+    assert point.time == pytest.approx(point.iteration * 1e-3, rel=4 * point.iteration * eps)
+    assert point.averaging is not None
+    assert (point.averaging.from_step, point.averaging.to_step) == (6, point.iteration)
+    assert point.averaging.to_time == point.time
+    original = (killed / "checkpoint.cgns").read_bytes()
+    tampered: list[Callable[[dict[str, Any]], None]] = [
+        lambda m: m.update(time=900.0),
+        lambda m: m.update(averaging=None),
+        lambda m: m["averaging"].update(from_step=-3),
+        lambda m: m["averaging"].update(to_step=m["checkpoint"]["iteration"] + 1),
+        lambda m: m["averaging"].update(from_time=m["time"] * 2),
+        lambda m: m["averaging"].update(to_time=m["time"] / 2),
+    ]
+    for change in tampered:
+        (killed / "checkpoint.cgns").write_bytes(original)
+        _rewrite_metadata(killed / "checkpoint.cgns", change)
+        with pytest.raises(autan.CaseError) as error:
+            autan.Results.open(killed).checkpoint()
+        assert set(error.value.codes) == {"E0701"}
+
+
+@pytest.mark.usefixtures("hybrid")
+def test_the_fake_backend_refuses_a_checkpoint_replaced_after_the_start(tmp_path: Path) -> None:
+    # solver-input.md, start: the state read is the one whose SHA-256 the start records.
+    killed = _killed(
+        tmp_path, "replaced", 4, lambda info, _: (info["checkpoint"] or {}).get("iteration", 0) >= 4
+    )
+    case = autan.load(tmp_path / "replaced.py")
+    mesh = autan.MeshInfo.load(tmp_path / "hybrid.meshinfo.json")
+    start = autan.restart.resolve(case.spec, mesh, autan.Results.open(killed), "continue")
+    with h5py.File(killed / "checkpoint.cgns", "r+") as handle:  # another valid state
+        handle["Base/Zone/FlowSolution/Density/ data"][0] *= 1.01
+    with pytest.raises(autan.CaseError) as error:
+        autan.FakeBackend(iterations=3).run(case, mesh, tmp_path / "rest", start)
+    assert error.value.codes == ["E0709"]
 
 
 PERIODIC_BOX = ROOT / "tests" / "data" / "mesh" / "periodic-box" / "periodic-box.binary.msh"
