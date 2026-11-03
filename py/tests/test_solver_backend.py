@@ -443,6 +443,7 @@ def test_a_checkpoint_holds_the_time_and_averaging_of_its_iteration(tmp_path: Pa
         lambda m: m["averaging"].update(from_step=-3),
         lambda m: m["averaging"].update(to_step=m["checkpoint"]["iteration"] + 1),
         lambda m: m["averaging"].update(from_time=m["time"] * 2),
+        lambda m: m["averaging"].update(from_time=m["averaging"]["from_time"] + 2e-3),
         lambda m: m["averaging"].update(to_time=m["time"] / 2),
     ]
     for change in tampered:

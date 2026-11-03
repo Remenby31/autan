@@ -1198,16 +1198,22 @@ def _unsteady_state_problems(
     iteration: int, time: object, averaging: object, spec: Unsteady
 ) -> list[str]:
     """The time and averaging of an unsteady run after ``iteration`` steps (results.md#runjson):
-    a positive time, ``iteration`` x ``dt`` up to the round-off of its sum when ``dt`` is fixed,
-    and the interval from step ``average_from`` + 1 to ``iteration`` once past ``average_from``,
-    ending at that time."""
+    a positive time, and the interval from step ``average_from`` + 1 to ``iteration`` once past
+    ``average_from``, ending at that time; with a fixed ``dt``, both times are their steps x ``dt``
+    up to the round-off of their sums."""
     if not isinstance(time, (int, float)) or type(time) is bool or not _finite(time) or time <= 0:
         return ["RunMetadata time of an unsteady checkpoint must be a number > 0"]
     found = []
-    if spec.dt is not None:
-        expected = iteration * spec.dt.to("s").magnitude
-        if abs(time - expected) > 4 * iteration * np.finfo(np.float64).eps * expected:
-            found.append(f"RunMetadata time must be {iteration} steps of dt")
+    dt = None if spec.dt is None else spec.dt.to("s").magnitude
+
+    def steps_of_dt(value: float, steps: int) -> bool:
+        return (
+            dt is None
+            or abs(value - steps * dt) <= 4 * steps * np.finfo(np.float64).eps * dt * steps
+        )
+
+    if not steps_of_dt(time, iteration):
+        found.append(f"RunMetadata time must be {iteration} steps of dt")
     if spec.average_from is None or iteration <= spec.average_from:
         if averaging is not None:
             found.append("RunMetadata averaging must be null up to average_from")
@@ -1221,6 +1227,7 @@ def _unsteady_state_problems(
         or interval.to_step != iteration
         or interval.to_time != time
         or not (_finite(interval.from_time) and 0 <= interval.from_time < interval.to_time)
+        or not steps_of_dt(interval.from_time, spec.average_from)
     ):
         found.append("RunMetadata averaging must run from step average_from + 1 to the checkpoint")
     return found
