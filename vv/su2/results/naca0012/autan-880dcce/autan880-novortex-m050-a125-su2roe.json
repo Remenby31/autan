@@ -21,6 +21,8 @@
         "run": "run-20261102T152533Z-73e6bf14",
         "n": 128,
         "case": "naca0012-m050-a125-novortex",
+        "mach": 0.5,
+        "alpha_deg": 1.25,
         "point_vortex": false,
         "converged": true,
         "iterations": 47,
@@ -70,21 +72,21 @@
           "rms": 0.10679356295422997
         },
         "shock_upper": {
-          "autan": null,
-          "su2": null
+          "autan": 0.9458679398425,
+          "su2": 0.9458679398425
         },
         "shock_lower": {
-          "autan": null,
-          "su2": null
+          "autan": 0.9458679398425,
+          "su2": 0.9458679398425
         },
         "outside_shocks": {
           "max_abs": 0.617408300573626,
-          "rms": 0.10679356295422997
+          "rms": 0.11314034103089865
         },
         "body": {
           "max_abs": 0.13507694842491147,
-          "rms": 0.03665395345399944,
-          "faces": 112
+          "rms": 0.03799537533569057,
+          "faces": 104
         }
       }
     },
@@ -94,6 +96,8 @@
         "run": "run-20261102T152548Z-3b6cfcfc",
         "n": 256,
         "case": "naca0012-m050-a125-novortex",
+        "mach": 0.5,
+        "alpha_deg": 1.25,
         "point_vortex": false,
         "converged": true,
         "iterations": 68,
@@ -167,6 +171,8 @@
         "run": "run-20261102T152726Z-430d5c21",
         "n": 512,
         "case": "naca0012-m050-a125-novortex",
+        "mach": 0.5,
+        "alpha_deg": 1.25,
         "point_vortex": false,
         "converged": true,
         "iterations": 108,
@@ -240,6 +246,8 @@
         "run": "run-20261103T053607Z-29476e31",
         "n": 1024,
         "case": "naca0012-m050-a125-novortex",
+        "mach": 0.5,
+        "alpha_deg": 1.25,
         "point_vortex": false,
         "converged": true,
         "iterations": 404,

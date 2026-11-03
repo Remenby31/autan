@@ -21,6 +21,8 @@
         "run": "run-20261101T201924Z-88a160b5",
         "n": 64,
         "case": "naca0012-m080-a125",
+        "mach": 0.8,
+        "alpha_deg": 1.25,
         "point_vortex": true,
         "converged": true,
         "iterations": 54,
@@ -74,17 +76,17 @@
           "su2": 0.6108066043
         },
         "shock_lower": {
-          "autan": null,
+          "autan": 0.957291362325,
           "su2": 0.3319967810225
         },
         "outside_shocks": {
-          "max_abs": 0.44862656249112365,
-          "rms": 0.11784574840545657
+          "max_abs": 0.4442042427569736,
+          "rms": 0.09912340698913216
         },
         "body": {
           "max_abs": 0.20196509754659397,
-          "rms": 0.057921410393139125,
-          "faces": 47
+          "rms": 0.05985585113811784,
+          "faces": 44
         }
       }
     },
@@ -94,6 +96,8 @@
         "run": "run-20261101T201929Z-d842e9ec",
         "n": 128,
         "case": "naca0012-m080-a125",
+        "mach": 0.8,
+        "alpha_deg": 1.25,
         "point_vortex": true,
         "converged": true,
         "iterations": 61,
@@ -167,6 +171,8 @@
         "run": "run-20261101T195656Z-1ea65a22",
         "n": 256,
         "case": "naca0012-m080-a125",
+        "mach": 0.8,
+        "alpha_deg": 1.25,
         "point_vortex": true,
         "converged": true,
         "iterations": 130,
@@ -240,6 +246,8 @@
         "run": "run-20261101T200103Z-61ae27c8",
         "n": 512,
         "case": "naca0012-m080-a125",
+        "mach": 0.8,
+        "alpha_deg": 1.25,
         "point_vortex": true,
         "converged": true,
         "iterations": 283,
@@ -313,6 +321,8 @@
         "run": "run-20261102T050722Z-4419cd02",
         "n": 1024,
         "case": "naca0012-m080-a125",
+        "mach": 0.8,
+        "alpha_deg": 1.25,
         "point_vortex": true,
         "converged": true,
         "iterations": 783,
