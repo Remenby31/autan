@@ -1,6 +1,7 @@
 import fcntl
 import importlib.machinery
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -18,6 +19,8 @@ def load_campaign():
     loader = importlib.machinery.SourceFileLoader("autan_campaign", str(SCRIPT))
     spec = importlib.util.spec_from_loader("autan_campaign", loader)
     module = importlib.util.module_from_spec(spec)
+    # Registered first: its dataclasses resolve their annotations through sys.modules.
+    sys.modules["autan_campaign"] = module
     loader.exec_module(module)
     return module
 
@@ -231,18 +234,19 @@ def test_a_campaign_gives_way_when_host_memory_falls_below_its_floor(
     assert "start autan-campaign-c1" not in calls_of("c1")
 
     # Running, then frozen behind a stalled `docker pause` (a measurement took the GPU lock), when
-    # memory falls below the floor: the container is killed at once, not once docker answers.
+    # memory falls below half the floor: the breach's leader removes it at once (it declares no
+    # clean stop, and the host is critical), not once docker answers the pause.
     meminfo(20)
     assert campaign.main(["start", "c2", "--free", "10G", "--dir", str(tmp_path), "--", "x"]) == 0
     assert until(lambda: "start autan-campaign-c2" in calls_of("c2"))
     measurement = lock.open()
     fcntl.flock(measurement, fcntl.LOCK_EX)
     assert until(lambda: "pause autan-campaign-c2" in calls_of("c2"))
-    meminfo(5)
+    meminfo(4)
     try:
         assert until(lambda: "kill autan-campaign-c2" in calls_of("c2"), timeout=8)
         fcntl.flock(measurement, fcntl.LOCK_UN)
-        assert until(lambda: "below --free" in (logs / "c2.log").read_text(), timeout=40)
+        assert until(lambda: "last resort: removed" in (logs / "c2.log").read_text(), timeout=40)
         assert until(lambda: "rm -f autan-campaign-c2" in calls_of("c2"))
     finally:
         measurement.close()
@@ -315,3 +319,173 @@ def test_how_a_campaign_ended_is_logged_and_returned(tmp_path, monkeypatch, stat
     monkeypatch.setattr(campaign, "STATE", tmp_path / "autan-campaigns")
     assert campaign.ended_status("c7", "autan-campaign-c7") == code
     assert said in (tmp_path / "autan-campaigns" / "c7.log").read_text()
+
+
+# A campaign's command as autan-run behaves (#455): at each "iteration" it looks for its stop file;
+# found, it writes its restart state (solution.cgns, run.json "stopped") and exits 130. With
+# IGNORE, it never looks: a hung program.
+SOLVER = """import json, pathlib, sys, time
+stop, out, ignore = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3] == "IGNORE"
+while True:
+    if not ignore and stop.exists():
+        (out / "solution.cgns").write_text("state")
+        (out / "run.json").write_text(json.dumps({"status": "stopped"}))
+        sys.exit(130)
+    time.sleep(0.05)
+"""
+GIB = 1 << 30
+
+
+class FakeHost:
+    """The leader's boundaries: docker as a record, memory as a function of what was stopped,
+    each campaign a real process honouring (or not) its stop file."""
+
+    def __init__(self, tmp_path, free_before, free_after, critical=False):
+        self.tmp_path = tmp_path
+        self.paused, self.killed, self.logs = set(), [], []
+        self.procs = {}
+        self.free_before, self.free_after, self.critical = free_before, free_after, critical
+        script = tmp_path / "solver.py"
+        script.write_text(SOLVER)
+        self.script = script
+
+    def spawn(self, name, clean_stop, ignore=False):
+        out = self.tmp_path / name
+        out.mkdir()
+        stop = out / "STOP"
+        self.procs[name] = subprocess.Popen(
+            [sys.executable, str(self.script), str(stop), str(out), "IGNORE" if ignore else "-"]
+        )
+        mode = f"stop-file:{stop}" if clean_stop == "stop-file" else clean_stop
+        return mode, out
+
+    def available(self):
+        if self.critical:
+            return 10 * GIB
+        gone = any(p.poll() is not None or n in self.killed for n, p in self.procs.items())
+        return self.free_after if gone else self.free_before
+
+    def host(self):
+        def kill(name):
+            self.killed.append(name)
+            if name in self.procs:
+                self.procs[name].kill()
+                self.procs[name].wait()
+
+        return campaign.Host(
+            available=self.available,
+            pause=self.paused.add,
+            unpause=self.paused.discard,
+            request_stop=campaign.request_stop,
+            ended=lambda name: name not in self.procs or self.procs[name].poll() is not None,
+            kill=kill,
+            log=lambda name, message: self.logs.append((name, message)),
+            sleep=lambda s: time.sleep(min(s, 0.1)),
+        )
+
+    def said(self, name):
+        return " | ".join(m for n, m in self.logs if n == name)
+
+    def close(self):
+        for proc in self.procs.values():
+            proc.kill()
+            proc.wait()
+
+
+@pytest.fixture
+def breach(tmp_path):
+    hosts = []
+
+    def make(**kwargs):
+        host = FakeHost(tmp_path, **kwargs)
+        hosts.append(host)
+        return host
+
+    yield make
+    for host in hosts:
+        host.close()
+
+
+def test_a_breach_freezes_all_then_stops_the_culprit_cleanly_and_thaws_the_rest(breach):
+    host = breach(free_before=20 * GIB, free_after=40 * GIB)
+    mode_a, _ = host.spawn("a", "none")
+    mode_b, out_b = host.spawn("b", "stop-file")
+    members = [campaign.Member("a", 100.0, mode_a, 60, growth=0),
+               campaign.Member("b", 50.0, mode_b, 60, growth=10 * GIB)]  # fmt: skip
+    campaign.lead(members, 24 * GIB, host.host())
+    # The culprit stopped cleanly, with its restart state; the other never removed, thawed.
+    assert host.procs["b"].wait(timeout=10) == 130
+    assert (out_b / "solution.cgns").exists()
+    assert json.loads((out_b / "run.json").read_text())["status"] == "stopped"
+    assert host.killed == []
+    assert host.paused == set()
+    assert "breach, every campaign frozen" in host.said("a")
+    assert "chosen to stop: grew 10.0 GiB in 30 s" in host.said("b")
+    assert "clean stop requested (stop-file)" in host.said("b")
+    assert "stopped cleanly" in host.said("b")
+    assert "breach over" in host.said("a")
+    assert "thawed" in host.said("a")
+    assert host.procs["a"].poll() is None
+
+
+def test_a_victim_that_ignores_its_stop_file_is_removed_after_its_wait(breach):
+    host = breach(free_before=20 * GIB, free_after=40 * GIB)
+    mode_a, _ = host.spawn("a", "none")
+    mode_b, _ = host.spawn("b", "stop-file", ignore=True)
+    members = [campaign.Member("a", 100.0, mode_a, 60),
+               campaign.Member("b", 200.0, mode_b, 2)]  # fmt: skip
+    start = time.monotonic()
+    campaign.lead(members, 24 * GIB, host.host())
+    assert host.killed == ["b"]
+    assert "last resort: stop-file ignored for 2 s, removed" in host.said("b")
+    assert 2 <= time.monotonic() - start < 10
+    assert host.paused == set()  # the other thawed
+    assert host.procs["a"].poll() is None
+
+
+def test_below_half_the_floor_the_victim_is_removed_at_once(breach):
+    host = breach(free_before=10 * GIB, free_after=10 * GIB, critical=True)
+    mode, _ = host.spawn("b", "stop-file")
+    campaign.lead([campaign.Member("b", 1.0, mode, 60)], 24 * GIB, host.host())
+    assert host.killed == ["b"]
+    assert "last resort: removed (host below half the floor" in host.said("b")
+
+
+@pytest.mark.parametrize(("members", "victim", "why"), [
+    # The culprit, whatever its stop.
+    ([("a", 3.0, "signal", 0), ("b", 1.0, "none", 5 * GIB)], "b", "grew 5.0 GiB"),
+    # No culprit: the newest with a clean stop, before a newer one without.
+    ([("a", 1.0, "signal", 0), ("b", 2.0, "stop-file:/x", GIB), ("c", 3.0, "none", 0)], "b",
+     "the newest with a clean stop"),
+    # None declares one: the newest.
+    ([("a", 1.0, "none", 0), ("b", 2.0, "none", 0)], "b", "the newest (none declares"),
+])  # fmt: skip
+def test_the_victim_is_the_culprit_else_the_newest_with_a_clean_stop(members, victim, why):
+    chosen, reason = campaign.victim_of(
+        [campaign.Member(n, t, mode, 60, growth=g) for n, t, mode, g in members]
+    )
+    assert chosen.name == victim
+    assert reason.startswith(why)
+
+
+def test_a_campaign_without_a_clean_stop_goes_straight_to_the_last_resort(breach):
+    host = breach(free_before=20 * GIB, free_after=40 * GIB)
+    mode, _ = host.spawn("b", "none")
+    campaign.lead([campaign.Member("b", 1.0, mode, 60)], 24 * GIB, host.host())
+    assert host.killed == ["b"]
+    assert "last resort: removed (no clean stop declared)" in host.said("b")
+
+
+def test_one_watcher_leads_a_breach_the_others_follow(tmp_path, monkeypatch):
+    monkeypatch.setattr(campaign, "STATES", tmp_path)
+    monkeypatch.setattr(campaign, "BREACH_LOCK", tmp_path / "breach.lock")
+    led = []
+    monkeypatch.setattr(campaign, "lead", lambda *a: led.append(a))
+    monkeypatch.setattr(campaign.memfloor, "below", lambda _floor: True)
+    monkeypatch.setattr(campaign, "members_alive", lambda: [campaign.Member("a", 1.0, "none", 60)])
+    with (tmp_path / "breach.lock").open("a") as other:
+        fcntl.flock(other, fcntl.LOCK_EX)  # another watcher leads
+        assert campaign.handle_breach(24 * GIB) is False
+    assert led == []
+    assert campaign.handle_breach(24 * GIB) is True
+    assert len(led) == 1
