@@ -42,7 +42,7 @@ export interface Run {
   /** Round-off floor of every equation of a steady fp32+acc64 run (case-schema.md#time). */
   convergence: { floor: Record<string, number> } | null;
   /** The last checkpoint written while running, null before the first (results.md#runjson). */
-  checkpoint: { iteration: number; time: number | null; seconds: number } | null;
+  checkpoint: { iteration: number; time: number | null; write_seconds: number } | null;
   /** Timing of this run alone, null while running, without iterations and for the fake backend
    * (results.md#runjson); bench/ measures performance. */
   timing: {

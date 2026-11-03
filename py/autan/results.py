@@ -7,6 +7,7 @@ import json
 import math
 import re
 import secrets
+import tempfile
 import tomllib
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -117,12 +118,17 @@ class StartInfo(_Strict):
 
 @dataclass(frozen=True)
 class ResumePoint:
-    """Where a run's checkpoint leaves it: the iteration it holds, its physical time (``None``
-    when steady) and its averaging."""
+    """The state a run can be continued from, read once: the iteration it holds, its physical
+    time (``None`` when steady), its averaging, the SHA-256 of the file read and, for a
+    checkpoint of a steady run, the convergence reference and woken equations at that iteration
+    (``None`` otherwise: a final solution's come from the history)."""
 
     iteration: int
     time: float | None
     averaging: Averaging | None
+    sha256: str
+    residual_reference: dict[str, float] | None = None
+    woken: list[str] | None = None
 
 
 def _is_averaging(value: object) -> bool:
@@ -140,7 +146,7 @@ class CheckpointRecord(_Strict):
 
     iteration: Annotated[int, Field(strict=True, ge=1)]
     time: float | None
-    seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)]
+    write_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)]
 
 
 class Convergence(_Strict):
@@ -520,6 +526,7 @@ class Results:
             history,
         )
         self._solution: cgns.Node | None = None
+        self._checkpoint: cgns.Node | None = None
 
     @classmethod
     def open(cls, path: str | Path) -> Results:
@@ -631,8 +638,8 @@ class Results:
         self._solution = self._read(path, checkpoint=False)
         return self._solution
 
-    def _read(self, path: Path, *, checkpoint: bool) -> cgns.Node:
-        where = Location(file=str(path))
+    def _read(self, path: Path, *, checkpoint: bool, shown: Path | None = None) -> cgns.Node:
+        where = Location(file=str(shown or path))
         try:
             tree = cgns.read(path)
         except cgns.OutsideFileError as error:
@@ -650,21 +657,40 @@ class Results:
 
     def checkpoint(self) -> ResumePoint:
         """The restart checkpoint a run wrote while running (results.md#checkpointcgns), read
-        and checked: the iteration it holds, its physical time and averaging. ``E0703`` when the
-        run has none."""
+        and checked from one copy of the file, so that its state and its SHA-256 agree even if
+        the run replaces it meanwhile. ``E0703`` when the run has none."""
         path = self.path / "checkpoint.cgns"
         if not path.is_file():
             message = f"run {self.run.run_id} ({self.run.status}) has no checkpoint"
             raise CaseError([diagnostic("E0703", message, location=Location(file=str(path)))])
-        metadata = json.loads(
-            self._read(path, checkpoint=True).child("Base").child("RunMetadata").text()
-        )
+        with tempfile.TemporaryDirectory() as scratch:
+            copy = Path(scratch) / "checkpoint.cgns"
+            data = path.read_bytes()
+            copy.write_bytes(data)
+            tree = self._read(copy, checkpoint=True, shown=path)
+        self._checkpoint = tree
+        metadata = json.loads(tree.child("Base").child("RunMetadata").text())
+        mark = metadata["checkpoint"]
         averaging = metadata["averaging"]
         return ResumePoint(
-            iteration=int(metadata["checkpoint"]["iteration"]),
+            iteration=int(mark["iteration"]),
             time=metadata["time"],
             averaging=None if averaging is None else Averaging.model_validate(averaging),
+            sha256=hashlib.sha256(data).hexdigest(),
+            residual_reference=mark["residual_reference"],
+            woken=mark["woken"],
         )
+
+    def checkpoint_field(self, name: str) -> NDArray[np.float64]:
+        """Cell-centred field ``name`` of the checkpoint ``checkpoint()`` read last."""
+        tree = self._checkpoint
+        if tree is None:
+            self.checkpoint()
+            tree = self._checkpoint
+        if tree is None:  # checkpoint() raises or sets it
+            raise CaseError([diagnostic("E0703", f"run {self.run.run_id} has no checkpoint")])
+        solution = tree.child("Base").child("Zone").child("FlowSolution")
+        return np.asarray(solution.child(name).data, dtype=np.float64)
 
     def _zone(self) -> cgns.Node:
         return self._tree().child("Base").child("Zone")
@@ -748,7 +774,7 @@ def _base(spec: CaseSpec) -> object:
 _TIMESTAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
 
 
-RUN_KEYS = ("start", "convergence", "monitors", "timing")
+RUN_KEYS = ("start", "convergence", "checkpoint", "monitors", "timing")
 
 
 def check_run_json(document: object, case: CaseSpec, mesh_info: MeshInfo) -> list[str]:
@@ -1059,12 +1085,7 @@ def _solution_problems(
     metadata = json.loads(base.child("RunMetadata").text())
     expected = run_metadata(run)
     if checkpoint:
-        mark = metadata.get("checkpoint")
-        iteration = mark.get("iteration") if isinstance(mark, dict) else None
-        if set(mark or {}) != {"iteration"} or type(iteration) is not int or iteration < 1:
-            found.append("RunMetadata of a checkpoint must give checkpoint.iteration >= 1")
-        if not _is_averaging(metadata.get("averaging", False)):
-            found.append("RunMetadata of a checkpoint must give averaging")
+        found += _checkpoint_state_problems(metadata, case)
         metadata = {k: v for k, v in metadata.items() if k not in CHECKPOINT_STATE}
         expected = {k: v for k, v in expected.items() if k not in CHECKPOINT_STATE}
     averaged = (
@@ -1132,6 +1153,45 @@ def _solution_problems(
         low, high = (1, faces) if region.name == "WallSolution" else (faces + 1, faces + cells)
         if not _ids_in(region.child("PointList").data, low, high):
             found.append(f"ZoneSubRegion {region.name} PointList is out of range")
+    return found
+
+
+def _checkpoint_state_problems(metadata: dict[str, Any], case: CaseSpec) -> list[str]:
+    """A checkpoint's own state in its RunMetadata (results.md#checkpointcgns): its iteration,
+    the time and averaging of that iteration, and the steady convergence reference and woken
+    equations, exactly for a steady run."""
+    found = []
+    steady = isinstance(case.time, Steady)
+    mark = metadata.get("checkpoint")
+    if not isinstance(mark, dict) or set(mark) != {"iteration", "residual_reference", "woken"}:
+        return ["RunMetadata checkpoint must be {iteration, residual_reference, woken}"]
+    iteration = mark["iteration"]
+    if type(iteration) is not int or iteration < 1:
+        found.append("RunMetadata checkpoint.iteration must be an integer >= 1")
+    time = metadata.get("time", False)
+    if steady and time is not None:
+        found.append("RunMetadata time of a steady checkpoint must be null")
+    if not steady and not (type(time) in (int, float) and _finite(time) and time >= 0):
+        found.append("RunMetadata time of an unsteady checkpoint must be a number >= 0")
+    if not _is_averaging(metadata.get("averaging", False)) or (
+        steady and metadata.get("averaging") is not None
+    ):
+        found.append("RunMetadata averaging of a checkpoint must be valid, and null when steady")
+    reference, woken = mark["residual_reference"], mark["woken"]
+    if steady:
+        equations = residual_names(case)
+        if (
+            not isinstance(reference, dict)
+            or sorted(reference) != sorted(equations)
+            or not all(
+                type(v) in (int, float) and _finite(v) and v >= 0 for v in reference.values()
+            )
+        ):
+            found.append("RunMetadata checkpoint.residual_reference must give every equation")
+        elif not isinstance(woken, list) or woken_problem(reference, woken):
+            found.append("RunMetadata checkpoint.woken must list sorted equations")
+    elif reference is not None or woken is not None:
+        found.append("RunMetadata checkpoint residual_reference and woken must be null")
     return found
 
 

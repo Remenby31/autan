@@ -284,11 +284,11 @@ class FakeBackend:
         end = min(budget, CONVERGED_AT) if steady else budget
         # A started run begins from the state of the previous one, which the synthetic
         # trajectory leaves unchanged.
-        inherited = (
-            {name: Results.open(start.run).field(name) for name in field_names(spec)}
-            if start is not None
-            else None
-        )
+        inherited = None
+        if start is not None:
+            source = Results.open(start.run)
+            read = source.checkpoint_field if start.info.file == "checkpoint" else source.field
+            inherited = {name: read(name) for name in field_names(spec)}
         # A continued run goes on counting; its trajectory is that of an uninterrupted run.
         offset = start.info.iterations if start and start.info.mode == "continue" else 0
         cap = offset + self.iterations

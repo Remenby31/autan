@@ -267,6 +267,8 @@ def test_defaults_are_materialized_before_hashing(tmp_path: Path) -> None:
             turbulence={"model": "ddes", "base": {"model": "sa", "intensity": 0.1}}
         ),
         lambda d: d["time"].update(matrix_free=True),  # an SA case
+        lambda d: d["time"].update(checkpoint={}),
+        lambda d: d["time"].update(checkpoint={"seconds": "100 s", "iterations": 5}),
         lambda d: (
             d["time"].update(coupled_turbulence=True),
             d["physics"].update(turbulence={"model": "laminar"}),

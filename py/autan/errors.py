@@ -708,7 +708,7 @@ _CODES = [
         "breaks during the run usually means a boundary condition breaks it.",
     ),
     Code(
-        "W0711",
+        "W0714",
         "Checkpoint not written",
         "Writing the restart checkpoint failed (results.md#checkpointcgns), or removing it once "
         "the final solution was written: the run goes on, and the previous checkpoint, if any, "

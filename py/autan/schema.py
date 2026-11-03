@@ -662,7 +662,15 @@ def json_schema() -> dict[str, Any]:
         initial = {"properties": {"initial": {"anyOf": [{"type": "null"}, rule]}}}
         return {"properties": {"cell_zones": {"items": {"properties": {"medium": initial}}}}}
 
+    one = [
+        {
+            "required": [key],
+            "properties": {key: {"not": {"type": "null"}}, other: {"type": "null"}},
+        }
+        for key, other in (("seconds", "iterations"), ("iterations", "seconds"))
+    ]
     schema["allOf"] = [
+        {"properties": {"time": {"properties": {"checkpoint": {"oneOf": one}}}}},
         {
             "if": {"required": ["initial_state"]},
             "then": {

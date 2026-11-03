@@ -27,7 +27,9 @@ def _budget(spec: CaseSpec) -> int:
 def _without_budget(spec: CaseSpec) -> dict[str, Any]:
     document = spec.document()
     document["time"] = {
-        k: v for k, v in document["time"].items() if k not in ("max_iterations", "steps")
+        k: v
+        for k, v in document["time"].items()
+        if k not in ("max_iterations", "steps", "checkpoint")
     }
     return document
 
@@ -38,10 +40,16 @@ def _resume_point(previous: Results) -> ResumePoint | None:
     either. Raises ``CaseError`` when that file does not conform."""
     run = previous.run
     if run.status in RESUMABLE:
-        if not (previous.path / "solution.cgns").is_file():
+        path = previous.path / "solution.cgns"
+        if not path.is_file():
             return None
         previous.field("Density")  # reads the solution and checks it against run.json
-        return ResumePoint(iteration=run.iterations, time=run.time, averaging=run.averaging)
+        return ResumePoint(
+            iteration=run.iterations,
+            time=run.time,
+            averaging=run.averaging,
+            sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
     if not (previous.path / "checkpoint.cgns").is_file():
         return None
     return previous.checkpoint()
@@ -92,7 +100,7 @@ def problems(
                 problem(
                     "E0708",
                     "continue needs the same case as the previous run, "
-                    "except its iteration or step budget",
+                    "except its iteration or step budget and its checkpoint cadence",
                 )
             )
         elif point is not None and _budget(spec) <= point.iteration:
@@ -122,18 +130,25 @@ def start_info(previous: Results, mode: Mode) -> StartInfo:
     if point is None:
         raise CaseError([diagnostic("E0707", f"run {run.run_id} has no state to start from")])
     file: Literal["solution", "checkpoint"] = "solution" if final else "checkpoint"
-    digest = hashlib.sha256((previous.path / f"{file}.cgns").read_bytes()).hexdigest()
-    reference = _reference(previous) if mode == "continue" else None
+    # A checkpoint carries its own convergence state; a final solution's is the history's.
+    reference: dict[str, float] | None = None
+    found_woken: list[str] | None = None
+    if mode == "continue" and isinstance(previous.case.time, Steady):
+        if final:
+            reference = _reference(previous)
+            found_woken = None if reference is None else woken(previous, reference, point.iteration)
+        else:
+            reference, found_woken = point.residual_reference, point.woken
     return StartInfo(
         run_id=run.run_id,
         identity=run.identity,
         mode=mode,
         iterations=point.iteration,
         time=point.time,
-        solution_sha256=digest,
+        solution_sha256=point.sha256,
         file=file,
         residual_reference=reference,
-        woken=None if reference is None else woken(previous, reference, point.iteration),
+        woken=found_woken,
     )
 
 

@@ -337,8 +337,9 @@ def _killed(
             time.sleep(0.01)
         else:
             pytest.fail("the run never got ready")
+        # This invocation's runtime only: the SDK script's child.
         found = subprocess.run(
-            ["pgrep", "-f", f"{RELAXATION} --input"], capture_output=True, text=True, check=True
+            ["pgrep", "-P", str(process.pid)], capture_output=True, text=True, check=True
         )
         for pid in found.stdout.split():
             os.kill(int(pid), signal.SIGKILL)
@@ -362,11 +363,17 @@ def test_a_killed_run_continues_from_its_last_checkpoint(tmp_path: Path) -> None
     assert point.iteration % 4 == 0
     assert point.iteration >= 8
     case = autan.load(tmp_path / "killed.py")
+    # The continuation may change the cadence: it changes no result.
+    other = tmp_path / "other-cadence.py"
+    other.write_text(
+        CASE + "case.time = autan.Steady(max_iterations=200, "
+        "checkpoint=autan.Checkpoint(iterations=7))\n"
+    )
     mesh = autan.MeshInfo.load(tmp_path / "hybrid.meshinfo.json")
     backend = autan.SolverBackend(executable=RELAXATION)
     with pytest.MonkeyPatch.context() as env:
         env.setenv("AUTAN_TEST_FACTOR", "0.99")
-        rest = case.run(mesh, backend=backend, runs=tmp_path / "rest", start=previous)
+        rest = autan.load(other).run(mesh, backend=backend, runs=tmp_path / "rest", start=previous)
         whole = case.run(mesh, backend=backend, runs=tmp_path / "whole")
     assert rest.run.start is not None
     assert (rest.run.start.file, rest.run.start.iterations) == ("checkpoint", point.iteration)

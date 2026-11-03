@@ -378,33 +378,22 @@ std::int64_t checkpoint_iteration(const fs::path& file) {
 }
 
 // The `start` the SDK writes to continue a run that did not end from its checkpoint
-// (solver-input.md): the checkpoint's iteration and time, its hash, and the steady residual
-// reference with the equations that left their floor up to that iteration.
+// (solver-input.md): the checkpoint's iteration, time and steady convergence state, and its
+// hash.
 Json start_from_checkpoint(const fs::path& previous) {
   const fs::path file = previous / "checkpoint.cgns";
   const Json metadata = Json::parse(autan::io::read_solution(file).run_metadata);
-  const std::int64_t k = metadata["checkpoint"]["iteration"].get<std::int64_t>();
   const Json info = Json::parse(read(previous / "run.json"));
-  std::vector<Json> lines;
-  for (const auto& line : lines_of(previous / "history.jsonl")) {
-    const Json j = Json::parse(line, nullptr, false);
-    if (!j.is_discarded() && j["iteration"].get<std::int64_t>() <= k) lines.push_back(j);
-  }
-  Json reference = nullptr, woken = nullptr;
-  if (metadata["time"].is_null()) {
-    reference = lines.front()["residuals"];
-    woken = Json::array();  // the relaxation's equations all start at 1
-  }
   return Json{{"run", previous.string()},
               {"run_id", info["run_id"]},
               {"identity", info["identity"]},
               {"mode", "continue"},
-              {"iterations", k},
+              {"iterations", metadata["checkpoint"]["iteration"]},
               {"time", metadata["time"]},
               {"solution_sha256", file_sha256(file)},
               {"file", "checkpoint"},
-              {"residual_reference", reference},
-              {"woken", woken}};
+              {"residual_reference", metadata["checkpoint"]["residual_reference"]},
+              {"woken", metadata["checkpoint"]["woken"]}};
 }
 
 }  // namespace
@@ -449,7 +438,7 @@ TEST_CASE("A run killed between two checkpoints continues from the last one bit 
   CHECK(k % 4 == 0);
   CHECK(k >= 8);
   CHECK(dead["checkpoint"]["iteration"] == k);
-  CHECK(dead["checkpoint"]["seconds"].get<double>() >= 0.0);
+  CHECK(dead["checkpoint"]["write_seconds"].get<double>() >= 0.0);
 
   Json next = doc(Json{{"seconds", 1800.0}});
   next["start"] = start_from_checkpoint(killed.run);
@@ -484,17 +473,27 @@ TEST_CASE("A run killed while it writes a checkpoint keeps the previous one whol
     d["time"]["max_iterations"] = 100000;
     d["time"]["checkpoint"] = Json{{"iterations", 1}};
   });
-  const auto killed = spawn_until(
-      doc, {"AUTAN_TEST_FACTOR=0.999"},
-      [](const fs::path& r) {
-        return fs::exists(r / "checkpoint.cgns") && fs::exists(r / ".checkpoint.cgns.tmp");
-      },
-      100);
-  kill_and_reap(killed.pid);
+  // Retried until the kill lands while the temporary file still exists, after a first
+  // checkpoint: a kill after the rename proves nothing.
+  Spawned killed;
+  bool during_write = false;
+  for (int attempt = 0; attempt < 20 && !during_write; ++attempt) {
+    killed = spawn_until(
+        doc, {"AUTAN_TEST_FACTOR=0.999"},
+        [](const fs::path& r) {
+          return fs::exists(r / "checkpoint.cgns") && fs::exists(r / ".checkpoint.cgns.tmp");
+        },
+        100);
+    kill_and_reap(killed.pid);
+    during_write = fs::exists(killed.run / ".checkpoint.cgns.tmp");
+  }
+  REQUIRE(during_write);
   const fs::path file = killed.run / "checkpoint.cgns";
   REQUIRE(fs::exists(file));
+  // Whole: readable, and its iteration has its history line.
   const std::int64_t k = checkpoint_iteration(file);
   CHECK(k >= 1);
+  CHECK(static_cast<std::int64_t>(lines_of(killed.run / "history.jsonl").size()) >= k);
   Json next = input([](Json& d) {
     d["time"]["max_iterations"] = 100000;
     d["time"]["checkpoint"] = Json{{"iterations", 1}};

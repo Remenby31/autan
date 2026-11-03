@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -250,6 +251,49 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
     INFO(name);
     CHECK(std::abs(floor[name].get<double>() - value.get<double>()) <= 1e-12 * value.get<double>());
   }
+}
+
+// Two runs of `doc`, one with the default cadence and one with a checkpoint after every
+// iteration: the same history and solution, bit for bit (results.md#checkpointcgns), and no
+// checkpoint left once the run ends.
+void check_checkpoints_change_nothing(Json doc) {
+  doc["reproducibility"] = "run";
+  const auto plain = run(doc);
+  INFO(plain.err);
+  REQUIRE(plain.status == ExitStatus::finished);
+  doc["time"]["checkpoint"] = Json{{"iterations", 1}};
+  const auto every = run(doc);
+  INFO(every.err);
+  REQUIRE(every.status == ExitStatus::finished);
+  CHECK(read(every.run / "history.jsonl") == read(plain.run / "history.jsonl"));
+  for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
+    CAPTURE(name);
+    const auto a = field(plain.run, name), b = field(every.run, name);
+    REQUIRE(a.size() == b.size());
+    CHECK(std::memcmp(a.data(), b.data(), a.size() * sizeof(double)) == 0);
+  }
+  const Json info = Json::parse(read(every.run / "run.json"));
+  CHECK(info["checkpoint"].is_object());
+  CHECK(!fs::exists(every.run / "checkpoint.cgns"));
+}
+
+TEST_CASE("checkpoints change no Euler result", "[euler]") {
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  const bool steady = GENERATE(true, false);
+  CAPTURE(precision, steady);
+  check_checkpoints_change_nothing(input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, precision);
+    for (auto& b : d["boundaries"]) b["kind"] = "farfield";
+    auto& init = d["cell_zones"].back()["initial"];
+    init["pressure"] = 1.3 * init["pressure"].get<double>();
+    if (steady) {
+      d["time"]["max_iterations"] = 8;
+    } else {
+      d["time"] = {{"kind", "unsteady"}, {"steps", 8},
+                   {"dt", nullptr},      {"cfl", 0.8},
+                   {"average_from", 4},  {"checkpoint", {{"seconds", 1800.0}}}};
+    }
+  }));
 }
 
 TEST_CASE("a verification case converges to its discrete solution", "[euler]") {
@@ -1456,6 +1500,19 @@ TEST_CASE("on a device, a uniform flow along slip walls and farfield faces stays
   for (const double v : field(out.run, "Pressure")) CHECK(std::abs(v - p) <= 64 * eps * p);
   for (const double v : field(out.run, "VelocityX")) CHECK(std::abs(v - speed) <= 64 * eps * speed);
   for (const double v : field(out.run, "VelocityZ")) CHECK(std::abs(v) <= 64 * eps * speed);
+}
+
+TEST_CASE("on a device, checkpoints change no Euler result", "[euler][gpu]") {
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  CAPTURE(precision);
+  check_checkpoints_change_nothing(input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, precision);
+    on_device(d);
+    for (auto& b : d["boundaries"]) b["kind"] = "farfield";
+    auto& init = d["cell_zones"].back()["initial"];
+    init["pressure"] = 1.3 * init["pressure"].get<double>();
+    d["time"]["max_iterations"] = 8;
+  }));
 }
 
 TEST_CASE("on a device, a verification case converges to the host's discrete solution",
