@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from autan.manufactured import MMS_BYTES
 from autan.schema import Steady
 from autan.texts import TEXT_BYTES
 
@@ -226,7 +227,8 @@ def _rank(
     # text, the document's strings (at most S), 1 KiB of members, its rows streamed into
     # vectors (64 B a row, 128 B while one grows) and their pairing (138 B a row, 160 B per
     # cell); face states the same with 1 200 B a zone, then 40 B per face of its oracle zones,
-    # which a rank keeps; a manufactured solution's text stays for the run with its compiled
+    # which a rank keeps; a manufactured solution's text stays for the run, read into a buffer of
+    # the contract's bound, with its compiled
     # expressions, at most one 32 B node per byte of text in vectors up to twice that, and the
     # physics parses it once, at most 40 B of document per byte of text, while the node
     # vectors grow (the old buffer, half the new one, is freed after the copy).
@@ -248,7 +250,10 @@ def _rank(
     if any(x.kind == "faces" for x in files):
         add("face states", sum(40 * x.faces for x in files if x.kind == "faces"))
     if any(x.kind == "manufactured" for x in files):
-        add("manufactured solution", sum(65 * x.size for x in files if x.kind == "manufactured"))
+        # The text in a buffer of MMS_BYTES + 1, which the runtime reads into and keeps
+        # (runtime/src/run.cpp), and its compiled expressions.
+        texts = sum(MMS_BYTES + 1 + 64 * x.size for x in files if x.kind == "manufactured")
+        add("manufactured solution", texts)
 
     # The physics (Euler's inventory, scaled from its 5 equations to n): geometry, stencil
     # and state on the host, always; the same on the device for a device run.
