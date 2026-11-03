@@ -238,29 +238,105 @@ def test_a_campaign_gives_way_when_host_memory_falls_below_its_floor(
         measurement.close()
 
 
-def test_campaigns_freeze_for_timed_holds_only(tmp_path, monkeypatch):
-    """A build or a functional test holds the GPU lock but times nothing: no freeze for it."""
-    lock = tmp_path / "gpu.lock"
-    lock.touch()
-    monkeypatch.setattr(campaign, "LOCK", lock)
-    monkeypatch.setattr(campaign, "TIMED", tmp_path / "timed.lock")
-    # A Spark not redeployed since: no timed.lock, every hold freezes as before.
-    assert campaign.freeze_lock() == lock
-    (tmp_path / "timed.lock").touch()
-    assert campaign.freeze_lock() == tmp_path / "timed.lock"
+HOLDER = """import fcntl, pathlib, sys, time
+handles = []
+for path, mode in zip(sys.argv[2::2], sys.argv[3::2]):
+    handle = open(path)
+    fcntl.flock(handle, fcntl.LOCK_EX if mode == "ex" else fcntl.LOCK_SH)
+    handles.append(handle)
+pathlib.Path(sys.argv[1]).touch()
+time.sleep(60)
+"""
+
+
+@pytest.fixture
+def holders(tmp_path):
+    """Processes that hold flocks, as a build or a measurement holds the GPU lock."""
+    script = tmp_path / "holder.py"
+    script.write_text(HOLDER)
+    started = []
+
+    def hold(*locks: tuple[Path, str]) -> subprocess.Popen:
+        ready = tmp_path / f"ready-{len(started)}"
+        args = [str(x) for lock in locks for x in lock]
+        proc = subprocess.Popen([sys.executable, str(script), str(ready), *args])
+        started.append(proc)
+        assert until(ready.exists, timeout=10)
+        return proc
+
+    yield hold
+    for proc in started:
+        proc.kill()
+        proc.wait()
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="/proc/locks is Linux's")
-def test_an_untimed_hold_leaves_campaigns_running_a_timed_one_freezes_them(tmp_path, monkeypatch):
-    lock, timed = tmp_path / "gpu.lock", tmp_path / "timed.lock"
+def test_only_a_hold_that_says_it_is_untimed_leaves_campaigns_running(
+    tmp_path, monkeypatch, holders
+):
+    lock, untimed = tmp_path / "gpu.lock", tmp_path / "untimed.lock"
     lock.touch()
-    timed.touch()
     monkeypatch.setattr(campaign, "LOCK", lock)
-    monkeypatch.setattr(campaign, "TIMED", timed)
-    proc_locks = Path("/proc/locks")
-    with lock.open() as gpu_handle:
-        fcntl.flock(gpu_handle, fcntl.LOCK_EX)  # a build under the GPU lock
-        assert not campaign.lock_in_use(campaign.freeze_lock(), proc_locks.read_text())
-        with timed.open() as timed_handle:
-            fcntl.flock(timed_handle, fcntl.LOCK_SH)  # a measurement
-            assert campaign.lock_in_use(campaign.freeze_lock(), proc_locks.read_text())
+    monkeypatch.setattr(campaign, "UNTIMED", untimed)
+
+    def wanted() -> bool:
+        return campaign.freeze_wanted(Path("/proc/locks").read_text())
+
+    assert not wanted()
+    # Before untimed.lock exists (a Spark not redeployed), every hold freezes.
+    proc = holders((lock, "ex"))
+    assert wanted()
+    proc.kill()
+    proc.wait()
+    untimed.touch()
+    # A build: the GPU lock and untimed.lock, by the same process.
+    build = holders((lock, "ex"), (untimed, "sh"))
+    assert not wanted()
+    build.kill()
+    build.wait()
+    # A measurement: the GPU lock alone; untimed.lock held by another process does not cover it.
+    holders((untimed, "sh"))
+    holders((lock, "ex"))
+    assert wanted()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="/proc/locks and cgroups are Linux's")
+def test_the_watcher_freezes_for_a_measurement_not_for_a_build(tmp_path, monkeypatch, holders):
+    # Through the CLI and its detached watcher; docker faked at the boundary (it records its
+    # calls and reports the container running as this test's own process, a real cgroup).
+    calls = tmp_path / "calls"
+    fake = tmp_path / "docker"
+    fake.write_text(f'#!/bin/sh\necho "$*" >> {calls}\n'
+                    f'case "$1" in inspect) echo "running {os.getpid()}" ;; esac\n')  # fmt: skip
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    lock, untimed = tmp_path / "gpu.lock", tmp_path / "untimed.lock"
+    lock.touch()
+    untimed.touch()
+    monkeypatch.setenv("AUTAN_GPU_LOCK", str(lock))
+    monkeypatch.setattr(campaign, "LOCK", lock)
+    monkeypatch.setattr(campaign, "UNTIMED", untimed)
+    monkeypatch.setattr(campaign, "STATE", tmp_path / "autan-campaigns")
+    monkeypatch.setattr(campaign, "STATES", tmp_path / "campaigns")
+
+    def calls_of() -> list[str]:
+        if not calls.exists():
+            return []
+        return [c.split()[0] for c in calls.read_text().splitlines()
+                if c.endswith("autan-campaign-c3")]  # fmt: skip
+
+    assert campaign.main(["start", "c3", "--free", "0G", "--dir", str(tmp_path), "--", "x"]) == 0
+    assert until(lambda: "start" in calls_of())
+    build = holders((lock, "ex"), (untimed, "sh"))
+    time.sleep(2)  # twenty polls of the watcher: a build never pauses the campaign
+    assert "pause" not in calls_of()
+    build.kill()
+    build.wait()
+    measurement = holders((lock, "ex"))
+    assert until(lambda: "pause" in calls_of())
+    assert (tmp_path / "campaigns" / "c3.state").read_text().strip() == "frozen"
+    measurement.kill()
+    measurement.wait()
+    assert until(lambda: "unpause" in calls_of())
+    campaign.main(["stop", "c3"])

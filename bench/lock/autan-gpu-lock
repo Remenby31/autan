@@ -12,9 +12,9 @@
            wait for CI and for a free lock, then run it without holding the lock, under the
            same records; the -t limit then counts from its start, its own lock wait included
            (a turn this wrapper takes past pull requests' CI is passed on to it)
---untimed  the command times nothing (a build, a functional test): CPU campaigns are not frozen
-           for it. By default a hold is a timed one: timed.lock, next to the lock, is held
-           (shared) with it, and campaigns freeze while it is (bench/campaign/autan-campaign)
+--untimed  the command times nothing (a build, a functional test): untimed.lock, next to the
+           lock, is held (shared) by this process while it waits and holds, and CPU campaigns
+           are not frozen for it (bench/campaign/autan-campaign). Any other hold freezes them.
 -t HOLD_S  hold the lock at most this long, 1 to 600 (default 600): the command's processes get
            TERM shortly before and KILL at the limit (exit 124)
 -f FLOOR   host memory to keep available, as 24G or 512M (default 24G, 0G for none): the
@@ -61,7 +61,7 @@ LOG = LOCK.parent / "holders.log"
 CI_LOCK = LOCK.parent / "ci.lock"
 MAIN_LOCK = LOCK.parent / "main.lock"
 TURN_LOCK = LOCK.parent / "turn.lock"
-TIMED_LOCK = LOCK.parent / "timed.lock"
+UNTIMED_LOCK = LOCK.parent / "untimed.lock"
 MAX_HOLD_S = 600
 POLL_S = 0.05
 CLEANUP_S = 10.0
@@ -161,15 +161,15 @@ class Log:
             self.unrecorded(line)
 
 
-def timed_hold() -> object | None:
-    """timed.lock held shared, as an open file to close at the end of the hold; None where it
-    does not exist and cannot be made (a read-only lock directory: campaigns there freeze on the
-    GPU lock itself)."""
+def untimed_hold() -> object | None:
+    """untimed.lock held shared by this process, as an open file kept to the process's end; None
+    where it does not exist and cannot be made (a read-only lock directory): the hold is then
+    taken as timed, the safe side."""
     try:
-        fd = os.open(TIMED_LOCK, os.O_RDONLY)
+        fd = os.open(UNTIMED_LOCK, os.O_RDONLY)
     except FileNotFoundError:
         try:
-            fd = os.open(TIMED_LOCK, os.O_RDONLY | os.O_CREAT, 0o666)
+            fd = os.open(UNTIMED_LOCK, os.O_RDONLY | os.O_CREAT, 0o666)
         except OSError:
             return None
     handle = os.fdopen(fd)
@@ -399,6 +399,8 @@ def run(turn: Turn) -> int:
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, lambda signum, _frame: cancel.append(signum))
 
+    # Said before the wait, by the process that will hold the lock: the watcher matches the two.
+    _untimed = untimed_hold() if untimed else None  # held to this process's end
     with LOCK.open() as handle:
         start = time.monotonic()
         log.record("wait", 0)
@@ -477,8 +479,6 @@ def run(turn: Turn) -> int:
         # A turn's hold counts from the turn's start, its memory wait included.
         if self_locking and not bypass:
             taken = time.monotonic()
-        # A timed hold says so (autan-bench, with -n, says it itself for each measurement).
-        timed = None if untimed or self_locking else timed_hold()
         become_subreaper()
         helpers: set[int] = set()
         container = Container(helpers)
@@ -495,8 +495,6 @@ def run(turn: Turn) -> int:
         tree = Tree(proc.pid, helpers)
         status, stop, leftover, low = supervise(proc, taken, hold_s, floor, cancel, container, tree)
         held = time.monotonic() - taken
-        if timed is not None:
-            timed.close()
         fcntl.flock(handle, fcntl.LOCK_UN)
 
     if leftover:

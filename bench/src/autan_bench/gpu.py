@@ -195,30 +195,6 @@ def gpu_lock(path: Path = DEFAULT_LOCK, timeout_s: float | None = None) -> Itera
 CAMPAIGN_HEARTBEAT_S = 90.0
 
 
-@contextlib.contextmanager
-def timed_hold(lock: Path = DEFAULT_LOCK) -> Iterator[None]:
-    """Hold ``timed.lock`` (shared) next to the GPU lock while a measurement times: CPU campaigns
-    freeze for it (bench/campaign/), not for builds or tests that hold only the GPU lock. Shared,
-    since timed holders never compete with each other through it; the GPU lock orders them."""
-    path = lock.parent / "timed.lock"
-    try:
-        fd = os.open(path, os.O_RDONLY)
-    except FileNotFoundError:
-        try:
-            fd = os.open(path, os.O_RDONLY | os.O_CREAT, 0o666)
-        except OSError:
-            # A read-only lock directory without timed.lock: campaigns there freeze on the GPU
-            # lock itself, which this measurement holds.
-            yield
-            return
-    with os.fdopen(fd) as handle:
-        fcntl.flock(handle, fcntl.LOCK_SH)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
-
-
 def require_campaigns_frozen(lock: Path, timeout_s: float = 10.0) -> None:
     """Wait until every live CPU campaign (bench/campaign/) reads frozen.
 

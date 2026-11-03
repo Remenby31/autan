@@ -406,7 +406,7 @@ def test_a_docker_run_command_has_its_container_killed_with_it(lock, tmp_path, m
             subprocess.run(["docker", "rm", "-f", cid], capture_output=True, check=False)
 
 
-PROBE_TIMED = """import fcntl, sys
+PROBE_UNTIMED = """import fcntl, sys
 with open(sys.argv[1]) as handle:
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -416,20 +416,19 @@ with open(sys.argv[1]) as handle:
 """
 
 
-@pytest.mark.parametrize(("flags", "expected"), [([], "held"), (["--untimed"], "free"),
+@pytest.mark.parametrize(("flags", "expected"), [([], "free"), (["--untimed"], "held"),
                                                  (["-n"], "free")])  # fmt: skip
-def test_a_hold_is_timed_unless_said_untimed(lock, tmp_path, flags, expected):
-    # Timed by default (campaigns freeze); --untimed for builds and tests; with -n, autan-bench
-    # declares each of its measurements itself.
-    timed = lock.parent / "timed.lock"
-    timed.touch()
+def test_only_an_untimed_hold_says_so(lock, tmp_path, flags, expected):
+    # --untimed holds untimed.lock, so campaigns keep running; every other hold freezes them.
+    untimed = lock.parent / "untimed.lock"
+    untimed.touch()
     probe = tmp_path / "probe.py"
-    probe.write_text(PROBE_TIMED)
-    proc = wrapper(lock, *flags, "-m", "unit test", "--", sys.executable, str(probe), str(timed),
+    probe.write_text(PROBE_UNTIMED)
+    proc = wrapper(lock, *flags, "-m", "unit test", "--", sys.executable, str(probe), str(untimed),
                    stdout=subprocess.PIPE)  # fmt: skip
     out, _ = proc.communicate(timeout=30)
     assert proc.returncode == 0
     assert out.decode().strip() == expected
-    # Released with the hold.
-    with timed.open() as handle:
+    # Released with the wrapper.
+    with untimed.open() as handle:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)

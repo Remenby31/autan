@@ -7,9 +7,9 @@
 
 A campaign runs COMMAND in a container limited to --cpus cores at nice 19, without the GPU and
 without the GPU lock. A watcher on the host freezes the whole container (docker pause, the cgroup
-v2 freezer) whenever a timed measurement holds or waits for /home/admin/autan-gpu/timed.lock
-(autan-bench always, autan-gpu-lock unless --untimed; the GPU lock itself on a Spark without
-timed.lock), and thaws it when no measurement does: on the GB10 the CPU shares the GPU's memory, so a running campaign would lower the
+v2 freezer) whenever a process holds or waits for /home/admin/autan-gpu/gpu.lock without also
+holding untimed.lock (autan-gpu-lock --untimed: a build, a functional test), and thaws it when
+none does: on the GB10 the CPU shares the GPU's memory, so a running campaign would lower the
 bandwidth a measurement sees. The watcher publishes each campaign's state next to the lock
 (campaigns/NAME.state: "running" before any start or thaw, "frozen" once frozen, and a heartbeat
 touched at every poll), and autan-bench measures only once every live campaign reads frozen. The container stops by itself when the watcher's
@@ -36,9 +36,10 @@ sys.dont_write_bytecode = True
 import autan_memfloor as memfloor
 
 LOCK = Path(os.environ.get("AUTAN_GPU_LOCK", "/home/admin/autan-gpu/gpu.lock"))
-# Held (shared) by every timed measurement, beside the GPU lock: a campaign is frozen for those,
-# not for builds or functional tests, which hold the GPU lock but time nothing (--untimed).
-TIMED = LOCK.parent / "timed.lock"
+# Held (shared) by a holder of the GPU lock that times nothing (autan-gpu-lock --untimed: a build,
+# a functional test): campaigns are not frozen for it. Any other user of the GPU lock, a legacy
+# one included, is taken as timed.
+UNTIMED = LOCK.parent / "untimed.lock"
 STATES = LOCK.parent / "campaigns"
 CGROUPS = Path("/sys/fs/cgroup")
 PREFIX = "autan-campaign-"
@@ -68,12 +69,6 @@ wait "$child"
 """
 
 
-def freeze_lock() -> Path:
-    """The lock whose use freezes campaigns: timed.lock, or the GPU lock itself on a Spark not
-    redeployed since (every hold then freezes them, as before)."""
-    return TIMED if TIMED.exists() else LOCK
-
-
 def lock_in_use(lock: Path, proc_locks: str) -> bool:
     """Whether any process holds or waits for a flock on ``lock``, read from /proc/locks."""
     st = lock.stat()
@@ -81,6 +76,30 @@ def lock_in_use(lock: Path, proc_locks: str) -> bool:
     # proc(5): "N: FLOCK ADVISORY WRITE PID MAJ:MIN:INODE START END", device numbers in hex;
     # a process blocked on the lock has its own line with "->" after "N:".
     return any(key in line.split() for line in proc_locks.splitlines())
+
+
+def _key(path: Path) -> str | None:
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return None
+    return f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
+
+
+def freeze_wanted(proc_locks: str) -> bool:
+    """Whether a process holds or waits for the GPU lock without holding ``untimed.lock``: a
+    timed measurement, or any holder that did not say it times nothing. Fail-safe: a holder
+    unknown to this rule (an older wrapper, a raw flock, autan-bench) freezes campaigns."""
+    gpu, untimed_key = _key(LOCK), _key(UNTIMED)
+    users: set[str] = set()
+    untimed: set[str] = set()
+    for line in proc_locks.splitlines():
+        fields = line.split()
+        if gpu is not None and gpu in fields:
+            users.add(fields[fields.index(gpu) - 1])
+        if untimed_key is not None and untimed_key in fields and "->" not in fields:
+            untimed.add(fields[fields.index(untimed_key) - 1])
+    return bool(users - untimed)
 
 
 def _state_of(stat_file: Path) -> bytes | None:
@@ -195,7 +214,7 @@ def watch(name: str, floor: int) -> int:
     (STATE / f"{name}.pid").write_text(f"{pid} {_start_time(pid)}\n")
     ended = False
     try:
-        while not stopping and lock_in_use(freeze_lock(), Path("/proc/locks").read_text()):
+        while not stopping and freeze_wanted(Path("/proc/locks").read_text()):
             heartbeat.touch()
             time.sleep(POLL_S)
         if stopping:
@@ -225,6 +244,17 @@ def watch(name: str, floor: int) -> int:
         # in between waits for the freeze instead of measuring beside the campaign.
         publish(name, "running")
         heartbeat.touch()
+        # A measurement that took the lock between the wait above and this publish may have read
+        # the state before it: checked again now, it waits for this campaign, never runs beside it.
+        while not stopping and freeze_wanted(Path("/proc/locks").read_text()):
+            publish(name, "frozen")
+            while not stopping and freeze_wanted(Path("/proc/locks").read_text()):
+                heartbeat.touch()
+                time.sleep(POLL_S)
+            publish(name, "running")
+        if stopping:
+            log(name, "stopped before it started")
+            return 0
         if breached.is_set():
             log(name, f"host memory available fell below --free {memfloor.show(floor)}: "
                       "not started")  # fmt: skip
@@ -249,7 +279,7 @@ def watch(name: str, floor: int) -> int:
                 ended = True
                 log(name, "campaign ended; `docker logs` keeps its output")
                 return 0
-            wanted = lock_in_use(freeze_lock(), Path("/proc/locks").read_text())
+            wanted = freeze_wanted(Path("/proc/locks").read_text())
             if wanted and not frozen:
                 docker("pause", container)
                 publish(name, "frozen")
@@ -257,9 +287,14 @@ def watch(name: str, floor: int) -> int:
                 log(name, "GPU lock in use: frozen")
             elif not wanted and frozen:
                 publish(name, "running")
-                docker("unpause", container)
-                frozen = False
-                log(name, "GPU lock free: thawed")
+                # As at the start: a measurement that read "frozen" just before the publish holds
+                # the lock by now, and the campaign stays frozen for it.
+                if freeze_wanted(Path("/proc/locks").read_text()):
+                    publish(name, "frozen")
+                else:
+                    docker("unpause", container)
+                    frozen = False
+                    log(name, "GPU lock free: thawed")
             if frozen:
                 samples.clear()
                 busy_since = None

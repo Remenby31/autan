@@ -1,4 +1,3 @@
-import fcntl
 import json
 import os
 import stat
@@ -344,30 +343,3 @@ def test_the_host_activity_brackets_the_run_itself(fake_gpu, tmp_path, monkeypat
     argv = ["run", "--suite", "codegen", "--binary", str(fake_gpu()), "--precision", "fp32"]
     assert main([*argv, "--out", str(out), "--lock", str(tmp_path / "lock"), "--", "--x", "1"]) == 0
     assert events == ["load", "activity:idle", "activity:idle", "sampler-exit", "load"]
-
-
-def test_a_measurement_is_timed_before_it_waits_for_campaigns_to_freeze(
-    fake_gpu, tmp_path, monkeypatch
-):
-    # The order that keeps campaigns out of every measurement: timed.lock held, then the wait.
-    lock = tmp_path / "lock"
-    seen = []
-
-    def frozen(*_args, **_kwargs):
-        with (lock.parent / "timed.lock").open() as handle:
-            try:
-                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                fcntl.flock(handle, fcntl.LOCK_UN)
-                seen.append("free")
-            except BlockingIOError:
-                seen.append("held")
-
-    monkeypatch.setattr(gpu, "require_campaigns_frozen", frozen)
-    argv = ["run", "--suite", "codegen", "--binary", str(fake_gpu()), "--precision", "fp32"]
-    assert (
-        main([*argv, "--out", str(tmp_path / "r.json"), "--lock", str(lock), "--", "--x", "1"]) == 0
-    )
-    assert seen == ["held"]
-    # Released with the measurement.
-    with (lock.parent / "timed.lock").open() as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
