@@ -729,7 +729,7 @@ test("a run's iteration cost shows when run.json measured it", async ({ page }) 
     .padStart(8, "0");
   const runId = `run-${started.replace(/[-:]/g, "")}-${suffix}`;
   // The fake backend measures nothing: a CUDA run, its identity as results.md defines it.
-  const solver = { ...source.solver, backend: "cuda" as const };
+  const solver = { ...source.solver, backend: "cuda" as const, binary_sha256: "e".repeat(64) };
   const devices = { kind: "cuda" as const, count: 1 };
   const identity = createHash("sha256")
     .update(
@@ -777,7 +777,12 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
     .toString(16)
     .padStart(8, "0");
   const runId = `run-${started.replace(/[-:]/g, "")}-${suffix}`;
-  const solver = { ...source.solver, backend: "cuda" as const, commit: "f".repeat(40) };
+  const solver = {
+    ...source.solver,
+    backend: "cuda" as const,
+    commit: "f".repeat(40),
+    binary_sha256: "e".repeat(64),
+  };
   const devices = { kind: "cuda" as const, count: 4 };
   // results.md#runjson: identity over what the run computes, start fields absent.
   const identity = createHash("sha256")

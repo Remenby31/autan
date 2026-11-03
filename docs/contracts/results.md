@@ -57,7 +57,7 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
 | `mesh.path`, `mesh.sha256` | Absolute path of the mesh read, and `source.sha256` of its MeshInfo. |
 | `solver.version`, `solver.commit` | Version and full 40-character git commit of the solver build. |
 | `solver.backend` | `cuda` · `hip` · `cpu` · `fake`. Results of the `fake` backend are synthetic and must never be used as reference data. |
-| `solver.binary_sha256` | SHA-256 of the `autan-run` executable that ran, which the solver's code links into statically, hashed at its start; `null` exactly for the `fake` backend. Outside the [identity](#identity). A `continue` whose executable is not the one of the state it starts from warns `W0715`. |
+| `solver.binary_sha256` | SHA-256 of the `autan-run` executable that ran, into which the build links every library of the solver statically (it refuses `BUILD_SHARED_LIBS`), hashed at its start; `null` exactly for the `fake` backend. Outside the [identity](#identity). A `continue` whose executable is not the one of the state it starts from warns `W0715`. |
 | `precision` | Precision as run, from the case. |
 | `devices` | `kind` (`cuda` · `hip` · `cpu`) and `count`, the number of ranks ([solver-input.md](solver-input.md)). |
 | `started`, `finished` | UTC, ISO 8601, second precision, `Z` suffix. `finished` is `null` while running. |
