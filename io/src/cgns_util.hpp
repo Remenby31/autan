@@ -192,37 +192,46 @@ class CgioTree {
 };
 
 // The CGNS library allocates for every node of the tree when it opens a file, before the reader
-// can drop any: at most 1 MiB + 16 KiB a node, read_mesh included (mesh.md, Memory of a CGNS read).
-// A file of more nodes than four times the most a real grid holds (CRM-HL: 4032) is refused.
+// can drop any, and HDF5 keeps every open node's path: at most 1 MiB + 16 KiB a node, read_mesh
+// included, in a tree of at most 16 levels (mesh.md, Memory of a CGNS read). A file of more nodes
+// than four times the most a real grid holds (CRM-HL: 4032), or more than three times as deep as
+// every real grid (5 levels), is refused.
 constexpr std::int64_t max_cgns_nodes = 16384;
+constexpr int max_cgns_depth = 16;
 
-// Every node of `tree`, counted by label; the count stops once it passes max_cgns_nodes, each
-// node's children counted before their ids are read, so that walking costs O(max_cgns_nodes).
-inline std::map<std::string, std::int64_t> count_nodes(const CgioTree& tree) {
+// The nodes of a tree by label, as far as the walk went: it stops once it passes max_cgns_nodes
+// or max_cgns_depth, each node's children counted before their ids are read, so that walking
+// costs O(max_cgns_nodes) nodes of at most max_cgns_depth levels.
+struct TreeCount {
   std::map<std::string, std::int64_t> labels;
-  std::int64_t seen = 0;
-  std::vector<double> pending{tree.root()};
-  while (!pending.empty() && seen <= max_cgns_nodes) {
-    const double node = pending.back();
+  std::int64_t nodes = 0;
+  bool too_deep = false;
+  [[nodiscard]] bool beyond() const { return too_deep || nodes > max_cgns_nodes; }
+};
+
+inline TreeCount count_nodes(const CgioTree& tree) {
+  TreeCount out;
+  std::vector<std::pair<double, int>> pending{{tree.root(), 0}};
+  while (!pending.empty()) {
+    const auto [node, depth] = pending.back();
     pending.pop_back();
     const std::int64_t n = tree.number_of_children(node);
-    if (seen + n > max_cgns_nodes) {
-      labels["(more)"] += max_cgns_nodes + 1 - seen;
-      break;
+    if (n == 0) continue;
+    if (depth == max_cgns_depth) {
+      out.too_deep = true;
+      return out;
+    }
+    if (out.nodes + n > max_cgns_nodes) {
+      out.nodes = max_cgns_nodes + 1;
+      return out;
     }
     for (const double child : tree.children(node)) {
-      ++labels[tree.label(child)];
-      ++seen;
-      pending.push_back(child);
+      ++out.labels[tree.label(child)];
+      ++out.nodes;
+      pending.emplace_back(child, depth + 1);
     }
   }
-  return labels;
-}
-
-inline std::int64_t total(const std::map<std::string, std::int64_t>& labels) {
-  std::int64_t n = 0;
-  for (const auto& [label, count] : labels) n += count;
-  return n;
+  return out;
 }
 
 }  // namespace autan::io

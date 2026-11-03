@@ -1776,17 +1776,23 @@ TEST_CASE("Face states that do not fit the case exit 2 before any directory", "[
     CHECK(padded.status == ExitStatus::finished);
 #if defined(__linux__)
     // Nested deeper than its structure (5 levels): refused before the parser keeps a level, so
-    // 2^22 levels cost their text, not the parser's stacks.
+    // 2^22 levels cost what as long a number does, which the scan refuses as well, not the
+    // parser's stacks.
     constexpr std::size_t levels = std::size_t{1} << 22;
-    const Json deep = ringleb_input({}, [&](std::string b) {
-      const std::size_t at = b.find("\"oracle\":");
-      REQUIRE(at != std::string::npos);
-      const std::size_t value = at + 9, end = b.find(',', value);
-      return b.replace(value, end - value, std::string(levels, '[') + std::string(levels, ']'));
-    });
+    const auto oracle_as = [&](const std::string& value) {
+      return ringleb_input({}, [&](std::string b) {
+        const std::size_t at = b.find("\"oracle\":");
+        REQUIRE(at != std::string::npos);
+        const std::size_t first = at + 9, end = b.find(',', first);
+        return b.replace(first, end - first, value);
+      });
+    };
+    const Json deep = oracle_as(std::string(levels, '[') + std::string(levels, ']'));
+    const Json digits = oracle_as(std::string(2 * levels, '1'));
+    const std::int64_t baseline = peak_of([&] { require_error(run(digits), "E0420"); });
     const std::int64_t peak = peak_of([&] { require_error(run(deep), "E0420"); });
-    CAPTURE(peak);
-    CHECK(peak <= 4 * static_cast<std::int64_t>(levels) + (std::int64_t{1} << 20));
+    CAPTURE(baseline, peak);
+    CHECK(peak - baseline <= std::int64_t{1} << 20);
 #endif
     // Rows, read as they stream: each an array of 3 (centroids) or 5 (values) finite numbers,
     // one per face of the zone.

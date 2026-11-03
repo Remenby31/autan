@@ -880,7 +880,6 @@ TEST_CASE("A start solution holds only what the writer writes for its mesh", "[c
       REQUIRE(cg_user_data_write(("u" + std::to_string(i)).c_str()) == CG_OK);
     }
     REQUIRE(cg_close(fn) == CG_OK);
-    REQUIRE(autan::io::cgns_logical_bytes(crowded).nodes == 16385);
     try {
       autan::io::check_start_solution(crowded, limits);
       FAIL("expected E0132");
@@ -1168,7 +1167,12 @@ TEST_CASE("Reading a CGNS file costs at most 1 MiB and 16 KiB a node, up to 16 3
   CAPTURE(before, after, nodes);
   CHECK(after - before <= (std::int64_t{1} << 20) + (std::int64_t{16} << 10) * (nodes - n0));
   const fs::path over = build("nodes-over.cgns", limit + 1);
-  REQUIRE(autan::io::cgns_logical_bytes(over).nodes == limit + 1);
+  try {
+    (void)autan::io::cgns_logical_bytes(over);  // MeshInfo refuses it too
+    FAIL("expected E0133");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == autan::ErrorCode::io_unsupported);
+  }
   constexpr std::int64_t caches = (std::int64_t{4} << 20) + (std::int64_t{8} << 20) + (64 << 10);
   const std::int64_t refused =
       peak_of([&] { require_error(autan::ErrorCode::io_unsupported, over); });
@@ -1204,41 +1208,53 @@ TEST_CASE("A BC range over points and edges is never expanded", "[cgns]") {
   CAPTURE(before, after);
   CHECK(after - before <= std::int64_t{1} << 20);  // the ids would be 32 MiB
 }
-TEST_CASE("Walking a CGNS tree costs a frame per node, whatever its depth", "[cgns]") {
-  // mesh.md, Memory of a CGNS read: 1024 nested user data nodes of 32-character names, 15 000
-  // siblings under the deepest, read within the per-node bound: no node holds its path.
+TEST_CASE("A CGNS tree is read within its per-node bound up to 16 levels, refused deeper",
+          "[cgns]") {
+  // mesh.md, Memory of a CGNS read: HDF5 keeps every open node's path, so a node costs more the
+  // deeper it is. 15 000 user data nodes of 32-character names at the deepest level allowed stay
+  // within 1 MiB + 16 KiB a node; 1024 levels are refused before cg_open, at the walk's cost.
   fs::create_directories(temp_dir());
   const fs::path plain =
       cgns_file("deep-none.cgns", [](int fn, int base) { unstructured_tet(fn, base, "Zone"); });
-  const fs::path deep = temp_dir() / "deep.cgns";
-  fs::copy_file(plain, deep, fs::copy_options::overwrite_existing);
-  {
+  const auto nested = [&](const std::string& name, int chain, int leaves) {
+    const fs::path file = temp_dir() / name;
+    fs::copy_file(plain, file, fs::copy_options::overwrite_existing);
     int cgio = 0;
-    REQUIRE(cgio_open_file(deep.string().c_str(), CGIO_MODE_MODIFY, CGIO_FILE_NONE, &cgio) ==
+    REQUIRE(cgio_open_file(file.string().c_str(), CGIO_MODE_MODIFY, CGIO_FILE_NONE, &cgio) ==
             CG_OK);
     double root = 0, parent = 0;
     REQUIRE(cgio_get_root_id(cgio, &root) == CG_OK);
     REQUIRE(cgio_get_node_id(cgio, root, "/Base", &parent) == CG_OK);
     const auto add = [&](double under, int i) {
-      std::string name = std::to_string(i);
-      name.insert(0, 32 - name.size(), 'u');
+      std::string tag = std::to_string(i);
+      tag.insert(0, 32 - tag.size(), 'u');
       double id = 0;
-      REQUIRE(cgio_create_node(cgio, under, name.c_str(), &id) == CG_OK);
+      REQUIRE(cgio_create_node(cgio, under, tag.c_str(), &id) == CG_OK);
       REQUIRE(cgio_set_label(cgio, id, "UserDefinedData_t") == CG_OK);
       return id;
     };
-    for (int i = 0; i < 1024; ++i) parent = add(parent, i);
-    for (int i = 0; i < 15000; ++i) (void)add(parent, 1024 + i);
+    for (int i = 0; i < chain; ++i) parent = add(parent, i);
+    for (int i = 0; i < leaves; ++i) (void)add(parent, chain + i);
     REQUIRE(cgio_close_file(cgio) == CG_OK);
-  }
+    return file;
+  };
+  constexpr std::int64_t caches = (std::int64_t{4} << 20) + (std::int64_t{8} << 20) + (64 << 10);
+  // The base at level 1, a chain of 14 under it, the leaves at level 16.
+  const fs::path deepest = nested("deep-16.cgns", 14, 15000);
   const std::int64_t n0 = autan::io::cgns_logical_bytes(plain).nodes;
-  const std::int64_t nodes = autan::io::cgns_logical_bytes(deep).nodes;
-  REQUIRE(nodes == n0 + 16024);
+  const std::int64_t nodes = autan::io::cgns_logical_bytes(deepest).nodes;
+  REQUIRE(nodes == n0 + 15014);
   (void)autan::io::read_mesh(plain);
   const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
-  const std::int64_t after = peak_of([&] { CHECK(autan::io::read_mesh(deep).n_cells() == 1); });
+  const std::int64_t after = peak_of([&] { CHECK(autan::io::read_mesh(deepest).n_cells() == 1); });
   CAPTURE(before, after);
   CHECK(after - before <= (std::int64_t{1} << 20) + (std::int64_t{16} << 10) * (nodes - n0));
+  const fs::path deeper = nested("deep-17.cgns", 15, 1);
+  require_error(autan::ErrorCode::io_unsupported, deeper);
+  const fs::path deep = nested("deep-1024.cgns", 1024, 15000);
+  const std::int64_t refused =
+      peak_of([&] { require_error(autan::ErrorCode::io_unsupported, deep); });
+  CHECK(refused <= (std::int64_t{1} << 20) + caches);
 }
 
 TEST_CASE("A BC point list over points and edges is read in chunks, never whole", "[cgns]") {

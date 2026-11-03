@@ -107,14 +107,17 @@ constexpr std::int64_t chunk_entries = std::int64_t{1} << 17;
 
 // The nodes of `tree`, E0133 beyond max_cgns_nodes, naming the commonest label.
 std::int64_t bounded_nodes(const CgioTree& tree, const fs::path& path) {
-  const auto labels = count_nodes(tree);
-  const std::int64_t n = total(labels);
-  if (n > max_cgns_nodes) {
-    const auto most = std::ranges::max_element(labels, {}, [](const auto& l) { return l.second; });
+  const TreeCount count = count_nodes(tree);
+  if (count.too_deep) {
+    unsupported(path.string(), "a tree deeper than " + std::to_string(max_cgns_depth) + " levels");
+  }
+  if (count.nodes > max_cgns_nodes) {
+    const auto most =
+        std::ranges::max_element(count.labels, {}, [](const auto& l) { return l.second; });
     unsupported(path.string(), "more than " + std::to_string(max_cgns_nodes) + " nodes, " +
                                    std::to_string(most->second) + " of them " + most->first);
   }
-  return n;
+  return count.nodes;
 }
 
 bool is_ignored_type(CGNS_ENUMT(ElementType_t) type) {

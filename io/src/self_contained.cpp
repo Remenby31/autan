@@ -99,10 +99,12 @@ void scan_cgns_links(const std::filesystem::path& file) {
     throw Error(ErrorCode::io_cannot_open, "cannot open '" + file.string() + "' as CGNS");
   }
   // Each node visited once, with the index of its parent: a path is built only for the
-  // diagnostic. The walk stops after max_cgns_nodes, which the reader refuses (cgns_util.hpp).
+  // diagnostic. The walk stops past max_cgns_nodes or max_cgns_depth, which the reader refuses
+  // (cgns_util.hpp).
   struct Frame {
     double id;
     std::size_t parent;
+    int depth;
   };
   constexpr std::size_t none = static_cast<std::size_t>(-1);
   std::vector<Frame> visited;
@@ -110,7 +112,7 @@ void scan_cgns_links(const std::filesystem::path& file) {
   bool broken = false;
   double root = 0;
   cgio_get_root_id(cgio, &root);
-  std::vector<Frame> pending{{root, none}};
+  std::vector<Frame> pending{{root, none, 0}};
   std::vector<double> children;
   while (!pending.empty() && found == none && !broken &&
          static_cast<std::int64_t>(visited.size()) <= max_cgns_nodes) {
@@ -132,12 +134,16 @@ void scan_cgns_links(const std::filesystem::path& file) {
     int count = 0;
     cgio_number_children(cgio, node, &count);
     if (count == 0) continue;
-    if (static_cast<std::int64_t>(visited.size()) + count > max_cgns_nodes + 1) break;
+    if (frame.depth == max_cgns_depth ||
+        static_cast<std::int64_t>(visited.size()) + count > max_cgns_nodes + 1) {
+      break;
+    }
     children.resize(static_cast<std::size_t>(count));
     int got = 0;
     cgio_children_ids(cgio, node, 1, count, &got, children.data());
     for (int i = 0; i < got; ++i) {
-      pending.push_back({children[static_cast<std::size_t>(i)], visited.size() - 1});
+      pending.push_back(
+          {children[static_cast<std::size_t>(i)], visited.size() - 1, frame.depth + 1});
     }
   }
   std::string path;
