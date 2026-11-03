@@ -126,28 +126,27 @@ def estimate(
     )
 
 
-def _shares(mesh: MeshInfo, ranks: int) -> list[tuple[int, int, int, int]]:
-    """Per rank: its cells with ghosts, faces, interior faces and stencil entries."""
+def _shares(mesh: MeshInfo, ranks: int) -> list[tuple[int, int, int, int, int | None]]:
+    """Per rank: its cells with ghosts, faces, interior faces and stencil entries, and its index
+    in the MeshInfo's partition (``None`` without one)."""
     counts, partition = mesh.counts, mesh.partition
     if partition is not None and partition.ranks == ranks:
-        return list(
-            zip(
-                (
-                    a + b
-                    for a, b in zip(partition.cells_by_rank, partition.ghosts_by_rank, strict=True)
-                ),
-                partition.faces_by_rank,
-                partition.interior_faces_by_rank,
-                partition.stencil_entries_by_rank,
-                strict=True,
+        return [
+            (
+                partition.cells_by_rank[r] + partition.ghosts_by_rank[r],
+                partition.faces_by_rank[r],
+                partition.interior_faces_by_rank[r],
+                partition.stencil_entries_by_rank[r],
+                r,
             )
-        )
+            for r in range(ranks)
+        ]
     interior = counts.faces - sum(zone.faces for zone in mesh.boundary_zones)
     if ranks == 1:
         # A single rank's periodic images, each with at most max_faces_per_cell faces.
         extra = counts.periodic_ghosts * mesh.quality.max_faces_per_cell
         cells = counts.cells + counts.periodic_ghosts
-        return [(cells, counts.faces + extra, interior + extra, counts.stencil_entries)]
+        return [(cells, counts.faces + extra, interior + extra, counts.stencil_entries, None)]
     # No partition for these ranks: the plan refuses the run (E0210), the estimate omits halos.
     return [
         (
@@ -155,14 +154,64 @@ def _shares(mesh: MeshInfo, ranks: int) -> list[tuple[int, int, int, int]]:
             -(-counts.faces // ranks),
             -(-interior // ranks),
             -(-counts.stencil_entries // ranks),
+            None,
         )
     ]
+
+
+def _partition(mesh: MeshInfo, r: int) -> tuple[int, int, int]:
+    """Rank r's local mesh and halo, kept for the run (host, then the device copy of the halo
+    buffers), and what extracting it holds at its peak (docs/design/setup-memory.md, partition
+    and halos, « CFD - Noyau maillage »)."""
+    p, counts = mesh.partition, mesh.counts
+    assert p is not None
+    n, fn, sent = p.nodes_by_rank[r], p.face_nodes_by_rank[r], p.sent_cells_by_rank[r]
+    c, g, f, fi = (
+        p.cells_by_rank[r],
+        p.ghosts_by_rank[r],
+        p.faces_by_rank[r],
+        p.interior_faces_by_rank[r],
+    )
+    local = c + g
+    # The local mesh (points, face nodes, faces, cells, ghost translations), its geometry and
+    # face ids, the halo pattern and exchange (176 B a sent cell) and the ghosts' slots.
+    kept = (
+        24 * n
+        + 4 * fn
+        + 20 * f
+        + 8 * fi
+        + 20 * local
+        + 24 * g
+        + 56 * f
+        + 32 * local
+        + 9 * f
+        + 176 * sent
+        + 128 * g
+    )
+    halo_device = 128 * sent + 128 * g
+    # Extraction: MeshInput, the maps and sets (64 B a node), assemble's temporaries, one
+    # neighbour's recomputed ghosts, and the covering and cell lists of the global mesh beside
+    # them; the partitioner's weights, freed before, are the alternative.
+    neighbour = max(a + b for a, b in zip(p.cells_by_rank, p.ghosts_by_rank, strict=True))
+    extraction = (
+        124 * n
+        + 8 * fn
+        + 122 * f
+        + 84 * local
+        + 120 * g
+        + 8 * sent
+        + 128 * neighbour
+        + 6 * counts.faces
+        + 16 * counts.nodes
+        + 8 * counts.cells
+    )
+    return kept, halo_device, max(extraction, 8 * counts.cells)
 
 
 def _rank(
     spec: CaseSpec,
     mesh: MeshInfo,
-    share: tuple[int, int, int, int],
+    share: tuple[int, int, int, int, int | None],
     *,
     equations: int,
     ranks: int,
@@ -178,7 +227,7 @@ def _rank(
     cells, faces, nodes = counts.cells, counts.faces, counts.nodes
     interior = faces - sum(zone.faces for zone in mesh.boundary_zones)
     boundary = faces - interior
-    c, f, fi, stencil = share
+    c, f, fi, stencil, rank = share
     fb = f - fi
     k = 2 * fi + fb
 
@@ -209,7 +258,12 @@ def _rank(
     # mesh beside the one it read, with the cell order and the face and point maps.
     if mesh.quality.lines.order == "rcm":
         add("renumbered mesh", mesh_bytes + 4 * cells + 5 * faces + 4 * nodes)
-    if ranks > 1:
+    if ranks > 1 and rank is not None and mesh.partition is not None:
+        kept, halo_device, extraction = _partition(mesh, rank)
+        add("partition", kept, halo_device if device_kind != "cpu" else 0)
+        add("partition setup", extraction, transient=True)
+    elif ranks > 1:
+        # No partition for these ranks: the plan refuses the run (E0210).
         add("partition", (mesh_bytes + geometry) / ranks + 9 * f)
     # The solution gathered on rank 0 at the end and the writer's copy: the n + 1 primitive
     # fields and their means; the restart's n conserved, n + 1 average sums and their weight, the
