@@ -320,11 +320,13 @@ void read_mesh_info(const Json& info, SolverInput& in) {
   if (info.contains("partition")) {
     const Object part(root.get("partition"), root.at("partition"),
                       {"ranks", "groups", "cells_by_rank", "ghosts_by_rank", "faces_by_rank",
-                       "interior_faces_by_rank", "stencil_entries_by_rank"});
+                       "interior_faces_by_rank", "stencil_entries_by_rank", "nodes_by_rank",
+                       "face_nodes_by_rank", "sent_cells_by_rank"});
     const std::int64_t ranks = part.integer("ranks", 2);
     (void)part.tag("groups", {"none", "lines"});
-    for (const char* key : {"cells_by_rank", "ghosts_by_rank", "faces_by_rank",
-                            "interior_faces_by_rank", "stencil_entries_by_rank"}) {
+    for (const char* key :
+         {"cells_by_rank", "ghosts_by_rank", "faces_by_rank", "interior_faces_by_rank",
+          "stencil_entries_by_rank", "nodes_by_rank", "face_nodes_by_rank", "sent_cells_by_rank"}) {
       const Json& v = list(part, key);
       if (static_cast<std::int64_t>(v.size()) != ranks)
         invalid(part.at(key), "expected one value per rank");

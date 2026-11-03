@@ -65,6 +65,9 @@ def prepared(document: dict[str, Any], *, scale: float = 1.0, ranks: int = 1) ->
             "faces_by_rank": split(counts["faces"]),
             "interior_faces_by_rank": split(interior),
             "stencil_entries_by_rank": split(counts["stencil_entries"]),
+            "nodes_by_rank": split(counts["nodes"]),
+            "face_nodes_by_rank": split(counts["face_nodes"]),
+            "sent_cells_by_rank": [0] * ranks,
         }
     return document
 

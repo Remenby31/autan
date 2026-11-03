@@ -81,7 +81,10 @@ MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
                            .ghosts = {},
                            .faces = {},
                            .interior_faces = {},
-                           .stencil_entries = {}};
+                           .stencil_entries = {},
+                           .nodes = {},
+                           .face_nodes = {},
+                           .sent_cells = {}};
   for (std::int32_t r = 0; r < ranks->ranks; ++r) {
     // Ghost cells hold no geometry here: the counts depend on the connectivity only.
     const LocalPartition part = extract_partition(mesh, geometry, parts, ranks->ranks, r);
@@ -90,6 +93,9 @@ MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
     p.faces.push_back(part.mesh.n_faces());
     p.interior_faces.push_back(part.mesh.n_interior_faces());
     p.stencil_entries.push_back(stencil_entries(part.mesh, part.geometry));
+    p.nodes.push_back(part.mesh.n_points());
+    p.face_nodes.push_back(static_cast<std::int64_t>(part.mesh.face_nodes().size()));
+    p.sent_cells.push_back(static_cast<std::int64_t>(part.halo.send_cells.size()));
   }
   out.partition = std::move(p);
   return out;

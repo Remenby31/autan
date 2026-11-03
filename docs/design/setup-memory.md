@@ -9,7 +9,7 @@ What each setup phase holds after the mesh is read and before the first iteratio
 | **M** mesh counts | grows with what MeshInfo counts: nodes `N`, cells `C`, faces `F`, interior faces `F_i`, boundary faces `F_b`, face nodes `P`, zones, periodic pairs | `mesh`, `mesh setup`, `renumbered mesh`, `physics`, `physics setup` |
 | **E** stencil entries | grows with `counts.stencil_entries`, the final stencil after deduplication | `physics`, `physics setup` |
 | **L** multigrid levels | grows with `quality.multigrid` (`cells_by_level`, `edges_by_level`) | the case's `linear_solver` component |
-| **Q** partition | grows with `partition` (`cells_by_rank`, `ghosts_by_rank`, `faces_by_rank`, `interior_faces_by_rank`, `stencil_entries_by_rank`) | `partition`, the per-rank counts of every component |
+| **Q** partition | grows with `partition` (`cells_by_rank`, `ghosts_by_rank`, `faces_by_rank`, `interior_faces_by_rank`, `stencil_entries_by_rank`, `nodes_by_rank`, `face_nodes_by_rank`, `sent_cells_by_rank`) | `partition`, the per-rank counts of every component |
 | **V** device | the packed arrays a device run copies, sized by M, E and L | `device setup`, `physics device` |
 | **F** fixed | independent of the input | `runtime` |
 
@@ -22,7 +22,7 @@ A temporary that grows with an intermediate count no class bounds, such as walks
 
 ## Partition and halos (`partition/`, `runtime/src/comm.cpp`; « CFD - Noyau maillage »)
 
-Every rank reads the whole mesh and runs these steps on it, so every row is held on every rank, beside the global mesh and its geometry. `index_t` is 4 bytes, `offset_t` 8; a `std::map` or `std::set` node about 64. A = the dual graph's arcs, at most 2 `F_i`; per rank, `L_r` = `C_r` + `G_r`. `N_r`, `P_r` (the local nodes and face nodes) and `S_r` (the cells a rank sends) are not MeshInfo counts: their rows are gaps.
+Every rank reads the whole mesh and runs these steps on it, so every row is held on every rank, beside the global mesh and its geometry. `index_t` is 4 bytes, `offset_t` 8; a `std::map` or `std::set` node about 64. A = the dual graph's arcs, at most 2 `F_i`; per rank, `L_r` = `C_r` + `G_r`. `N_r`, `P_r` and `S_r` are `partition.nodes_by_rank`, `face_nodes_by_rank` and `sent_cells_by_rank`.
 
 | Held | Grows with | Class |
 |---|---|---|
@@ -33,11 +33,11 @@ Every rank reads the whole mesh and runs these steps on it, so every row is held
 | `Covering`, built even without periodic pairs (`extract.cpp:92`–`97`) | F, N: 6F + 16N | M |
 | `cells_of`, every part's cells on every rank, by `push_back` (`extract.cpp:315`) | C | M |
 | `local`, `ghosts_of`'s sets and frontiers, `first_layer`, `faces` (`extract.cpp:278`–`344`) | `L_r`, `G_r`, `F_r` | Q |
-| the `nodes` map (`extract.cpp:380`) and the local `MeshInput`'s `x`, `y`, `z`, `face_nodes` by `push_back` (`extract.cpp:389`–`404`) | `N_r`, `P_r` | gap |
+| the `nodes` map (`extract.cpp:380`) and the local `MeshInput`'s `x`, `y`, `z`, `face_nodes` by `push_back` (`extract.cpp:389`–`404`) | `N_r`, `P_r` | Q |
 | the local `MeshInput`'s face and cell arrays, `assemble`'s temporaries, the local mesh, geometry, `face_global_id`, `face_reversed` (`extract.cpp:364`–`447`, `mesh.cpp:273`–`377`) | `F_r`, `F_ir`, `L_r`, `G_r` | Q |
 | one neighbour's ghosts, recomputed for each neighbour in turn (`extract.cpp:472`) | that neighbour's `C_q` + `G_q` | Q |
-| send lists, slots and interface faces (`extract.cpp:473`–`494`), `HaloExchange`'s index copies and messages (`halo_exchange.cpp:322`–`336`) | `S_r`, `G_r` | gap (`S_r`), Q |
-| `host_slots`, `host_ghosts`: 16 components of 8 B each, whatever the run moves (`halo_exchange.cpp:366`) | `S_r`, `G_r` | gap (`S_r`), Q |
+| send lists, slots and interface faces (`extract.cpp:473`–`494`), `HaloExchange`'s index copies and messages (`halo_exchange.cpp:322`–`336`) | `S_r`, `G_r` | Q |
+| `host_slots`, `host_ghosts`: 16 components of 8 B each, whatever the run moves (`halo_exchange.cpp:366`) | `S_r`, `G_r` | Q |
 | `MpiGhosts`, one exchange per memory space for the run; `fill_ghosts`' temporary exchange (`comm.cpp:108`, `:211`) | as `HaloExchange` | as above |
 | the per-rank counts `send_count`, `expected`, `received` (`halo_exchange.cpp:295`) | ranks | F |
 | `colour_cells` over the global mesh: 44 B a cell, and its cell pairs gathered by `push_back` with a cell's pairs with itself before they are filtered (`colouring.cpp:33`–`96`) | C; `F_i` + periodic faces | M; gap |
