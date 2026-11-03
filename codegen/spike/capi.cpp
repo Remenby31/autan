@@ -686,6 +686,11 @@ void autan_spike_stencil_arrays(const void* mesh, std::int64_t* offsets, std::in
 
 void autan_spike_mesh_free(void* mesh) { delete static_cast<SpikeMesh*>(mesh); }
 
+/// PackedGeometry::all_planar of the mesh as it is packed now.
+int autan_spike_all_planar(const void* mesh) {
+  return static_cast<const SpikeMesh*>(mesh)->packed.all_planar ? 1 : 0;
+}
+
 /// counts = {n_cells, n_owned_cells, n_faces, n_interior_faces, n_incidences}
 void autan_spike_mesh_counts(const void* mesh, std::int64_t* counts) {
   const auto& t = static_cast<const SpikeMesh*>(mesh)->topo;
