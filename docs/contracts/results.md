@@ -31,7 +31,7 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
   "status": "converged",
   "case": {"name": "crm-hl", "sha256": "…"},
   "mesh": {"path": "/data/crm-hl.cgns", "sha256": "…"},
-  "solver": {"version": "0.1.0", "commit": "d769576…", "backend": "fake"},
+  "solver": {"version": "0.1.0", "commit": "d769576…", "backend": "fake", "binary_sha256": null},
   "precision": "fp32+acc64",
   "devices": {"kind": "cpu", "count": 1},
   "started": "2026-10-31T21:40:12Z",
@@ -57,6 +57,7 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
 | `mesh.path`, `mesh.sha256` | Absolute path of the mesh read, and `source.sha256` of its MeshInfo. |
 | `solver.version`, `solver.commit` | Version and full 40-character git commit of the solver build. |
 | `solver.backend` | `cuda` · `hip` · `cpu` · `fake`. Results of the `fake` backend are synthetic and must never be used as reference data. |
+| `solver.binary_sha256` | SHA-256 of the `autan-run` executable that ran, which the solver's code links into statically, hashed at its start; `null` exactly for the `fake` backend. Outside the [identity](#identity). A `continue` whose executable is not the one of the state it starts from warns `W0715`. |
 | `precision` | Precision as run, from the case. |
 | `devices` | `kind` (`cuda` · `hip` · `cpu`) and `count`, the number of ranks ([solver-input.md](solver-input.md)). |
 | `started`, `finished` | UTC, ISO 8601, second precision, `Z` suffix. `finished` is `null` while running. |
@@ -192,7 +193,7 @@ While a run runs, the writer saves the state it can be continued from in `checkp
 
 The writer writes it under the temporary name `.checkpoint.cgns.tmp`, then renames it over the previous one. A run killed at any moment therefore leaves a whole checkpoint or none; readers ignore the temporary name. Writing a checkpoint only reads the state, so a run's `history.jsonl` and `solution.cgns` are the same whatever its checkpoints.
 
-After each checkpoint, the writer rewrites `run.json` `checkpoint` and logs it (`info`, source `writer`, `data` `{iteration, seconds, bytes}`). A write that fails, or its records, leaves the previous checkpoint, and the run goes on with `W0714`.
+After each checkpoint, the writer rewrites `run.json` `checkpoint` and logs it (`info`, source `writer`, `data` `{iteration, write_seconds, bytes}`). A write that fails, or its records, leaves the previous checkpoint, and the run goes on with `W0714`.
 
 Once a run's final `run.json` says it is `converged`, `completed` or `stopped`, the writer removes `checkpoint.cgns`: until then it stays the run's resumable state. A `diverged` or `failed` run keeps it, so that it can be continued from its last checkpoint ([solver-input.md](solver-input.md), `start`).
 ## Results API

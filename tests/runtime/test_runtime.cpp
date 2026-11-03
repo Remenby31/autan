@@ -568,7 +568,12 @@ TEST_CASE("A converging run writes the run directory of results.md", "[runtime]"
   CHECK(std::regex_match(info["finished"].get<std::string>(),
                          std::regex("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z")));
   CHECK(info["mesh"]["path"] == fs::absolute(mesh_path).lexically_normal().string());
-  CHECK(info["solver"] == Json{{"version", "0.0.0"}, {"commit", build.commit}, {"backend", "cpu"}});
+  CHECK(info["solver"] == Json{{"version", "0.0.0"},
+                               {"commit", build.commit},
+                               {"backend", "cpu"},
+                               {"binary_sha256", info["solver"]["binary_sha256"]}});
+  CHECK(std::regex_match(info["solver"]["binary_sha256"].get<std::string>(),
+                         std::regex("[0-9a-f]{64}")));
   // identity: SHA-256 of the seven fields joined by "\n" (results.md).
   std::string expected;
   picosha2::hash256_hex_string(doc["case"]["sha256"].get<std::string>() + "\n" +

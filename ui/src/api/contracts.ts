@@ -28,7 +28,12 @@ export interface Run {
   status: RunStatus;
   case: { name: string; sha256: string };
   mesh: { path: string; sha256: string };
-  solver: { version: string; commit: string; backend: "cuda" | "hip" | "cpu" | "fake" };
+  solver: {
+    version: string;
+    commit: string;
+    backend: "cuda" | "hip" | "cpu" | "fake";
+    binary_sha256: string | null;
+  };
   precision: "fp32+acc64" | "fp64";
   devices: { kind: "cuda" | "hip" | "cpu"; count: number };
   started: string;

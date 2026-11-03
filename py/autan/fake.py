@@ -239,7 +239,7 @@ class FakeBackend:
             raise CaseError(d for d in result.diagnostics if d.severity == "error")
         spec = case.spec
         started = utc_now()
-        solver = Solver(version=__version__, commit=COMMIT, backend="fake")
+        solver = Solver(version=__version__, commit=COMMIT, backend="fake", binary_sha256=None)
         devices = Devices(kind="cpu", count=1)
         info = RunInfo(
             run_id=RunWriter.new_run_id(started),
