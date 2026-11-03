@@ -91,6 +91,17 @@ A temporary that lives for one item of the input (one element, one face, one rec
 | dictionary entries: only `type`, `startFace`, `nFaces` kept, one entry at a time | patches | M |
 | cell zones with cells | cell zones | M |
 
+A keyword given more than once takes its last value, as in OpenFOAM (User Guide, 4.2.14); none of the lists a superseded value holds is parsed into memory:
+
+| List or dictionary | Repeated keyword |
+|---|---|
+| `points`, `faces`, `owner`, `neighbour` | not applicable: each file is its header and one list, without a keyword |
+| `FoamFile` header of every file | not a gap: each value at most 4096 bytes, one held at a time, the last kept |
+| `boundary` entries | not a gap: `type`, `startFace` and `nFaces` at most 4096 bytes each, the last kept; other values read past, sub-dictionaries skipped without a copy |
+| `cellZones`: `cellLabels` | covered: each occurrence read past (`skip_labels`), the last parsed once its dictionary closes |
+| `cellZones`: other entries | not a gap: as `boundary` entries |
+| `faceZones`, `pointZones`, `sets` | not applicable: the reader does not open them (mesh.md, Readers) |
+
 ## Runtime state files (`runtime/src/run.cpp`)
 
 | Held | Grows with | Class |
