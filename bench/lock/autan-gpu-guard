@@ -13,6 +13,9 @@ Every 0.5 s it reads /proc/locks for /home/admin/autan-gpu/gpu.lock and:
   (`autan*`) by nvidia-smi's process name and container name only, never their command lines:
   `foreign-gpu` and `foreign-gone` in holders.log, and the current list in `foreign-gpu` next to
   the lock, which a failed CI job reads to name what took the GPU (bench/ci/gpu-tenants.sh).
+- records `low-memory` when a holder is released after host MemAvailable fell below the default
+  memory floor during its hold, with the lowest value seen: a CI runner cannot write holders.log
+  (its mount is read-only), so the wrapper's own memory events are in the job's log only.
 It never signals or stops anything. See docs/infra/bench.md.
 """
 
@@ -25,6 +28,9 @@ import sys
 import threading
 import time
 from pathlib import Path
+
+sys.dont_write_bytecode = True  # installed in a shared, often read-only directory
+import autan_memfloor as memfloor
 
 LOCK = Path(os.environ.get("AUTAN_GPU_LOCK", "/home/admin/autan-gpu/gpu.lock"))
 LOG = LOCK.parent / "holders.log"
@@ -164,9 +170,9 @@ def publish(foreign: dict[int, dict] | None) -> None:
         sys.stderr.write(f"autan-gpu-guard: cannot write {FOREIGN}: {err}\n")
 
 
-def record(event: str, who: str, where: str, secs: float, command: str) -> None:
+def record(event: str, who: str, where: str, secs: float, command: str, status: str = "-") -> None:
     stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    line = f"{stamp}\t{event}\t{who}\t{where}\t{secs:.0f}\t-\tseen by autan-gpu-guard\t{command}\n"
+    line = f"{stamp}\t{event}\t{who}\t{where}\t{secs:.0f}\t{status}\tseen by autan-gpu-guard\t{command}\n"
     try:
         fd = os.open(LOG, os.O_WRONLY | os.O_APPEND | os.O_NONBLOCK)
         try:
@@ -194,6 +200,7 @@ def main() -> int:
     ci = CI_LOCK.open()
     announcing = False
     seen: dict[int, dict] = {}
+    floor = memfloor.parse(memfloor.DEFAULT)
     containers.refresh()
     threading.Thread(target=watch_foreign, args=(containers, stopping), daemon=True).start()
     while not stopping:
@@ -213,16 +220,23 @@ def main() -> int:
             announcing = False
             say("CI gone: ci.lock released")
         now = time.monotonic()
+        free = memfloor.available() if seen or holders else None
         for pid in holders - seen.keys():
             who, cmd = describe(pid)
             seen[pid] = {"since": now, "noted": now, "who": who, "cmd": cmd,
-                         "where": containers.name(container_of(pid))}  # fmt: skip
+                         "where": containers.name(container_of(pid)), "lowest": free}  # fmt: skip
             record("held", who, seen[pid]["where"], 0, cmd)
         for pid in list(seen):
             h = seen[pid]
             held = now - h["since"]
+            # Only a holder still holding sees this reading: one that left keeps its own lowest.
+            if pid in holders and free is not None and (h["lowest"] is None or free < h["lowest"]):
+                h["lowest"] = free
             if pid not in holders:
                 record("released", h["who"], h["where"], held, h["cmd"])
+                if h["lowest"] is not None and floor and h["lowest"] < floor:
+                    record("low-memory", h["who"], h["where"], held, h["cmd"],
+                           status=f"MemAvailable down to {memfloor.show(h['lowest'])}")  # fmt: skip
                 del seen[pid]
             elif held > MAX_HOLD_S and (h["noted"] == h["since"] or now - h["noted"] >= REPEAT_S):
                 record("overhold", h["who"], h["where"], held, h["cmd"])

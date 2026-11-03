@@ -465,7 +465,7 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
   // The multigrid agglomerates one mesh's cells and takes no image ghosts: E0706 at
   // `time.linear_solver`. The multigrid sums in local cell order: reproducibility "ranks" is
   // E1109. The coupled turbulence step is SA's (case-schema.md#time): E0426 on inviscid flow.
-  const std::string reason = GENERATE("periodic", "ranks", "coupled");
+  const std::string reason = GENERATE("periodic", "ranks", "coupled", "matrix-free");
   CAPTURE(reason);
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     if (reason == "periodic") {
@@ -474,6 +474,7 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
       inviscid_along_x(d, "fp64");
       if (reason == "ranks") d["reproducibility"] = "ranks";
       if (reason == "coupled") d["time"]["coupled_turbulence"] = true;
+      if (reason == "matrix-free") d["time"]["matrix_free"] = true;
     }
   });
   const auto out = run(doc);
@@ -484,7 +485,8 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
   const std::map<std::string, std::pair<std::string, std::string>> expected = {
       {"periodic", {"E0706", "time.linear_solver"}},
       {"ranks", {"E1109", "reproducibility"}},
-      {"coupled", {"E0426", "time.coupled_turbulence"}}};
+      {"coupled", {"E0426", "time.coupled_turbulence"}},
+      {"matrix-free", {"E0429", "time.matrix_free"}}};
   CHECK(diagnostic["code"] == expected.at(reason).first);
   CHECK(diagnostic["location"]["path"] == expected.at(reason).second);
 }
@@ -882,9 +884,15 @@ TEST_CASE("a steady Gauss-Seidel or lines case on several ranks converges to the
   // Gauss-Seidel sweeps the runtime's colours by global id, and the step length, the worst cell
   // and the norms reduce over the ranks, so N ranks run the one-rank algorithm. "lines" sweeps
   // the multigrid's fine lines, kept whole by the partition, over the runtime's colouring of the
-  // lines. Under reproducibility "run" the face sums follow local order, so the bits differ:
-  // converged, the fields agree within 1e-9 of their magnitude (the largest speed for velocity
-  // components), 1e-5 in fp32+acc64 (5 orders), and a fixed rank count repeats bit for bit. Under
+  // lines. Under reproducibility "run" the face sums follow local order, so the bits differ and a
+  // fixed rank count repeats bit for bit. Converged in fp64, the fields agree within 1e-9 of their
+  // magnitude (the largest speed for velocity components). In fp32+acc64 the runs stop near the
+  // round-off floor, where the state drifts with the summation order (partition, cell order,
+  // processor), so the N-rank state is held to the stop rule instead (case-schema.md#time): one
+  // rank, started from it, reports for each equation a residual within the one-rank run's
+  // threshold, the larger of its iteration-1 residual times 10^-orders and the floor, plus the
+  // floor, which the contract places above the round-off of evaluating a residual, here of one
+  // state in another summation order. Under
   // "ranks" every sum follows the global order: bit for bit. Two zones at different states on the
   // hybrid mesh, farfield around.
   const int ranks = GENERATE(2, 4);
@@ -911,23 +919,44 @@ TEST_CASE("a steady Gauss-Seidel or lines case on several ranks converges to the
   const fs::path many = run_on_ranks(doc, ranks);
   REQUIRE(!many.empty());
   CHECK(Json::parse(read(many / "run.json"))["status"] == "converged");
-  const auto vx = field(one.run, "VelocityX"), vy = field(one.run, "VelocityY"),
-             vz = field(one.run, "VelocityZ");
-  double speed = 0.0;
-  for (std::size_t c = 0; c < vx.size(); ++c) {
-    speed = std::max(speed, std::hypot(vx[c], vy[c], vz[c]));
-  }
-  for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
-    const auto a = field(one.run, name), b = field(many, name);
-    REQUIRE(a.size() == b.size());
-    double diff = 0.0, scale = 0.0;
-    for (std::size_t c = 0; c < a.size(); ++c) {
-      diff = std::max(diff, std::abs(a[c] - b[c]));
-      scale = std::max(scale, std::abs(a[c]));
+  if (fp64) {
+    const auto vx = field(one.run, "VelocityX"), vy = field(one.run, "VelocityY"),
+               vz = field(one.run, "VelocityZ");
+    double speed = 0.0;
+    for (std::size_t c = 0; c < vx.size(); ++c) {
+      speed = std::max(speed, std::hypot(vx[c], vy[c], vz[c]));
     }
-    if (std::string(name).starts_with("Velocity")) scale = speed;
-    INFO(name << " differs by " << diff / scale << " of its magnitude");
-    CHECK(diff <= (fp64 ? 1e-9 : 1e-5) * scale);
+    for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
+      const auto a = field(one.run, name), b = field(many, name);
+      REQUIRE(a.size() == b.size());
+      double diff = 0.0, scale = 0.0;
+      for (std::size_t c = 0; c < a.size(); ++c) {
+        diff = std::max(diff, std::abs(a[c] - b[c]));
+        scale = std::max(scale, std::abs(a[c]));
+      }
+      if (std::string(name).starts_with("Velocity")) scale = speed;
+      INFO(name << " differs by " << diff / scale << " of its magnitude");
+      CHECK(diff <= 1e-9 * scale);
+    }
+  } else {
+    // History line 1 of a steady run is the residual of the state it starts from (results.md).
+    auto check = doc;
+    check["start"] = continue_from(many, "warm");
+    check["time"]["max_iterations"] = 1;
+    const auto from_many = run(check);
+    INFO(from_many.err);
+    REQUIRE(from_many.status == ExitStatus::finished);
+    const Json first = history(one.run).front()["residuals"];
+    const Json floor = Json::parse(read(one.run / "run.json"))["convergence"]["floor"];
+    const double drop = std::pow(10.0, -doc["time"]["residual_orders"].get<double>());
+    const Json residuals = history(from_many.run).front()["residuals"];
+    REQUIRE(residuals.size() == first.size());
+    for (const auto& [name, r] : residuals.items()) {
+      const double f = floor[name].get<double>();
+      const double bound = std::max(first[name].get<double>() * drop, f) + f;
+      INFO(name << ": residual " << r.get<double>() << ", bound " << bound);
+      CHECK(r.get<double>() <= bound);
+    }
   }
   if (std::string(reproducibility) == "ranks") check_bit_for_bit(one.run, many);
   const fs::path again = run_on_ranks(doc, ranks);

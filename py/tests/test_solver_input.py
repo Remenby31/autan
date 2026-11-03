@@ -86,6 +86,7 @@ def test_crm_hl_input_is_resolved_and_closed_in_si(
         "residual_orders": 8.0,
         "linear_solver": "multigrid",
         "coupled_turbulence": False,
+        "matrix_free": False,
     }
 
 
@@ -110,6 +111,7 @@ def test_the_coupled_turbulence_step_is_an_sa_option(
     assert codes("autan.SA()", f"{on}, linear_solver='gauss-seidel'") == ["E0427", "W0426"]
     assert codes("autan.SA()", on, gpus=2) == ["E0427", "W0426"]
     case = write_case(CRM_HL + f"case.time = autan.Steady({on})\n")
+    jsonschema.Draft202012Validator(json_schema("case")).validate(autan.load(case).spec.document())
     status, document = prepare(capsys, case, "crm-hl.meshinfo.json")
     assert status == 0
     assert document["time"]["coupled_turbulence"] is True
@@ -121,6 +123,40 @@ def test_the_coupled_turbulence_step_is_an_sa_option(
     status, refused = prepare(capsys, case, "crm-hl.meshinfo.json", "--device-count", "2")
     assert status != 0
     assert "E0427" in refused
+
+
+def test_the_matrix_free_step_is_a_laminar_option(
+    write_case: Callable[..., Path], capsys: pytest.CaptureFixture[str], crm_mesh: autan.MeshInfo
+) -> None:
+    # case-schema.md#time: off by default; on for compressible laminar flow only (E0429), with
+    # the multigrid on one rank (E0427), and always reported as validated on the TMR laminar
+    # flat plate only.
+    def codes(turbulence: str, time: str, gpus: int = 1) -> list[str]:
+        body = CRM_HL.replace("autan.SA()", turbulence) + f"case.time = autan.Steady({time})\n"
+        try:
+            planned = autan.load(write_case(body)).plan(crm_mesh, gpus=gpus)
+        except autan.CaseError as error:
+            return error.codes
+        return sorted(d.code for d in planned.diagnostics if d.code[1:3] == "04")
+
+    on = "matrix_free=True"
+    assert codes("autan.Laminar()", "") == []
+    assert codes("autan.Laminar()", on) == ["W0429"]
+    assert codes("autan.SA()", on) == ["E0429"]
+    assert codes("autan.Inviscid()", on) == ["E0429"]
+    assert codes("autan.Laminar()", f"{on}, linear_solver='lines'") == ["E0427", "W0429"]
+    assert codes("autan.Laminar()", on, gpus=2) == ["E0427", "W0429"]
+    case = write_case(
+        CRM_HL.replace("autan.SA()", "autan.Laminar()") + f"case.time = autan.Steady({on})\n"
+    )
+    jsonschema.Draft202012Validator(json_schema("case")).validate(autan.load(case).spec.document())
+    status, document = prepare(capsys, case, "crm-hl.meshinfo.json")
+    assert status == 0
+    assert document["time"]["matrix_free"] is True
+    with pytest.raises(ValidationError):
+        autan.solver_input.SolverInput.model_validate(
+            document | {"time": document["time"] | {"matrix_free": 1}}
+        )
 
 
 def test_heat_exchanger_media_and_inlets_in_si(
