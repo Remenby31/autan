@@ -666,7 +666,8 @@ TEST_CASE("A Fluent interior zone keeps no name of its own", "[io]") {
   // mesh.md, Readers: an interior zone, which nothing exposes, is named by its id, so its record's
   // name, here 4096 bytes and the same as a boundary zone's, is neither kept nor checked.
   const std::string name(4096, 'n');
-  std::string text = slurp(data_dir / "hex" / "hex.fluent.msh");
+  std::ifstream in(data_dir / "hex" / "hex.fluent.msh", std::ios::binary);
+  std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
   text =
       replace(replace(text, "(39 (2 interior interior-1)())", "(39 (2 interior " + name + ")())"),
               "(39 (10 pressure-outlet xmin)())", "(39 (10 pressure-outlet " + name + ")())");
