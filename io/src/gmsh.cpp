@@ -92,12 +92,16 @@ class GmshReader {
       } else if (section == "PhysicalNames") {
         physical_names();
       } else if (section == "Entities") {
-        entities();
+        // Read once the elements say which entities they use (entities_used).
+        entities_at_ = c_.position();
+        skip_section(section);
+        continue;
       } else if (section == "Nodes") {
         nodes();
         seen_nodes = true;
       } else if (section == "Elements") {
         if (!seen_nodes) c_.fail("$Elements before $Nodes");
+        if (entities_at_ != std::string::npos) entities(entities_used());
         elements();
         seen_elements = true;
       } else if (section == "Periodic") {
@@ -252,7 +256,43 @@ class GmshReader {
     return values * (binary_ ? 4 : 2);
   }
 
-  void entities() {
+  // The (dim, tag) of the entities the element blocks name, sorted: one per block, which the
+  // elements bound. The blocks' elements are read past.
+  std::vector<std::pair<int, int>> entities_used() {
+    const Cursor at = c_;
+    if (binary_) (void)c_.line();
+    const std::uint64_t n_blocks = next_size();
+    (void)next_size();
+    (void)next_size();
+    (void)next_size();
+    c_.check_fits(n_blocks, min_bytes(4));
+    std::vector<std::pair<int, int>> used;
+    for (std::uint64_t b = 0; b < n_blocks; ++b) {
+      const int dim = next_int();
+      const int entity = next_int();
+      const int type = next_int();
+      const std::uint64_t n = next_size();
+      ElementType et{};
+      c_.check_fits(n, min_bytes(2));
+      if (!element_type(type, et))
+        c_.unsupported("element type " + std::to_string(type) + " (linear elements only)");
+      used.emplace_back(dim, entity);
+      for (std::uint64_t v = 0; v < n * (1 + static_cast<std::uint64_t>(et.nodes)); ++v) {
+        (void)next_size();
+      }
+    }
+    c_ = at;
+    std::ranges::sort(used);
+    used.erase(std::ranges::unique(used).begin(), used.end());
+    return used;
+  }
+
+  // $Entities, from where it starts: the physical group of each entity of dimension 2 or 3 that
+  // an element block names (`used`). An entity no block names labels nothing: not kept.
+  void entities(const std::vector<std::pair<int, int>>& used) {
+    const Cursor after = c_;
+    c_ = Cursor(data_, c_.path());
+    c_.advance(entities_at_);
     if (binary_) (void)c_.line();
     std::uint64_t counts[4];
     for (auto& n : counts) n = next_size();
@@ -281,14 +321,14 @@ class GmshReader {
                     ErrorCode::io_ambiguous_zone);
           }
           // An entity in no group labels nothing: not kept (physical_of gives it 0).
-          if (!physicals.empty()) {
+          if (!physicals.empty() && std::ranges::binary_search(used, std::pair(dim, tag))) {
             entity_physical_.push_back({dim, tag, physicals.front()});
             entities_sorted_ = false;
           }
         }
       }
     }
-    if (binary_) c_.skip_space();
+    c_ = after;
   }
 
   void nodes() {
@@ -483,7 +523,9 @@ class GmshReader {
   std::string data_;
   Cursor c_;
   bool binary_ = false;
-  std::size_t names_at_ = std::string::npos;  // where $PhysicalNames starts, when given
+  std::size_t names_at_ = std::string::npos;
+  std::size_t entities_at_ = std::string::npos;  // where $Entities starts, when given  // where
+                                                 // $PhysicalNames starts, when given
   // (dim, tag, physical group) of the entities of dimension 2 and 3 in a group: 12 bytes each,
   // fewer than their record in the file. Sorted on first lookup, the last record of a key winning.
   std::vector<std::array<int, 3>> entity_physical_;

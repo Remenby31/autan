@@ -1288,4 +1288,52 @@ TEST_CASE("A BC point list over points and edges is read in chunks, never whole"
   CAPTURE(before, after);
   CHECK(after - before <= std::int64_t{2} << 20);  // a 1 MiB chunk; the list would be 32 MiB
 }
+TEST_CASE("A section of boundary faces nothing names is skipped", "[cgns]") {
+  // mesh.md, Readers: the faces come from the cells; 2^20 triangles no family, BC, subregion or
+  // connectivity names cost nothing kept, not 88 bytes each.
+  fs::create_directories(temp_dir());
+  constexpr cgsize_t triangles = cgsize_t{1} << 20;
+  const fs::path plain =
+      cgns_file("faces-none.cgns", [](int fn, int base) { unstructured_tet(fn, base, "Zone"); });
+  const fs::path padded = cgns_file("faces-unused.cgns", [&](int fn, int base) {
+    unstructured_tet(fn, base, "Zone");
+    std::vector<cgsize_t> tri(3 * static_cast<std::size_t>(triangles));
+    for (std::size_t t = 0; t < tri.size(); t += 3) {
+      tri[t] = 1;
+      tri[t + 1] = 3;
+      tri[t + 2] = 2;
+    }
+    int section = 0;
+    REQUIRE(cg_section_write(fn, base, 1, "Faces", CGNS_ENUMV(TRI_3), 2, triangles + 1, 0,
+                             tri.data(), &section) == CG_OK);
+  });
+  (void)autan::io::read_mesh(plain);
+  const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+  const std::int64_t after = peak_of([&] { CHECK(autan::io::read_mesh(padded).n_cells() == 1); });
+  CAPTURE(before, after);
+  CHECK(after - before <= std::int64_t{2} << 20);  // kept, the triangles would be 88 MiB
+}
+
+TEST_CASE("A CGNS file reads at most 1 MiB of other data when it opens", "[cgns]") {
+  // mesh.md, Memory of a CGNS read: cg_open reads a BaseIterativeData_t's TimeValues whole; the
+  // largest within 1 MiB is read, one value more is refused before cg_open.
+  fs::create_directories(temp_dir());
+  const auto with_times = [&](const std::string& name, cgsize_t steps) {
+    return cgns_file(name, [&](int fn, int base) {
+      unstructured_tet(fn, base, "Zone");
+      REQUIRE(cg_biter_write(fn, base, "Iterations", static_cast<int>(steps)) == CG_OK);
+      REQUIRE(cg_goto(fn, base, "BaseIterativeData_t", 1, "end") == CG_OK);
+      const std::vector<double> times(static_cast<std::size_t>(steps), 1.0);
+      REQUIRE(cg_array_write("TimeValues", CGNS_ENUMV(RealDouble), 1, &steps, times.data()) ==
+              CG_OK);
+    });
+  };
+  constexpr std::int64_t limit = std::int64_t{1} << 20;
+  const std::int64_t one = autan::io::cgns_logical_bytes(with_times("times-1.cgns", 1)).eager;
+  const auto steps = static_cast<cgsize_t>(1 + (limit - one) / 8);
+  const fs::path at = with_times("times-at.cgns", steps);
+  CHECK(autan::io::cgns_logical_bytes(at).eager <= limit);
+  CHECK(autan::io::read_mesh(at).n_cells() == 1);
+  require_error(autan::ErrorCode::io_unsupported, with_times("times-over.cgns", steps + 1));
+}
 #endif

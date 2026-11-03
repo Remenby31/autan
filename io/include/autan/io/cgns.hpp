@@ -30,6 +30,8 @@ struct LogicalBytes {
   std::int64_t filtered = 0;
   /// Every node of the file's tree, for each of which the CGNS library allocates at cg_open.
   std::int64_t nodes = 0;
+  /// The data cg_open reads beyond descriptors (mesh.md, Memory of a CGNS read): at most 1 MiB.
+  std::int64_t eager = 0;
 };
 
 /// LogicalBytes of a CGNS file, from its node metadata only, through cgio (no cg_open).

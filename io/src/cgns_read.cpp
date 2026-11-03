@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <span>
 #include <string>
@@ -105,9 +106,14 @@ bool is_face_type(CGNS_ENUMT(ElementType_t) type) {
 constexpr std::size_t chunk_elements = 4096;
 constexpr std::int64_t chunk_entries = std::int64_t{1} << 17;
 
-// The nodes of `tree`, E0133 beyond max_cgns_nodes, naming the commonest label.
-std::int64_t bounded_nodes(const CgioTree& tree, const fs::path& path) {
+// The count of `tree`, E0133 beyond its nodes, depth or data read at open, naming the commonest
+// label for too many nodes.
+TreeCount bounded_nodes(const CgioTree& tree, const fs::path& path) {
   const TreeCount count = count_nodes(tree);
+  if (count.eager_bytes > max_cgns_eager_bytes) {
+    unsupported(path.string(), "more than " + std::to_string(max_cgns_eager_bytes) +
+                                   " bytes of data read when the file opens");
+  }
   if (count.too_deep) {
     unsupported(path.string(), "a tree deeper than " + std::to_string(max_cgns_depth) + " levels");
   }
@@ -117,7 +123,7 @@ std::int64_t bounded_nodes(const CgioTree& tree, const fs::path& path) {
     unsupported(path.string(), "more than " + std::to_string(max_cgns_nodes) + " nodes, " +
                                    std::to_string(most->second) + " of them " + most->first);
   }
-  return count.nodes;
+  return count;
 }
 
 bool is_ignored_type(CGNS_ENUMT(ElementType_t) type) {
@@ -166,6 +172,7 @@ class Reader {
 
     read_families();
     read_coordinates();
+    mark_referenced_sections();
     read_sections();
     read_bcs();
     read_connectivity();
@@ -268,7 +275,11 @@ class Reader {
       char family_name[CG_MAX_GOTO_DEPTH * 33 + 1];
       if (cg_famname_read(family_name) == CG_OK) family = family_name;
       const auto count = at(end - start + 1);
-      if (is_ignored_type(type)) {
+      // A section of boundary faces no family and no point set names labels nothing: the faces
+      // come from the cells, so it is skipped as points and edges are.
+      const bool unused_faces = is_face_type(type) && family.empty() &&
+                                !referenced_sections_[static_cast<std::size_t>(s - 1)];
+      if (is_ignored_type(type) || unused_faces) {
         // Points and edges the reader never uses: their ids resolve, their nodes are not read.
         sections_.push_back(
             Section{.start = start,
@@ -438,6 +449,66 @@ class Reader {
     } else if (!is_face_type(type) && !is_ignored_type(type)) {
       unsupported(path_, std::string("element type ") + ElementTypeName[type] + " in section '" +
                              section + "' (linear elements only)");
+    }
+  }
+
+  // Which sections a point set names: every IndexRange_t and IndexArray_t under the zone's BCs,
+  // subregions and connectivities, ranges at once and lists 2^17 ids at a time.
+  void mark_referenced_sections() {
+    int n = 0;
+    ok(cg_nsections(fn_, 1, 1, &n), "count sections");
+    std::vector<std::pair<cgsize_t, cgsize_t>> ranges;  // [start, end] of section s - 1
+    for (int s = 1; s <= n; ++s) {
+      char name[33];
+      CGNS_ENUMT(ElementType_t) type{};
+      cgsize_t start = 0, end = 0;
+      int boundary = 0, parent_flag = 0;
+      ok(cg_section_read(fn_, 1, 1, s, name, &type, &start, &end, &boundary, &parent_flag),
+         "read section");
+      ranges.emplace_back(start, end);
+    }
+    referenced_sections_.assign(ranges.size(), false);
+    std::vector<std::size_t> by_start(ranges.size());
+    std::iota(by_start.begin(), by_start.end(), std::size_t{0});
+    std::ranges::sort(by_start, {}, [&](std::size_t s) { return ranges[s].first; });
+    const auto mark = [&](cgsize_t lo, cgsize_t hi) {
+      // The sections overlapping [lo, hi]: from the last one starting at or before lo.
+      auto it = std::ranges::upper_bound(by_start, lo, {},
+                                         [&](std::size_t s) { return ranges[s].first; });
+      if (it != by_start.begin()) --it;
+      for (; it != by_start.end() && ranges[*it].first <= hi; ++it) {
+        if (ranges[*it].second >= lo) referenced_sections_[*it] = true;
+      }
+    };
+    const CgioTree tree(fn_);
+    const auto base = tree.child(tree.root(), "CGNSBase_t");
+    const auto zone = base ? tree.child(*base, "Zone_t") : std::nullopt;
+    if (!zone) return;
+    std::vector<cgsize_t> chunk;
+    const auto walk = [&](const auto& self, double node) -> void {
+      for (const double child : tree.children(node)) {
+        const std::string label = tree.label(child);
+        if (label == "IndexRange_t") {
+          std::array<cgsize_t, 2> range{};
+          tree.read_integers(child, 0, range);
+          mark(std::min(range[0], range[1]), std::max(range[0], range[1]));
+        } else if (label == "IndexArray_t") {
+          const std::int64_t count = tree.values(child);
+          for (std::int64_t first = 0; first < count; first += chunk_entries) {
+            chunk.resize(static_cast<std::size_t>(std::min(chunk_entries, count - first)));
+            tree.read_integers(child, first, chunk);
+            for (const cgsize_t id : chunk) mark(id, id);
+          }
+        } else {
+          self(self, child);
+        }
+      }
+    };
+    for (const double child : tree.children(*zone)) {
+      const std::string label = tree.label(child);
+      if (label == "ZoneBC_t" || label == "ZoneSubRegion_t" || label == "ZoneGridConnectivity_t") {
+        walk(walk, child);
+      }
     }
   }
 
@@ -1085,6 +1156,7 @@ class Reader {
     }
   };
   std::vector<Section> sections_;
+  std::vector<bool> referenced_sections_;  // by section index - 1, mark_referenced_sections
   bool has_ngon_ = false, has_nface_ = false, has_standard_cells_ = false;
   std::vector<FaceZone> face_zones_;
   std::map<std::string, index_t> face_zone_index_;
@@ -1113,7 +1185,9 @@ LogicalBytes cgns_logical_bytes(const fs::path& file) {
   reject_outside_data(file);
   const CgioTree tree(file);
   LogicalBytes out;
-  out.nodes = bounded_nodes(tree, file);  // first: every walk below is then bounded
+  const TreeCount count = bounded_nodes(tree, file);  // first: every walk below is then bounded
+  out.nodes = count.nodes;
+  out.eager = count.eager_bytes;
   // Every Descriptor_t, at any level: cg_open loads them all.
   const auto descriptors = [&](const auto& self, double node) -> void {
     for (const double child : tree.children(node)) {

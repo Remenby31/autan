@@ -357,6 +357,11 @@ class FluentReader {
     auto [id, info] = zone_record(c_);
     skip_rest();
     if (info.type == "fluid" || info.type == "solid") {
+      // A cell zone each: real meshes have a few; at most 16 384 records, 256 KiB of offsets.
+      if (cell_zone_records_.size() == max_cell_zone_records) {
+        c_.unsupported("more than " + std::to_string(max_cell_zone_records) +
+                       " fluid or solid zone records");
+      }
       cell_zone_records_.emplace_back(id, at);
     } else {
       zones_[id] = std::move(info);
@@ -539,6 +544,7 @@ class FluentReader {
   std::vector<index_t> face_block_;
   std::vector<FaceBlock> face_blocks_;
   std::map<std::int64_t, ZoneInfo> zones_;
+  static constexpr std::size_t max_cell_zone_records = 16384;
   std::vector<std::pair<std::int64_t, std::size_t>> cell_zone_records_;  // (id, record offset)
 };
 

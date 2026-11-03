@@ -34,9 +34,10 @@ std::int64_t solution_cells(const std::filesystem::path& file) {
   reject_outside_data(file);
   const CgioTree tree(file);
   if (count_nodes(tree).beyond()) {
-    throw Error(ErrorCode::io_malformed, file.string() + ": more than " +
-                                             std::to_string(max_cgns_nodes) + " nodes or " +
-                                             std::to_string(max_cgns_depth) + " levels");
+    throw Error(ErrorCode::io_malformed,
+                file.string() + ": more than " + std::to_string(max_cgns_nodes) + " nodes or " +
+                    std::to_string(max_cgns_depth) + " levels, or " +
+                    std::to_string(max_cgns_eager_bytes) + " bytes read when the file opens");
   }
   const auto base = tree.child(tree.root(), "CGNSBase_t");
   const auto zone = base ? tree.child(*base, "Zone_t") : std::nullopt;
@@ -55,7 +56,8 @@ void check_start_solution(const std::filesystem::path& file, const StartLimits& 
   };
   if (count_nodes(tree).beyond()) {
     refuse("more than " + std::to_string(max_cgns_nodes) + " nodes or " +
-           std::to_string(max_cgns_depth) + " levels");
+           std::to_string(max_cgns_depth) + " levels, or " + std::to_string(max_cgns_eager_bytes) +
+           " bytes read when the file opens");
   }
   std::int64_t translations = 0, families = 0;
   // Every descriptor of the tree, where the writer puts them and no larger than it writes them.

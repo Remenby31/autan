@@ -198,6 +198,23 @@ class CgioTree {
 // every real grid (5 levels), is refused.
 constexpr std::int64_t max_cgns_nodes = 16384;
 constexpr int max_cgns_depth = 16;
+// The data cg_open reads beyond descriptors: every node's but a Descriptor_t's (counted as
+// descriptor_bytes), a point set's (cgi_read_ptset skips it) and a DataArray_t's under the parents
+// cgi_read_array leaves unread (CGNS 4.5.2, cgns_internals.c:5184). At most 1 MiB, 24 times the
+// 42 KB of the CRM-HL grid (DPW4: 3.2 KB).
+constexpr std::int64_t max_cgns_eager_bytes = std::int64_t{1} << 20;
+
+// Whether cg_open reads the data of a node labelled `label` under one labelled `parent`.
+inline bool read_at_open(std::string_view label, std::string_view parent) {
+  if (label == "Descriptor_t" || label == "IndexArray_t") return false;
+  if (label != "DataArray_t") return true;
+  for (const std::string_view lazy :
+       {"GridCoordinates_t", "FlowSolution_t", "Elements_t", "ZoneSubRegion_t", "DiscreteData_t",
+        "ParticleCoordinates_t", "ParticleSolution_t", "UserDefinedData_t"}) {
+    if (parent == lazy) return false;
+  }
+  return true;
+}
 
 // The nodes of a tree by label, as far as the walk went: it stops once it passes max_cgns_nodes
 // or max_cgns_depth, each node's children counted before their ids are read, so that walking
@@ -206,14 +223,22 @@ struct TreeCount {
   std::map<std::string, std::int64_t> labels;
   std::int64_t nodes = 0;
   bool too_deep = false;
-  [[nodiscard]] bool beyond() const { return too_deep || nodes > max_cgns_nodes; }
+  std::int64_t eager_bytes = 0;  // what cg_open reads of the nodes counted (read_at_open)
+  [[nodiscard]] bool beyond() const {
+    return too_deep || nodes > max_cgns_nodes || eager_bytes > max_cgns_eager_bytes;
+  }
 };
 
 inline TreeCount count_nodes(const CgioTree& tree) {
   TreeCount out;
-  std::vector<std::pair<double, int>> pending{{tree.root(), 0}};
+  struct Pending {
+    double node;
+    int depth;
+    std::string label;
+  };
+  std::vector<Pending> pending{{tree.root(), 0, ""}};
   while (!pending.empty()) {
-    const auto [node, depth] = pending.back();
+    const auto [node, depth, parent] = pending.back();
     pending.pop_back();
     const std::int64_t n = tree.number_of_children(node);
     if (n == 0) continue;
@@ -226,9 +251,11 @@ inline TreeCount count_nodes(const CgioTree& tree) {
       return out;
     }
     for (const double child : tree.children(node)) {
-      ++out.labels[tree.label(child)];
+      std::string label = tree.label(child);
+      ++out.labels[label];
       ++out.nodes;
-      pending.emplace_back(child, depth + 1);
+      if (read_at_open(label, parent)) out.eager_bytes += tree.logical_bytes(child);
+      pending.push_back({child, depth + 1, std::move(label)});
     }
   }
   return out;

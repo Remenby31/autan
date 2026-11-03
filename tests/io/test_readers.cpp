@@ -539,9 +539,28 @@ TEST_CASE("Records a reader does not use cost their text, not a copy each", "[io
     CHECK(std::ranges::any_of(mesh->cell_zones(),
                               [](const auto& z) { return z.name == "solid-block"; }));
   }
+  SECTION("Gmsh volume entities in a physical group without elements") {
+    std::string entities;
+    for (int i = 0; i < n; ++i) entities += std::to_string(i + 2) + " 0 0 0 1 1 1 1 9 0\n";
+    const fs::path plain = write_temp("grouped-plain.msh", gmsh_tet);
+    const std::string text = replace(replace(gmsh_tet, "$Entities\n1 0 2 1\n",
+                                             "$Entities\n1 0 2 " + std::to_string(1 + n) + "\n"),
+                                     "$EndEntities", entities + "$EndEntities");
+    const fs::path padded = write_temp("grouped-padded.msh", text);
+    const auto added = static_cast<std::int64_t>(text.size() - gmsh_tet.size());
+    (void)autan::io::read_mesh(plain);
+    const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+    std::optional<autan::Mesh> mesh;
+    const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(padded); });
+    CAPTURE(before, after, added);
+    CHECK(after - before <= added + (std::int64_t{1} << 20));
+    CHECK(std::ranges::any_of(mesh->cell_zones(),
+                              [](const auto& z) { return z.name == "solid-block"; }));
+  }
   SECTION("Fluent fluid zones no cell is in") {
     std::string zones;
-    for (int i = 0; i < n / 32; ++i) {
+    // The file's own fluid zone and n / 32 - 1 more: the 16 384 records a file may hold.
+    for (int i = 0; i < n / 32 - 1; ++i) {
       zones += "(45 (" + std::to_string(100 + i) + " fluid " + std::string(1024, 'f') + ")())\n";
     }
     const fs::path plain = write_temp("fluid-plain.msh", fluent_tet);
@@ -579,5 +598,13 @@ TEST_CASE("Records a reader does not use cost their text, not a copy each", "[io
     REQUIRE(mesh->cell_zones().size() == 1);
     CHECK(mesh->cell_zones()[0].name == "block");
   }
+}
+TEST_CASE("A Fluent file holds at most 16 384 fluid or solid zone records", "[io]") {
+  // mesh.md, Readers: a record each read again by offset for the cells that use it.
+  std::string zones;
+  for (int i = 0; i < 16383; ++i) zones += "(45 (" + std::to_string(100 + i) + " fluid f)())\n";
+  CHECK(autan::io::read_mesh(write_temp("fluid-limit.msh", fluent_tet + zones)).n_cells() == 1);
+  require_error(autan::ErrorCode::io_unsupported,
+                write_temp("fluid-over.msh", fluent_tet + zones + "(45 (99999 solid s)())\n"));
 }
 #endif
