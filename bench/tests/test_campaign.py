@@ -236,3 +236,48 @@ def test_a_campaign_gives_way_when_host_memory_falls_below_its_floor(
         assert until(lambda: "rm -f autan-campaign-c2" in calls_of("c2"))
     finally:
         measurement.close()
+
+
+@pytest.mark.usefixtures("meminfo")
+@pytest.mark.parametrize(("given", "expected"), [([], 48 << 30), (["--memory", "20G"], 20 << 30)])
+def test_a_campaign_is_capped_at_its_declared_memory(tmp_path, monkeypatch, given, expected):
+    # docker is the external boundary: the cap reaches `docker create`, swap included.
+    calls = tmp_path / "calls"
+    fake = tmp_path / "docker"
+    fake.write_text(
+        f"#!/bin/sh\nprintf '%s\\037' \"$@\" >> {calls}; printf '\\036' >> {calls}\n"
+        'case "$1" in inspect) echo "exited 0" ;; esac\n'
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    lock = tmp_path / "gpu.lock"
+    lock.touch()
+    monkeypatch.setenv("AUTAN_GPU_LOCK", str(lock))
+    monkeypatch.setattr(campaign, "LOCK", lock)
+    monkeypatch.setattr(campaign, "STATE", tmp_path / "autan-campaigns")
+    monkeypatch.setattr(campaign, "STATES", tmp_path / "campaigns")
+    argv = ["start", "c4", *given, "--dir", str(tmp_path), "--", "true"]
+    assert campaign.main(argv) == 0
+    records = [r.split("\x1f")[:-1] for r in calls.read_text().split("\x1e")[:-1]]
+    create = next(r for r in records if r[0] == "create")
+    assert create[create.index("--memory") + 1] == f"{expected}b"
+    assert create[create.index("--memory-swap") + 1] == f"{expected}b"
+
+
+@pytest.mark.usefixtures("meminfo")
+def test_a_cap_that_cannot_fit_beside_the_floor_is_refused(tmp_path, monkeypatch):
+    # 128 GiB in all (the meminfo fixture), a 24 GiB floor: a 110 GiB cap could only end in the
+    # floor's breach, which removes every campaign.
+    monkeypatch.setattr(campaign.memfloor, "MEMINFO", Path(os.environ["AUTAN_MEMINFO"]))
+    lock = tmp_path / "gpu.lock"
+    lock.touch()
+    monkeypatch.setattr(campaign, "LOCK", lock)
+    monkeypatch.setattr(campaign, "STATE", tmp_path / "autan-campaigns")
+    monkeypatch.setattr(campaign, "STATES", tmp_path / "campaigns")
+    with pytest.raises(SystemExit) as stop:
+        campaign.main(["start", "c5", "--memory", "110G", "--dir", str(tmp_path), "--", "true"])
+    assert "exceeds the host" in str(stop.value)
+    with pytest.raises(SystemExit) as stop:
+        campaign.main(["start", "c6", "--memory", "lots", "--dir", str(tmp_path), "--", "true"])
+    assert "is not a size" in str(stop.value)
