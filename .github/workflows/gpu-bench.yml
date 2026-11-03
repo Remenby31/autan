@@ -152,7 +152,7 @@ jobs:
       # beside a compilation.
       - name: Build the benchmarks
         run: >-
-          bench/lock/autan-gpu-lock -m "gpu-bench: build the benchmarks" -t 600 --
+          bench/lock/autan-gpu-lock --untimed -m "gpu-bench: build the benchmarks" -t 600 --
           bash -c 'cmake -S bench -B build/bench && cmake --build build/bench'
       - name: Install the harness
         run: uv sync --project bench --locked
@@ -168,7 +168,7 @@ jobs:
       - name: Image smoke test on the GPU (bench/ or docker/ changed)
         if: needs.changes.outputs.harness == 'true'
         run: >-
-          REQUIRE_GPU=1 bench/lock/autan-gpu-lock -m "gpu-bench: image smoke test"
+          REQUIRE_GPU=1 bench/lock/autan-gpu-lock --untimed -m "gpu-bench: image smoke test"
           -w "$AUTAN_BENCH_LOCK_TIMEOUT" -t 600 -- docker/dev/smoke/run.sh build/smoke
       - name: STREAM, paired with the base (pull requests)
         if: needs.changes.outputs.bench == 'true' && github.event_name == 'pull_request'
@@ -210,7 +210,7 @@ jobs:
       - name: Build the generated loops
         if: needs.changes.outputs.bench == 'true'
         run: >-
-          bench/lock/autan-gpu-lock -m "gpu-bench: build the generated loops" -t 600 --
+          bench/lock/autan-gpu-lock --untimed -m "gpu-bench: build the generated loops" -t 600 --
           bash -c 'cmake -S . -B build/autan -DAUTAN_ENABLE_CUDA=ON -DAUTAN_BUILD_TESTS=OFF
           -DCMAKE_CUDA_ARCHITECTURES=121 && cmake --build build/autan --target autan_loop_bench'
       # changes.sh's measured directories are exactly those both benchmarks are built from, so

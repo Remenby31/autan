@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """autan-gpu-lock: run a command under the Spark GPU lock, bounded, and record who held it.
 
-    autan-gpu-lock -m WHY [-n] [-w WAIT_S] [-t HOLD_S] [-f FLOOR] [-r RECOVER_S] -- COMMAND...
+    autan-gpu-lock -m WHY [-n] [--untimed] [-w WAIT_S] [-t HOLD_S] [-f FLOOR] [-r RECOVER_S] -- COMMAND...
 -r RECOVER_S  with the lock taken and the host below the floor, wait up to this long, 0 to 600
            (default 120), for memory to come back before refusing: a holder the floor just
            killed takes seconds to return its memory
@@ -12,6 +12,9 @@
            wait for CI and for a free lock, then run it without holding the lock, under the
            same records; the -t limit then counts from its start, its own lock wait included
            (a turn this wrapper takes past pull requests' CI is passed on to it)
+--untimed  the command times nothing (a build, a functional test): CPU campaigns are not frozen
+           for it. By default a hold is a timed one: timed.lock, next to the lock, is held
+           (shared) with it, and campaigns freeze while it is (bench/campaign/autan-campaign)
 -t HOLD_S  hold the lock at most this long, 1 to 600 (default 600): the command's processes get
            TERM shortly before and KILL at the limit (exit 124)
 -f FLOOR   host memory to keep available, as 24G or 512M (default 24G, 0G for none): the
@@ -58,6 +61,7 @@ LOG = LOCK.parent / "holders.log"
 CI_LOCK = LOCK.parent / "ci.lock"
 MAIN_LOCK = LOCK.parent / "main.lock"
 TURN_LOCK = LOCK.parent / "turn.lock"
+TIMED_LOCK = LOCK.parent / "timed.lock"
 MAX_HOLD_S = 600
 POLL_S = 0.05
 CLEANUP_S = 10.0
@@ -75,11 +79,15 @@ def seconds(text: str, low: int, high: int) -> int:
     return int(text)
 
 
-def parse(argv: list[str]) -> tuple[str, int, int, int, int, bool, list[str]]:
+def parse(argv: list[str]) -> tuple[str, int, int, int, int, bool, bool, list[str]]:
     why, wait_s, hold_s, floor, recover_s, self_locking = "", 3600, MAX_HOLD_S, None, 120, False
+    untimed = False
     while argv and argv[0] != "--":
         if argv[0] == "-n":
             self_locking, argv = True, argv[1:]
+            continue
+        if argv[0] == "--untimed":
+            untimed, argv = True, argv[1:]
             continue
         if len(argv) < 2 or argv[0] not in ("-m", "-w", "-t", "-f", "-r"):
             usage(f"unexpected {argv[0]!r}")
@@ -101,7 +109,7 @@ def parse(argv: list[str]) -> tuple[str, int, int, int, int, bool, list[str]]:
         usage("-m WHY and a command after -- are required")
     if floor is None:
         floor = memfloor.parse(memfloor.DEFAULT)
-    return why, wait_s, hold_s, floor, recover_s, self_locking, command
+    return why, wait_s, hold_s, floor, recover_s, self_locking, untimed, command
 
 
 def field(text: str, limit: int) -> str:
@@ -151,6 +159,22 @@ class Log:
                 os.close(fd)
         except OSError:
             self.unrecorded(line)
+
+
+def timed_hold() -> object | None:
+    """timed.lock held shared, as an open file to close at the end of the hold; None where it
+    does not exist and cannot be made (a read-only lock directory: campaigns there freeze on the
+    GPU lock itself)."""
+    try:
+        fd = os.open(TIMED_LOCK, os.O_RDONLY)
+    except FileNotFoundError:
+        try:
+            fd = os.open(TIMED_LOCK, os.O_RDONLY | os.O_CREAT, 0o666)
+        except OSError:
+            return None
+    handle = os.fdopen(fd)
+    fcntl.flock(handle, fcntl.LOCK_SH)
+    return handle
 
 
 def _held(path: Path) -> bool:
@@ -369,7 +393,7 @@ def main() -> int:
 
 
 def run(turn: Turn) -> int:
-    why, wait_s, hold_s, floor, recover_s, self_locking, command = parse(sys.argv[1:])
+    why, wait_s, hold_s, floor, recover_s, self_locking, untimed, command = parse(sys.argv[1:])
     log = Log(why, command)
     cancel = []
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
@@ -453,6 +477,8 @@ def run(turn: Turn) -> int:
         # A turn's hold counts from the turn's start, its memory wait included.
         if self_locking and not bypass:
             taken = time.monotonic()
+        # A timed hold says so (autan-bench, with -n, says it itself for each measurement).
+        timed = None if untimed or self_locking else timed_hold()
         become_subreaper()
         helpers: set[int] = set()
         container = Container(helpers)
@@ -469,6 +495,8 @@ def run(turn: Turn) -> int:
         tree = Tree(proc.pid, helpers)
         status, stop, leftover, low = supervise(proc, taken, hold_s, floor, cancel, container, tree)
         held = time.monotonic() - taken
+        if timed is not None:
+            timed.close()
         fcntl.flock(handle, fcntl.LOCK_UN)
 
     if leftover:

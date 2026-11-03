@@ -221,6 +221,15 @@ def _measure(
     binary: Path, args: list[str], gated: _Gated | None, setup: float | None, suite: str,
     precision: str, lock: Path, waited: float, max_load_per_cpu: float | None,
 ) -> dict[str, Any]:  # fmt: skip
+    # Announced as timed before anything else, so that CPU campaigns freeze for it.
+    with gpu.timed_hold(lock):
+        return _timed(binary, args, gated, setup, suite, precision, lock, waited, max_load_per_cpu)
+
+
+def _timed(
+    binary: Path, args: list[str], gated: _Gated | None, setup: float | None, suite: str,
+    precision: str, lock: Path, waited: float, max_load_per_cpu: float | None,
+) -> dict[str, Any]:  # fmt: skip
     gpu.require_campaigns_frozen(lock)
     idle = gpu.require_idle()
     before = gpu.host_load()

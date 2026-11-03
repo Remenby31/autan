@@ -404,3 +404,32 @@ def test_a_docker_run_command_has_its_container_killed_with_it(lock, tmp_path, m
     finally:
         for cid in containers(label):
             subprocess.run(["docker", "rm", "-f", cid], capture_output=True, check=False)
+
+
+PROBE_TIMED = """import fcntl, sys
+with open(sys.argv[1]) as handle:
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        print("free")
+    except BlockingIOError:
+        print("held")
+"""
+
+
+@pytest.mark.parametrize(("flags", "expected"), [([], "held"), (["--untimed"], "free"),
+                                                 (["-n"], "free")])  # fmt: skip
+def test_a_hold_is_timed_unless_said_untimed(lock, tmp_path, flags, expected):
+    # Timed by default (campaigns freeze); --untimed for builds and tests; with -n, autan-bench
+    # declares each of its measurements itself.
+    timed = lock.parent / "timed.lock"
+    timed.touch()
+    probe = tmp_path / "probe.py"
+    probe.write_text(PROBE_TIMED)
+    proc = wrapper(lock, *flags, "-m", "unit test", "--", sys.executable, str(probe), str(timed),
+                   stdout=subprocess.PIPE)  # fmt: skip
+    out, _ = proc.communicate(timeout=30)
+    assert proc.returncode == 0
+    assert out.decode().strip() == expected
+    # Released with the hold.
+    with timed.open() as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)

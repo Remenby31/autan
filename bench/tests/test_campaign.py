@@ -236,3 +236,31 @@ def test_a_campaign_gives_way_when_host_memory_falls_below_its_floor(
         assert until(lambda: "rm -f autan-campaign-c2" in calls_of("c2"))
     finally:
         measurement.close()
+
+
+def test_campaigns_freeze_for_timed_holds_only(tmp_path, monkeypatch):
+    """A build or a functional test holds the GPU lock but times nothing: no freeze for it."""
+    lock = tmp_path / "gpu.lock"
+    lock.touch()
+    monkeypatch.setattr(campaign, "LOCK", lock)
+    monkeypatch.setattr(campaign, "TIMED", tmp_path / "timed.lock")
+    # A Spark not redeployed since: no timed.lock, every hold freezes as before.
+    assert campaign.freeze_lock() == lock
+    (tmp_path / "timed.lock").touch()
+    assert campaign.freeze_lock() == tmp_path / "timed.lock"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="/proc/locks is Linux's")
+def test_an_untimed_hold_leaves_campaigns_running_a_timed_one_freezes_them(tmp_path, monkeypatch):
+    lock, timed = tmp_path / "gpu.lock", tmp_path / "timed.lock"
+    lock.touch()
+    timed.touch()
+    monkeypatch.setattr(campaign, "LOCK", lock)
+    monkeypatch.setattr(campaign, "TIMED", timed)
+    proc_locks = Path("/proc/locks")
+    with lock.open() as gpu_handle:
+        fcntl.flock(gpu_handle, fcntl.LOCK_EX)  # a build under the GPU lock
+        assert not campaign.lock_in_use(campaign.freeze_lock(), proc_locks.read_text())
+        with timed.open() as timed_handle:
+            fcntl.flock(timed_handle, fcntl.LOCK_SH)  # a measurement
+            assert campaign.lock_in_use(campaign.freeze_lock(), proc_locks.read_text())
