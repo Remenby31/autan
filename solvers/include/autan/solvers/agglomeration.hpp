@@ -43,7 +43,7 @@ struct AgglomerationOptions {
   /// cells across a large face are not wall layers).
   std::size_t min_line = 4;
   /// Coarsening stops once a level has at most this many nodes, or when a level would keep more
-  /// than `min_coarsening` of the finer level's nodes.
+  /// than `min_coarsening` of the finer level's nodes or of its edges.
   std::size_t coarsest_nodes = 64;
   double min_coarsening = 0.8;
   int max_levels = 30;
