@@ -708,6 +708,14 @@ _CODES = [
         "breaks during the run usually means a boundary condition breaks it.",
     ),
     Code(
+        "W0714",
+        "Checkpoint not written",
+        "Writing the restart checkpoint failed (results.md#checkpointcgns), or removing it once "
+        "the final solution was written: the run goes on, and the previous checkpoint, if any, "
+        "stays whole. `data` gives the iteration when a write failed.",
+        "Check the space and permissions of the run directory's file system.",
+    ),
+    Code(
         "D0107",
         "Divergence",
         "The solution diverged: a residual or a state became non-finite or non-physical. "

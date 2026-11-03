@@ -16,6 +16,7 @@
 #include <numeric>
 #include <optional>
 #include <random>
+#include <set>
 #include <span>
 #include <sstream>
 #include <string>
@@ -441,7 +442,9 @@ const Geometry& geometry_of(Prepared& p) {
 // mesh, precision and fields, and reads its state, before any directory exists.
 void load_start(Prepared& p) {
   const Start& start = *p.input.start;
-  const fs::path file = fs::path(start.run) / "solution.cgns";
+  const bool from_checkpoint = start.file == "checkpoint";
+  const fs::path file =
+      fs::path(start.run) / (from_checkpoint ? "checkpoint.cgns" : "solution.cgns");
   const auto unusable = [&](const std::string& why) {
     start_mismatch("E0707", file.string() + ": " + why, "start.run");
   };
@@ -485,6 +488,18 @@ void load_start(Prepared& p) {
   }
   if (stored.cells != p.mesh.n_cells()) {
     unusable(std::to_string(stored.cells) + " cells, the mesh " + std::to_string(p.mesh.n_cells()));
+  }
+  // A checkpoint names its iteration (results.md#checkpointcgns); a final solution does not.
+  if (from_checkpoint) {
+    const Json* c = metadata.contains("checkpoint") ? &metadata["checkpoint"] : nullptr;
+    if (c == nullptr || !c->is_object() || !c->contains("iteration") ||
+        !(*c)["iteration"].is_number_integer())
+      unusable("RunMetadata has no checkpoint iteration");
+    if ((*c)["iteration"].get<std::int64_t>() != start.iterations)
+      unusable("the checkpoint is of iteration " + (*c)["iteration"].dump() +
+               ", start.iterations " + std::to_string(start.iterations));
+  } else if (metadata.contains("checkpoint")) {
+    unusable("RunMetadata of a final solution has a checkpoint");
   }
   const std::string precision = text(metadata, "precision");
   if (precision != p.input.precision) {
@@ -1164,6 +1179,7 @@ class Run final : public Log {
                    {"iterations", s.iterations},
                    {"time", s.time ? Json(*s.time) : Json(nullptr)},
                    {"solution_sha256", s.solution_sha256},
+                   {"file", s.file},
                    {"residual_reference", reference},
                    {"woken", s.woken ? Json(*s.woken) : Json(nullptr)}};
     }
@@ -1186,6 +1202,7 @@ class Run final : public Log {
         {"time", in.time.kind == "unsteady" ? Json(0.0) : Json(nullptr)},
         {"averaging", nullptr},
         {"convergence", nullptr},
+        {"checkpoint", nullptr},
         {"start", start},
         {"monitors", nullptr},
         {"timing", nullptr},
@@ -1545,6 +1562,10 @@ class Run final : public Log {
     // Steady convergence is measured against iteration 1 of the original run
     // (solver-input.md, `start`); a `continue` goes on counting and timing.
     std::vector<double> first;
+    // The equations that left their floor, in the chain so far: a checkpoint carries them.
+    std::set<std::string> woken;
+    if (continued() && in.start->woken)
+      woken.insert(in.start->woken->begin(), in.start->woken->end());
     RoundOffExemption exempt(
         equations, continued() && in.start->woken ? *in.start->woken : std::vector<std::string>{});
     double time = 0.0, average_start = 0.0;
@@ -1556,6 +1577,7 @@ class Run final : public Log {
       from = s.iterations + 1;
       if (!info_["averaging"].is_null()) average_start = info_["averaging"]["from_time"];
     }
+    last_checkpoint_ = std::chrono::steady_clock::now();
     for (std::int64_t it = from; it <= budget; ++it) {
       // A launcher forwards a signal to every rank, not at the same instant,
       // and may abort the job on one: the stop file asks for the same stop
@@ -1634,6 +1656,7 @@ class Run final : public Log {
         // case-schema.md#time: equations at the round-off floor are exempt while they stay there
         // (runtime/round_off.hpp); one leaving it reports W0710, once.
         for (const std::size_t e : exempt.update(report.residuals)) {
+          woken.insert(equations[e]);
           add_diagnostic(
               Diagnostic{.code = "W0710",
                          .message = "equation " + equations[e] + " left its floor at iteration " +
@@ -1654,8 +1677,104 @@ class Run final : public Log {
         }
         if (converged) return "converged";
       }
+      if (it < budget && checkpoint_due(it)) {
+        Json state = Json{{"iteration", it}, {"residual_reference", nullptr}, {"woken", nullptr}};
+        if (steady) {
+          Json reference = Json::object();
+          for (std::size_t e = 0; e < equations.size(); ++e) reference[equations[e]] = first[e];
+          state["residual_reference"] = std::move(reference);
+          state["woken"] = Json(std::vector<std::string>(woken.begin(), woken.end()));
+        }
+        write_checkpoint(it, state);
+      }
     }
     return "completed";
+  }
+
+  // Rank 0, after the final run.json: a failure is recorded in run.json again.
+  void remove_checkpoint() {
+    try {
+      dir_->remove_checkpoint();
+    } catch (const std::exception& e) {
+      try {
+        add_diagnostic(
+            Diagnostic{.code = "W0714",
+                       .message = std::string("checkpoint.cgns was not removed: ") + e.what(),
+                       .path = "",
+                       .data_json = "{}"});
+        dir_->write_run_json(info_.dump(2));
+      } catch (const std::exception&) {
+        // Nothing more can be recorded; the stale checkpoint stays beside the final solution.
+      }
+    }
+  }
+
+  // Whether a checkpoint follows iteration `it` (case-schema.md#time): every `iterations`, or once
+  // `seconds` of wall-clock time have passed since the last one, as rank 0 measures it; every
+  // rank decides alike.
+  bool checkpoint_due(std::int64_t it) {
+    const auto& t = p_.input.time;
+    if (t.checkpoint_iterations) return it % *t.checkpoint_iterations == 0;
+    const std::int64_t due =
+        comm_.rank() == 0 && seconds_since(last_checkpoint_) >= *t.checkpoint_seconds ? 1 : 0;
+    return comm_.max(due) != 0;
+  }
+
+  // The state after iteration `it` to checkpoint.cgns, with `state` (its iteration and steady
+  // convergence state) as RunMetadata `checkpoint`; then run.json `checkpoint` and a log line
+  // (results.md#checkpointcgns). Collective. A failure of the physics fails the run; any other
+  // failure, of the write or of its records, leaves the previous checkpoint and goes on with
+  // W0714, which every rank records alike.
+  void write_checkpoint(std::int64_t it, const Json& state) {
+    const auto start = std::chrono::steady_clock::now();
+    std::string failure;
+    try {
+      write_solution(false, state);
+    } catch (const PhysicsFailure&) {
+      throw;
+    } catch (const std::exception& e) {
+      failure = e.what();
+    }
+    // Only rank 0 writes: its outcome is every rank's.
+    failure = comm_.broadcast(failure);
+    const double seconds =
+        Json::parse(comm_.broadcast(Json(seconds_since(start)).dump())).get<double>();
+    last_checkpoint_ = std::chrono::steady_clock::now();
+    if (failure.empty()) {
+      info_["checkpoint"] =
+          Json{{"iteration", it}, {"time", info_["time"]}, {"write_seconds", seconds}};
+      try {
+        if (comm_.rank() == 0) {
+          std::error_code ec;
+          const auto bytes = fs::file_size(dir_->path() / "checkpoint.cgns", ec);
+          dir_->write_run_json(info_.dump(2));
+          note("info", "writer", "checkpoint", "",
+               Json{{"iteration", it},
+                    {"seconds", seconds},
+                    {"bytes", ec ? Json(nullptr) : Json(static_cast<std::int64_t>(bytes))}}
+                   .dump());
+        }
+      } catch (const std::exception& e) {
+        failure = std::string("recording it: ") + e.what();
+      }
+      failure = comm_.broadcast(failure);
+    }
+    if (failure.empty()) return;
+    const Diagnostic warning{.code = "W0714",
+                             .message = "the checkpoint of iteration " + std::to_string(it) +
+                                        " was not written: " + failure,
+                             .path = "",
+                             .data_json = Json{{"iteration", it}}.dump()};
+    std::string unlogged;
+    try {
+      note("warning", "solver", warning.message, warning.code, warning.data_json);
+    } catch (const std::exception& e) {
+      unlogged = e.what();
+    }
+    // run.json names only diagnostics the log holds (results.md, Log): a warning the log
+    // cannot take is recorded nowhere.
+    if (comm_.broadcast(unlogged).empty())
+      info_["diagnostics"].push_back(Json::parse(warning.json()));
   }
 
   // The mesh index of the least diverged cell over all ranks, from the cell
@@ -1687,13 +1806,46 @@ class Run final : public Log {
 
   // Collects the solution from the physics (PhysicsFailure on any error of
   // its members) and writes it; skips a diverged state that is not finite.
-  void write_solution(bool diverged) {
+  // With `checkpoint`, the state after that iteration goes to checkpoint.cgns
+  // (results.md#checkpointcgns), which names the iteration.
+  void write_solution(bool diverged, const Json& checkpoint = nullptr) {
+    io::Solution s;
+    // A failure before the gathers end leaves other ranks inside them: it
+    // fails the run like a physics failure, which ends every rank.
+    try {
+      s = gathered_solution(checkpoint);
+    } catch (const PhysicsFailure&) {
+      throw;
+    } catch (const std::exception& e) {
+      throw PhysicsFailure(std::string("gathering the solution: ") + e.what());
+    }
+    if (comm_.rank() != 0) return;
+    // A diverged state may hold non-finite values; results.md asks for its
+    // solution only if one can be written, and readers require finite fields.
+    if (diverged) {
+      for (const auto& f : s.fields) {
+        if (!std::ranges::all_of(f.values, [](double v) { return std::isfinite(v); })) return;
+      }
+    }
+    if (!checkpoint.is_null()) {
+      io::write_solution(dir_->checkpoint_staging(), p_.mesh, s);
+      dir_->publish_checkpoint();
+      return;
+    }
+    io::write_solution(dir_->solution_staging(), p_.mesh, s);
+    dir_->publish_solution();
+  }
+
+  // The current state with `checkpoint` as RunMetadata `checkpoint`, every field gathered on
+  // rank 0. Collective.
+  io::Solution gathered_solution(const Json& checkpoint) {
     const auto& in = p_.input;
     io::Solution s;
     Json metadata = info_;
     for (const char* key :
-         {"status", "finished", "iterations", "monitors", "timing", "diagnostics"})
+         {"status", "finished", "iterations", "monitors", "timing", "diagnostics", "checkpoint"})
       metadata.erase(key);
+    if (!checkpoint.is_null()) metadata["checkpoint"] = checkpoint;
     // ASCII JSON, as readers decode CGNS descriptors.
     s.run_metadata = metadata.dump(-1, ' ', true);
     std::map<std::string, const BoundaryInput*> conditions;
@@ -1749,28 +1901,11 @@ class Run final : public Log {
         f.values = comm_.gather(where, f.values, n);
       }
     };
-    // A failure before the gathers end leaves other ranks inside them: it
-    // fails the run like a physics failure, which ends every rank.
-    try {
-      gather(s.fields, ids, p_.mesh.n_cells());
-      gather(s.mean_fields, ids, p_.mesh.n_cells());
-      gather(s.restart_fields, ids, p_.mesh.n_cells());
-      gather(s.wall_fields, slots, static_cast<std::int64_t>(s.wall_faces.size()));
-    } catch (const PhysicsFailure&) {
-      throw;
-    } catch (const std::exception& e) {
-      throw PhysicsFailure(std::string("gathering the solution: ") + e.what());
-    }
-    if (comm_.rank() != 0) return;
-    // A diverged state may hold non-finite values; results.md asks for its
-    // solution only if one can be written, and readers require finite fields.
-    if (diverged) {
-      for (const auto& f : s.fields) {
-        if (!std::ranges::all_of(f.values, [](double v) { return std::isfinite(v); })) return;
-      }
-    }
-    io::write_solution(dir_->solution_staging(), p_.mesh, s);
-    dir_->publish_solution();
+    gather(s.fields, ids, p_.mesh.n_cells());
+    gather(s.mean_fields, ids, p_.mesh.n_cells());
+    gather(s.restart_fields, ids, p_.mesh.n_cells());
+    gather(s.wall_fields, slots, static_cast<std::int64_t>(s.wall_faces.size()));
+    return s;
   }
 
   // The forces of every monitor on the final state, whether or not its last
@@ -1903,6 +2038,9 @@ class Run final : public Log {
     note(status == "failed" ? "error" : "info", "solver", "run finished: " + status, "",
          Json{{"status", status}, {"iterations", done}}.dump());
     if (comm_.rank() == 0) dir_->write_run_json(info_.dump(2));
+    // The final solution supersedes the checkpoint once run.json says so; a diverged or failed
+    // run keeps it, its last resumable state (results.md#checkpointcgns).
+    if (comm_.rank() == 0 && status != "failed" && status != "diverged") remove_checkpoint();
     if (status == "failed") return ExitStatus::failed;
     return stopped_by_signal_ ? ExitStatus::signalled : ExitStatus::finished;
   }
@@ -1910,9 +2048,11 @@ class Run final : public Log {
   Prepared& p_;
   Comm& comm_;
   std::chrono::steady_clock::time_point launched_;  // run_case's entry
-  double log_seconds_ = 0.0;                        // spent in write()
-  fs::path stop_file_;                              // --stop-file; empty: none
-  double solve_seconds_ = 0.0;                      // this rank's step() and accumulate_average()
+  // The end of the last checkpoint, or the start of the iterations.
+  std::chrono::steady_clock::time_point last_checkpoint_ = std::chrono::steady_clock::now();
+  double log_seconds_ = 0.0;    // spent in write()
+  fs::path stop_file_;          // --stop-file; empty: none
+  double solve_seconds_ = 0.0;  // this rank's step() and accumulate_average()
   // Declared before the physics, so destroyed after it: its stream outlives the physics' use.
   std::optional<Gpu> gpu_;
   Geometry geometry_;

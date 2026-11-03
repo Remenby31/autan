@@ -309,6 +309,7 @@ Json start_from(const fs::path& previous, const std::string& mode) {
               {"iterations", info["iterations"]},
               {"time", info["time"]},
               {"solution_sha256", file_sha256(previous / "solution.cgns")},
+              {"file", "solution"},
               {"residual_reference", reference},
               {"woken", woken}};
 }
@@ -320,7 +321,215 @@ std::vector<std::string> lines_of(const fs::path& file) {
   return lines;
 }
 
+// autan-run (the relaxation build) on `doc` as a process, with `env` added to its environment:
+// its pid and, once `ready(run directory)` holds, its run directory. The caller reaps it.
+struct Spawned {
+  pid_t pid = 0;
+  fs::path run;
+};
+
+Spawned spawn_until(const Json& doc, const std::vector<std::string>& env,
+                    const std::function<bool(const fs::path&)>& ready, int poll_us = 2000) {
+  const fs::path dir = fresh_dir();
+  const fs::path input_file = dir / "solver-input.json";
+  std::ofstream(input_file) << doc.dump();
+  const std::string runs = (dir / "runs").string();
+  std::vector<std::string> args{AUTAN_RUN_RELAXATION, "--input", input_file.string(), "--runs",
+                                runs};
+  std::vector<char*> argv;
+  for (auto& a : args) argv.push_back(a.data());
+  argv.push_back(nullptr);
+  std::vector<std::string> all = env;
+  for (char** e = environ; *e != nullptr; ++e) all.emplace_back(*e);
+  std::vector<char*> envp;
+  for (auto& e : all) envp.push_back(e.data());
+  envp.push_back(nullptr);
+  Spawned s;
+  REQUIRE(posix_spawn(&s.pid, AUTAN_RUN_RELAXATION, nullptr, nullptr, argv.data(), envp.data()) ==
+          0);
+  for (int attempt = 0; attempt < 10'000'000 / poll_us; ++attempt) {
+    if (fs::exists(runs)) {
+      for (const auto& entry : fs::directory_iterator(runs)) {
+        if (entry.path().filename().string()[0] != '.' && ready(entry.path())) {
+          s.run = entry.path();
+          return s;
+        }
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::microseconds(poll_us));
+  }
+  kill(s.pid, SIGKILL);
+  waitpid(s.pid, nullptr, 0);
+  FAIL("the run never got ready");
+  return s;
+}
+
+void kill_and_reap(pid_t pid) {
+  REQUIRE(kill(pid, SIGKILL) == 0);
+  int status = 0;
+  REQUIRE(waitpid(pid, &status, 0) == pid);
+  REQUIRE(WIFSIGNALED(status));
+}
+
+// The iteration a checkpoint holds (results.md#checkpointcgns).
+std::int64_t checkpoint_iteration(const fs::path& file) {
+  return Json::parse(autan::io::read_solution(file).run_metadata)["checkpoint"]["iteration"]
+      .get<std::int64_t>();
+}
+
+// The `start` the SDK writes to continue a run that did not end from its checkpoint
+// (solver-input.md): the checkpoint's iteration, time and steady convergence state, and its
+// hash.
+Json start_from_checkpoint(const fs::path& previous) {
+  const fs::path file = previous / "checkpoint.cgns";
+  const Json metadata = Json::parse(autan::io::read_solution(file).run_metadata);
+  const Json info = Json::parse(read(previous / "run.json"));
+  return Json{{"run", previous.string()},
+              {"run_id", info["run_id"]},
+              {"identity", info["identity"]},
+              {"mode", "continue"},
+              {"iterations", metadata["checkpoint"]["iteration"]},
+              {"time", metadata["time"]},
+              {"solution_sha256", file_sha256(file)},
+              {"file", "checkpoint"},
+              {"residual_reference", metadata["checkpoint"]["residual_reference"]},
+              {"woken", metadata["checkpoint"]["woken"]}};
+}
+
 }  // namespace
+
+TEST_CASE("A run killed between two checkpoints continues from the last one bit for bit",
+          "[runtime]") {
+  // results.md#checkpointcgns: SIGKILL loses at most the iterations since the last checkpoint;
+  // the continuation from it equals the uninterrupted run, history line by line and solution
+  // bit for bit. The uninterrupted run has the default cadence: checkpoints change nothing.
+  const bool steady = GENERATE(true, false);
+  CAPTURE(steady);
+  const std::int64_t total = 40;
+  const auto doc = [&](const Json& checkpoint) {
+    const auto edit = [&](Json& d) {
+      d["reproducibility"] = "run";
+      d["monitors"][0]["every"] = 1;
+      d["time"]["checkpoint"] = checkpoint;
+      d["time"][steady ? "max_iterations" : "steps"] = total;
+    };
+    return steady ? input(edit) : input(edit, "hybrid-unsteady.solver-input.json");
+  };
+  // Residuals decay slowly enough that the steady run does not converge within the budget.
+  const autan_test::RelaxationOptions options{.factor = 0.95, .growth = 1e-3};
+  const Outcome whole = run(doc(Json{{"seconds", 1800.0}}), options);
+  REQUIRE(whole.status == ExitStatus::finished);
+  CHECK(!fs::exists(whole.run / "checkpoint.cgns"));
+  CHECK(Json::parse(read(whole.run / "run.json"))["checkpoint"].is_null());
+
+  const Json every4 = doc(Json{{"iterations", 4}});
+  const auto killed = spawn_until(
+      every4, {"AUTAN_TEST_FACTOR=0.95", "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_PAUSE_MS=40"},
+      [](const fs::path& r) {
+        const Json info = Json::parse(read(r / "run.json"), nullptr, false);
+        return !info.is_discarded() && info["checkpoint"].is_object() &&
+               info["checkpoint"]["iteration"].get<std::int64_t>() >= 8;
+      });
+  kill_and_reap(killed.pid);
+  const Json dead = Json::parse(read(killed.run / "run.json"));
+  CHECK(dead["status"] == "running");
+  REQUIRE(fs::exists(killed.run / "checkpoint.cgns"));
+  const std::int64_t k = checkpoint_iteration(killed.run / "checkpoint.cgns");
+  CHECK(k % 4 == 0);
+  CHECK(k >= 8);
+  CHECK(dead["checkpoint"]["iteration"] == k);
+  CHECK(dead["checkpoint"]["write_seconds"].get<double>() >= 0.0);
+
+  Json next = doc(Json{{"seconds", 1800.0}});
+  next["start"] = start_from_checkpoint(killed.run);
+  const Outcome cont = run(next, options);
+  REQUIRE(cont.status == ExitStatus::finished);
+  const Json info = Json::parse(read(cont.run / "run.json"));
+  CHECK(info["start"]["file"] == "checkpoint");
+  CHECK(info["start"]["iterations"] == k);
+
+  const auto all = lines_of(whole.run / "history.jsonl");
+  auto chain = lines_of(killed.run / "history.jsonl");
+  REQUIRE(chain.size() >= static_cast<std::size_t>(k));
+  chain.resize(static_cast<std::size_t>(k));
+  const auto more = lines_of(cont.run / "history.jsonl");
+  chain.insert(chain.end(), more.begin(), more.end());
+  CHECK(chain == all);
+  for (const char* field : {"Density", "Pressure", "Temperature"}) {
+    CAPTURE(field);
+    CHECK(solution_field(cont.run / "solution.cgns", "FlowSolution", field) ==
+          solution_field(whole.run / "solution.cgns", "FlowSolution", field));
+    if (!steady) {
+      CHECK(solution_field(cont.run / "solution.cgns", "FlowSolutionMean", field) ==
+            solution_field(whole.run / "solution.cgns", "FlowSolutionMean", field));
+    }
+  }
+}
+
+TEST_CASE("A run killed while it writes a checkpoint keeps the previous one whole", "[runtime]") {
+  // The checkpoint is written under .checkpoint.cgns.tmp and renamed over checkpoint.cgns: a
+  // kill while the temporary file exists leaves the previous checkpoint, readable and resumable.
+  const Json doc = input([](Json& d) {
+    d["time"]["max_iterations"] = 100000;
+    d["time"]["checkpoint"] = Json{{"iterations", 1}};
+  });
+  // Retried until the kill lands while the temporary file still exists, after a first
+  // checkpoint: a kill after the rename proves nothing.
+  Spawned killed;
+  bool during_write = false;
+  for (int attempt = 0; attempt < 20 && !during_write; ++attempt) {
+    killed = spawn_until(
+        doc, {"AUTAN_TEST_FACTOR=0.999"},
+        [](const fs::path& r) {
+          return fs::exists(r / "checkpoint.cgns") && fs::exists(r / ".checkpoint.cgns.tmp");
+        },
+        100);
+    kill_and_reap(killed.pid);
+    during_write = fs::exists(killed.run / ".checkpoint.cgns.tmp");
+  }
+  REQUIRE(during_write);
+  const fs::path file = killed.run / "checkpoint.cgns";
+  REQUIRE(fs::exists(file));
+  // Whole: readable, and its iteration has its history line.
+  const std::int64_t k = checkpoint_iteration(file);
+  CHECK(k >= 1);
+  CHECK(static_cast<std::int64_t>(lines_of(killed.run / "history.jsonl").size()) >= k);
+  Json next = input([](Json& d) {
+    d["time"]["max_iterations"] = 100000;
+    d["time"]["checkpoint"] = Json{{"iterations", 1}};
+  });
+  next["time"]["max_iterations"] = k + 3;
+  next["start"] = start_from_checkpoint(killed.run);
+  const Outcome cont = run(next, autan_test::RelaxationOptions{.factor = 0.999});
+  INFO(cont.err);
+  REQUIRE(cont.status == ExitStatus::finished);
+  CHECK(Json::parse(read(cont.run / "run.json"))["iterations"] == k + 3);
+}
+
+TEST_CASE("A checkpoint names its iteration, and a start checks it", "[runtime]") {
+  // A start from a checkpoint whose iteration is not start.iterations exits 2 (E0707), as does
+  // a final solution read as a checkpoint.
+  const Json doc = input([](Json& d) {
+    d["time"]["max_iterations"] = 10;
+    d["time"]["checkpoint"] = Json{{"iterations", 3}};
+  });
+  const auto stopped = spawn_until(
+      doc, {"AUTAN_TEST_FACTOR=0.999", "AUTAN_TEST_PAUSE_MS=40"}, [](const fs::path& r) {
+        const Json i = Json::parse(read(r / "run.json"), nullptr, false);
+        return !i.is_discarded() && i["checkpoint"].is_object();
+      });
+  kill_and_reap(stopped.pid);
+  Json next = input([](Json& d) {
+    d["time"]["max_iterations"] = 20;
+    d["time"]["checkpoint"] = Json{{"iterations", 3}};
+  });
+  next["start"] = start_from_checkpoint(stopped.run);
+  next["start"]["iterations"] = next["start"]["iterations"].get<std::int64_t>() + 1;
+  const Outcome off = run(next, autan_test::RelaxationOptions{.factor = 0.999});
+  CHECK(off.status == ExitStatus::invalid_input);
+  CHECK(off.run.empty());
+  CHECK(off.err.find("E0707") != std::string::npos);
+}
 
 TEST_CASE("A converging run writes the run directory of results.md", "[runtime]") {
   // Residuals 0.5^(k-1) drop 8 orders at k = 28 (0.5^27 < 1e-8 < 0.5^26).
@@ -2227,6 +2436,49 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   CHECK(fs::exists(stopped / "solution.cgns"));
 }
 
+TEST_CASE("Several ranks checkpoint and continue from it as one", "[runtime][mpi]") {
+  // results.md#checkpointcgns: the ranks gather the checkpoint as they gather the solution. A
+  // run that fails at step 8 keeps its checkpoint of step 6 (every 3); continuing from it under
+  // "ranks", on the same ranks or on one, gives the uninterrupted run of one rank bit for bit.
+  const int ranks = 2;
+  const int resume_on = GENERATE(1, 2);
+  CAPTURE(resume_on);
+  const auto steps = [](std::int64_t n) {
+    return [n](Json& d) {
+      d["reproducibility"] = "ranks";
+      d["monitors"][0]["every"] = 1;
+      d["time"]["steps"] = n;
+      d["time"]["checkpoint"] = Json{{"iterations", 3}};
+    };
+  };
+  const std::vector<std::string> env{"AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"};
+  const Outcome whole =
+      run(input(steps(12), "hybrid-unsteady.solver-input.json"), {.growth = 1e-3, .vary = true});
+  std::vector<std::string> failing = env;
+  failing.emplace_back("AUTAN_TEST_THROW_AT=8");
+  const fs::path a =
+      run_on_ranks(input(steps(12), "hybrid-unsteady.solver-input.json"), ranks, failing, 1);
+  REQUIRE(Json::parse(read(a / "run.json"))["status"] == "failed");
+  REQUIRE(checkpoint_iteration(a / "checkpoint.cgns") == 6);
+  Json next = input(steps(12), "hybrid-unsteady.solver-input.json");
+  next["start"] = start_from_checkpoint(a);
+  const fs::path b = resume_on == 1 ? run(next, {.growth = 1e-3, .vary = true}).run
+                                    : run_on_ranks(next, ranks, env);
+
+  auto chain = lines_of(a / "history.jsonl");
+  chain.resize(6);
+  const auto more = lines_of(b / "history.jsonl");
+  chain.insert(chain.end(), more.begin(), more.end());
+  CHECK(chain == lines_of(whole.run / "history.jsonl"));
+  for (const char* solution : {"FlowSolution", "FlowSolutionMean"}) {
+    for (const char* field : {"Density", "Pressure"}) {
+      CAPTURE(solution, field);
+      CHECK(solution_field(b / "solution.cgns", solution, field) ==
+            solution_field(whole.run / "solution.cgns", solution, field));
+    }
+  }
+}
+
 TEST_CASE("Several ranks average and continue as one", "[runtime][mpi]") {
   // Unsteady with averaging after step 3: two runs of 4 then 4 steps on
   // several ranks, the second continuing the first, give the 8 steps of one
@@ -2319,11 +2571,9 @@ TEST_CASE("A mesh in inches gives the run of the same mesh in metres", "[runtime
       if (b["zone"] == "ymin") b["kind"] = "slip";
     }
     d["monitors"][0]["every"] = 1;
-    d["time"] = {{"kind", "unsteady"},
-                 {"steps", 5},
-                 {"dt", nullptr},
-                 {"cfl", 0.8},
-                 {"average_from", nullptr}};
+    d["time"] = {{"kind", "unsteady"},      {"steps", 5},
+                 {"dt", nullptr},           {"cfl", 0.8},
+                 {"average_from", nullptr}, {"checkpoint", {{"seconds", 1800.0}}}};
   };
   const Json metres = input(euler);
   Json in_inches = metres;
