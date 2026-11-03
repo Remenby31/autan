@@ -125,7 +125,6 @@ class Parser {
     Op op = Op::constant;
     int node = -1;
   };
-  // A number, pi or a name (its node), or a function's name (its operation).
   [[gnu::noinline]] Leaf leaf() {
     if (i_ < s_.size() &&
         (std::isdigit(static_cast<unsigned char>(s_[i_])) != 0 || s_[i_] == '.')) {
