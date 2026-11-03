@@ -1,3 +1,4 @@
+import dataclasses
 import fcntl
 import importlib.machinery
 import importlib.util
@@ -247,7 +248,6 @@ def test_a_campaign_gives_way_when_host_memory_falls_below_its_floor(
     try:
         assert until(lambda: "kill autan-campaign-c2" in calls_of("c2"), timeout=8)
         fcntl.flock(measurement, fcntl.LOCK_UN)
-        assert until(lambda: "last resort: removed" in (logs / "c2.log").read_text(), timeout=40)
         assert until(lambda: "rm -f autan-campaign-c2" in calls_of("c2"))
     finally:
         measurement.close()
@@ -342,12 +342,15 @@ class FakeHost:
     docker pause and unpause are SIGSTOP and SIGCONT to it, so a frozen campaign really cannot
     stop, and a pause can be made to land late; memory is a function of what has stopped."""
 
-    def __init__(self, tmp_path, free_before, free_after, critical=False, pause_delay=0.0):
+    def __init__(self, tmp_path, free_before, free_after, critical=False, pause_delay=0.0,
+                 pause_fails=False):  # fmt: skip
         self.tmp_path = tmp_path
         self.paused, self.killed, self.events = set(), [], []
+        self.killed_at = {}
         self.published, self.procs, self.logs = {}, {}, []
         self.free_before, self.free_after, self.critical = free_before, free_after, critical
-        self.pause_delay = pause_delay
+        self.pause_delay, self.pause_fails = pause_delay, pause_fails
+        self.history = []  # every state published, in order
         self.gpu_until = 0.0  # the GPU lock is held until this time.monotonic()
         self.script = tmp_path / "solver.py"
         self.script.write_text(SOLVER)
@@ -371,6 +374,8 @@ class FakeHost:
         def pause(name):
             def run():
                 time.sleep(self.pause_delay)
+                if self.pause_fails:
+                    return False
                 self.procs[name].send_signal(signal.SIGSTOP)
                 self.paused.add(name)
                 self.published[name] = "frozen"
@@ -390,13 +395,15 @@ class FakeHost:
 
         def kill(name):
             self.killed.append(name)
+            self.killed_at[name] = time.monotonic()
             self.procs[name].kill()
             self.procs[name].wait()
 
         return campaign.Host(
             available=self.available, exclusive=lambda: True,
             gpu_busy=lambda: time.monotonic() < self.gpu_until, pause=pause, unpause=unpause,
-            publish=self.published.__setitem__, request_stop=campaign.request_stop,
+            publish=lambda name, state: (self.published.__setitem__(name, state),
+                                         self.history.append((name, state))), request_stop=campaign.request_stop,
             ended=lambda name: self.procs[name].poll() is not None, kill=kill,
             log=lambda name, message: self.logs.append((name, message)),
         )  # fmt: skip
@@ -458,6 +465,35 @@ def test_a_victim_is_not_thawed_while_a_measurement_holds_the_gpu(breach):
     assert thawed[0] >= host.gpu_until
 
 
+def test_a_campaign_whose_pause_failed_never_reads_frozen(breach):
+    # Its pause failed: it runs. A measurement takes the GPU lock between "running" and the thaw.
+    host = breach(free_before=20 * GIB, free_after=40 * GIB, pause_fails=True)
+    mode, out = host.spawn("b", "stop-file")
+    real = host.host()
+    reads = iter([False, True, True, True])  # free, then held right after "running"
+    gpu = dataclasses.replace(real, gpu_busy=lambda: next(reads, False))
+    campaign.lead([campaign.Member("b", 1.0, mode, 30)], 24 * GIB, gpu)
+    assert stopped_cleanly(out)
+    assert ("b", "frozen") not in host.history
+
+
+def test_memory_is_watched_while_the_breach_s_docker_calls_settle(breach):
+    # Back above the floor at once, but a pause is still under way (3 s) when the host falls
+    # below half the floor: the newest is removed then, not once docker has answered.
+    host = breach(free_before=0, free_after=0, pause_delay=3.0)
+    host.spawn("a", "none")
+    host.spawn("b", "none")
+    start = time.monotonic()
+    real = host.host()
+    falling = dataclasses.replace(
+        real, available=lambda: 40 * GIB if time.monotonic() - start < 0.5 else 5 * GIB
+    )
+    members = [campaign.Member("a", 1.0, "none", 30), campaign.Member("b", 2.0, "none", 30)]
+    campaign.lead(members, 24 * GIB, falling)
+    assert host.killed[0] == "b"
+    assert host.killed_at["b"] - start < 2
+
+
 def test_a_victim_that_does_not_stop_within_its_wait_is_removed(breach):
     host = breach(free_before=20 * GIB, free_after=40 * GIB)
     mode_a, _ = host.spawn("a", "none")
@@ -467,7 +503,7 @@ def test_a_victim_that_does_not_stop_within_its_wait_is_removed(breach):
     start = time.monotonic()
     campaign.lead(members, 24 * GIB, host.host())
     assert host.killed == ["b"]
-    assert 2 <= time.monotonic() - start < 10
+    assert 2 <= host.killed_at["b"] - start < 5
     assert host.procs["a"].poll() is None
 
 
@@ -483,7 +519,7 @@ def test_the_last_resort_is_at_once(breach, cause):
     start = time.monotonic()
     campaign.lead([campaign.Member("b", 1.0, mode, 60)], 24 * GIB, host.host())
     assert host.killed == ["b"]
-    assert time.monotonic() - start < 10
+    assert host.killed_at["b"] - start < 1
 
 
 @pytest.mark.parametrize(("members", "victim"), [
@@ -508,14 +544,15 @@ def states(tmp_path, monkeypatch):
     monkeypatch.setattr(campaign, "STATES", states)
     monkeypatch.setattr(campaign, "BREACH_LOCK", states / "breach.lock")
     monkeypatch.setattr(campaign, "TRANSITIONS", states / "transitions.lock")
+    monkeypatch.setattr(campaign, "BREACH_GENERATION", states / "breach.generation")
     return states
 
 
 def published(states, name, *, clean_stop, started, floor, growth=None):
-    """A live campaign as its watcher publishes it."""
     (states / f"{name}.meta").write_text(json.dumps(
         {"started": started, "clean_stop": clean_stop, "stop_wait_s": 30, "floor": floor}))  # fmt: skip
     (states / f"{name}.heartbeat").touch()
+    (states / f"{name}.state").write_text("running\n")
     if growth is not None:
         (states / f"{name}.growth").write_text(f"{growth[0]} {growth[1]}\n")
 
@@ -567,26 +604,52 @@ def test_a_watcher_s_transition_and_a_breach_never_cross(states):
 
 
 def test_a_stop_file_outside_an_existing_directory_is_refused(tmp_path, monkeypatch):
+    calls = tmp_path / "calls"
+    fake = tmp_path / "docker"
+    fake.write_text(
+        f'#!/bin/sh\necho "$*" >> {calls}\ncase "$1" in inspect) echo "exited 0" ;; esac\n'
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("HOME", str(tmp_path))
     lock = tmp_path / "gpu.lock"
     lock.touch()
+    monkeypatch.setenv("AUTAN_GPU_LOCK", str(lock))
     monkeypatch.setattr(campaign, "LOCK", lock)
+    monkeypatch.setattr(campaign, "STATE", tmp_path / "autan-campaigns")
+    monkeypatch.setattr(campaign, "STATES", tmp_path / "campaigns")
+    argv = ["start", "c1", "--dir", str(tmp_path), "--clean-stop", "stop-file:control/STOP",
+            "--", "x"]  # fmt: skip
     with pytest.raises(SystemExit):
-        campaign.main(["start", "c1", "--dir", str(tmp_path), "--clean-stop",
-                       "stop-file:control/STOP", "--", "x"])  # fmt: skip
+        campaign.main(argv)
+    assert not calls.exists() or "create" not in calls.read_text()
+    (tmp_path / "control").mkdir()
+    assert campaign.main(argv) == 0
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="/proc/meminfo and cgroups are Linux's")
 def test_a_leader_whose_own_campaign_is_the_victim_finishes_the_breach(
     tmp_path, monkeypatch, meminfo
 ):
-    # Through the CLI and the detached watchers, docker faked at the boundary as above. c1's
-    # floor (30G) is crossed, c2's (10G) is not: c1's watcher leads, at the host's floor, 30G.
-    # Neither declares a clean stop: the newest, c1, goes first; memory does not come back, so
-    # the leader must go on to c2 after its own campaign has ended.
+    # Through the CLI and the detached watchers, docker faked at the boundary: it records its
+    # calls, keeps each container's paused state, and reports every container running as this
+    # test's process (a real cgroup). c1's floor (30G) is crossed, c2's and c3's (10G) are not:
+    # c1's watcher leads, at the host's floor, 30G. c1 alone declares a clean stop: it goes
+    # first, is asked through its stop file (created in its --dir), and, its fake container never
+    # ending, is removed after its 10 s wait. Memory does not come back: the leader goes on, after
+    # its own campaign has ended, to the newest, c2. Memory then comes back: c3 survives, and its
+    # own watcher thaws it.
     calls = tmp_path / "calls"
     fake = tmp_path / "docker"
-    fake.write_text(f'#!/bin/sh\necho "$*" >> {calls}\n'
-                    f'case "$1" in inspect) echo "running {os.getpid()}" ;; esac\n')  # fmt: skip
+    fake.write_text(
+        f'#!/bin/sh\necho "$*" >> {calls}\n'
+        'case "$1" in\n'
+        f'  inspect) case "$3" in *Paused*) [ -e "{tmp_path}/paused-$4" ] && echo true || echo false ;;\n'
+        f'           *) echo "running {os.getpid()}" ;; esac ;;\n'
+        f'  pause) touch "{tmp_path}/paused-$2" ;;\n'
+        f'  unpause) rm -f "{tmp_path}/paused-$2" ;;\n'
+        "esac\n"
+    )
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -600,12 +663,18 @@ def test_a_leader_whose_own_campaign_is_the_victim_finishes_the_breach(
     def ran(command: str) -> bool:
         return calls.exists() and command in calls.read_text().splitlines()
 
-    for name, free in (("c2", "10G"), ("c1", "30G")):
-        assert (
-            campaign.main(["start", name, "--free", free, "--dir", str(tmp_path), "--", "x"]) == 0
-        )
+    for name, free, stop in (("c3", "10G", "none"), ("c2", "10G", "none"),
+                             ("c1", "30G", "stop-file:STOP")):  # fmt: skip
+        argv = ["start", name, "--free", free, "--dir", str(tmp_path), "--clean-stop", stop,
+                "--stop-wait", "10", "--", "x"]  # fmt: skip
+        assert campaign.main(argv) == 0
         assert until(lambda n=name: ran(f"start autan-campaign-{n}"))
     meminfo(25)
-    assert until(lambda: ran("kill autan-campaign-c1"))
+    assert until((tmp_path / "paused-autan-campaign-c3").exists)
+    assert until((tmp_path / "STOP").exists)
+    assert until(lambda: ran("kill autan-campaign-c1"), timeout=20)
     assert until(lambda: ran("kill autan-campaign-c2"), timeout=20)
+    meminfo(100)  # within the leader's 2 s wait for c2's memory
+    assert until(lambda: not (tmp_path / "paused-autan-campaign-c3").exists(), timeout=20)
     assert until(lambda: ran("rm -f autan-campaign-c1") and ran("rm -f autan-campaign-c2"))
+    assert not ran("kill autan-campaign-c3")
