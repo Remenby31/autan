@@ -81,10 +81,10 @@ Peaks: `rcm_order`, 37C + 8`F_i`; `renumber_cells`, 40C + 56N + 50F + 8`F_i` + 8
 | Held | Grows with | Class |
 |---|---|---|
 | `agglomerate`'s fine graph `g` (`agglomeration.cpp:126-180`): owner, neighbour, weight, CSR adjacency, zone, volume, centroid, per-cell boundary zones, normals and areas, weakest/strongest, lines | `F_i` (24 B each), `C` (140 B each with push_back capacity), (cell, boundary zone) pairs ≤ `F_b` (72 B) | M |
-| Level 0's copy (`as_level`, `:677`): owner, neighbour, lines | `F_i` (8 B), `C` (4 B + 8 B per line; lines ≤ `C`) | M |
+| Level 0's copy (`as_level`, `:677`): owner, neighbour, lines; its edges are the mesh's interior faces, duplicates of a cell pair kept, since `Multigrid::set_operator` indexes the fine operator by face and each duplicate is a face already in `F_i` | `F_i` (8 B), `C` (4 B + 8 B per line; lines ≤ `C`) | M |
 | `coarsen`'s per-level work arrays (`:285-302`, `:480`, `:599`): line_of, position, agg, members, coarse lines, grouped, point order, renumber | `C` on level 0 (≤ 124 B per cell with capacity), then `cells_by_level[k]` | M, L |
 | The agglomeration front, a `std::set` (`:487`) | one entry (64 B) per edge from a new agglomerate to a free node, so ≤ `F_i` live; level-0 edges are faces, so a cell pair sharing several faces counts several times (none in any measured mesh) | M |
-| The line-grouping candidates and their `votes` `std::map` (`:346-350`) | **gap:** the candidates of one group step, ≤ 2 · max_lines · line length · degree map nodes (about 64 B); line length has no cap (732 on RAE fine, 223 on DPW4), bounded only by about 4 `edges_by_level[k]` | gap (to close: a flat vector bounded by the group's edges) |
+| The line-grouping candidates and their `votes` `std::map` (`:346-375`) | one group step inserts 2 keys per coupling of the group's nodes, so ≤ 2 Σ deg ≤ 4 `edges_by_level[k]` map nodes of about 64 B, live for that step only: ≤ 256 `F_i` on level 0 | M on level 0, L above |
 | Coarse edge `pairs` before they merge (`:650`) | one per cut fine edge, ≤ `edges_by_level[k]` (16 B, up to 2× without reserve) | L |
 | The coarse graph (`:608-670`) | `edges_by_level[k+1]` (48 B with capacity), `cells_by_level[k+1]` (156 B), boundary pairs (72 B) | L |
 | Each level's maps to the coarser one, kept (`coarse_node`, `coarse_edge`, `coarse_flipped`) | `cells_by_level[k]` (4 B), `edges_by_level[k]` (5 B) | L |
@@ -93,7 +93,8 @@ Peaks: `rcm_order`, 37C + 8`F_i`; `renumber_cells`, 40C + 56N + 50F + 8`F_i` + 8
 | The Galerkin coarse operators (`multigrid.cpp:296-298`, first `set_operator`) | 25 doubles per `cells_by_level[k]` and 2 × 25 per `edges_by_level[k]`, k ≥ 1 | L |
 | The coarsest dense LU (`multigrid.cpp:239-253`) | (5 `cells_by_level[L−1]`)², only if 5 n ≤ 1000: ≤ 8 MB | F |
 
-**Peak.** The setup transient is the largest of these three moments:
+**Peak.** The setup transient is the largest of these four moments:
+- P_lines, the line grouping, before the isotropic loop, with the fine graph, Level 0, `coarsen`'s locals and the votes: ≤ 288 `F_i` + 284 `C` + 72 `F_b` bytes;
 - P1, inside `coarsen` on level 0, during the isotropic loop: ≤ 96 `F_i` + 284 `C` + 72 `F_b` bytes;
 - P2, at the coarse-edge build: ≤ 69 `F_i` + 48 `edges_by_level[1]` + 296 `C` + 156 `cells_by_level[1]` + 144 `F_b`;
 - after `agglomerate` returns, `line_colours` on level 0, ≤ 32 `C` + 32 `F_i`, beside the multigrid's kept arrays.
