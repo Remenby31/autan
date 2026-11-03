@@ -421,65 +421,49 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     split["partition"] = {
         "ranks": 2,
         "groups": "none",
-        "cells_by_rank": [6, 4],
-        "ghosts_by_rank": [2, 3],
-        "faces_by_rank": [26, 24],
-        "interior_faces_by_rank": [12, 10],
-        "stencil_entries_by_rank": [150, 120],
-        "nodes_by_rank": [20, 18],
-        "face_nodes_by_rank": [104, 96],
+        "cells_by_rank": [7, 3],
+        "ghosts_by_rank": [3, 2],
+        "faces_by_rank": [30, 18],
+        "interior_faces_by_rank": [14, 8],
+        "stencil_entries_by_rank": [170, 90],
+        "nodes_by_rank": [24, 14],
+        "face_nodes_by_rank": [120, 72],
         "sent_cells_by_rank": [3, 2],
     }
     two = autan.MeshInfo.from_document(split, autan.Location())
-    for kind in ("cpu", "cuda"):
+    # Rank 0, larger in every count, is the rank the estimate gives.
+    n, p, f, fi, lc, g, sent = 24, 120, 30, 14, 7 + 3, 3, 3
+    kept = (
+        24 * n
+        + 4 * p
+        + 20 * f
+        + 8 * fi
+        + 20 * lc
+        + 24 * g
+        + 56 * f
+        + 32 * lc
+        + 9 * f
+        + 176 * sent
+        + 128 * g
+    )
+    extraction = (
+        124 * n
+        + 8 * p
+        + 122 * f
+        + 84 * lc
+        + 120 * g
+        + 8 * sent
+        + 128 * (7 + 3)
+        + 6 * 40
+        + 16 * 30
+        + 8 * 10
+    )
+    for kind, halo_device in (("cpu", 0), ("cuda", 128 * sent + 128 * g)):
         planned = autan.load(write_case(TINY)).plan(two, gpus=2, device_kind=kind).memory
-        worst = {c.name: c for c in planned.components}
-        local = [6 + 2, 4 + 3]
-        kept = [
-            24 * n
-            + 4 * p
-            + 20 * f
-            + 8 * fi
-            + 20 * lc
-            + 24 * g
-            + 56 * f
-            + 32 * lc
-            + 9 * f
-            + 176 * sent
-            + 128 * g
-            for n, p, f, fi, lc, g, sent in zip(
-                [20, 18], [104, 96], [26, 24], [12, 10], local, [2, 3], [3, 2], strict=True
-            )
-        ]
-        assert worst["partition"].bytes_host in kept
-        assert worst["partition"].bytes_device == (
-            0
-            if kind == "cpu"
-            else 128 * (3 if worst["partition"].bytes_host == kept[0] else 2)
-            + 128 * (2 if worst["partition"].bytes_host == kept[0] else 3)
-        )
-        r = kept.index(worst["partition"].bytes_host)
-        n, p, f, lc, g, sent = (
-            [20, 18][r],
-            [104, 96][r],
-            [26, 24][r],
-            local[r],
-            [2, 3][r],
-            [3, 2][r],
-        )
-        extraction = (
-            124 * n
-            + 8 * p
-            + 122 * f
-            + 84 * lc
-            + 120 * g
-            + 8 * sent
-            + 128 * max(local)
-            + 6 * 40
-            + 16 * 30
-            + 8 * 10
-        )
-        assert worst["partition setup"].bytes_host == extraction
+        part = {c.name: c for c in planned.components}
+        assert part["partition"].bytes_host == kept
+        assert part["partition"].bytes_device == halo_device
+        assert part["partition setup"].bytes_host == extraction
     # Building the hierarchy (setup-memory.md): the larger of the isotropic loop,
     # 96 F_i + 284 C + 72 F_b, and the coarse-edge build, 69 F_i + 48 F_1 + 296 C + 156 C_1 + 144 F_b,
     # on 20 interior and 20 boundary faces, and the coarse level's 2 cells and 1 edge.
