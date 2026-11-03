@@ -6,6 +6,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -41,6 +42,9 @@ struct RelaxationOptions {
   std::int64_t touch_at = 0;  ///< iteration after which `touch_rank` creates `touch_file`; 0: never
   int touch_rank = 0;
   std::string touch_file{};
+  /// At iteration 1, a non-empty directory at the checkpoint's staging path of every run in this
+  /// runs directory: every checkpoint write then fails (W0714). Empty: none.
+  std::string block_checkpoints_in{};
   std::int64_t log_bytes = 0;  ///< a log event of this many bytes at every step; 0: none
   int pause_ms = 0;
   double pressure_offset = 0.0;  ///< added to every fluid cell's pressure, Pa
@@ -212,6 +216,10 @@ class Relaxation final : public autan::runtime::Physics {
       std::raise(SIGTERM);
     if (iteration == options_.touch_at && options_.touch_rank == context_.ranks.rank())
       std::ofstream(options_.touch_file).put('\n');
+    if (iteration == 1 && !options_.block_checkpoints_in.empty()) {
+      for (const auto& run : std::filesystem::directory_iterator(options_.block_checkpoints_in))
+        std::filesystem::create_directories(run.path() / ".checkpoint.cgns.tmp" / "blocked");
+    }
     if (options_.log_bytes > 0) {
       context_.log.write(
           "info", "solver", "bulk", "",

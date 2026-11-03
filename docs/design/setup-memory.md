@@ -132,7 +132,7 @@ What an iteration adds stays bounded by the case or the mesh, or leaves memory a
 | the history line, `record` with its residuals and the monitors due this step, appended to `history.jsonl` then dropped | equations, monitors | streamed |
 | log lines, appended to `log.jsonl` as they occur | — | streamed |
 | `info_["diagnostics"]`: W0150 once at setup; W0710 once per equation leaving its floor; D0107, E0704 once, ending the run | equations | F |
-| `info_["diagnostics"]`: W0714, one per failed checkpoint | checkpoints | gap: aggregated into one W0714 with a counter (« CFD - Générateur kernels ») |
+| `info_["diagnostics"]`: W0714, one for every failed checkpoint write, replaced in place with their count, and one if removing the checkpoint fails; the RunMetadata copies no diagnostics (#462) | — | F |
 | `info_["monitors"]`, the final record of each monitor; `info_["averaging"]` and `info_["checkpoint"]`, replaced each step | monitors | F: `input` |
 | `woken`, `first`, the exemption's floors | equations | F |
 | the physics' solver state (`first_norms_`, penalty, CFL cap) and timing scalars (`solve_seconds_`, `log_seconds_`) | — | F |
