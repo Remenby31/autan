@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, model_validator
 
 from autan.initial_state import Text, unique_members
+from autan.texts import load_json, number
 
 SCHEMA = "autan.face-states/1"
 VARIABLES = ("density", "velocity-x", "velocity-y", "velocity-z", "pressure")
@@ -50,7 +50,12 @@ class FaceStates(_Strict):
 def parse(data: bytes) -> FaceStates | str:
     """The document in ``data``, or why it is not a valid one."""
     try:
-        document = json.loads(data, object_pairs_hook=unique_members)
+        document = load_json(
+            data,
+            object_pairs_hook=unique_members,
+            parse_float=number(float),
+            parse_int=number(int),
+        )
     except ValueError as error:
         return str(error)
     try:

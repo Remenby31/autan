@@ -145,6 +145,12 @@ def _raw(case: Path, text: str) -> None:
     )
 
 
+def _number(case: Path, characters: int) -> None:
+    """The file with its first pressure spelt in ``characters`` characters, the same value."""
+    text = (case.parent / "state.json").read_text()
+    _raw(case, text.replace("100000.0", "100000." + "0" * (characters - 7), 1))
+
+
 def _oracle(case: Path, oracle: str) -> None:
     document = json.loads((case.parent / "state.json").read_text())
     _raw(case, json.dumps(document | {"oracle": oracle}))
@@ -174,6 +180,9 @@ def _oracle(case: Path, oracle: str) -> None:
         (_fifo, "E0508"),  # a FIFO with no writer: never a blocking read
         (lambda case: _oracle(case, "é" * 2048), None),  # case-schema.md#free-texts
         (lambda case: _oracle(case, "é" * 2048 + "x"), "E0508"),
+        (lambda case: _number(case, 64), None),  # initial-state.md: numbers of 64 characters
+        (lambda case: _number(case, 65), "E0508"),
+        (lambda case: _raw(case, "[" * 100_000 + "]" * 100_000), "E0508"),  # nested too deep
     ],
 )
 def test_the_file_is_checked(

@@ -17,7 +17,7 @@ from pydantic import (
     model_validator,
 )
 
-from autan.texts import bounded
+from autan.texts import bounded, load_json, number
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -72,7 +72,12 @@ def unique_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 def parse(data: bytes) -> InitialState | str:
     """The document in ``data``, or why it is not a valid one."""
     try:
-        document = json.loads(data, object_pairs_hook=unique_members)
+        document = load_json(
+            data,
+            object_pairs_hook=unique_members,
+            parse_float=number(float),
+            parse_int=number(int),
+        )
     except ValueError as error:
         return str(error)
     try:
