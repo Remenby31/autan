@@ -394,6 +394,24 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     multigrid = {c.name: c for c in deeper.memory.components}["multigrid"].bytes_host
     dense = 8 * 50 * 50 + 8 * 50, 8 * 10 * 10 + 8 * 10
     assert multigrid - by_name["multigrid"].bytes_host == 1000 * 2 + 410 * 1 + dense[1] - dense[0]
+    # The physics' setup (setup-memory.md): the packed geometry 8(25F + 4C + 4K), the stencil's
+    # twins and FP64 weights 32 a stencil entry, its marks 4C + 4F_b and a vertex stencil's node
+    # lists 16N + 8P, on 10 cells, 40 faces (20 boundary), K = 2F_i + F_b = 60 incidences,
+    # 240 stencil entries, 30 nodes and 160 face nodes.
+    marks = 4 * 10 + 4 * 20 + 16 * 30 + 8 * 160
+    expected_setup = 8 * (25 * 40 + 4 * 10 + 4 * 60) + 32 * 240 + marks
+    assert by_name["physics setup"].bytes_host == expected_setup
+    # Under reproducibility "ranks", the global order: 12K + F kept by the physics, and a first
+    # 12K built and freed while packing.
+    ranks = autan.load(
+        write_case(TINY.replace("Inviscid())", 'Inviscid(), reproducibility="ranks")'))
+    ).plan(tiny_mesh(20), device_kind="cpu")
+    keyed = {c.name: c for c in ranks.memory.components}
+    assert keyed["physics"].bytes_host - by_name["physics"].bytes_host == 12 * 60 + 40
+    assert keyed["physics setup"].bytes_host - expected_setup == 12 * 60
+    # A device run's face scratch: 5 values of 8 B a face, on the device.
+    cuda = autan.load(write_case(TINY)).plan(tiny_mesh(20), device_kind="cuda").memory
+    assert {c.name: c for c in cuda.components}["device face scratch"].bytes_device == 40 * 40
     # Building the hierarchy (setup-memory.md): the larger of the isotropic loop,
     # 96 F_i + 284 C + 72 F_b, and the coarse-edge build, 69 F_i + 48 F_1 + 296 C + 156 C_1 + 144 F_b,
     # on 20 interior and 20 boundary faces, and the coarse level's 2 cells and 1 edge.

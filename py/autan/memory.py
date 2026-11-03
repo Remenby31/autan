@@ -282,11 +282,18 @@ def _rank(
         + (n + 1) * c * s
         + n * fb * 8
     )
-    add("physics", host_physics)
-    # The constructor's packed geometry (25F + 4C + 4K in FP64) and the stencil's twins and
-    # FP64 weights, freed when it returns.
+    # Under reproducibility "ranks", the global order the physics keeps: 4 B an incidence, 8 its
+    # twin, 1 a face's orientation (codegen/cpp/geometry.cpp, global_order).
+    ranks_order = 12 * k + f if spec.physics.reproducibility == "ranks" else 0
+    add("physics", host_physics + ranks_order)
+    # The constructor's packed geometry (25F + 4C + 4K in FP64), the stencil's twins and FP64
+    # weights, the stencil's marks (4C + 4F_b), a vertex stencil's node lists (16N + 8P) and,
+    # under "ranks", a first global order built and freed in pack_geometry: freed when it
+    # returns (docs/design/setup-memory.md).
     packed = 8 * (25 * f + 4 * c + 4 * k)
-    add("physics setup", packed + 32 * stencil, transient=True)
+    marks = 4 * c + 4 * fb + 16 * nodes + 8 * counts.face_nodes
+    first_order = 12 * k if spec.physics.reproducibility == "ranks" else 0
+    add("physics setup", packed + 32 * stencil + marks + first_order, transient=True)
     if device_kind != "cpu":
         # DeviceMesh keeps the face colourings on the host; it holds the packed geometry moved
         # into it until release_host after bind. Its setup passes through three phases in
@@ -316,6 +323,8 @@ def _rank(
             + n * f * 8
         )
         add("physics device", 0, device)
+        # The kernels' face scratch, 5 values of 8 B a face (euler_device face_scratch_width).
+        add("device face scratch", 0, 40 * f)
         add("device context", _CUDA_CONTEXT)
 
     # The implicit steady solve (host, CPU runs only): Jacobians, block matrix and the linear
