@@ -631,6 +631,8 @@ def _archived_state_run(kind: str, runs: Path, tmp_path: Path) -> tuple[Path, Pa
         case += f"case.boundary('farfield').oracle_state(path={str(source)!r}, sha256={digest!r})\n"
     else:
         mesh["counts"]["cells"] = 4
+        # A hand-written MeshInfo may omit its partition; this run extracts none.
+        del mesh["partition"]
         mesh["counts"]["cells_by_type"] = dict.fromkeys(mesh["counts"]["cells_by_type"], 0)
         mesh["counts"]["cells_by_type"]["hexa"] = 4
         # Lines of cells within the 4 cells, as mesh.md bounds them.
