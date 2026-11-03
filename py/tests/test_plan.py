@@ -215,7 +215,7 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
                 "descriptor_bytes": 2048,
                 "zone_names_bytes": 512,
                 "filtered_bytes": 0,
-                "cgns_nodes": 0,
+                "cgns_nodes": 40,
             },
             "counts": {
                 "cells": 10,
@@ -353,7 +353,8 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     # skip kept as runs, 24 B for each of the 30 elements and one more.
     standard += 2**20 + 32 * 2**10 + 24 * (10 + 20 + 1)
     caches = 4 * 2**20 + 8 * 2**20 + 64 * 2**10
-    assert by_name["mesh reading"].bytes_host == standard + 2048 + 40 * 512 + caches
+    tree = 2**20 + 16 * 2**10 * 40  # cg_open's tree of 40 nodes: 1 MiB and 16 KiB a node
+    assert by_name["mesh reading"].bytes_host == standard + 2048 + 40 * 512 + caches + tree
     filtered: dict[str, Any] = tiny_mesh(20).document()
     filtered["source"]["filtered_bytes"] = 3 * 2**20  # a dataset inflated beside its input
     compressed = autan.load(write_case(TINY)).plan(

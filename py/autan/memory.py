@@ -399,6 +399,9 @@ def _reading(mesh: MeshInfo, interior: int, boundary: int) -> int:
         # mesh.md#memory-of-a-cgns-read); the reader parses ZoneNames, at most 40 B a byte.
         source = mesh.source
         texts = source.descriptor_bytes + source.filtered_bytes
+        # cg_open and the reader hold up to 16 KiB per node of the tree, which the MeshInfo
+        # counts (at most _CGNS_NODES_MAX, E0133 beyond).
+        texts += _CGNS_TREE + _CGNS_NODE * source.cgns_nodes
         reading = (
             max(standard, ngon) + texts + _JSON_DOCUMENT * source.zone_names_bytes + _HDF5_CACHE
         )
