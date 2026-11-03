@@ -545,24 +545,31 @@ def test_a_bad_tracked_baseline_fails_this_run_s_record(paired, tmp_path):
 
 def test_hold_per_pair_releases_the_lock_between_pairs(paired, tmp_path, monkeypatch):
     # STREAM's series: one hold per pair (#403), so other jobs can take the GPU between pairs.
-    events = []
+    holds = []
     take = gpu.gpu_lock
+
+    def runs_so_far() -> int:
+        return len(log(tmp_path)) if (tmp_path / "log").exists() else 0
 
     @contextmanager
     def watched(path, *args, **kwargs):
         with take(path, *args, **kwargs) as waited:
-            events.append("hold")
+            before = runs_so_far()
             yield waited
+            holds.append(runs_so_far() - before)
         with Path(path).open() as handle:  # free once released: another job could take it now
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
             fcntl.flock(handle, fcntl.LOCK_UN)
-        events.append("free")
 
     monkeypatch.setattr(gpu, "gpu_lock", watched)
     assert main([*paired([1.0] * 10, [1.0] * 10), "--hold-per-pair"]) == 0
-    assert events == ["hold", "free"] * 5
+    # Exactly the two runs of one pair in each hold, the lock free after each.
+    assert holds == [2] * 5
     runs = log(tmp_path)
     assert [r.split()[0] for r in runs] == pair.order(5)
     assert all(r.split()[1] == "True" for r in runs)  # every run measured under the lock
+    # Every run's result kept under its own number.
+    kept = sorted(p.name for p in (tmp_path / "out" / "series-1").iterdir())
+    assert kept == [f"{i + 1:02d}-{s}.json" for i, s in enumerate(pair.order(5))]
     summary = json.loads((tmp_path / "out" / "pair.json").read_text())
     assert summary["outcome"] == pair.OK
