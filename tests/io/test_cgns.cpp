@@ -920,9 +920,9 @@ TEST_CASE("A start solution holds only what the writer writes for its mesh", "[c
 namespace {
 
 // mesh-info.md, source.logical_bytes, counted through cgio by the contract's rule: every
-// Descriptor_t, and the datasets the reader reads (the base and zone headers, families,
-// coordinates, BCs, subregions, connectivities, and element sections, of whose points and edges
-// only the header and range), each its dimensions times its type's size.
+// Descriptor_t, the base and zone headers, the coordinates, the whole subtree of each family, BC,
+// subregion and connectivity, and the element sections, of whose points and edges only the header
+// and range, each its dimensions times its type's size.
 std::int64_t logical_total(const fs::path& file) {
   int cgio = 0;
   REQUIRE(cgio_open_file(file.string().c_str(), CGIO_MODE_READ, CGIO_FILE_NONE, &cgio) ==
