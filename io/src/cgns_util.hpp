@@ -75,6 +75,11 @@ class CgioTree {
   }
   [[nodiscard]] double root() const { return root_; }
 
+  [[nodiscard]] std::int64_t number_of_children(double node) const {
+    int n = 0;
+    check(cgio_number_children(cgio_, node, &n), "count children");
+    return n;
+  }
   [[nodiscard]] std::vector<double> children(double node) const {
     int n = 0;
     check(cgio_number_children(cgio_, node, &n), "count children");
@@ -148,14 +153,18 @@ class CgioTree {
     int dims = 0;
     std::array<cgsize_t, CGIO_MAX_DIMENSIONS> extent{};
     check(cgio_get_dimensions(cgio_, node, &dims, extent.data()), "read dimensions");
-    if (dims != 1) throw Error(ErrorCode::io_malformed, "CGNS: '" + name(node) + "' is not 1-D");
+    // One-dimensional, or an IndexArray_t of index dimension 1: extents (1, n).
+    if (dims != 1 && !(dims == 2 && extent[0] == 1)) {
+      throw Error(ErrorCode::io_malformed, "CGNS: '" + name(node) + "' is not 1-D");
+    }
     // cgio reads one start, end and stride per dimension of the node: every one is given.
     std::array<cgsize_t, CGIO_MAX_DIMENSIONS> start{}, end{}, stride{};
     start.fill(1);
     end.fill(1);
     stride.fill(1);
-    start[0] = first + 1;
-    end[0] = first + static_cast<cgsize_t>(out.size());
+    const std::size_t along = dims == 1 ? 0 : 1;
+    start[along] = first + 1;
+    end[along] = first + static_cast<cgsize_t>(out.size());
     const cgsize_t size = static_cast<cgsize_t>(out.size()), one = 1;
     check(cgio_read_data_type(cgio_, node, start.data(), end.data(), stride.data(), "I8", 1, &size,
                               &one, &size, &one, out.data()),
@@ -187,16 +196,26 @@ class CgioTree {
 // A file of more nodes than four times the most a real grid holds (CRM-HL: 4032) is refused.
 constexpr std::int64_t max_cgns_nodes = 16384;
 
-// Every node of `tree`, counted by label.
+// Every node of `tree`, counted by label; the count stops once it passes max_cgns_nodes, each
+// node's children counted before their ids are read, so that walking costs O(max_cgns_nodes).
 inline std::map<std::string, std::int64_t> count_nodes(const CgioTree& tree) {
   std::map<std::string, std::int64_t> labels;
-  const auto walk = [&](const auto& self, double node) -> void {
+  std::int64_t seen = 0;
+  std::vector<double> pending{tree.root()};
+  while (!pending.empty() && seen <= max_cgns_nodes) {
+    const double node = pending.back();
+    pending.pop_back();
+    const std::int64_t n = tree.number_of_children(node);
+    if (seen + n > max_cgns_nodes) {
+      labels["(more)"] += max_cgns_nodes + 1 - seen;
+      break;
+    }
     for (const double child : tree.children(node)) {
       ++labels[tree.label(child)];
-      self(self, child);
+      ++seen;
+      pending.push_back(child);
     }
-  };
-  walk(walk, tree.root());
+  }
   return labels;
 }
 

@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -333,20 +334,46 @@ class FluentReader {
     c_.expect(')');
   }
 
-  void zone() {
-    c_.expect('(');
-    const auto id = c_.integer<std::int64_t>(10, "()");
+  // A section 39/45 zone record, its header from `c` on: its id, type and name.
+  static std::pair<std::int64_t, ZoneInfo> zone_record(Cursor& c) {
+    c.expect('(');
+    const auto id = c.integer<std::int64_t>(10, "()");
     ZoneInfo info;
-    const std::string_view type = c_.token("()");
-    check_text(c_.path(), "zone type", type.size());
+    const std::string_view type = c.token("()");
+    check_text(c.path(), "zone type", type.size());
     info.type = std::string(type);
-    const std::string_view name = c_.token("()");
-    check_text(c_.path(), "zone name", name.size());
+    const std::string_view name = c.token("()");
+    check_text(c.path(), "zone name", name.size());
     info.name = std::string(name);
-    while (c_.peek() != ')') (void)c_.token("()");
-    c_.expect(')');
+    while (c.peek() != ')') (void)c.token("()");
+    c.expect(')');
+    return {id, std::move(info)};
+  }
+
+  // Fluid and solid zones name cell zones only: their records are read again for the zones the
+  // cells use, so that a zone no cell takes is never kept (mesh.md, Readers).
+  void zone() {
+    const std::size_t at = c_.position();
+    auto [id, info] = zone_record(c_);
     skip_rest();
-    zones_[id] = std::move(info);
+    if (info.type == "fluid" || info.type == "solid") {
+      cell_zone_records_.emplace_back(id, at);
+    } else {
+      zones_[id] = std::move(info);
+    }
+  }
+
+  // The zone record of cell zone `id`, the last one given winning, as zones_ keeps them.
+  std::optional<ZoneInfo> cell_zone_info(std::int64_t id) const {
+    for (auto it = cell_zone_records_.rbegin(); it != cell_zone_records_.rend(); ++it) {
+      if (it->first != id) continue;
+      Cursor c(data_, c_.path());
+      c.advance(it->second);
+      return zone_record(c).second;
+    }
+    const auto it = zones_.find(id);
+    if (it != zones_.end()) return it->second;
+    return std::nullopt;
   }
 
   index_t cell_index(std::int64_t cell) {
@@ -432,11 +459,11 @@ class FluentReader {
     in.cell_zone.assign(n_cells, -1);
     std::map<std::int64_t, index_t> cell_zone_index;
     for (const std::int64_t zone : cell_zone_order_) {
-      const auto it = zones_.find(zone);
-      const std::string type = it != zones_.end() ? it->second.type : "";
+      const auto info = cell_zone_info(zone);
+      const std::string type = info ? info->type : "";
       cell_zone_index[zone] = static_cast<index_t>(in.cell_zones.size());
       in.cell_zones.push_back(CellZone{
-          .name = it != zones_.end() ? it->second.name : "zone-" + std::to_string(zone),
+          .name = info ? info->name : "zone-" + std::to_string(zone),
           .type = type,
           .kind = type == "fluid"   ? CellKind::fluid
                   : type == "solid" ? CellKind::solid
@@ -512,6 +539,7 @@ class FluentReader {
   std::vector<index_t> face_block_;
   std::vector<FaceBlock> face_blocks_;
   std::map<std::int64_t, ZoneInfo> zones_;
+  std::vector<std::pair<std::int64_t, std::size_t>> cell_zone_records_;  // (id, record offset)
 };
 
 }  // namespace

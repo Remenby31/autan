@@ -171,10 +171,10 @@ class GmshReader {
         }
       }
       const auto group = [&](int entity) {
-        const auto it = entity_physical_.find({2, entity});
-        if (it == entity_physical_.end() || it->second == 0)
+        const int physical = physical_of(2, entity);
+        if (physical == 0)
           c_.fail("periodic surface " + std::to_string(entity) + " is in no physical group");
-        return it->second;
+        return physical;
       };
       const std::array<double, 3> t{a[3], a[7], a[11]};
       const auto [it, added] = periodic_links_.try_emplace({group(master), group(tag)}, t);
@@ -188,6 +188,24 @@ class GmshReader {
     const std::size_t at = data_.find(end, c_.position());
     if (at == std::string::npos) c_.fail("unterminated $" + section);
     c_.advance(at + end.size() - c_.position());
+  }
+
+  void sort_entities() {
+    if (entities_sorted_) return;
+    std::ranges::stable_sort(entity_physical_, {},
+                             [](const auto& e) { return std::pair(e[0], e[1]); });
+    entities_sorted_ = true;
+  }
+
+  // The physical group of entity (dim, tag), 0 when it has none.
+  int physical_of(int dim, int tag) {
+    sort_entities();
+    const auto key = std::pair(dim, tag);
+    const auto last = std::ranges::upper_bound(entity_physical_, key, {},
+                                               [](const auto& e) { return std::pair(e[0], e[1]); });
+    if (last == entity_physical_.begin()) return 0;
+    const auto& e = *std::prev(last);
+    return std::pair(e[0], e[1]) == key ? e[2] : 0;
   }
 
   // $PhysicalNames comes before the elements that use them: the section is checked here and
@@ -262,7 +280,11 @@ class GmshReader {
                         ") belongs to several physical groups",
                     ErrorCode::io_ambiguous_zone);
           }
-          entity_physical_[{dim, tag}] = physicals.empty() ? 0 : physicals.front();
+          // An entity in no group labels nothing: not kept (physical_of gives it 0).
+          if (!physicals.empty()) {
+            entity_physical_.push_back({dim, tag, physicals.front()});
+            entities_sorted_ = false;
+          }
         }
       }
     }
@@ -363,8 +385,7 @@ class GmshReader {
       if (!element_type(type, et))
         c_.unsupported("element type " + std::to_string(type) + " (linear elements only)");
       if (et.dim != dim) c_.fail("element type does not match its entity dimension");
-      const auto physical_it = entity_physical_.find({dim, entity});
-      const int physical = physical_it == entity_physical_.end() ? 0 : physical_it->second;
+      const int physical = physical_of(dim, entity);
       nodes.resize(et.nodes);
       for (std::uint64_t e = 0; e < n; ++e) {
         (void)next_size();
@@ -422,8 +443,9 @@ class GmshReader {
     });
     std::ranges::sort(surfaces);
     for (const int tag : surfaces) (void)face_zone(tag);
-    for (const auto& [key, physical] : entity_physical_) {
-      if (key.first == 2 && physical != 0) (void)face_zone(physical);
+    sort_entities();
+    for (const auto& [dim, tag, physical] : entity_physical_) {
+      if (dim == 2) (void)face_zone(physical);
     }
     for (const auto& [groups, t] : periodic_links_) {
       const index_t a = face_zone(groups.first), b = face_zone(groups.second);
@@ -462,7 +484,10 @@ class GmshReader {
   Cursor c_;
   bool binary_ = false;
   std::size_t names_at_ = std::string::npos;  // where $PhysicalNames starts, when given
-  std::map<std::pair<int, int>, int> entity_physical_;
+  // (dim, tag, physical group) of the entities of dimension 2 and 3 in a group: 12 bytes each,
+  // fewer than their record in the file. Sorted on first lookup, the last record of a key winning.
+  std::vector<std::array<int, 3>> entity_physical_;
+  bool entities_sorted_ = false;
   std::map<std::pair<int, int>, std::array<double, 3>> periodic_links_;  // (master, slave) groups
   std::vector<std::uint64_t> tags_;
   std::vector<index_t> order_;

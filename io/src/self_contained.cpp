@@ -14,6 +14,7 @@
 #include <nlohmann/json.hpp>
 
 #include "autan/core/error.hpp"
+#include "cgns_util.hpp"
 
 namespace autan::io {
 
@@ -97,15 +98,26 @@ void scan_cgns_links(const std::filesystem::path& file) {
   if (cgio_open_file(file.string().c_str(), CGIO_MODE_READ, CGIO_FILE_NONE, &cgio) != CG_OK) {
     throw Error(ErrorCode::io_cannot_open, "cannot open '" + file.string() + "' as CGNS");
   }
-  std::string found;
+  // Each node visited once, with the index of its parent: a path is built only for the
+  // diagnostic. The walk stops after max_cgns_nodes, which the reader refuses (cgns_util.hpp).
+  struct Frame {
+    double id;
+    std::size_t parent;
+  };
+  constexpr std::size_t none = static_cast<std::size_t>(-1);
+  std::vector<Frame> visited;
+  std::size_t found = none;
   bool broken = false;
   double root = 0;
   cgio_get_root_id(cgio, &root);
-  std::vector<std::pair<double, std::string>> pending{{root, ""}};
+  std::vector<Frame> pending{{root, none}};
   std::vector<double> children;
-  while (!pending.empty() && found.empty() && !broken) {
-    const auto [node, path] = pending.back();
+  while (!pending.empty() && found == none && !broken &&
+         static_cast<std::int64_t>(visited.size()) <= max_cgns_nodes) {
+    const Frame frame = pending.back();
     pending.pop_back();
+    const double node = frame.id;
+    visited.push_back(frame);
     int length = 0;
     if (cgio_is_link(cgio, node, &length) != CG_OK) {
       broken = true;
@@ -114,23 +126,28 @@ void scan_cgns_links(const std::filesystem::path& file) {
     if (length > 0) {
       int file_length = 0, name_length = 0;
       cgio_link_size(cgio, node, &file_length, &name_length);
-      if (file_length > 0) found = path.empty() ? "/" : path;
+      if (file_length > 0) found = visited.size() - 1;
       continue;
     }
     int count = 0;
     cgio_number_children(cgio, node, &count);
     if (count == 0) continue;
+    if (static_cast<std::int64_t>(visited.size()) + count > max_cgns_nodes + 1) break;
     children.resize(static_cast<std::size_t>(count));
     int got = 0;
     cgio_children_ids(cgio, node, 1, count, &got, children.data());
     for (int i = 0; i < got; ++i) {
-      char name[CGIO_MAX_NAME_LENGTH + 1] = {};
-      cgio_get_name(cgio, children[static_cast<std::size_t>(i)], name);
-      pending.emplace_back(children[static_cast<std::size_t>(i)], path + "/" + name);
+      pending.push_back({children[static_cast<std::size_t>(i)], visited.size() - 1});
     }
   }
+  std::string path;
+  for (std::size_t f = found; f != none && visited[f].parent != none; f = visited[f].parent) {
+    char name[CGIO_MAX_NAME_LENGTH + 1] = {};
+    cgio_get_name(cgio, visited[f].id, name);
+    path.insert(0, std::string("/") + name);
+  }
   cgio_close_file(cgio);
-  if (!found.empty()) outside(file, found);
+  if (found != none) outside(file, path.empty() ? "/" : path);
   if (broken) unreadable(file);
 }
 

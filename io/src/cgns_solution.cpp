@@ -33,6 +33,10 @@ void ok(int status, const std::string& what) {
 std::int64_t solution_cells(const std::filesystem::path& file) {
   reject_outside_data(file);
   const CgioTree tree(file);
+  if (total(count_nodes(tree)) > max_cgns_nodes) {
+    throw Error(ErrorCode::io_malformed,
+                file.string() + ": more than " + std::to_string(max_cgns_nodes) + " nodes");
+  }
   const auto base = tree.child(tree.root(), "CGNSBase_t");
   const auto zone = base ? tree.child(*base, "Zone_t") : std::nullopt;
   if (!zone) throw Error(ErrorCode::io_malformed, file.string() + ": no zone");
@@ -48,6 +52,9 @@ void check_start_solution(const std::filesystem::path& file, const StartLimits& 
     throw Error(ErrorCode::io_malformed,
                 file.string() + ": " + what + ", which results.md's writer does not write");
   };
+  if (total(count_nodes(tree)) > max_cgns_nodes) {
+    refuse("more than " + std::to_string(max_cgns_nodes) + " nodes");
+  }
   std::int64_t translations = 0, families = 0;
   // Every descriptor of the tree, where the writer puts them and no larger than it writes them.
   const auto walk = [&](const auto& self, double node, const std::string& parent) -> void {
@@ -72,9 +79,6 @@ void check_start_solution(const std::filesystem::path& file, const StartLimits& 
     }
   };
   walk(walk, tree.root(), "");
-  if (const std::int64_t n = total(count_nodes(tree)); n > max_cgns_nodes) {
-    refuse(std::to_string(n) + " nodes (at most " + std::to_string(max_cgns_nodes) + ")");
-  }
   if (largest_filtered_bytes(file) > 0) refuse("a filtered (compressed) dataset");
 }
 

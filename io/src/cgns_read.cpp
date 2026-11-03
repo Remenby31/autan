@@ -105,6 +105,18 @@ bool is_face_type(CGNS_ENUMT(ElementType_t) type) {
 constexpr std::size_t chunk_elements = 4096;
 constexpr std::int64_t chunk_entries = std::int64_t{1} << 17;
 
+// The nodes of `tree`, E0133 beyond max_cgns_nodes, naming the commonest label.
+std::int64_t bounded_nodes(const CgioTree& tree, const fs::path& path) {
+  const auto labels = count_nodes(tree);
+  const std::int64_t n = total(labels);
+  if (n > max_cgns_nodes) {
+    const auto most = std::ranges::max_element(labels, {}, [](const auto& l) { return l.second; });
+    unsupported(path.string(), "more than " + std::to_string(max_cgns_nodes) + " nodes, " +
+                                   std::to_string(most->second) + " of them " + most->first);
+  }
+  return n;
+}
+
 bool is_ignored_type(CGNS_ENUMT(ElementType_t) type) {
   return type == CGNS_ENUMV(NODE) || type == CGNS_ENUMV(BAR_2);
 }
@@ -126,14 +138,7 @@ class Reader {
   // more nodes than max_cgns_nodes.
   static void check_links(const fs::path& path) {
     reject_outside_data(path);
-    const auto labels = count_nodes(CgioTree(path));
-    if (const std::int64_t n = total(labels); n > max_cgns_nodes) {
-      const auto most =
-          std::ranges::max_element(labels, {}, [](const auto& l) { return l.second; });
-      unsupported(path.string(), std::to_string(n) + " nodes, " + std::to_string(most->second) +
-                                     " of them " + most->first + " (at most " +
-                                     std::to_string(max_cgns_nodes) + ")");
-    }
+    (void)bounded_nodes(CgioTree(path), path);
   }
 
   MeshInput read() {
@@ -433,6 +438,32 @@ class Reader {
     }
   }
 
+  // The dimension of the elements the point set of BC or subregion `owner` designates, as
+  // dimension_of gives it, 2 for a range (point_set judges ranges): a list is read in chunks of
+  // chunk_entries, so that a list of points or edges, which labels nothing, is never held whole.
+  // `container` is "ZoneBC_t" for a BC, empty for a subregion, which sits under the zone.
+  int listed_dimension(CGNS_ENUMT(PointSetType_t) set, const char* container, const char* owner) {
+    if (set != CGNS_ENUMV(PointList) && set != CGNS_ENUMV(ElementList)) return 2;
+    const CgioTree tree(fn_);
+    const auto base = tree.child(tree.root(), "CGNSBase_t");
+    auto parent = base ? tree.child(*base, "Zone_t") : std::nullopt;
+    if (parent && *container != '\0') parent = tree.child(*parent, container);
+    const auto node =
+        parent ? tree.child(*parent, *container != '\0' ? "BC_t" : "ZoneSubRegion_t", owner)
+               : std::nullopt;
+    const auto list = node ? tree.child(*node, "IndexArray_t") : std::nullopt;
+    if (!list) malformed(path_, std::string("no point list in '") + owner + "'");
+    const std::int64_t n = tree.values(*list);
+    std::vector<cgsize_t> chunk;
+    int dimension = -1;
+    for (std::int64_t first = 0; first < n; first += chunk_entries) {
+      chunk.resize(static_cast<std::size_t>(std::min(chunk_entries, n - first)));
+      tree.read_integers(*list, first, chunk);
+      for (const cgsize_t id : chunk) dimension = merged_dimension(dimension, id, owner);
+    }
+    return dimension;
+  }
+
   // Elements a point set designates: a range or a list of 1-based ids.
   std::vector<cgsize_t> point_set(CGNS_ENUMT(PointSetType_t) type, std::vector<cgsize_t> points,
                                   const std::string& owner) {
@@ -472,9 +503,17 @@ class Reader {
          "read BC");
       CGNS_ENUMT(GridLocation_t) location{};
       ok(cg_boco_gridlocation_read(fn_, 1, 1, b, &location), "read BC location", name);
-      std::vector<cgsize_t> ids(at(points));
-      ok(cg_boco_read(fn_, 1, 1, b, ids.data(), nullptr), "read BC", name);
-      ids = point_set(set, std::move(ids), name);
+      if (location == CGNS_ENUMV(Vertex) && set != CGNS_ENUMV(ElementList) &&
+          set != CGNS_ENUMV(ElementRange)) {
+        unsupported(path_,
+                    std::string("BC '") + name + "' given by vertices (element point sets only)");
+      }
+      std::vector<cgsize_t> ids;
+      if (listed_dimension(set, "ZoneBC_t", name) > 1) {
+        ids.resize(at(points));
+        ok(cg_boco_read(fn_, 1, 1, b, ids.data(), nullptr), "read BC", name);
+        ids = point_set(set, std::move(ids), name);
+      }
       ok(cg_goto(fn_, 1, "Zone_t", 1, "ZoneBC_t", 1, "BC_t", b, "end"), "go to BC", name);
       char family[CG_MAX_GOTO_DEPTH * 33 + 1];
       const std::string family_name = cg_famname_read(family) == CG_OK ? family : "";
@@ -487,11 +526,6 @@ class Reader {
       const std::string zone = family_ref.empty() ? name : group_of(family_ref);
       std::string bc_type = BCTypeName[type];
       if (type == CGNS_ENUMV(FamilySpecified)) bc_type = family_bc(family_ref);
-      if (location == CGNS_ENUMV(Vertex) && set != CGNS_ENUMV(ElementList) &&
-          set != CGNS_ENUMV(ElementRange)) {
-        unsupported(path_,
-                    std::string("BC '") + name + "' given by vertices (element point sets only)");
-      }
       // The ids name elements; their dimension says whether the BC labels
       // faces or cells (some writers mark surface BCs as CellCenter).
       switch (dimension_of(ids, name)) {
@@ -545,9 +579,12 @@ class Reader {
                         &gc_name_length),
          "read subregion");
       if (location != CGNS_ENUMV(CellCenter) || points == 0) continue;
-      std::vector<cgsize_t> ids(at(points));
-      ok(cg_subreg_ptset_read(fn_, 1, 1, s, ids.data()), "read subregion", name);
-      ids = point_set(set, std::move(ids), name);
+      std::vector<cgsize_t> ids;
+      if (listed_dimension(set, "", name) > 1) {
+        ids.resize(at(points));
+        ok(cg_subreg_ptset_read(fn_, 1, 1, s, ids.data()), "read subregion", name);
+        ids = point_set(set, std::move(ids), name);
+      }
       ok(cg_goto(fn_, 1, "Zone_t", 1, "ZoneSubRegion_t", s, "end"), "go to subregion", name);
       char family[CG_MAX_GOTO_DEPTH * 33 + 1];
       const std::string zone =
@@ -1073,7 +1110,7 @@ LogicalBytes cgns_logical_bytes(const fs::path& file) {
   reject_outside_data(file);
   const CgioTree tree(file);
   LogicalBytes out;
-  out.nodes = total(count_nodes(tree));
+  out.nodes = bounded_nodes(tree, file);  // first: every walk below is then bounded
   // Every Descriptor_t, at any level: cg_open loads them all.
   const auto descriptors = [&](const auto& self, double node) -> void {
     for (const double child : tree.children(node)) {

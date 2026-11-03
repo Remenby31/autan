@@ -32,6 +32,9 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <malloc.h>
+#endif
 
 #include "../io/outside_data.hpp"
 #include "autan/core/geometry.hpp"
@@ -295,6 +298,42 @@ std::string emptied_twice(std::string text, const std::string& member, std::size
   text.insert(i + 1, "," + key + "]");
   return text;
 }
+
+// `text` (compact JSON) with the first number of its first `member` row written in `length`
+// characters, zeros added to its fraction: the same value, a longer token.
+std::string padded_number(std::string text, const std::string& member, std::size_t length) {
+  const std::size_t key = text.find("\"" + member + "\":[[");
+  REQUIRE(key != std::string::npos);
+  const std::size_t first = key + member.size() + 5;
+  const std::size_t last = text.find_first_not_of("0123456789+-.eE", first);
+  std::string number = text.substr(first, last - first);
+  const std::size_t e = number.find_first_of("eE");
+  std::string mantissa = number.substr(0, e),
+              exponent = e == std::string::npos ? "" : number.substr(e);
+  if (mantissa.find('.') == std::string::npos) mantissa += '.';
+  REQUIRE(mantissa.size() + exponent.size() <= length);
+  mantissa.append(length - mantissa.size() - exponent.size(), '0');
+  return text.replace(first, last - first, mantissa + exponent);
+}
+
+#if defined(__linux__)
+// The peak resident memory `run` adds while it runs (the runtime runs in this process).
+template <class Run>
+std::int64_t peak_of(const Run& run) {
+  const auto status = [](const std::string& key) -> std::int64_t {
+    std::ifstream in("/proc/self/status");
+    for (std::string line; std::getline(in, line);) {
+      if (line.rfind(key + ":", 0) == 0) return std::stoll(line.substr(key.size() + 1)) * 1024;
+    }
+    return -1;
+  };
+  malloc_trim(0);
+  const std::int64_t before = status("VmRSS");
+  std::ofstream("/proc/self/clear_refs") << "5";  // VmHWM := VmRSS
+  run();
+  return status("VmHWM") - before;
+}
+#endif
 
 // The `start` the SDK writes for a run that starts from `previous`
 // (solver-input.md): its run.json, the hash of its solution and, for a
@@ -1306,6 +1345,16 @@ TEST_CASE("An initial-state file gives each fluid cell its state", "[runtime]") 
     nested["centroids"][0] = Json::array({Json{{"values", Json::array()}}});
     require_error(run(with_initial_state(input(inviscid), nested)), "E0508");
   }
+  SECTION("E0508: a number over 64 characters") {
+    // initial-state.md: refused before the parser reads it; the same value in 64 accepted.
+    require_error(
+        run(with_initial_state(input(inviscid), padded_number(state.dump(), "values", 65))),
+        "E0508");
+    const Outcome at_limit =
+        run(with_initial_state(input(inviscid), padded_number(state.dump(), "values", 64)));
+    INFO(at_limit.err);
+    CHECK(at_limit.status == ExitStatus::finished);
+  }
   SECTION("E0508: an oracle over 4096 bytes") {
     // initial-state.md: the oracle, as every member name, at most 4096 bytes.
     Json long_oracle = state;
@@ -1716,6 +1765,29 @@ TEST_CASE("Face states that do not fit the case exit 2 before any directory", "[
         run(ringleb_input([](Json& s) { s["oracle"] = std::string(4096, 'o'); }));
     INFO(longest.err);
     CHECK(longest.status == ExitStatus::finished);
+    // A number of at most 64 characters: refused before the parser reads it, the same value in
+    // 64 characters accepted.
+    require_error(
+        run(ringleb_input({}, [](std::string b) { return padded_number(b, "values", 65); })),
+        "E0420");
+    const Outcome padded =
+        run(ringleb_input({}, [](std::string b) { return padded_number(b, "values", 64); }));
+    INFO(padded.err);
+    CHECK(padded.status == ExitStatus::finished);
+#if defined(__linux__)
+    // Nested deeper than its structure (5 levels): refused before the parser keeps a level, so
+    // 2^22 levels cost their text, not the parser's stacks.
+    constexpr std::size_t levels = std::size_t{1} << 22;
+    const Json deep = ringleb_input({}, [&](std::string b) {
+      const std::size_t at = b.find("\"oracle\":");
+      REQUIRE(at != std::string::npos);
+      const std::size_t value = at + 9, end = b.find(',', value);
+      return b.replace(value, end - value, std::string(levels, '[') + std::string(levels, ']'));
+    });
+    const std::int64_t peak = peak_of([&] { require_error(run(deep), "E0420"); });
+    CAPTURE(peak);
+    CHECK(peak <= 4 * static_cast<std::int64_t>(levels) + (std::int64_t{1} << 20));
+#endif
     // Rows, read as they stream: each an array of 3 (centroids) or 5 (values) finite numbers,
     // one per face of the zone.
     for (const auto& edit : std::vector<std::function<void(Json&)>>{

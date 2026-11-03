@@ -521,5 +521,63 @@ TEST_CASE("Records a reader does not use cost their text, not a copy each", "[io
     CHECK(after - before <= added + (std::int64_t{1} << 20));
     CHECK(std::ranges::any_of(mesh->face_zones(), [](const auto& z) { return z.name == "walls"; }));
   }
+  SECTION("Gmsh volume entities in no physical group") {
+    std::string entities;
+    for (int i = 0; i < n; ++i) entities += std::to_string(i + 2) + " 0 0 0 1 1 1 0 0\n";
+    const fs::path plain = write_temp("entities-plain.msh", gmsh_tet);
+    const std::string text = replace(replace(gmsh_tet, "$Entities\n1 0 2 1\n",
+                                             "$Entities\n1 0 2 " + std::to_string(1 + n) + "\n"),
+                                     "$EndEntities", entities + "$EndEntities");
+    const fs::path padded = write_temp("entities-padded.msh", text);
+    const auto added = static_cast<std::int64_t>(text.size() - gmsh_tet.size());
+    (void)autan::io::read_mesh(plain);
+    const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+    std::optional<autan::Mesh> mesh;
+    const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(padded); });
+    CAPTURE(before, after, added);
+    CHECK(after - before <= added + (std::int64_t{1} << 20));
+    CHECK(std::ranges::any_of(mesh->cell_zones(),
+                              [](const auto& z) { return z.name == "solid-block"; }));
+  }
+  SECTION("Fluent fluid zones no cell is in") {
+    std::string zones;
+    for (int i = 0; i < n / 32; ++i) {
+      zones += "(45 (" + std::to_string(100 + i) + " fluid " + std::string(1024, 'f') + ")())\n";
+    }
+    const fs::path plain = write_temp("fluid-plain.msh", fluent_tet);
+    const fs::path padded = write_temp("fluid-padded.msh", fluent_tet + zones);
+    const auto added = static_cast<std::int64_t>(zones.size());
+    (void)autan::io::read_mesh(plain);
+    const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+    std::optional<autan::Mesh> mesh;
+    const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(padded); });
+    CAPTURE(before, after, added);
+    CHECK(after - before <= added + (std::int64_t{1} << 20));
+    REQUIRE(mesh->cell_zones().size() == 1);
+    CHECK(mesh->cell_zones()[0].name == "tet-cell");
+  }
+  SECTION("polyMesh cell zones without cells") {
+    const fs::path dir = single_hex_polymesh();
+    (void)autan::io::read_mesh(dir);
+    const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(dir); });
+    std::string zones;
+    for (int i = 0; i < n / 32; ++i) {
+      zones += "e" + std::to_string(i) + std::string(1024, 'z') + "\n{\n    type cellZone;\n" +
+               "    cellLabels List<label> 0();\n}\n";
+    }
+    const std::string cell_zones = foam_header("ascii", "cellZoneList", "cellZones") +
+                                   std::to_string(1 + n / 32) +
+                                   "\n(\nblock\n{\n    type cellZone;\n    cellLabels List<label> "
+                                   "(0);\n}\n" +
+                                   zones + ")\n";
+    write_temp("single-hex/cellZones", cell_zones);
+    const auto added = static_cast<std::int64_t>(zones.size());
+    std::optional<autan::Mesh> mesh;
+    const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(dir); });
+    CAPTURE(before, after, added);
+    CHECK(after - before <= added + (std::int64_t{1} << 20));
+    REQUIRE(mesh->cell_zones().size() == 1);
+    CHECK(mesh->cell_zones()[0].name == "block");
+  }
 }
 #endif

@@ -570,8 +570,54 @@ std::size_t ordinal(const StateDocument& object, std::string_view key) {
 }
 
 // A free text of a state file, the oracle and every member name: at most 4096 bytes in UTF-8
-// (case-schema.md#free-texts, face-states.md, initial-state.md).
+// (case-schema.md#free-texts, face-states.md, initial-state.md); a number, at most 64 characters.
 constexpr std::size_t max_text_bytes = 4096;
+constexpr std::size_t max_number_chars = 64;
+
+// What a scan of a state file's text finds before it is parsed: the longest run of characters a
+// JSON number is made of, outside strings, which bounds every number token before the lexer,
+// holding a token twice, accumulates one; and the deepest nesting of brackets, which bounds the
+// parser's stacks before it pushes a level.
+struct TextScan {
+  std::size_t number = 0;
+  std::size_t depth = 0;
+};
+
+TextScan scan_text(std::string_view text) {
+  TextScan out;
+  std::size_t run = 0, depth = 0;
+  bool in_string = false, escaped = false;
+  for (const char ch : text) {
+    if (in_string) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch == '\\') {
+        escaped = true;
+      } else if (ch == '"') {
+        in_string = false;
+      }
+      continue;
+    }
+    const bool number =
+        (ch >= '0' && ch <= '9') || ch == '-' || ch == '+' || ch == '.' || ch == 'e' || ch == 'E';
+    run = number ? run + 1 : 0;
+    out.number = std::max(out.number, run);
+    if (ch == '[' || ch == '{') out.depth = std::max(out.depth, ++depth);
+    if ((ch == ']' || ch == '}') && depth > 0) --depth;
+    in_string = ch == '"';
+  }
+  return out;
+}
+
+// Why `text` exceeds a state file's bounds: numbers of 64 characters, `depth` levels of nesting.
+std::string beyond_bounds(std::string_view text, std::size_t depth) {
+  const TextScan scan = scan_text(text);
+  if (scan.number > max_number_chars) {
+    return "a number of " + std::to_string(scan.number) + " characters (at most 64)";
+  }
+  if (scan.depth > depth) return "nested deeper than its structure";
+  return "";
+}
 
 // `text` parsed (discarded if not JSON), every "centroids" and "values" array member streamed into
 // `streamed` under the ordinals of the members leading to it and left empty in the document:
@@ -764,8 +810,10 @@ void load_states(Prepared& p) {
     RowMap rows;
     bool duplicate = false;
     std::size_t longest = 0;
-    StateDocument doc = parse_rows(bytes, rows, duplicate, longest);
-    std::string why = doc.is_discarded() ? "not JSON" : "";
+    // face-states.md: object, zones, zone, rows, row.
+    std::string why = beyond_bounds(bytes, 5);
+    StateDocument doc = why.empty() ? parse_rows(bytes, rows, duplicate, longest) : StateDocument{};
+    if (why.empty() && doc.is_discarded()) why = "not JSON";
     if (why.empty() && duplicate) why = "an object has a member twice";
     if (why.empty() && longest > max_text_bytes) {
       why = "a member name of " + std::to_string(longest) + " bytes (at most 4096)";
@@ -871,11 +919,13 @@ void load_initial(Prepared& p) {
   RowMap streamed;
   bool duplicate = false;
   std::size_t longest = 0;
-  StateDocument doc = parse_rows(bytes, streamed, duplicate, longest);
   const auto invalid_document = [&](const std::string& why) {
     fail("E0508", "'" + file.path + "' is not an autan.initial-state/1 document: " + why,
          {{"problem", why}});
   };
+  // initial-state.md: object, rows, row.
+  if (const std::string why = beyond_bounds(bytes, 3); !why.empty()) invalid_document(why);
+  StateDocument doc = parse_rows(bytes, streamed, duplicate, longest);
   if (doc.is_discarded() || !doc.is_object()) invalid_document("not a JSON object");
   if (duplicate) invalid_document("an object has a member twice");
   if (longest > max_text_bytes) {

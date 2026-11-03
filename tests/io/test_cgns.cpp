@@ -7,6 +7,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <random>
 #include <string>
 #include <string_view>
@@ -14,6 +15,7 @@
 #include <vector>
 
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <cgns_io.h>
 #include <cgnslib.h>
 #include <hdf5.h>
 #include <nlohmann/json.hpp>
@@ -1201,5 +1203,73 @@ TEST_CASE("A BC range over points and edges is never expanded", "[cgns]") {
   const std::int64_t after = peak_of([&] { CHECK(autan::io::read_mesh(all).n_cells() == 1); });
   CAPTURE(before, after);
   CHECK(after - before <= std::int64_t{1} << 20);  // the ids would be 32 MiB
+}
+TEST_CASE("Walking a CGNS tree costs a frame per node, whatever its depth", "[cgns]") {
+  // mesh.md, Memory of a CGNS read: 1024 nested user data nodes of 32-character names, 15 000
+  // siblings under the deepest, read within the per-node bound: no node holds its path.
+  fs::create_directories(temp_dir());
+  const fs::path plain =
+      cgns_file("deep-none.cgns", [](int fn, int base) { unstructured_tet(fn, base, "Zone"); });
+  const fs::path deep = temp_dir() / "deep.cgns";
+  fs::copy_file(plain, deep, fs::copy_options::overwrite_existing);
+  {
+    int cgio = 0;
+    REQUIRE(cgio_open_file(deep.string().c_str(), CGIO_MODE_MODIFY, CGIO_FILE_NONE, &cgio) ==
+            CG_OK);
+    double root = 0, parent = 0;
+    REQUIRE(cgio_get_root_id(cgio, &root) == CG_OK);
+    REQUIRE(cgio_get_node_id(cgio, root, "/Base", &parent) == CG_OK);
+    const auto add = [&](double under, int i) {
+      std::string name = std::to_string(i);
+      name.insert(0, 32 - name.size(), 'u');
+      double id = 0;
+      REQUIRE(cgio_create_node(cgio, under, name.c_str(), &id) == CG_OK);
+      REQUIRE(cgio_set_label(cgio, id, "UserDefinedData_t") == CG_OK);
+      return id;
+    };
+    for (int i = 0; i < 1024; ++i) parent = add(parent, i);
+    for (int i = 0; i < 15000; ++i) (void)add(parent, 1024 + i);
+    REQUIRE(cgio_close_file(cgio) == CG_OK);
+  }
+  const std::int64_t n0 = autan::io::cgns_logical_bytes(plain).nodes;
+  const std::int64_t nodes = autan::io::cgns_logical_bytes(deep).nodes;
+  REQUIRE(nodes == n0 + 16024);
+  (void)autan::io::read_mesh(plain);
+  const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+  const std::int64_t after = peak_of([&] { CHECK(autan::io::read_mesh(deep).n_cells() == 1); });
+  CAPTURE(before, after);
+  CHECK(after - before <= (std::int64_t{1} << 20) + (std::int64_t{16} << 10) * (nodes - n0));
+}
+
+TEST_CASE("A BC point list over points and edges is read in chunks, never whole", "[cgns]") {
+  // mesh.md, Readers: a point list of points or edges labels nothing; the reader judges it in
+  // chunks of 2^17 ids. 2^22 listed edges cost what one does, not 8 bytes each.
+  fs::create_directories(temp_dir());
+  constexpr cgsize_t edges = cgsize_t{1} << 22;
+  const auto with_bc = [&](const std::string& name, cgsize_t listed) {
+    return cgns_file(name, [&](int fn, int base) {
+      unstructured_tet(fn, base, "Zone");
+      std::vector<cgsize_t> bar(2 * static_cast<std::size_t>(edges));
+      for (std::size_t e = 0; e < bar.size(); e += 2) {
+        bar[e] = 1;
+        bar[e + 1] = 2;
+      }
+      int section = 0, bc = 0;
+      REQUIRE(cg_section_write(fn, base, 1, "Edges", CGNS_ENUMV(BAR_2), 2, edges + 1, 0, bar.data(),
+                               &section) == CG_OK);
+      std::vector<cgsize_t> ids(static_cast<std::size_t>(listed));
+      std::iota(ids.begin(), ids.end(), cgsize_t{2});
+      REQUIRE(cg_boco_write(fn, base, 1, "edges", CGNS_ENUMV(BCWall), CGNS_ENUMV(PointList), listed,
+                            ids.data(), &bc) == CG_OK);
+      REQUIRE(cg_boco_gridlocation_write(fn, base, 1, bc, CGNS_ENUMV(EdgeCenter)) == CG_OK);
+    });
+  };
+  const fs::path one = with_bc("list-one.cgns", 1);
+  const fs::path all = with_bc("list-all.cgns", edges);
+  (void)autan::io::read_mesh(one);  // the libraries' first-use setup, outside both peaks
+  const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(one); });
+  const std::int64_t after = peak_of([&] { CHECK(autan::io::read_mesh(all).n_cells() == 1); });
+  CAPTURE(before, after);
+  CHECK(after - before <= std::int64_t{2} << 20);  // a 1 MiB chunk; the list would be 32 MiB
 }
 #endif

@@ -313,11 +313,13 @@ struct NamedDict {
   std::vector<std::int64_t> labels;
 };
 
-std::vector<NamedDict> read_dict_list(FoamFile& file, std::string_view label_key) {
+// Each entry of a dictionary list given to `visit` as it is read, none kept.
+template <class Visit>
+void read_dict_list(FoamFile& file, std::string_view label_key, const Visit& visit) {
   Cursor& c = file.cursor();
   const auto n = file.list_size();
   c.expect('(');
-  std::vector<NamedDict> out;
+  std::size_t entries = 0;
   for (;;) {
     skip_blank(c);
     if (c.accept(')')) break;
@@ -346,10 +348,10 @@ std::vector<NamedDict> read_dict_list(FoamFile& file, std::string_view label_key
         (void)file.value();  // read past, not kept: the reader uses no other entry
       }
     }
-    out.push_back(std::move(d));
+    ++entries;
+    visit(std::move(d));
   }
-  if (n && *n != out.size()) c.fail("list size does not match its entries");
-  return out;
+  if (n && *n != entries) c.fail("list size does not match its entries");
 }
 
 BcKind patch_kind(std::string_view type) {
@@ -436,7 +438,7 @@ Mesh read_polymesh(const fs::path& directory) {
   boundary_file.require_class({"polyBoundaryMesh"});
   Cursor& bc = boundary_file.cursor();
   std::size_t expected_start = neighbour.size();
-  for (const auto& patch : read_dict_list(boundary_file, "")) {
+  read_dict_list(boundary_file, "", [&](const NamedDict& patch) {
     const auto value = [&](const char* key) {
       const auto it = patch.values.find(key);
       if (it == patch.values.end()) bc.fail("patch '" + patch.name + "' has no '" + key + "'");
@@ -466,7 +468,7 @@ Mesh read_polymesh(const fs::path& directory) {
             Provenance{.source_id = zone, .detail = "polyMesh patch " + std::to_string(zone)}});
     std::fill(in.face_zone.begin() + static_cast<std::ptrdiff_t>(start),
               in.face_zone.begin() + static_cast<std::ptrdiff_t>(start + count), zone);
-  }
+  });
   if (expected_start != n_faces) bc.fail("patches do not cover every boundary face");
   if (!neighbour.empty()) {
     const auto interior = static_cast<index_t>(in.face_zones.size());
@@ -489,14 +491,18 @@ Mesh read_polymesh(const fs::path& directory) {
   if (fs::exists(dir / "cellZones", ec)) {
     FoamFile zones_file(dir / "cellZones");
     zones_file.require_class({"regIOobject", "cellZoneList"});
-    for (const auto& zone : read_dict_list(zones_file, "cellLabels")) {
+    // A cell zone without cells labels nothing (MeshInfo omits it): dropped as it is read.
+    index_t in_file = 0;
+    read_dict_list(zones_file, "cellLabels", [&](const NamedDict& zone) {
+      const index_t f = in_file++;
+      if (zone.labels.empty()) return;
       const auto z = static_cast<index_t>(in.cell_zones.size());
       in.cell_zones.push_back(CellZone{
           .name = zone.name,
           .type = "",
           .kind = CellKind::unspecified,
           .provenance =
-              Provenance{.source_id = z, .detail = "polyMesh cellZone " + std::to_string(z)}});
+              Provenance{.source_id = f, .detail = "polyMesh cellZone " + std::to_string(f)}});
       for (const auto cell : zone.labels) {
         const index_t c = to_index(zones_file.cursor(), cell, n_cells, "cell label");
         if (in.cell_zone[static_cast<std::size_t>(c)] != -1) {
@@ -506,7 +512,7 @@ Mesh read_polymesh(const fs::path& directory) {
         }
         in.cell_zone[static_cast<std::size_t>(c)] = z;
       }
-    }
+    });
   }
   if (std::ranges::find(in.cell_zone, -1) != in.cell_zone.end()) {
     const auto fluid = static_cast<index_t>(in.cell_zones.size());
