@@ -1816,11 +1816,12 @@ TEST_CASE("Face states that do not fit the case exit 2 before any directory", "[
     const std::int64_t text = peak_of([&] { require_error(run(string), "E0420"); });
     CAPTURE(text);
     CHECK(text - baseline <= std::int64_t{1} << 20);
-    // More than 16 384 zones: refused as text (E0420), before any zone is matched (E0421).
+    // More than 16 384 zones, each a valid empty zone the run does not use: refused as text
+    // (E0420), before any zone is read.
     require_error(run(ringleb_input([](Json& s) {
                     for (int z = 0; z <= 16384; ++z) {
-                      s["zones"]["z" + std::to_string(z)] = {{"centroids", Json::array()},
-                                                             {"values", Json::array()}};
+                      s["zones"]["z" + std::to_string(z)] = {
+                          {"faces", 0}, {"centroids", Json::array()}, {"values", Json::array()}};
                     }
                   })),
                   "E0420");
