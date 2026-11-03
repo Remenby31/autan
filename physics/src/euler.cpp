@@ -47,6 +47,8 @@ struct Euler<P>::Impl {
   kernels::GlobalOrder order;
   std::vector<std::uint8_t> reversed;
   bool gather = false;
+  bool all_planar = false;
+  bool planar = false;
 
   // Fills the ghost values of `n` components of an array laid out c * n_cells + i.
   // The exchange takes at most 16 components a call.
@@ -94,6 +96,7 @@ struct Euler<P>::Impl {
        const kernels::GlobalKeys* keys)
       : scheme(s) {
     const auto packed = kernels::pack_geometry(mesh, geometry, keys);
+    all_planar = packed.all_planar;
     topo = kernels::topology(mesh.view());
     stencil =
         kernels::cell_stencil(mesh, packed,
@@ -261,6 +264,10 @@ struct Euler<P>::Impl {
   }
 
   void faces() {
+    if (planar) {
+      faces_planar();
+      return;
+    }
     switch (scheme.flux) {
       case Flux::roe:
         run([&](auto... strategy) { ek::cpu::roe_faces(d, strategy...); });
@@ -273,6 +280,23 @@ struct Euler<P>::Impl {
       case Flux::ausm_up:
         run([&](auto... strategy) { ek::cpu::ausm_faces(d, strategy...); });
         run([&](auto... strategy) { ek::cpu::ausm_boundaries(d, strategy...); });
+        break;
+    }
+  }
+
+  void faces_planar() {
+    switch (scheme.flux) {
+      case Flux::roe:
+        run([&](auto... strategy) { ek::cpu::roe_faces_planar(d, strategy...); });
+        run([&](auto... strategy) { ek::cpu::roe_boundaries_planar(d, strategy...); });
+        break;
+      case Flux::hllc:
+        run([&](auto... strategy) { ek::cpu::hllc_faces_planar(d, strategy...); });
+        run([&](auto... strategy) { ek::cpu::hllc_boundaries_planar(d, strategy...); });
+        break;
+      case Flux::ausm_up:
+        run([&](auto... strategy) { ek::cpu::ausm_faces_planar(d, strategy...); });
+        run([&](auto... strategy) { ek::cpu::ausm_boundaries_planar(d, strategy...); });
         break;
     }
   }
@@ -366,6 +390,24 @@ template <class P>
 std::vector<double> Euler<P>::gradient_weights() const {
   const auto& w = impl_->stencil_lsq_weight;
   return {w.begin(), w.end()};
+}
+
+template <class P>
+bool Euler<P>::all_planar() const noexcept {
+  return impl_->all_planar;
+}
+
+template <class P>
+void Euler<P>::set_planar(bool on) {
+  if (on && !impl_->all_planar) {
+    throw std::invalid_argument("planar loops on a mesh with a face not proven planar");
+  }
+  impl_->planar = on;
+}
+
+template <class P>
+bool Euler<P>::planar() const noexcept {
+  return impl_->planar;
 }
 
 template <class P>

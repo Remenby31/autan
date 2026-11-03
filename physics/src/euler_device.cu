@@ -178,6 +178,14 @@ void check(cudaError_t e, const char* what) {
   if (e != cudaSuccess) throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e));
 }
 
+// The device's built-in geometry. The stepper runs the residual loops only, so with the
+// planar loops nothing reads the face moments: none are uploaded (36 B per face in FP32).
+kernels::PackedGeometry device_geometry(const Mesh& mesh, const Geometry& geometry, bool planar) {
+  auto packed = kernels::pack_geometry(mesh, geometry);
+  if (planar) decltype(packed.face_moment)().swap(packed.face_moment);
+  return packed;
+}
+
 template <class P>
 class CudaStepper final : public DeviceStepper<P> {
   using D = ek::Data<P>;
@@ -195,11 +203,12 @@ class CudaStepper final : public DeviceStepper<P> {
         ghosts_(ghosts),
         scheme_(host.scheme()),
         second_order_(second_order),
+        planar_(host.planar()),
         n_(static_cast<std::size_t>(mesh.n_cells())),
         owned_(static_cast<std::size_t>(mesh.n_owned_cells())),
         nf_(static_cast<std::size_t>(mesh.n_faces())),
         gamma_(gamma),
-        mesh_(mesh, kernels::pack_geometry(mesh, geometry), &host.stencil(),
+        mesh_(mesh, device_geometry(mesh, geometry, planar_), &host.stencil(),
               {.block = block,
                .face_scratch_width = 5,
                .incidence_scratch_width = 0,
@@ -346,6 +355,23 @@ class CudaStepper final : public DeviceStepper<P> {
     }
     ek::gpu_loops::sources(d_, sched);
     constexpr auto deterministic = gpu::Strategy::store_gather;
+    if (planar_) {
+      switch (scheme_.flux) {
+        case Flux::roe:
+          ek::gpu_loops::roe_faces_planar(d_, deterministic, sched);
+          ek::gpu_loops::roe_boundaries_planar(d_, deterministic, sched);
+          break;
+        case Flux::hllc:
+          ek::gpu_loops::hllc_faces_planar(d_, deterministic, sched);
+          ek::gpu_loops::hllc_boundaries_planar(d_, deterministic, sched);
+          break;
+        case Flux::ausm_up:
+          ek::gpu_loops::ausm_faces_planar(d_, deterministic, sched);
+          ek::gpu_loops::ausm_boundaries_planar(d_, deterministic, sched);
+          break;
+      }
+      return;
+    }
     switch (scheme_.flux) {
       case Flux::roe:
         ek::gpu_loops::roe_faces(d_, deterministic, sched);
@@ -411,6 +437,7 @@ class CudaStepper final : public DeviceStepper<P> {
   runtime::GhostExchange& ghosts_;
   Scheme scheme_;
   bool second_order_;
+  bool planar_;
   std::size_t n_, owned_, nf_;
   double gamma_, p_ref_ = 0.0;
   Five ref_{};

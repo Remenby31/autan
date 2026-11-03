@@ -105,6 +105,15 @@ class EulerPhysics final : public runtime::Physics {
         reference_(scheme(ctx.input).reference) {
     // On every rank: the exchange is collective, even for a part without ghosts.
     euler_.set_ghosts(&ghost_fill_);
+    // The loops without the warped-face terms where every face of every rank is planar: one
+    // choice for the run, so that ranks evaluate their faces alike (#412).
+    if (ctx.ranks.min(euler_.all_planar() ? 1.0 : 0.0) > 0.0) {
+      euler_.set_planar(true);
+      ctx.log.write("info", "solver",
+                    "every face is planar: residual loops without the "
+                    "warped-face terms",
+                    {}, "{}");
+    }
     const auto& mesh = ctx.mesh;
     const auto& in = ctx.input;
     std::optional<Manufactured> mms;

@@ -172,6 +172,67 @@ TEMPLATE_TEST_CASE("one device residual equals the host's to round-off, cell by 
   CHECK(worst <= 500.0);
 }
 
+TEMPLATE_TEST_CASE("the device's planar loops give its full loops' residual", "[euler][gpu]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // A stepper built from a host Euler with set_planar(true) runs the loops without the
+  // warped-face terms and uploads no face moments; on a mesh whose faces are all planar its
+  // residual equals the full loops' (== also equates -0 and +0).
+  using P = TestType;
+  const char* file = GENERATE("tet-gmsh/tet-gmsh.ascii.msh", "hex/hex.ascii.msh");
+  const auto flux = GENERATE(Flux::roe, Flux::hllc, Flux::ausm_up);
+  CAPTURE(file, static_cast<int>(flux));
+  const auto mesh = autan::io::read_mesh(mesh_dir / file);
+  const auto g = autan::compute_geometry(mesh);
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  const auto ref = flow(0.5, 0.5, 0.5);
+  Scheme s;
+  s.flux = flux;
+  s.limiter = true;
+  s.mach_ref = std::hypot(ref[1], ref[2], ref[3]) / std::sqrt(air.gamma * ref[4] / ref[0]);
+  s.scale = {ref[0], 100.0, 100.0, 100.0, ref[4]};
+  s.reference = conserved(ref);
+  s.venkat_k = 0.1;
+  std::vector<BoundaryKind> kind(nb);
+  std::vector<double> data(5 * nb, 0.0);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const auto f = ni + b;
+    const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[f])].name;
+    kind[b] = zone[0] == 'y' ? BoundaryKind::slip : BoundaryKind::farfield;
+    const auto w = flow(g.face_centroid_x[f], g.face_centroid_y[f], g.face_centroid_z[f]);
+    for (std::size_t k = 0; k < 5; ++k) data[k * nb + b] = w[k];
+  }
+  std::vector<double> u(5 * n);
+  for (std::size_t c = 0; c < n; ++c) {
+    const auto w =
+        conserved(flow(g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]));
+    for (std::size_t k = 0; k < 5; ++k) u[k * n + c] = w[k];
+  }
+  autan::runtime::OneRank rank;
+  NoGhosts ghosts;
+  auto residual = [&](bool planar) {
+    Euler<P> host(mesh, g, air, s);
+    REQUIRE(host.all_planar());
+    host.set_planar(planar);
+    host.set_boundary(kind, data);
+    host.set_second_order(true);
+    auto device = autan::physics::make_device_stepper<P>(mesh, g, host, air.gamma, true, rank,
+                                                         ghosts, nullptr);
+    std::vector<double> r(5 * n);
+    device->residual(u, r);
+    return r;
+  };
+  const auto full = residual(false);
+  const auto planar = residual(true);
+  std::size_t differ = 0;
+  for (std::size_t i = 0; i < full.size(); ++i) {
+    REQUIRE(std::isfinite(full[i]));
+    if (!(planar[i] == full[i])) ++differ;
+  }
+  CHECK(differ == 0);
+}
+
 TEST_CASE("the device names the invalid cell of least global id, whatever the numbering",
           "[euler][gpu]") {
   // A tetrahedral mesh renumbered by RCM keeps each cell's global id. Two cells get a negative
