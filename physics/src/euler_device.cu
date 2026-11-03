@@ -182,6 +182,9 @@ void check(cudaError_t e, const char* what) {
 // planar loops nothing reads the face moments: none are uploaded (36 B per face in FP32).
 kernels::PackedGeometry device_geometry(const Mesh& mesh, const Geometry& geometry, bool planar) {
   auto packed = kernels::pack_geometry(mesh, geometry);
+  if (planar && !packed.all_planar) {
+    throw std::invalid_argument("planar loops on a mesh with a face not proven planar");
+  }
   if (planar) decltype(packed.face_moment)().swap(packed.face_moment);
   return packed;
 }
