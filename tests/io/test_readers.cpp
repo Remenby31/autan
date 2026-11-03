@@ -66,7 +66,7 @@ TEST_CASE("Every format of a test mesh reads to the same mesh", "[io]") {
     CHECK(zone_named(fluent, "ymin").bc_type == "wall");
     CHECK(zone_named(fluent, "ymin").kind == autan::BcKind::wall);
     CHECK(zone_named(fluent, "zmax").kind == autan::BcKind::symmetry);
-    CHECK_FALSE(zone_named(fluent, "interior-1").boundary);
+    CHECK_FALSE(zone_named(fluent, "(interior 2)").boundary);  // named by its id (mesh.md, Readers)
     REQUIRE(fluent.cell_zones().size() == 1);
     CHECK(fluent.cell_zones()[0].kind == autan::CellKind::fluid);
   }
