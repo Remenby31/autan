@@ -12,7 +12,7 @@ What each reader holds while it reads, and the bound that covers it, so that the
 | **D** CGNS descriptors and filters | `source.descriptor_bytes`, `source.filtered_bytes` (largest chunk) and HDF5's caches, 12 MiB 64 KiB | mesh.md, Memory of a CGNS read |
 | **C** chunks | element sections and point lists read 4096 offsets and 2^17 entries at a time: 1 MiB 32 KiB | mesh.md, Memory of a CGNS read |
 | **T** texts | a name, key, header entry or other free text at most 4096 bytes (E0122), `ZoneNames` (families + 1) × 25 600 bytes, `RunMetadata` 64 KiB, a state file's strings 4096 (written in at most 6 each) and numbers 64 characters | mesh.md, E0122; results.md; face-states.md, initial-state.md |
-| **R** refused counts | Fluent fluid, solid and interior zone records ≤ 16 384; a polyMesh uniform list ≤ the faces or cells it labels; a Fluent section header ≤ 8 fields; a state file ≤ 16 384 zones and nesting ≤ its structure; a start's FlowSolution and FlowSolutionMean exactly the run's fields, its RestartState ≤ 64 arrays | mesh.md, Readers; results.md |
+| **R** refused counts | Fluent fluid, solid and interior zone records ≤ 16 384; a polyMesh uniform list ≤ the faces or cells it labels; a Fluent section header ≤ 8 fields; a state file ≤ 16 384 zones and nesting ≤ its structure; a start's FlowSolution and FlowSolutionMean exactly the run's fields, its RestartState exactly the physics' arrays | mesh.md, Readers; results.md |
 | **F** fixed | independent of the input | — |
 
 A temporary that lives for one item of the input (one element, one face, one record) is listed only when that item's size is not already bounded by its class.
@@ -48,7 +48,7 @@ A temporary that lives for one item of the input (one element, one face, one rec
 |---|---|---|
 | the walks of `solution_cells`, `check_start_solution`, `solution_field_names` | nodes, after the count | K |
 | `RunMetadata` text and DOM | 64 KiB | T |
-| the fields of `FlowSolution`, `FlowSolutionMean`, `RestartState`, `cells` doubles each | the run's fields, checked by name before any array is read; RestartState ≤ 64 arrays | M, R |
+| the fields of `FlowSolution`, `FlowSolutionMean`, `RestartState`, `cells` doubles each | the run's fields, and the physics' restart arrays, checked by name before any array is read | M, R |
 | `ZoneNames`, `PeriodicTranslation` | the writer's sizes for the run's mesh | T |
 
 ## Gmsh (`io/src/gmsh.cpp`)

@@ -451,13 +451,10 @@ const Geometry& geometry_of(Prepared& p) {
   return *p.geometry;
 }
 
-// A start's RestartState: the Euler physics writes 5 conserved fields, 7 for averaging, 10 of
-// solver state and one per point vortex; 64 leaves room for 42 vortices (results.md).
-constexpr std::size_t max_restart_arrays = 64;
-
 // solver-input.md, `start`: the runtime checks the previous solution's hash,
-// mesh, precision and fields, and reads its state, before any directory exists.
-void load_start(Prepared& p) {
+// mesh, precision and fields, and reads its state, before any directory exists. `entry` is the
+// physics that continues it, null when the build has none (E0706 follows).
+void load_start(Prepared& p, const PhysicsRegistry::Entry* entry) {
   const Start& start = *p.input.start;
   const fs::path file = fs::path(start.run) / "solution.cgns";
   const auto unusable = [&](const std::string& why) {
@@ -504,8 +501,11 @@ void load_start(Prepared& p) {
           !mean.empty() && mean != field_names(p.input)) {
         unusable("FlowSolutionMean holds other fields than the run averages");
       }
-      if (named("RestartState").size() > max_restart_arrays) {
-        unusable("RestartState holds more than " + std::to_string(max_restart_arrays) + " arrays");
+      const bool averaged = !named("FlowSolutionMean").empty();
+      const auto restart = entry != nullptr && entry->restart ? entry->restart(p.input, averaged)
+                                                              : std::vector<std::string>{};
+      if (named("RestartState") != restart) {
+        unusable("RestartState holds other arrays than the physics writes");
       }
     }
     stored = io::read_solution(snapshot->path(), start.mode == "continue");
@@ -1283,7 +1283,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
   }
   p.mesh_info = p.input.mesh_info;
   if (p.input.mesh_scale != 1.0) p.mesh = scaled(p.mesh, p.input.mesh_scale);
-  if (p.input.start) load_start(p);
+  if (p.input.start) load_start(p, registry.find(p.input));
   if (p.input.verification) {
     // The manufactured solution is checked like the mesh: by its hash.
     auto& v = *p.input.verification;
@@ -2436,9 +2436,9 @@ class Run final : public Log {
 }  // namespace
 
 void PhysicsRegistry::add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope,
-                          bool several_ranks, PartitionGroups groups) {
+                          bool several_ranks, PartitionGroups groups, RestartNames restart) {
   entries_.emplace_back(std::move(key), Entry{std::move(factory), std::move(scope), several_ranks,
-                                              std::move(groups)});
+                                              std::move(groups), std::move(restart)});
 }
 
 const PhysicsRegistry::Entry* PhysicsRegistry::find(const SolverInput& in) const {

@@ -1465,8 +1465,8 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
   }
   SECTION("a solution holding what the writer does not write") {
     // results.md, Sizes a reader accepts: a descriptor beside RunMetadata and ZoneNames, one
-    // family more than the mesh has zones, or a RestartState of more than 64 arrays (each as
-    // many doubles as cells) is refused before the CGNS library loads the file or any array.
+    // family more than the mesh has zones, or a RestartState holding one array more than the
+    // physics writes is refused before the CGNS library loads the file or any array.
     const fs::path solution = a.run / "solution.cgns";
     const int kind = GENERATE(0, 1, 2);
     CAPTURE(kind);
@@ -1490,15 +1490,10 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
         if (std::string_view(name) == "RestartState") restart = s;
       }
       REQUIRE(restart > 0);
-      int fields = 0;
-      REQUIRE(cg_nfields(fn, 1, 1, restart, &fields) == CG_OK);
       const std::vector<double> zeros(static_cast<std::size_t>(size[1]), 0.0);
-      for (int f = fields; f <= 64; ++f) {
-        int field = 0;
-        REQUIRE(cg_field_write(fn, 1, 1, restart, CGNS_ENUMV(RealDouble),
-                               ("Extra" + std::to_string(f)).c_str(), zeros.data(),
-                               &field) == CG_OK);
-      }
+      int field = 0;
+      REQUIRE(cg_field_write(fn, 1, 1, restart, CGNS_ENUMV(RealDouble), "Extra", zeros.data(),
+                             &field) == CG_OK);
     }
     REQUIRE(cg_close(fn) == CG_OK);
     require_error(from([](Json&) {}), "E0707");

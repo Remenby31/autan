@@ -199,6 +199,12 @@ struct CellGroups {
 using PartitionGroups =
     std::function<CellGroups(const SolverInput& input, const Mesh& mesh, const Geometry& geometry)>;
 
+/// The names of the RestartState arrays the physics writes for `input`, in order, after a run
+/// that averaged or not (Physics::restart_fields). A continued start is read only when its
+/// RestartState holds exactly these (E0707).
+using RestartNames =
+    std::function<std::vector<std::string>(const SolverInput& input, bool averaging)>;
+
 /// The physics a build of autan-run provides; the first matching key wins.
 class PhysicsRegistry {
  public:
@@ -209,9 +215,10 @@ class PhysicsRegistry {
     /// reduce over PhysicsContext::ranks (runtime.md, Ranks).
     bool several_ranks = false;
     PartitionGroups groups;  ///< empty: no group
+    RestartNames restart;    ///< empty: no RestartState
   };
   void add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope = {},
-           bool several_ranks = false, PartitionGroups groups = {});
+           bool several_ranks = false, PartitionGroups groups = {}, RestartNames restart = {});
   /// The entry for `input`, or null when this build has none (E0706).
   [[nodiscard]] const Entry* find(const SolverInput& input) const;
 
