@@ -76,7 +76,7 @@ A temporary that lives for one item of the input (one element, one face, one rec
 | `xyz_`, `node_seen_`, `cell_fluent_zone_`, `cell_element_` | nodes and cells, checked against the file's size | M |
 | `face_offsets_`, `face_nodes_`, `face_cell0_`, `face_cell1_`, `face_block_` and their copies | faces and face nodes | M |
 | `face_blocks_`, `cell_zone_order_` | face and cell sections, bounded by faces and cells | M |
-| `records_`, 16 bytes per zone record, read again by offset for the zones cells and faces use and the boundary zones declared without faces | zone records: fluid, solid and interior ones at most 16 384, the others each a face block's zone or a zone of MeshInfo | R, M |
+| `records_`, the last record's offset per zone id (a map node, 64 bytes), read again for the zones cells and faces use and the boundary zones declared without faces | distinct zone ids: fluid, solid and interior ones at most 16 384, the others each a face block's zone or a zone of MeshInfo | R, M |
 | a section's raw node or cell-type buffer | that section | M |
 | the mesh's face zones and their names, copied once more into assembly's uniqueness check (`core/src/mesh.cpp`): boundary zones by their record's name, each a zone of MeshInfo; zones of interior faces, whatever their type, by their id, `(interior N)`, at most 30 bytes, their record's name never copied | zones; interior face blocks | M, T |
 

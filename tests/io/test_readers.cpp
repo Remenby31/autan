@@ -596,6 +596,22 @@ TEST_CASE("Records a reader does not use cost their text, not a copy each", "[io
     CHECK(std::ranges::any_of(mesh->cell_zones(),
                               [](const auto& z) { return z.name == "solid-block"; }));
   }
+  SECTION("Fluent zone records repeated") {
+    // The last record of an id names its zone: the others are read past, not kept.
+    std::string records;
+    for (int i = 0; i < n; ++i) records += "(45 (3 wall bottom-and-front)())\n";
+    const fs::path plain = write_temp("repeated-plain.msh", fluent_tet);
+    const fs::path padded = write_temp("repeated-padded.msh", fluent_tet + records);
+    const auto added = static_cast<std::int64_t>(records.size());
+    (void)autan::io::read_mesh(plain);
+    const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+    std::optional<autan::Mesh> mesh;
+    const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(padded); });
+    CAPTURE(before, after, added);
+    CHECK(after - before <= added + (std::int64_t{1} << 20));
+    CHECK(std::ranges::count(mesh->face_zones(), std::string("bottom-and-front"),
+                             &autan::FaceZone::name) == 1);
+  }
   SECTION("Fluent fluid zones no cell is in") {
     std::string zones;
     // The file's own fluid zone and n / 32 - 1 more: the 16 384 records a file may hold.
