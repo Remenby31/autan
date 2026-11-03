@@ -28,6 +28,22 @@ std::string read(const std::filesystem::path& path) {
 
 const std::filesystem::path euler_mms{AUTAN_EULER_MMS};
 
+// The stack the deepest expressions are read on: 1 MiB, an eighth of the runtime's main thread.
+// AddressSanitizer pads every local of an unoptimised frame: a parenthesis level of the parser
+// takes 896 B instead of 464 B (clang -O0 -fstack-usage), 917 KiB for the contract's 1 023
+// levels, so a sanitized build reads them on 2 MiB.
+#if defined(__SANITIZE_ADDRESS__)
+constexpr std::size_t deep_stack = std::size_t{2} << 20U;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+constexpr std::size_t deep_stack = std::size_t{2} << 20U;
+#else
+constexpr std::size_t deep_stack = std::size_t{1} << 20U;
+#endif
+#else
+constexpr std::size_t deep_stack = std::size_t{1} << 20U;
+#endif
+
 // Runs `body` on a thread of `bytes` of stack, rethrowing what it throws.
 void on_stack(std::size_t bytes, const std::function<void()>& body) {
   struct Call {
@@ -134,8 +150,8 @@ TEST_CASE("expressions as deep as the contract allows read and evaluate on a sma
           "[manufactured]") {
   // case-schema.md, `verification`: the runtime refuses an expression whose tree is deeper than
   // 1024. The runtime runs on the process's main thread (8 MiB of stack on Linux and macOS); these
-  // read and evaluate on 1 MiB. A left-deep chain of 2^17 terms, beyond the contract, evaluates
-  // too: the evaluation does not recurse.
+  // read and evaluate on deep_stack. A left-deep chain of 2^17 terms, beyond the contract,
+  // evaluates too: the evaluation does not recurse.
   auto repeat = [](const std::string& s, std::size_t n) {
     std::string out;
     for (std::size_t i = 0; i < n; ++i) out += s;
@@ -156,7 +172,7 @@ TEST_CASE("expressions as deep as the contract allows read and evaluate on a sma
   }};
   for (const auto& [expr, expected] : cases) {
     double value = 0.0;
-    on_stack(std::size_t{1} << 20U, [&] {
+    on_stack(deep_stack, [&] {
       const autan::physics::Manufactured mms(doc(expr));
       value = mms.evaluate("fields", rho, at)[0][0];
     });
