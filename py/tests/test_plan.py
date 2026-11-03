@@ -374,8 +374,8 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     # bytes per field, the 34 written fields for a continuation, the 6 primitives for a warm one;
     # and its descriptors at their bounds, held from cg_open: run metadata of 64 KiB, also
     # copied and parsed (40 B a byte), and zone names of 25 600 B for each of the 2 zones and
-    # the document; HDF5's default caches; and cg_open's tree, 1 MiB and 16 KiB a node, at most
-    # 64 + 8 per zone + 2 per field of what the writer writes.
+    # the document; HDF5's default caches; and cg_open's tree, 1 MiB and 16 KiB a node, at the
+    # 16 384 nodes the runtime accepts in a start file.
     modes: tuple[tuple[Literal["continue", "warm"], int], ...] = (("continue", 34), ("warm", 6))
     for mode, fields in modes:
         started = autan.load(write_case(TINY)).plan(tiny_mesh(20), device_kind="cpu", start=mode)
@@ -385,7 +385,7 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
             + 25_600 * 3
             + caches
             + 2**20
-            + 16 * 2**10 * (64 + 8 * 2 + 2 * 34)
+            + 16 * 2**10 * 16_384
         )
 
 
