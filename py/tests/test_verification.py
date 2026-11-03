@@ -10,6 +10,7 @@ import json
 import shutil
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import autan
 import autan.solver_input
@@ -100,6 +101,28 @@ def test_the_solution_file_is_checked(
     case = verified(write_case)
     setup(case)
     assert [d.code for d in autan.load(case).plan(crm_mesh).diagnostics] == [code]
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda d: d["fields"].update(subexpressions=123),
+        lambda d: d["fields"].pop("outputs"),
+        lambda d: d.update(fields=[]),
+    ],
+)
+def test_a_group_the_solver_cannot_read_is_e0208(
+    edit: Callable[[dict[str, Any]], None],
+    write_case: Callable[[str], Path],
+    crm_mesh: autan.MeshInfo,
+) -> None:
+    # docs/validation/mms.md: a group is an object of subexpressions (an array) and outputs.
+    document = json.loads((FIXTURES / "euler.mms.json").read_text())
+    edit(document)
+    text = json.dumps(document).encode()
+    case = verified(write_case, sha256=hashlib.sha256(text).hexdigest())
+    (case.parent / "euler.mms.json").write_bytes(text)
+    assert [d.code for d in autan.load(case).plan(crm_mesh).diagnostics] == ["E0208"]
 
 
 def test_a_file_of_another_format_is_e0208(

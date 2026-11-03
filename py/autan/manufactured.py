@@ -106,14 +106,15 @@ def depth(text: str, limit: int = MMS_DEPTH) -> int | None:
 def expressions(document: dict[str, Any]) -> list[Any]:
     """Every expression string of the document's groups, as the solver reads them."""
     found: list[Any] = []
-    for group in GROUPS:
-        content = document.get(group)
-        if not isinstance(content, dict):
+    for group in (g for g in GROUPS if g in document):
+        content = document[group]
+        pairs = content.get("subexpressions") if isinstance(content, dict) else None
+        outputs = content.get("outputs") if isinstance(content, dict) else None
+        if not isinstance(pairs, list) or not isinstance(outputs, dict):
+            found.append(None)  # the solver refuses a group that is not this shape
             continue
-        pairs = content.get("subexpressions") or []
         found.extend(p[1] if isinstance(p, list) and len(p) == 2 else None for p in pairs)
-        outputs = content.get("outputs")
-        found.extend(outputs.values() if isinstance(outputs, dict) else [None])
+        found.extend(outputs.values())
     return found
 
 

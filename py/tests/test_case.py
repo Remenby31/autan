@@ -226,7 +226,11 @@ def test_missing_physics_is_reported_at_the_case_constructor(
 
 @pytest.mark.parametrize(
     ("name", "text"),
-    [("case.json", "[" * 100_000 + "]" * 100_000), ("case.toml", "a = [[[")],
+    [
+        ("case.json", "[" * 100_000 + "]" * 100_000),
+        ("case.toml", "a = [[["),
+        ("case.toml", "a = " + "[" * 2_000 + "]" * 2_000),
+    ],
 )
 def test_an_unreadable_case_document_is_e0001(name: str, text: str, tmp_path: Path) -> None:
     (tmp_path / name).write_text(text)

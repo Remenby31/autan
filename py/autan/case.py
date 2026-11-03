@@ -475,6 +475,9 @@ def load(path: str | Path) -> Case:
             document = tomllib.loads(text) if path.suffix == ".toml" else load_json(text)
         except ValueError as error:  # TOML, JSON, UTF-8 and nesting errors alike
             raise CaseError([diagnostic("E0001", f"{path}: {error}", location=where)]) from None
+        except RecursionError:  # tomllib on a document nested too deeply
+            message = f"{path}: nested too deeply"
+            raise CaseError([diagnostic("E0001", message, location=where)]) from None
         if not isinstance(document, dict):
             raise CaseError([diagnostic("E0003", f"{path}: not a table", location=where)])
         return Case.from_spec(CaseSpec.from_document(document, where), file=str(path))
