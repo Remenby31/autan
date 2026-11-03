@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
-#include <iterator>
 #include <map>
 #include <optional>
 #include <string>
@@ -356,9 +355,9 @@ class FluentReader {
     return {id, std::move(info)};
   }
 
-  // A zone record is kept as its offset, 16 bytes, and read again for the zones the cells and
-  // faces use and the boundary zones declared without faces: a name is copied only for a zone
-  // MeshInfo shows (mesh.md, Readers).
+  // A zone record is kept as its offset, the last given for an id winning, and read again for the
+  // zones the cells and faces use and the boundary zones declared without faces: a name is copied
+  // only for a zone MeshInfo shows (mesh.md, Readers).
   void zone() {
     const std::size_t at = c_.position();
     auto [id, info] = zone_record(c_);
@@ -370,16 +369,15 @@ class FluentReader {
                        " fluid, solid or interior zone records");
       }
     }
-    records_.emplace_back(id, at);
+    records_[id] = at;
   }
 
-  // The zone record of zone `id`, the last one given winning (records_ sorted by id, file order
-  // kept among equal ids).
+  // The zone record of zone `id`, the last one given winning.
   std::optional<ZoneInfo> zone_info(std::int64_t id) const {
-    const auto last = std::ranges::upper_bound(records_, id, {}, &Record::first);
-    if (last == records_.begin() || std::prev(last)->first != id) return std::nullopt;
+    const auto it = records_.find(id);
+    if (it == records_.end()) return std::nullopt;
     Cursor c(data_, c_.path());
-    c.advance(std::prev(last)->second);
+    c.advance(it->second);
     return zone_record(c).second;
   }
 
@@ -414,7 +412,6 @@ class FluentReader {
       if (v > n_nodes_) c_.fail("face node index out of range");
       in.face_nodes.push_back(static_cast<index_t>(v - 1));
     }
-    std::ranges::stable_sort(records_, {}, &Record::first);
     // A zone's role is that of its faces (assemble() rejects a zone that mixes them): a zone of
     // interior faces, whatever its type, is named by its id, which no Fluent name can be (a name
     // holds no parenthesis or space). Nothing exposes it (mesh.md, Readers), so its record's name
@@ -446,9 +443,7 @@ class FluentReader {
                                    .detail = "Fluent zone " + std::to_string(block.zone)}});
     }
     // Boundary zones declared without faces stay visible; cell-zone and interior types excluded.
-    for (auto r = records_.begin(); r != records_.end(); ++r) {
-      const std::int64_t id = r->first;
-      if (std::next(r) != records_.end() && std::next(r)->first == id) continue;  // the last wins
+    for (const auto& [id, offset] : records_) {
       const bool cells = std::ranges::find(cell_zone_order_, id) != cell_zone_order_.end();
       if (cells || face_zone_index.contains(id)) continue;
       const ZoneInfo info = *zone_info(id);
@@ -561,8 +556,7 @@ class FluentReader {
   std::vector<std::int64_t> face_cell1_;
   std::vector<index_t> face_block_;
   std::vector<FaceBlock> face_blocks_;
-  using Record = std::pair<std::int64_t, std::size_t>;  // (zone id, record offset)
-  std::vector<Record> records_;
+  std::map<std::int64_t, std::size_t> records_;  // zone id -> offset of its last record
   static constexpr std::size_t max_cell_zone_records = 16384;
   std::size_t cell_zone_records_ = 0;  // fluid, solid and interior records among them
 };
