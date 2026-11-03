@@ -175,7 +175,7 @@ jobs:
         run: >-
           uv run --project bench --locked autan-bench pair --suite stream --precision fp64
           --change build/bench/stream --base "$RUNNER_TEMP/base/build/bench/stream"
-          --out results/pair/stream --confirm --summary "$GITHUB_STEP_SUMMARY"
+          --out results/pair/stream --confirm --hold-per-pair --summary "$GITHUB_STEP_SUMMARY"
       - name: STREAM against the GB10 baseline (pull requests, information)
         # The machine's state, recorded and annotated, never blocking a pull request (#403): the
         # change's first run against gb10.json, whatever the paired verdict, as soon as that run
