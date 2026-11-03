@@ -12,6 +12,8 @@ from autan_bench.errors import Code
 
 ROOT = Path(__file__).parents[1]
 WRAPPER = ROOT / "lock" / "autan-gpu-lock"
+# The guard, loaded as a module below, imports autan_memfloor from its own directory.
+sys.path.insert(0, str(ROOT / "lock"))
 # The default memory floor (24 GiB) is a Spark's; a test host may have less memory in all.
 NO_FLOOR = ["-f", "0G"]
 PRIORITY = ROOT / "ci" / "priority.sh"
@@ -382,6 +384,62 @@ def test_the_guard_records_every_holder_and_never_announces_ci_for_others(spark)
         guard.wait(timeout=10)
 
 
+@pytest.mark.parametrize(("gib", "low"), [(10, True), (100, False)])
+def test_the_guard_records_memory_below_the_floor_during_a_hold(spark, meminfo, gib, low):
+    # A CI runner cannot write holders.log: the guard records the memory its holders saw.
+    meminfo(gib)
+    env = {**spark, "AUTAN_MEMINFO": os.environ["AUTAN_MEMINFO"]}
+    guard = subprocess.Popen([sys.executable, str(GUARD)], env=env, stderr=subprocess.PIPE)
+    try:
+        time.sleep(1)
+        subprocess.run(["flock", spark["AUTAN_GPU_LOCK"], "sleep", "1.5"], check=True)
+        time.sleep(1.5)
+    finally:
+        guard.terminate()
+        guard.wait(timeout=10)
+    log = Path(spark["AUTAN_GPU_LOCK"]).parent / "holders.log"
+    records = [line.split("\t") for line in log.read_text().splitlines()]
+    lows = [r for r in records if r[1] == "low-memory"]
+    if low:
+        (record,) = lows
+        assert record[5] == f"MemAvailable down to {gib:.1f} GiB"
+        assert [r[1] for r in records if not r[1].startswith("foreign")][:3] == [
+            "held", "released", "low-memory"]  # fmt: skip
+    else:
+        assert not lows
+
+
+def test_the_guard_charges_a_holder_only_with_the_memory_of_its_own_hold(spark, meminfo):
+    """Codex on #436: pressure after a release is not the released holder's; a dip inside the
+    hold is, even once memory is back."""
+    env = {**spark, "AUTAN_MEMINFO": os.environ["AUTAN_MEMINFO"]}
+    lock = spark["AUTAN_GPU_LOCK"]
+    guard = subprocess.Popen([sys.executable, str(GUARD)], env=env, stderr=subprocess.PIPE)
+    try:
+        time.sleep(1)
+        meminfo(100)
+        subprocess.run(["flock", lock, "sleep", "1"], check=True)  # comfortable, then...
+        meminfo(10)  # ...pressure after its release
+        time.sleep(1.5)
+        meminfo(100)
+        dip = subprocess.Popen(["flock", lock, "sleep", "3"])
+        time.sleep(1)
+        meminfo(10)  # a dip inside the second hold...
+        time.sleep(1)
+        meminfo(100)  # ...that recovers before its release
+        dip.wait(timeout=10)
+        time.sleep(1.5)
+    finally:
+        guard.terminate()
+        guard.wait(timeout=10)
+    log = Path(lock).parent / "holders.log"
+    records = [line.split("\t") for line in log.read_text().splitlines()]
+    kinds = [r[1] for r in records if not r[1].startswith("foreign")]
+    assert kinds == ["held", "released", "held", "released", "low-memory"]
+    (low,) = [r for r in records if r[1] == "low-memory"]
+    assert low[5] == "MemAvailable down to 10.0 GiB"
+
+
 def test_the_guard_reads_holders_and_waiters_from_proc_locks():
     loader = importlib.machinery.SourceFileLoader("guard", str(GUARD))
     spec = importlib.util.spec_from_loader("guard", loader)
@@ -442,11 +500,13 @@ def test_the_guard_names_the_gpu_processes_outside_autan_containers(tmp_path, mo
         7: "host",
         9: "mcpbench-vllm",
     }
-    env = {**os.environ, "AUTAN_GPU_LOCK": str(tmp_path / "gpu.lock")}
+    # A host that runs timed benchmarks (bench/ci/timed-hosts): a foreign tenant is an error.
+    env = {**os.environ, "AUTAN_GPU_LOCK": str(tmp_path / "gpu.lock"),
+           "AUTAN_BENCH_HOST": "spark-5359"}  # fmt: skip
 
-    def report() -> list[str]:
-        return subprocess.run([str(ROOT / "ci" / "gpu-tenants.sh")], env=env, capture_output=True,
-                              text=True, check=True).stdout.splitlines()  # fmt: skip
+    def report(**extra: str) -> list[str]:
+        return subprocess.run([str(ROOT / "ci" / "gpu-tenants.sh")], env={**env, **extra},
+                              capture_output=True, text=True, check=True).stdout.splitlines()  # fmt: skip
 
     guard.publish(foreign)
     # The harness reads the same list to skip, not fail, tests that need the GPU to itself.
@@ -459,6 +519,12 @@ def test_the_guard_names_the_gpu_processes_outside_autan_containers(tmp_path, mo
     assert "autan_halo_tests" not in error
     assert not [line for line in out if line.startswith(("::", "##")) and line != error]
     assert not any("#" in line or "[" in line for line in out[1:])
+    # Elsewhere the tenant is allowed: the same line, as a warning.
+    (warning,) = [line for line in report(AUTAN_BENCH_HOST="spark-5512") if line.startswith("::")]
+    # Severity, host and tenants, each on its own: the memory reading may move between calls.
+    assert warning.startswith("::warning::GPU shared with a foreign tenant on spark-5512: ")
+    assert error.startswith("::error::GPU shared with a foreign tenant on spark-5359: ")
+    assert "VLLM::EngineCore (mcpbench-vllm, pid 3285079, 22484 MiB)" in warning
     guard.publish({})
     assert not [line for line in report() if line.startswith("::")]
     assert gpu.foreign_tenants(tmp_path / "gpu.lock") == []

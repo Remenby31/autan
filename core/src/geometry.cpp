@@ -40,6 +40,81 @@ Vec3 node_mean(const Mesh& mesh, std::span<const index_t> nodes) {
   return origin + (1.0 / static_cast<double>(nodes.size())) * sum;
 }
 
+struct FaceGeom {
+  Vec3 area;
+  double magnitude;
+  Vec3 centroid;
+};
+
+FaceGeom face_geometry(const Mesh& mesh, index_t face) {
+  const auto nodes = mesh.face_nodes(face);
+  const std::size_t n = nodes.size();
+  const Vec3 m = node_mean(mesh, nodes);
+  Vec3 area{0.0, 0.0, 0.0};
+  for (std::size_t i = 0; i < n; ++i) {
+    area = area + 0.5 * cross(point(mesh, nodes[i]) - m, point(mesh, nodes[(i + 1) % n]) - m);
+  }
+  const double magnitude = norm(area);
+  if (!(magnitude > 0.0) || !std::isfinite(magnitude)) return {area, magnitude, m};
+  const Vec3 normal = (1.0 / magnitude) * area;
+  // Fan triangles are weighted by their area projected on the face normal,
+  // so a triangle folded back by warping counts negatively.
+  Vec3 moment{0.0, 0.0, 0.0};
+  double weight = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const Vec3 a = point(mesh, nodes[i]) - m;
+    const Vec3 b = point(mesh, nodes[(i + 1) % n]) - m;
+    const double w = dot(0.5 * cross(a, b), normal);
+    moment = moment + (w / 3.0) * (a + b);
+    weight += w;
+  }
+  return {area, magnitude, m + (1.0 / weight) * moment};
+}
+
+bool valid_face(const FaceGeom& f) { return f.magnitude > 0.0 && std::isfinite(f.magnitude); }
+
+struct CellGeom {
+  double volume;
+  bool valid;
+  Vec3 centroid;
+};
+
+// `face(f)` gives the FaceGeom of each face of the cell.
+template <class FaceOf>
+CellGeom cell_geometry(const Mesh& mesh, index_t cell, const FaceOf& face) {
+  const auto faces = mesh.cell_faces(cell);
+  // Apex of the decomposition: any point gives the exact signed volume and
+  // centroid; the mean of the face centroids keeps the terms small.
+  Vec3 apex{0.0, 0.0, 0.0};
+  for (const index_t f : faces) apex = apex + face(f).centroid;
+  apex = (1.0 / static_cast<double>(faces.size())) * apex;
+
+  // Work in units of the cell size so that volume moments neither overflow
+  // nor underflow at extreme length scales.
+  double length = 0.0;
+  for (const index_t f : faces) length = std::max(length, std::sqrt(face(f).magnitude));
+  const double inv = 1.0 / length;
+  double scaled_volume = 0.0;
+  Vec3 moment{0.0, 0.0, 0.0};
+  for (const index_t f : faces) {
+    const double sign = mesh.owner()[to_size(f)] == cell ? 1.0 : -1.0;
+    const auto nodes = mesh.face_nodes(f);
+    const std::size_t n = nodes.size();
+    const Vec3 m = inv * (node_mean(mesh, nodes) - apex);
+    for (std::size_t i = 0; i < n; ++i) {
+      const Vec3 a = inv * (point(mesh, nodes[i]) - apex);
+      const Vec3 b = inv * (point(mesh, nodes[(i + 1) % n]) - apex);
+      // Tetrahedron (apex, m, a, b): V = (1/3) A_tri . (m - apex).
+      const double v = sign * dot(0.5 * cross(a - m, b - m), m) / 3.0;
+      scaled_volume += v;
+      moment = moment + (v / 4.0) * (m + a + b);
+    }
+  }
+  const double volume = scaled_volume * length * length * length;
+  const bool valid = scaled_volume > 0.0 && std::isfinite(volume) && volume > 0.0;
+  return {volume, valid, apex + (length / scaled_volume) * moment};
+}
+
 }  // namespace
 
 Geometry compute_geometry(const Mesh& mesh) {
@@ -55,38 +130,18 @@ Geometry compute_geometry(const Mesh& mesh) {
   g.face_centroid_z.resize(n_faces);
 
   for (std::size_t f = 0; f < n_faces; ++f) {
-    const auto nodes = mesh.face_nodes(static_cast<index_t>(f));
-    const std::size_t n = nodes.size();
-    const Vec3 m = node_mean(mesh, nodes);
-    Vec3 area{0.0, 0.0, 0.0};
-    for (std::size_t i = 0; i < n; ++i) {
-      area = area + 0.5 * cross(point(mesh, nodes[i]) - m, point(mesh, nodes[(i + 1) % n]) - m);
-    }
-    const double magnitude = norm(area);
-    if (!(magnitude > 0.0) || !std::isfinite(magnitude)) {
+    const FaceGeom face = face_geometry(mesh, static_cast<index_t>(f));
+    if (!valid_face(face)) {
       throw Error(ErrorCode::geometry_degenerate_face,
                   "face " + std::to_string(f) + " has zero or non-finite area");
     }
-    const Vec3 normal = (1.0 / magnitude) * area;
-    // Fan triangles are weighted by their area projected on the face normal,
-    // so a triangle folded back by warping counts negatively.
-    Vec3 moment{0.0, 0.0, 0.0};
-    double weight = 0.0;
-    for (std::size_t i = 0; i < n; ++i) {
-      const Vec3 a = point(mesh, nodes[i]) - m;
-      const Vec3 b = point(mesh, nodes[(i + 1) % n]) - m;
-      const double w = dot(0.5 * cross(a, b), normal);
-      moment = moment + (w / 3.0) * (a + b);
-      weight += w;
-    }
-    const Vec3 centroid = m + (1.0 / weight) * moment;
-    g.face_area_x[f] = area.x;
-    g.face_area_y[f] = area.y;
-    g.face_area_z[f] = area.z;
-    g.face_area[f] = magnitude;
-    g.face_centroid_x[f] = centroid.x;
-    g.face_centroid_y[f] = centroid.y;
-    g.face_centroid_z[f] = centroid.z;
+    g.face_area_x[f] = face.area.x;
+    g.face_area_y[f] = face.area.y;
+    g.face_area_z[f] = face.area.z;
+    g.face_area[f] = face.magnitude;
+    g.face_centroid_x[f] = face.centroid.x;
+    g.face_centroid_y[f] = face.centroid.y;
+    g.face_centroid_z[f] = face.centroid.z;
   }
 
   // Ghost cells have only the faces they share with owned cells; their
@@ -96,51 +151,34 @@ Geometry compute_geometry(const Mesh& mesh) {
   g.cell_centroid_x.assign(n_cells, unset);
   g.cell_centroid_y.assign(n_cells, unset);
   g.cell_centroid_z.assign(n_cells, unset);
+  const auto stored = [&](index_t f) {
+    const auto i = to_size(f);
+    return FaceGeom{.area = {g.face_area_x[i], g.face_area_y[i], g.face_area_z[i]},
+                    .magnitude = g.face_area[i],
+                    .centroid = {g.face_centroid_x[i], g.face_centroid_y[i], g.face_centroid_z[i]}};
+  };
   for (std::size_t c = 0; c < to_size(mesh.n_owned_cells()); ++c) {
-    const auto cell = static_cast<index_t>(c);
-    const auto faces = mesh.cell_faces(cell);
-    // Apex of the decomposition: any point gives the exact signed volume and
-    // centroid; the mean of the face centroids keeps the terms small.
-    Vec3 apex{0.0, 0.0, 0.0};
-    for (const index_t f : faces) {
-      const auto i = to_size(f);
-      apex = apex + Vec3{g.face_centroid_x[i], g.face_centroid_y[i], g.face_centroid_z[i]};
-    }
-    apex = (1.0 / static_cast<double>(faces.size())) * apex;
-
-    // Work in units of the cell size so that volume moments neither overflow
-    // nor underflow at extreme length scales.
-    double length = 0.0;
-    for (const index_t f : faces) length = std::max(length, std::sqrt(g.face_area[to_size(f)]));
-    const double inv = 1.0 / length;
-    double scaled_volume = 0.0;
-    Vec3 moment{0.0, 0.0, 0.0};
-    for (const index_t f : faces) {
-      const double sign = mesh.owner()[to_size(f)] == cell ? 1.0 : -1.0;
-      const auto nodes = mesh.face_nodes(f);
-      const std::size_t n = nodes.size();
-      const Vec3 m = inv * (node_mean(mesh, nodes) - apex);
-      for (std::size_t i = 0; i < n; ++i) {
-        const Vec3 a = inv * (point(mesh, nodes[i]) - apex);
-        const Vec3 b = inv * (point(mesh, nodes[(i + 1) % n]) - apex);
-        // Tetrahedron (apex, m, a, b): V = (1/3) A_tri . (m - apex).
-        const double v = sign * dot(0.5 * cross(a - m, b - m), m) / 3.0;
-        scaled_volume += v;
-        moment = moment + (v / 4.0) * (m + a + b);
-      }
-    }
-    const double volume = scaled_volume * length * length * length;
-    if (!(scaled_volume > 0.0) || !std::isfinite(volume) || !(volume > 0.0)) {
+    const CellGeom cell = cell_geometry(mesh, static_cast<index_t>(c), stored);
+    if (!cell.valid) {
       throw Error(ErrorCode::geometry_non_positive_volume,
                   "cell " + std::to_string(c) + " has non-positive or non-finite volume");
     }
-    const Vec3 centroid = apex + (length / scaled_volume) * moment;
-    g.cell_volume[c] = volume;
-    g.cell_centroid_x[c] = centroid.x;
-    g.cell_centroid_y[c] = centroid.y;
-    g.cell_centroid_z[c] = centroid.z;
+    g.cell_volume[c] = cell.volume;
+    g.cell_centroid_x[c] = cell.centroid.x;
+    g.cell_centroid_y[c] = cell.centroid.y;
+    g.cell_centroid_z[c] = cell.centroid.z;
   }
   return g;
+}
+
+GeometryCheck check_face(const Mesh& mesh, index_t face) {
+  const FaceGeom f = face_geometry(mesh, face);
+  return {.value = f.magnitude, .valid = valid_face(f)};
+}
+
+GeometryCheck check_cell(const Mesh& mesh, index_t cell) {
+  const CellGeom c = cell_geometry(mesh, cell, [&](index_t f) { return face_geometry(mesh, f); });
+  return {.value = c.volume, .valid = c.valid};
 }
 
 GeometryView view(const Geometry& g) noexcept {
