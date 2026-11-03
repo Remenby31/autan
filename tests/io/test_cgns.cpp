@@ -1458,10 +1458,16 @@ TEST_CASE("Faces of a section nothing names are skipped, one named is kept", "[c
                                  data.data(), &section) == CG_OK);
       }
       if (family) {
-        int f = 0;
+        // The mid-level library writes no FamilyName_t under Elements_t; other writers do.
+        int f = 0, cgio = 0;
+        double root = 0, faces = 0, node = 0;
         REQUIRE(cg_family_write(fn, base, "Skin", &f) == CG_OK);
-        REQUIRE(cg_goto(fn, base, "Zone_t", 1, "Elements_t", section, "end") == CG_OK);
-        REQUIRE(cg_famname_write("Skin") == CG_OK);
+        REQUIRE(cg_get_cgio(fn, &cgio) == CG_OK);
+        REQUIRE(cg_root_id(fn, &root) == CG_OK);
+        REQUIRE(cgio_get_node_id(cgio, root, "/Base/Zone/Faces", &faces) == CGIO_ERR_NONE);
+        const cgsize_t length = 4;
+        REQUIRE(cgio_new_node(cgio, faces, "FamilyName", "FamilyName_t", "C1", 1, &length, "Skin",
+                              &node) == CGIO_ERR_NONE);
       }
       const cgsize_t first[] = {2, 2};
       REQUIRE(cg_boco_write(fn, base, 1, "wall", CGNS_ENUMV(BCWall),
