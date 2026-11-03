@@ -394,6 +394,12 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     multigrid = {c.name: c for c in deeper.memory.components}["multigrid"].bytes_host
     dense = 8 * 50 * 50 + 8 * 50, 8 * 10 * 10 + 8 * 10
     assert multigrid - by_name["multigrid"].bytes_host == 1000 * 2 + 410 * 1 + dense[1] - dense[0]
+    # Building the hierarchy (setup-memory.md): the larger of the isotropic loop,
+    # 96 F_i + 284 C + 72 F_b, and the coarse-edge build, 69 F_i + 48 F_1 + 296 C + 156 C_1 + 144 F_b,
+    # on 20 interior and 20 boundary faces, and the coarse level's 2 cells and 1 edge.
+    assert by_name["multigrid setup"].bytes_host == 69 * 20 + 296 * 10 + 144 * 20
+    setup = {c.name: c for c in deeper.memory.components}["multigrid setup"].bytes_host
+    assert setup == 69 * 20 + 48 * 1 + 296 * 10 + 156 * 2 + 144 * 20
     # A start reads the previous solution on every rank and takes the rank's share: 8 (C + C_r)
     # bytes per field, the 34 written fields for a continuation, the 6 primitives for a warm one;
     # and its descriptors at their bounds, held from cg_open: run metadata of 64 KiB, also
