@@ -35,7 +35,7 @@ A temporary that lives for one item of the input (one element, one face, one rec
 | `referenced_ranges_`, one interval per `IndexRange_t` naming a face or `MIXED` section | point-set nodes | K |
 | `referenced_ids_`, the listed ids of face and `MIXED` sections, sorted and distinct at the end, in storage reserved once for every list entry; the chunk they are read through | 8 × `source.point_list_ids` + 1 MiB | D |
 | section chunk buffers `bounds`, `data`; an element larger than 2^17 entries read into its own storage | 1 MiB 32 KiB; that element is kept | C, M |
-| BC and subregion point sets: ranges judged id by id, lists in chunks, read whole only for faces or cells | labelled faces and cells | C, M |
+| BC and subregion point sets: ranges judged id by id; lists in chunks, those of faces or cells kept distinct as they grow, at most twice their distinct ids plus a chunk, 24 B each with the vector's spare | labelled faces and cells | C, M |
 | `face_label_`, `cell_label_` | labelled faces and cells | M |
 | `face_zones_`, `cell_zones_` and their index maps | zones | M |
 | `periodic_`, `declared_`, `sides`, `partner` | periodic pairs and their faces | M |

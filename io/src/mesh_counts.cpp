@@ -53,18 +53,53 @@ MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
     count_ordered(mesh, geometry, out);
   }
 
-  // The stencil and ghosts are sets, the same in any cell order.
+  // The stencil and ghosts are sets, the same in any cell order. On one rank, the run's partition
+  // is its one part (Run::make_part): the mesh itself without periodic pairs, else the part
+  // whose image ghosts make each periodic face interior.
+  MeshInfoRun::Partition one_part{.ranks = 1,
+                                  .groups = "none",
+                                  .cells = {},
+                                  .ghosts = {},
+                                  .faces = {},
+                                  .interior_faces = {},
+                                  .stencil_entries = {},
+                                  .nodes = {},
+                                  .face_nodes = {},
+                                  .sent_cells = {}};
+  const auto count_part = [](MeshInfoRun::Partition& p, const LocalPartition& part,
+                             std::int64_t stencil) {
+    p.cells.push_back(part.mesh.n_owned_cells());
+    p.ghosts.push_back(part.mesh.n_cells() - part.mesh.n_owned_cells());
+    p.faces.push_back(part.mesh.n_faces());
+    p.interior_faces.push_back(part.mesh.n_interior_faces());
+    p.stencil_entries.push_back(stencil);
+    p.nodes.push_back(part.mesh.n_points());
+    p.face_nodes.push_back(static_cast<std::int64_t>(part.mesh.face_nodes().size()));
+    p.sent_cells.push_back(static_cast<std::int64_t>(part.halo.send_cells.size()));
+  };
   if (mesh.periodic_pairs().empty()) {
     out.stencil_entries = stencil_entries(mesh, geometry);
+    one_part.cells = {mesh.n_cells()};
+    one_part.ghosts = {0};
+    one_part.faces = {mesh.n_faces()};
+    one_part.interior_faces = {mesh.n_interior_faces()};
+    one_part.stencil_entries = {out.stencil_entries};
+    one_part.nodes = {mesh.n_points()};
+    one_part.face_nodes = {static_cast<std::int64_t>(mesh.face_nodes().size())};
+    one_part.sent_cells = {0};
   } else {
     const std::vector<std::int32_t> one(static_cast<std::size_t>(mesh.n_cells()), 0);
     LocalPartition part = extract_partition(mesh, geometry, one, 1, 0);
     fill_ghost_geometry(part);
     out.periodic_ghosts = part.mesh.n_cells() - part.mesh.n_owned_cells();
     out.stencil_entries = stencil_entries(part.mesh, part.geometry);
+    count_part(one_part, part, out.stencil_entries);
   }
 
-  if (!ranks) return out;
+  if (!ranks || ranks->ranks == 1) {
+    out.partition = std::move(one_part);
+    return out;
+  }
   // As the physics forms them (euler_groups): a mesh without lines has no groups.
   Lines groups{.offsets = {}, .cells = {}};
   if (ranks->groups == RankGroups::lines) {
@@ -88,14 +123,7 @@ MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
   for (std::int32_t r = 0; r < ranks->ranks; ++r) {
     // Ghost cells hold no geometry here: the counts depend on the connectivity only.
     const LocalPartition part = extract_partition(mesh, geometry, parts, ranks->ranks, r);
-    p.cells.push_back(part.mesh.n_owned_cells());
-    p.ghosts.push_back(part.mesh.n_cells() - part.mesh.n_owned_cells());
-    p.faces.push_back(part.mesh.n_faces());
-    p.interior_faces.push_back(part.mesh.n_interior_faces());
-    p.stencil_entries.push_back(stencil_entries(part.mesh, part.geometry));
-    p.nodes.push_back(part.mesh.n_points());
-    p.face_nodes.push_back(static_cast<std::int64_t>(part.mesh.face_nodes().size()));
-    p.sent_cells.push_back(static_cast<std::int64_t>(part.halo.send_cells.size()));
+    count_part(p, part, stencil_entries(part.mesh, part.geometry));
   }
   out.partition = std::move(p);
   return out;

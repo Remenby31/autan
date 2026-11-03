@@ -92,7 +92,19 @@ TEST_CASE("MeshInfo counts a single-rank run's stencil entries and periodic ghos
   const auto plain = counts(box(n, 1.0), CellOrder::rcm);
   CHECK(plain.stencil_entries == face2_entries(n));
   CHECK(plain.periodic_ghosts == 0);
-  CHECK_FALSE(plain.partition);
+  // On one rank the partition is the mesh itself: a box of n^3 hexahedra.
+  REQUIRE(plain.partition);
+  const auto& one = *plain.partition;
+  CHECK(one.ranks == 1);
+  CHECK(one.groups == "none");
+  CHECK(one.cells == std::vector<std::int64_t>{n * n * n});
+  CHECK(one.ghosts == std::vector<std::int64_t>{0});
+  CHECK(one.faces == std::vector<std::int64_t>{3 * n * n * (n + 1)});
+  CHECK(one.interior_faces == std::vector<std::int64_t>{3 * n * n * (n - 1)});
+  CHECK(one.nodes == std::vector<std::int64_t>{(n + 1) * (n + 1) * (n + 1)});
+  CHECK(one.face_nodes == std::vector<std::int64_t>{4 * 3 * n * n * (n + 1)});
+  CHECK(one.sent_cells == std::vector<std::int64_t>{0});
+  CHECK(one.stencil_entries == std::vector<std::int64_t>{face2_entries(n)});
   // Periodic along x: two layers of images across each of xmin and xmax (extract_partition).
   auto cw = box(n, 1.0);
   cw.face_zones[0].kind = autan::BcKind::periodic;
@@ -100,6 +112,15 @@ TEST_CASE("MeshInfo counts a single-rank run's stencil entries and periodic ghos
   cw.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
   const auto periodic = counts(std::move(cw), CellOrder::rcm);
   CHECK(periodic.periodic_ghosts == 2 * 2 * n * n);
+  // Its one part: the image ghosts, each sent by the rank to itself, and their faces' nodes.
+  REQUIRE(periodic.partition);
+  const auto& images = *periodic.partition;
+  CHECK(images.ranks == 1);
+  CHECK(images.ghosts == std::vector<std::int64_t>{2 * 2 * n * n});
+  CHECK(images.sent_cells == images.ghosts);
+  CHECK(images.face_nodes[0] == 4 * images.faces[0]);
+  CHECK(images.nodes[0] > (n + 1) * (n + 1) * (n + 1));
+  CHECK(images.stencil_entries == std::vector<std::int64_t>{periodic.stencil_entries});
   CHECK(periodic.stencil_entries > plain.stencil_entries);
 }
 

@@ -185,7 +185,16 @@ void check_cells_closed(const Mesh& mesh) {
     std::uint64_t key;
     bool forward;
   };
+  // Sized once for the cell with the most face nodes, at most counts.face_nodes, so that it never
+  // holds two copies while it grows (setup-memory.md, Assembly).
+  std::size_t largest = 0;
+  for (index_t c = 0; c < mesh.n_owned_cells(); ++c) {
+    std::size_t n = 0;
+    for (const index_t f : mesh.cell_faces(c)) n += mesh.face_nodes(f).size();
+    largest = std::max(largest, n);
+  }
   std::vector<Edge> edges;
+  edges.reserve(largest);
   for (index_t c = 0; c < mesh.n_owned_cells(); ++c) {
     edges.clear();
     for (const index_t f : mesh.cell_faces(c)) {

@@ -322,7 +322,7 @@ void read_mesh_info(const Json& info, SolverInput& in) {
                       {"ranks", "groups", "cells_by_rank", "ghosts_by_rank", "faces_by_rank",
                        "interior_faces_by_rank", "stencil_entries_by_rank", "nodes_by_rank",
                        "face_nodes_by_rank", "sent_cells_by_rank"});
-    const std::int64_t ranks = part.integer("ranks", 2);
+    const std::int64_t ranks = part.integer("ranks", 1);
     (void)part.tag("groups", {"none", "lines"});
     for (const char* key :
          {"cells_by_rank", "ghosts_by_rank", "faces_by_rank", "interior_faces_by_rank",

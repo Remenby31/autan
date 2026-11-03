@@ -1189,6 +1189,36 @@ TEST_CASE("Reading a MIXED section costs the elements it keeps, not its points a
   CAPTURE(at_half, at_full);
   CHECK(at_full - at_half <= std::int64_t{1} << 20);
 }
+namespace {
+
+// The nodes of `file`'s tree but its root, counted through the CGNS library's own cgio calls: a
+// count independent of the reader's.
+std::int64_t tree_nodes(const fs::path& file) {
+  int cgio = 0;
+  REQUIRE(cgio_open_file(file.string().c_str(), CGIO_MODE_READ, CGIO_FILE_NONE, &cgio) ==
+          CGIO_ERR_NONE);
+  double root = 0;
+  REQUIRE(cgio_get_root_id(cgio, &root) == CGIO_ERR_NONE);
+  std::int64_t count = 0;
+  std::vector<double> pending{root};
+  while (!pending.empty()) {
+    const double node = pending.back();
+    pending.pop_back();
+    int n = 0;
+    REQUIRE(cgio_number_children(cgio, node, &n) == CGIO_ERR_NONE);
+    if (n == 0) continue;
+    std::vector<double> ids(static_cast<std::size_t>(n));
+    int got = 0;
+    REQUIRE(cgio_children_ids(cgio, node, 1, n, &got, ids.data()) == CGIO_ERR_NONE);
+    count += got;
+    pending.insert(pending.end(), ids.begin(), ids.begin() + got);
+  }
+  REQUIRE(cgio_close_file(cgio) == CGIO_ERR_NONE);
+  return count;
+}
+
+}  // namespace
+
 TEST_CASE("Reading a CGNS file costs at most 1 MiB and 16 KiB a node, up to 16 384 nodes",
           "[cgns]") {
   // mesh.md, Memory of a CGNS read: cg_open allocates for every node it parses; families,
@@ -1198,7 +1228,7 @@ TEST_CASE("Reading a CGNS file costs at most 1 MiB and 16 KiB a node, up to 16 3
   constexpr std::int64_t limit = 16384;
   const fs::path plain =
       cgns_file("nodes-none.cgns", [](int fn, int base) { unstructured_tet(fn, base, "Zone"); });
-  const std::int64_t n0 = autan::io::cgns_logical_bytes(plain).nodes;
+  const std::int64_t n0 = tree_nodes(plain);
   const auto build = [&](const std::string& name, std::int64_t nodes) {
     const fs::path file = cgns_file(name, [&](int fn, int base) {
       unstructured_tet(fn, base, "Zone");
@@ -1229,14 +1259,16 @@ TEST_CASE("Reading a CGNS file costs at most 1 MiB and 16 KiB a node, up to 16 3
     return file;
   };
   const fs::path full = build("nodes-limit.cgns", limit);
-  const std::int64_t nodes = autan::io::cgns_logical_bytes(full).nodes;
+  const std::int64_t nodes = tree_nodes(full);
   REQUIRE(nodes == limit);
+  CHECK(autan::io::cgns_logical_bytes(full).nodes == nodes);
+  REQUIRE(tree_nodes(build("nodes-over.cgns", limit + 1)) == limit + 1);
   (void)autan::io::read_mesh(plain);  // the libraries' first-use setup, outside both peaks
   const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
   const std::int64_t after = peak_of([&] { CHECK(autan::io::read_mesh(full).n_cells() == 1); });
   CAPTURE(before, after, nodes);
   CHECK(after - before <= (std::int64_t{1} << 20) + (std::int64_t{16} << 10) * (nodes - n0));
-  const fs::path over = build("nodes-over.cgns", limit + 1);
+  const fs::path over = temp_dir() / "nodes-over.cgns";
   try {
     (void)autan::io::cgns_logical_bytes(over);  // MeshInfo refuses it too
     FAIL("expected E0133");
@@ -1383,6 +1415,40 @@ TEST_CASE("A BC point list over points and edges is read in chunks, never whole"
   CAPTURE(mixed_before, mixed_after);
   CHECK(mixed_after - mixed_before <= 8 * mixed + (std::int64_t{2} << 20));
 }
+TEST_CASE("A BC naming one face many times holds its entries once", "[cgns]") {
+  // mesh.md, Memory of a CGNS read: the reader holds 8 bytes per point-list entry while it marks
+  // the faces (source.point_list_ids), releases them, and reads a BC's list in chunks made
+  // distinct as they grow; 2^22 entries naming one face cost them once, not twice.
+  fs::create_directories(temp_dir());
+  constexpr cgsize_t entries = cgsize_t{1} << 22;
+  const auto with_bc = [&](const std::string& name, cgsize_t listed) {
+    return cgns_file(name, [&](int fn, int base) {
+      unstructured_tet(fn, base, "Zone");
+      const cgsize_t tri[] = {1, 3, 2};
+      int section = 0, bc = 0;
+      REQUIRE(cg_section_write(fn, base, 1, "Face", CGNS_ENUMV(TRI_3), 2, 2, 0, tri, &section) ==
+              CG_OK);
+      const std::vector<cgsize_t> ids(static_cast<std::size_t>(listed), 2);
+      REQUIRE(cg_boco_write(fn, base, 1, "wall", CGNS_ENUMV(BCWall), CGNS_ENUMV(PointList), listed,
+                            ids.data(), &bc) == CG_OK);
+      REQUIRE(cg_boco_gridlocation_write(fn, base, 1, bc, CGNS_ENUMV(FaceCenter)) == CG_OK);
+    });
+  };
+  const fs::path one = with_bc("named-once.cgns", 1);
+  const fs::path many = with_bc("named-many.cgns", entries);
+  (void)autan::io::read_mesh(one);
+  const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(one); });
+  std::optional<autan::Mesh> mesh;
+  const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(many); });
+  CAPTURE(before, after);
+  CHECK(after - before <= 8 * entries + (std::int64_t{2} << 20));
+  const auto zones = mesh->face_zones();
+  const auto wall = std::ranges::find(zones, std::string("wall"), &autan::FaceZone::name);
+  REQUIRE(wall != zones.end());
+  const auto z = static_cast<std::size_t>(wall - zones.begin());
+  CHECK(mesh->boundary_zone_offsets()[z + 1] - mesh->boundary_zone_offsets()[z] == 1);
+}
+
 TEST_CASE("A section of boundary faces nothing names is skipped", "[cgns]") {
   // mesh.md, Readers: the faces come from the cells; 2^20 triangles no family, BC, subregion or
   // connectivity names cost nothing kept, not 88 bytes each.
@@ -1407,6 +1473,45 @@ TEST_CASE("A section of boundary faces nothing names is skipped", "[cgns]") {
   const std::int64_t after = peak_of([&] { CHECK(autan::io::read_mesh(padded).n_cells() == 1); });
   CAPTURE(before, after);
   CHECK(after - before <= std::int64_t{2} << 20);  // kept, the triangles would be 88 MiB
+  // Beside NGON_n faces, which are the mesh's faces, standard triangles a BC names are never
+  // assembled: skipped as well.
+  const autan::Mesh box =
+      autan::assemble(autan::to_face_based(autan::test::box(2, autan::test::BoxFill::hexa)));
+  const fs::path ngon = temp_dir() / "ngon.cgns", named = temp_dir() / "ngon-named.cgns";
+  autan::io::write_solution(ngon, box, solution_for(box));
+  fs::copy_file(ngon, named, fs::copy_options::overwrite_existing);
+  int fn = 0, n = 0;
+  REQUIRE(cg_open(named.string().c_str(), CG_MODE_MODIFY, &fn) == CG_OK);
+  REQUIRE(cg_nsections(fn, 1, 1, &n) == CG_OK);
+  cgsize_t last = 0;
+  for (int s = 1; s <= n; ++s) {
+    char name[33];
+    CGNS_ENUMT(ElementType_t) type{};
+    cgsize_t start = 0, end = 0;
+    int boundary = 0, parent = 0;
+    REQUIRE(cg_section_read(fn, 1, 1, s, name, &type, &start, &end, &boundary, &parent) == CG_OK);
+    last = std::max(last, end);
+  }
+  std::vector<cgsize_t> tri(3 * static_cast<std::size_t>(triangles));
+  for (std::size_t t = 0; t < tri.size(); t += 3) {
+    tri[t] = 1;
+    tri[t + 1] = 3;
+    tri[t + 2] = 2;
+  }
+  int section = 0, bc = 0;
+  REQUIRE(cg_section_write(fn, 1, 1, "Triangles", CGNS_ENUMV(TRI_3), last + 1, last + triangles, 0,
+                           tri.data(), &section) == CG_OK);
+  const cgsize_t range[] = {last + 1, last + triangles};
+  REQUIRE(cg_boco_write(fn, 1, 1, "triangles", CGNS_ENUMV(BCWall), CGNS_ENUMV(PointRange), 2, range,
+                        &bc) == CG_OK);
+  REQUIRE(cg_boco_gridlocation_write(fn, 1, 1, bc, CGNS_ENUMV(FaceCenter)) == CG_OK);
+  REQUIRE(cg_close(fn) == CG_OK);
+  (void)autan::io::read_mesh(ngon);
+  const std::int64_t ngon_before = peak_of([&] { (void)autan::io::read_mesh(ngon); });
+  const std::int64_t ngon_after =
+      peak_of([&] { CHECK(autan::io::read_mesh(named).n_cells() == box.n_cells()); });
+  CAPTURE(ngon_before, ngon_after);
+  CHECK(ngon_after - ngon_before <= std::int64_t{2} << 20);
 }
 
 TEST_CASE("A CGNS file reads at most 1 MiB of other data when it opens", "[cgns]") {

@@ -29,6 +29,14 @@ A temporary that grows with an intermediate count no class bounds, such as walks
 | the stencil: offsets 8(C + 1), entries 4E, twins 8E, FP64 weights 24E, and one row of offsets while weighting | cells, stencil entries | E: `physics` 8C + 4S, `physics setup` 32S |
 | `sliced`, `sliced_incidences`, `sliced_values`: every slice of rows padded to its longest | up to `slice` times the entries | none: the runtime builds no sliced layout (`DeviceMesh` options `stencil_slice` and `incidence_slice` 0 in `euler_device.cu`); benchmarks and the spike only, and a term before the runtime uses one |
 
+## Assembly (`core/src/mesh.cpp`; « CFD - Noyau maillage »)
+
+`assemble` runs after every reader, in the renumbering and in each rank's extraction; its other temporaries are those rows'.
+
+| Held | Grows with | Class |
+|---|---|---|
+| `check_cells_closed`'s edge records, 16 B each, reserved once for the owned cell with the most face nodes (`mesh.cpp:183`) | that cell's face nodes, at most P | M |
+
 ## Partition and halos (`partition/`, `runtime/src/comm.cpp`; « CFD - Noyau maillage »)
 
 Every rank reads the whole mesh and runs these steps on it, so every row is held on every rank, beside the global mesh and its geometry. `index_t` is 4 bytes, `offset_t` 8; a `std::map` or `std::set` node about 64. A = the dual graph's arcs, at most 2 `F_i`; per rank, `L_r` = `C_r` + `G_r`. `N_r`, `P_r` and `S_r` are `partition.nodes_by_rank`, `face_nodes_by_rank` and `sent_cells_by_rank`.

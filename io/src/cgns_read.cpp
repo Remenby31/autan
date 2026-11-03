@@ -173,6 +173,9 @@ class Reader {
     read_coordinates();
     mark_referenced_sections();
     read_sections();
+    // The ids that chose which faces to keep: released before the point sets are read for zones.
+    referenced_ids_ = {};
+    referenced_ranges_ = {};
     read_bcs();
     read_connectivity();
     read_subregions();
@@ -271,16 +274,20 @@ class Reader {
       if (start < 1 || end < start) malformed(path_, std::string("section '") + name + "' range");
       const auto count = at(end - start + 1);
       // A section of boundary faces no point set names labels nothing: the faces come from the
-      // cells, so it is skipped as points and edges are.
+      // cells, so it is skipped as points and edges are; beside NGON_n faces, which are the
+      // faces, every standard face is.
       const bool unused_faces =
-          is_face_type(type) && !referenced_sections_[static_cast<std::size_t>(s - 1)];
+          is_face_type(type) &&
+          (ngon_faces_ || !referenced_sections_[static_cast<std::size_t>(s - 1)]);
       if (is_ignored_type(type) || unused_faces) {
-        // Points and edges the reader never uses: their ids resolve, their nodes are not read.
+        // Points, edges and faces the reader never uses: their ids resolve, their nodes are not
+        // read, and they label nothing (a skipped face answers as an edge, as in MIXED sections).
+        const auto as = is_ignored_type(type) ? type : CGNS_ENUMV(BAR_2);
         sections_.push_back(Section{.start = start,
                                     .count = count,
                                     .elements = {},
                                     .skipped = {},
-                                    .ignored = Element{.type = type, .connectivity = {}}});
+                                    .ignored = Element{.type = as, .connectivity = {}}});
         continue;
       }
 
@@ -409,8 +416,9 @@ class Reader {
     }
     // Points and edges of a MIXED section, and faces no point set names (the faces come from the
     // cells): their index alone, as in a section of them.
-    if (is_ignored_type(element_type) || (pruning_ && is_face_type(element_type) &&
-                                          !referenced(section.start + static_cast<cgsize_t>(e)))) {
+    if (is_ignored_type(element_type) || (pruning_ && is_face_type(element_type) && ngon_faces_) ||
+        (pruning_ && is_face_type(element_type) &&
+         !referenced(section.start + static_cast<cgsize_t>(e)))) {
       section.skip(e);
       return;
     }
@@ -466,6 +474,7 @@ class Reader {
          "read section");
       ranges.emplace_back(start, end);
       prunable.push_back(type == CGNS_ENUMV(MIXED) || is_face_type(type));
+      ngon_faces_ = ngon_faces_ || type == CGNS_ENUMV(NGON_n);
     }
     referenced_sections_.assign(ranges.size(), false);
     referenced_ranges_.clear();
@@ -570,6 +579,16 @@ class Reader {
   // `container` is "ZoneBC_t" for a BC, empty for a subregion, which sits under the zone.
   int listed_dimension(CGNS_ENUMT(PointSetType_t) set, const char* container, const char* owner) {
     if (set != CGNS_ENUMV(PointList) && set != CGNS_ENUMV(ElementList)) return 2;
+    int dimension = -1;
+    each_listed(container, owner, [&](std::span<const cgsize_t> chunk) {
+      for (const cgsize_t id : chunk) dimension = merged_dimension(dimension, id, owner);
+    });
+    return dimension;
+  }
+
+  // The point list of BC or subregion `owner`, chunk_entries ids at a time (listed_dimension).
+  template <typename Visit>
+  void each_listed(const char* container, const char* owner, Visit&& visit) {
     const CgioTree tree(fn_);
     const auto base = tree.child(tree.root(), "CGNSBase_t");
     auto parent = base ? tree.child(*base, "Zone_t") : std::nullopt;
@@ -581,13 +600,30 @@ class Reader {
     if (!list) malformed(path_, std::string("no point list in '") + owner + "'");
     const std::int64_t n = tree.values(*list);
     std::vector<cgsize_t> chunk;
-    int dimension = -1;
     for (std::int64_t first = 0; first < n; first += chunk_entries) {
       chunk.resize(static_cast<std::size_t>(std::min(chunk_entries, n - first)));
       tree.read_integers(*list, first, chunk);
-      for (const cgsize_t id : chunk) dimension = merged_dimension(dimension, id, owner);
+      visit(std::span<const cgsize_t>(chunk));
     }
-    return dimension;
+  }
+
+  // The distinct ids of `owner`'s point list, ascending: read in chunks and made distinct each
+  // time they double, so that a list naming its faces many times holds them about twice, not as
+  // often as it names them.
+  std::vector<cgsize_t> listed_ids(const char* container, const char* owner) {
+    std::vector<cgsize_t> ids;
+    std::size_t distinct = 0;
+    const auto compact = [&] {
+      std::ranges::sort(ids);
+      ids.erase(std::ranges::unique(ids).begin(), ids.end());
+      distinct = ids.size();
+    };
+    each_listed(container, owner, [&](std::span<const cgsize_t> chunk) {
+      ids.insert(ids.end(), chunk.begin(), chunk.end());
+      if (ids.size() >= 2 * distinct + static_cast<std::size_t>(chunk_entries)) compact();
+    });
+    compact();
+    return ids;
   }
 
   // Elements a point set designates: a range or a list of 1-based ids.
@@ -636,9 +672,13 @@ class Reader {
       }
       std::vector<cgsize_t> ids;
       if (listed_dimension(set, "ZoneBC_t", name) > 1) {
-        ids.resize(at(points));
-        ok(cg_boco_read(fn_, 1, 1, b, ids.data(), nullptr), "read BC", name);
-        ids = point_set(set, std::move(ids), name);
+        if (set == CGNS_ENUMV(PointList) || set == CGNS_ENUMV(ElementList)) {
+          ids = listed_ids("ZoneBC_t", name);
+        } else {
+          ids.resize(at(points));
+          ok(cg_boco_read(fn_, 1, 1, b, ids.data(), nullptr), "read BC", name);
+          ids = point_set(set, std::move(ids), name);
+        }
       }
       ok(cg_goto(fn_, 1, "Zone_t", 1, "ZoneBC_t", 1, "BC_t", b, "end"), "go to BC", name);
       char family[CG_MAX_GOTO_DEPTH * 33 + 1];
@@ -707,9 +747,13 @@ class Reader {
       if (location != CGNS_ENUMV(CellCenter) || points == 0) continue;
       std::vector<cgsize_t> ids;
       if (listed_dimension(set, "", name) > 1) {
-        ids.resize(at(points));
-        ok(cg_subreg_ptset_read(fn_, 1, 1, s, ids.data()), "read subregion", name);
-        ids = point_set(set, std::move(ids), name);
+        if (set == CGNS_ENUMV(PointList) || set == CGNS_ENUMV(ElementList)) {
+          ids = listed_ids("", name);
+        } else {
+          ids.resize(at(points));
+          ok(cg_subreg_ptset_read(fn_, 1, 1, s, ids.data()), "read subregion", name);
+          ids = point_set(set, std::move(ids), name);
+        }
       }
       ok(cg_goto(fn_, 1, "Zone_t", 1, "ZoneSubRegion_t", s, "end"), "go to subregion", name);
       char family[CG_MAX_GOTO_DEPTH * 33 + 1];
@@ -1203,7 +1247,8 @@ class Reader {
   std::vector<bool> referenced_sections_;  // by section index - 1, mark_referenced_sections
   std::vector<std::pair<cgsize_t, cgsize_t>> referenced_ranges_;  // [lo, hi], disjoint, ascending
   std::vector<cgsize_t> referenced_ids_;                          // listed, sorted, distinct
-  bool pruning_ = false;  // the section read_element reads drops the faces no point set names
+  bool ngon_faces_ = false;  // the zone's faces are NGON_n elements: standard faces are never used
+  bool pruning_ = false;     // the section read_element reads drops the faces no point set names
   bool has_ngon_ = false, has_nface_ = false, has_standard_cells_ = false;
   std::vector<FaceZone> face_zones_;
   std::map<std::string, index_t> face_zone_index_;

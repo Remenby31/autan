@@ -170,7 +170,7 @@ ByRank = Annotated[tuple[Count, ...], Field(min_length=1)]
 
 
 class Partition(_Strict):
-    ranks: Annotated[int, Field(strict=True, ge=2)]
+    ranks: Annotated[int, Field(strict=True, ge=1)]
     groups: Literal["none", "lines"]
     cells_by_rank: ByRank
     ghosts_by_rank: ByRank
