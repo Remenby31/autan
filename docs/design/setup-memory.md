@@ -35,7 +35,7 @@ A temporary that grows with an intermediate count no class bounds, such as walks
 | Held | Grows with | Class |
 |---|---|---|
 
-## Face colouring (`solvers/`, `codegen/`)
+## Face colouring (`codegen/cpp/colouring.cpp`; « CFD - Générateur kernels »)
 
 | Held | Grows with | Class |
 |---|---|---|
