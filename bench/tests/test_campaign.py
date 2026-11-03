@@ -699,3 +699,38 @@ def test_a_leader_whose_own_campaign_is_the_victim_finishes_the_breach(
     assert until(lambda: not (tmp_path / "paused-autan-campaign-c3").exists(), timeout=20)
     assert until(lambda: ran("rm -f autan-campaign-c1") and ran("rm -f autan-campaign-c2"))
     assert not ran("kill autan-campaign-c3")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="/proc/locks is Linux's")
+def test_a_start_delayed_by_a_breach_waits_for_a_measurement_begun_meanwhile(tmp_path, monkeypatch):
+    # Through the CLI and the detached watcher, docker faked at the boundary. A breach is being
+    # led (breach.lock held) when the campaign would start: it waits. A measurement takes the GPU
+    # lock, then the breach ends: it still waits, and starts once the measurement is over.
+    calls = tmp_path / "calls"
+    fake = tmp_path / "docker"
+    fake.write_text(f'#!/bin/sh\necho "$*" >> {calls}\n'
+                    f'case "$1" in inspect) echo "running {os.getpid()}" ;; esac\n')  # fmt: skip
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    lock = tmp_path / "gpu.lock"
+    lock.touch()
+    monkeypatch.setenv("AUTAN_GPU_LOCK", str(lock))
+    monkeypatch.setattr(campaign, "LOCK", lock)
+    monkeypatch.setattr(campaign, "STATE", tmp_path / "autan-campaigns")
+    monkeypatch.setattr(campaign, "STATES", tmp_path / "campaigns")
+    (tmp_path / "campaigns").mkdir()
+
+    def started() -> bool:
+        return calls.exists() and "start autan-campaign-c1" in calls.read_text().splitlines()
+
+    with (tmp_path / "campaigns" / "breach.lock").open("a") as breach, lock.open() as measurement:
+        fcntl.flock(breach, fcntl.LOCK_EX)
+        assert campaign.main(["start", "c1", "--dir", str(tmp_path), "--", "x"]) == 0
+        assert not until(started, timeout=2)
+        fcntl.flock(measurement, fcntl.LOCK_EX)
+        fcntl.flock(breach, fcntl.LOCK_UN)
+        assert not until(started, timeout=2)
+        assert not (tmp_path / "campaigns" / "c1.state").exists()
+        fcntl.flock(measurement, fcntl.LOCK_UN)
+        assert until(started, timeout=10)

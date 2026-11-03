@@ -610,14 +610,18 @@ def watch(name: str, floor: int) -> int:
                           "not started")  # fmt: skip
                 return 1
             with transition_allowed() as allowed:
-                if allowed:
-                    # "running" is published before the start, so that a measurement that takes
-                    # the lock in between waits for the freeze instead of measuring beside it.
+                # A start delayed behind a breach waits again for a measurement begun meanwhile.
+                # "running" is published before the start, then the GPU lock read again: a
+                # measurement that takes it in between waits for the freeze, or this start waits.
+                if allowed and not gpu_busy():
                     publish(name, "running")
-                    heartbeat.touch()
-                    docker("start", container)
-                    started.set()
-                    break
+                    if gpu_busy():
+                        (STATES / f"{name}.state").unlink(missing_ok=True)
+                    else:
+                        heartbeat.touch()
+                        docker("start", container)
+                        started.set()
+                        break
             heartbeat.touch()
             time.sleep(POLL_S)
         if breached.is_set():
