@@ -94,6 +94,10 @@ struct TimeInput {
   std::int64_t steps = 0;
   std::optional<double> dt, cfl;
   std::optional<std::int64_t> average_from;
+  /// Checkpoint cadence (case-schema.md#time): wall-clock seconds between two checkpoints, or
+  /// every that many iterations; exactly one is set.
+  std::optional<double> checkpoint_seconds;
+  std::optional<std::int64_t> checkpoint_iterations;
 };
 
 struct ForcesMonitor {
@@ -119,6 +123,8 @@ struct Start {
   std::int64_t iterations = 0;
   std::optional<double> time;
   std::string solution_sha256;
+  /// The file of `run` to read: "solution" (solution.cgns) or "checkpoint" (checkpoint.cgns).
+  std::string file;
   /// Residuals at iteration 1 of the original run, in residual_names order;
   /// set exactly for a steady `continue`.
   std::optional<std::vector<double>> residual_reference;

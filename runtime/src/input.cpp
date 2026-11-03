@@ -531,12 +531,27 @@ bool is_run_id(std::string_view id) {
   return true;
 }
 
+// time.checkpoint: {seconds} in [60, 86400] or {iterations} >= 1 (case-schema.md#time).
+void parse_checkpoint(const Object& time, TimeInput& out) {
+  const Json& c = time.get("checkpoint");
+  const std::string path = time.at("checkpoint");
+  if (c.is_object() && c.contains("seconds")) {
+    const Object o(c, path, {"seconds"});
+    const double s = o.number("seconds");
+    if (s < 60.0 || s > 86400.0) invalid(o.at("seconds"), "must be in [60, 86400]");
+    out.checkpoint_seconds = s;
+  } else {
+    const Object o(c, path, {"iterations"});
+    out.checkpoint_iterations = o.integer("iterations", 1);
+  }
+}
+
 // Needs the rest of the input: the residual reference is keyed by its
 // equations and the mode's rules depend on its time.
 Start parse_start(const Json& value, const SolverInput& in) {
   const Object o(value, "start",
                  {"run", "run_id", "identity", "mode", "iterations", "time", "solution_sha256",
-                  "residual_reference", "woken"});
+                  "file", "residual_reference", "woken"});
   Start start;
   start.run = o.string("run");
   if (!std::filesystem::path(start.run).is_absolute())
@@ -547,6 +562,7 @@ Start parse_start(const Json& value, const SolverInput& in) {
   start.mode = o.tag("mode", {"continue", "warm"});
   start.iterations = o.integer("iterations", 1);
   start.solution_sha256 = sha256(o, "solution_sha256");
+  start.file = o.tag("file", {"solution", "checkpoint"});
   const bool steady = in.time.kind == "steady";
   const bool continued = start.mode == "continue";
   // A continued run has the previous run's kind of time; a warm one may not.
@@ -687,15 +703,16 @@ SolverInput parse_solver_input(const std::string& text) {
     if (kind == "steady") {
       const Object o(t, "time",
                      {"kind", "max_iterations", "residual_orders", "linear_solver",
-                      "coupled_turbulence", "matrix_free"});
+                      "coupled_turbulence", "matrix_free", "checkpoint"});
       in.time.kind = "steady";
       in.time.max_iterations = o.integer("max_iterations", 1);
       in.time.residual_orders = o.positive("residual_orders");
       in.time.linear_solver = o.tag("linear_solver", {"multigrid", "gauss-seidel", "lines"});
       in.time.coupled_turbulence = o.boolean("coupled_turbulence");
       in.time.matrix_free = o.boolean("matrix_free");
+      parse_checkpoint(o, in.time);
     } else if (kind == "unsteady") {
-      const Object o(t, "time", {"kind", "steps", "dt", "cfl", "average_from"});
+      const Object o(t, "time", {"kind", "steps", "dt", "cfl", "average_from", "checkpoint"});
       in.time.kind = "unsteady";
       in.time.steps = o.integer("steps", 1);
       in.time.dt = o.is_null("dt") ? std::nullopt : std::optional<double>(o.positive("dt"));
@@ -705,6 +722,7 @@ SolverInput parse_solver_input(const std::string& text) {
         if (*in.time.average_from >= in.time.steps)
           invalid("time.average_from", "must be below steps");
       }
+      parse_checkpoint(o, in.time);
     } else {
       invalid("time.kind", "expected steady or unsteady");
     }

@@ -33,6 +33,7 @@ from autan.schema import (
     SST,
     WMLES,
     CaseSpec,
+    Checkpoint,
     Compressible,
     ConstantDensityFluid,
     ConstantViscosity,
@@ -286,6 +287,26 @@ class CellZoneInput(_Strict):
         return self
 
 
+class CheckpointSeconds(_Strict):
+    seconds: Annotated[float, Field(ge=60.0, le=86400.0, allow_inf_nan=False)]
+
+
+class CheckpointIterations(_Strict):
+    iterations: Annotated[int, Field(strict=True, ge=1)]
+
+
+CheckpointInput = CheckpointSeconds | CheckpointIterations
+
+
+def _checkpoint(checkpoint: Checkpoint) -> CheckpointInput:
+    if checkpoint.seconds is not None:
+        return CheckpointSeconds(seconds=si(checkpoint.seconds, "s"))
+    if checkpoint.iterations is None:
+        message = "a checkpoint gives seconds or iterations"
+        raise ValueError(message)
+    return CheckpointIterations(iterations=checkpoint.iterations)
+
+
 class SteadyInput(_Strict):
     kind: Literal["steady"]
     max_iterations: Annotated[int, Field(ge=1)]
@@ -293,6 +314,7 @@ class SteadyInput(_Strict):
     linear_solver: Literal["multigrid", "gauss-seidel", "lines"]
     coupled_turbulence: Annotated[bool, Field(strict=True)]
     matrix_free: Annotated[bool, Field(strict=True)]
+    checkpoint: CheckpointInput
 
 
 class UnsteadyInput(_Strict):
@@ -301,6 +323,7 @@ class UnsteadyInput(_Strict):
     dt: Positive | None
     cfl: Positive | None
     average_from: Annotated[int, Field(ge=0)] | None
+    checkpoint: CheckpointInput
 
     @model_validator(mode="after")
     def _one_step_rule(self) -> Self:
@@ -343,6 +366,7 @@ class StartInput(_Strict):
     residual_reference: dict[str, Annotated[float, Field(ge=0, allow_inf_nan=False)]] | None
     woken: list[str] | None
     solution_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
+    file: Literal["solution", "checkpoint"]
 
     @model_validator(mode="after")
     def _woken_names(self) -> Self:
@@ -769,6 +793,7 @@ def build(
             linear_solver=spec.time.linear_solver,
             coupled_turbulence=spec.time.coupled_turbulence,
             matrix_free=spec.time.matrix_free,
+            checkpoint=_checkpoint(spec.time.checkpoint),
         )
         if isinstance(spec.time, Steady)
         else UnsteadyInput(
@@ -777,6 +802,7 @@ def build(
             dt=si(spec.time.dt, "s") if spec.time.dt is not None else None,
             cfl=spec.time.cfl,
             average_from=spec.time.average_from,
+            checkpoint=_checkpoint(spec.time.checkpoint),
         )
     )
     return SolverInput(

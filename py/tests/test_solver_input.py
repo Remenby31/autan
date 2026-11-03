@@ -102,6 +102,7 @@ def test_crm_hl_input_is_resolved_and_closed_in_si(
         "linear_solver": "multigrid",
         "coupled_turbulence": False,
         "matrix_free": False,
+        "checkpoint": {"seconds": 1800.0},
     }
 
 

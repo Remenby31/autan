@@ -828,6 +828,14 @@ A memory cgroup above the process (its own excepted when mounted) is shown by no
 
 Fix: Mount the cgroup hierarchy from its root in the container (cgroup namespace), or check the job's memory limit by other means.
 
+## W0714
+
+**Checkpoint not written** (warning)
+
+Writing the restart checkpoint failed (results.md#checkpointcgns), or removing it once the final solution was written: the run goes on, and the previous checkpoint, if any, stays whole. `data` gives the iteration when a write failed.
+
+Fix: Check the space and permissions of the run directory's file system.
+
 ## W0801
 
 **No NVIDIA GPU found** (warning)
