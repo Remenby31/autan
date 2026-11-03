@@ -1257,10 +1257,13 @@ LogicalBytes cgns_logical_bytes(const fs::path& file) {
   descriptors(descriptors, tree.root());
   // The datasets the reader reads, descriptors aside.
   std::int64_t arrays = 0;
-  const auto subtree = [&](const auto& self, double node) -> void {
-    arrays += tree.logical_bytes(node);
+  // `lists`: under a BC, subregion or connectivity container, where IndexArray_t are point lists.
+  const auto subtree = [&](const auto& self, double node, bool lists) -> void {
+    const std::int64_t bytes = tree.logical_bytes(node);
+    arrays += bytes;
+    if (lists && tree.label(node) == "IndexArray_t") out.point_lists += bytes;
     for (const double child : tree.children(node)) {
-      if (tree.label(child) != "Descriptor_t") self(self, child);
+      if (tree.label(child) != "Descriptor_t") self(self, child, lists);
     }
   };
   for (const double base : tree.children(tree.root())) {
@@ -1270,15 +1273,16 @@ LogicalBytes cgns_logical_bytes(const fs::path& file) {
       out.zone_names = tree.logical_bytes(*names);
     for (const double node : tree.children(base)) {
       const std::string label = tree.label(node);
-      if (label == "Family_t") subtree(subtree, node);
+      if (label == "Family_t") subtree(subtree, node, false);
       if (label != "Zone_t") continue;
       arrays += tree.logical_bytes(node);
       for (const double child : tree.children(node)) {
         const std::string kind = tree.label(child);
-        if (kind == "ZoneType_t" || kind == "GridCoordinates_t" || kind == "ZoneBC_t" ||
-            kind == "ZoneSubRegion_t" || kind == "FamilyName_t" ||
-            kind == "ZoneGridConnectivity_t") {
-          subtree(subtree, child);
+        const bool lists =
+            kind == "ZoneBC_t" || kind == "ZoneSubRegion_t" || kind == "ZoneGridConnectivity_t";
+        if (lists || kind == "ZoneType_t" || kind == "GridCoordinates_t" ||
+            kind == "FamilyName_t") {
+          subtree(subtree, child, lists);
         } else if (kind == "Elements_t") {
           // A section of points or edges: its header and range only (mesh.md, Readers).
           std::array<std::int64_t, 2> header{};
@@ -1288,7 +1292,7 @@ LogicalBytes cgns_logical_bytes(const fs::path& file) {
             if (const auto range = tree.child(child, "IndexRange_t", "ElementRange"))
               arrays += tree.logical_bytes(*range);
           } else {
-            subtree(subtree, child);
+            subtree(subtree, child, false);
           }
         }
       }

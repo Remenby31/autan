@@ -50,6 +50,7 @@ class Source(_Strict):
     zone_names_bytes: Count
     filtered_bytes: Count
     cgns_nodes: Count
+    point_list_bytes: Count
 
 
 class CellsByType(_Strict):

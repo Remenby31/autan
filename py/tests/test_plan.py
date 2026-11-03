@@ -216,6 +216,7 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
                 "zone_names_bytes": 512,
                 "filtered_bytes": 0,
                 "cgns_nodes": 40,
+                "point_list_bytes": 0,
             },
             "counts": {
                 "cells": 10,

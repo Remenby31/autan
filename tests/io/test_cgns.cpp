@@ -1449,6 +1449,8 @@ TEST_CASE("Faces of a section nothing names are skipped, one named is kept", "[c
   REQUIRE(wall != zones.end());
   const auto z = static_cast<std::size_t>(wall - zones.begin());
   CHECK(mesh->boundary_zone_offsets()[z + 1] - mesh->boundary_zone_offsets()[z] == 1);
+  // mesh-info.md, source.point_list_bytes: the BC's list of one 8-byte id.
+  CHECK(autan::io::cgns_logical_bytes(many).point_lists == 8);
 }
 
 TEST_CASE("Looking up many BCs among many families keeps no HDF5 handle", "[cgns]") {

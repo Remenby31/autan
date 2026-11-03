@@ -9,7 +9,7 @@ What each reader holds while it reads, and the bound that covers it, so that the
 | **S** text | a text file is read once into memory at its size `S`, and the reader parses views of it | plan.md, `S = source.bytes` |
 | **M** mesh counts | grows with what MeshInfo counts: nodes `N_s` and `N`, cells `C`, faces `F`, boundary faces `F_b`, face nodes, zones, periodic pairs `P` | mesh-info.md, `counts`; plan.md's per-format terms |
 | **K** CGNS tree | at most 16 384 nodes in at most 16 levels, 1 MiB of other data read at open; reading costs at most 1 MiB + 16 KiB a node | mesh.md, Memory of a CGNS read |
-| **D** CGNS descriptors and filters | `source.descriptor_bytes`, `source.filtered_bytes` (largest chunk) and HDF5's caches, 12 MiB 64 KiB | mesh.md, Memory of a CGNS read |
+| **D** CGNS descriptors, filters and point lists | `source.descriptor_bytes`, `source.filtered_bytes` (largest chunk), HDF5's caches, 12 MiB 64 KiB, and 2 × `source.point_list_bytes` + 1 MiB of listed ids | mesh.md, Memory of a CGNS read |
 | **C** chunks | element sections and point lists read 4096 offsets and 2^17 entries at a time: 1 MiB 32 KiB | mesh.md, Memory of a CGNS read |
 | **T** texts | a name, key, header entry or other free text at most 4096 bytes (E0122), `ZoneNames` (families + 1) × 25 600 bytes, `RunMetadata` 64 KiB, a state file's strings 4096 (written in at most 6 each) and numbers 64 characters | mesh.md, E0122; results.md; face-states.md, initial-state.md |
 | **R** refused counts | Fluent fluid, solid and interior zone records ≤ 16 384; a polyMesh uniform list ≤ the faces or cells it labels; a Fluent section header ≤ 8 fields; a state file ≤ 16 384 zones and nesting ≤ its structure; a start's FlowSolution and FlowSolutionMean exactly the run's fields, its RestartState exactly the physics' arrays | mesh.md, Readers; results.md |
@@ -33,7 +33,7 @@ A temporary that lives for one item of the input (one element, one face, one rec
 | `Section::skipped` runs | at most one per kept element of the section, plus one | M |
 | `referenced_sections_` | sections | K |
 | `referenced_ranges_`, one interval per `IndexRange_t` naming a face or `MIXED` section | point-set nodes | K |
-| `referenced_ids_`, the listed ids of face and `MIXED` sections, sorted and distinct, compacted as they double | 16 bytes per distinct listed id, plus a chunk: labelled faces, but for the points and edges a list names in a `MIXED` section, at most twice the lists' logical bytes | M, D |
+| `referenced_ids_`, the listed ids of face and `MIXED` sections, sorted and distinct, compacted as they double | 16 bytes per distinct listed id, plus a 1 MiB chunk: at most 2 × `source.point_list_bytes` + 1 MiB | D |
 | section chunk buffers `bounds`, `data`; an element larger than 2^17 entries read into its own storage | 1 MiB 32 KiB; that element is kept | C, M |
 | BC and subregion point sets: ranges judged id by id, lists in chunks, read whole only for faces or cells | labelled faces and cells | C, M |
 | `face_label_`, `cell_label_` | labelled faces and cells | M |
@@ -61,7 +61,7 @@ A temporary that lives for one item of the input (one element, one face, one rec
 | section names | 4096 bytes, checked before they are copied | T |
 | `$PhysicalNames`, read again for the zones the elements make | names the zones take | M, T |
 | `entity_physical_`, 12 bytes per entity of a group that a block of surface or volume elements names, once per 65 536 distinct blocks | blocks of kept elements | M |
-| `block_entities`' pairs, of blocks of surface or volume elements | at most 65 536 | F |
+| `block_entities`' pairs, of blocks of surface or volume elements | at most 65 536 of 8 bytes: 512 KiB | F |
 | `tags_`, `order_`, `xyz_` and the mesh's copy | nodes `N_s` | M |
 | `periodic_links_`, one per distinct group pair | `$Periodic` records, each longer than its entry | S |
 | a periodic link's node pairs | that link's records | S |
