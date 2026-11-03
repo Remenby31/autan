@@ -7,6 +7,7 @@
 #include <iterator>
 #include <map>
 #include <numeric>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
@@ -476,3 +477,49 @@ TEST_CASE("A zone name longer than 4096 bytes is E0122 in the text readers", "[i
     }
   }
 }
+
+#if defined(__linux__)
+TEST_CASE("Records a reader does not use cost their text, not a copy each", "[io]") {
+  // mesh.md, Readers: Gmsh physical names no zone takes and polyMesh dictionary entries the
+  // reader does not use are read past, so 2^19 of them cost the file's text, held once, and the
+  // mesh reads the same.
+  constexpr int n = 1 << 19;
+  SECTION("Gmsh physical names of points and of volumes no element uses") {
+    std::string names;
+    for (int i = 0; i < n; ++i) {
+      names += "0 " + std::to_string(i + 1) + " \"p\"\n3 " + std::to_string(i + 100) + " \"v\"\n";
+    }
+    const fs::path plain = write_temp("names-plain.msh", gmsh_tet);
+    const std::string text = replace(gmsh_tet, "$PhysicalNames\n2\n",
+                                     "$PhysicalNames\n" + std::to_string(2 + 2 * n) + "\n" + names);
+    const fs::path padded = write_temp("names-padded.msh", text);
+    const auto added = static_cast<std::int64_t>(text.size() - gmsh_tet.size());
+    (void)autan::io::read_mesh(plain);
+    const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+    std::optional<autan::Mesh> mesh;
+    const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(padded); });
+    CAPTURE(before, after, added);
+    CHECK(after - before <= added + (std::int64_t{1} << 20));
+    CHECK(std::ranges::any_of(mesh->face_zones(), [](const auto& z) { return z.name == "base"; }));
+    CHECK(std::ranges::any_of(mesh->cell_zones(),
+                              [](const auto& z) { return z.name == "solid-block"; }));
+  }
+  SECTION("polyMesh boundary entries the reader does not use") {
+    const fs::path dir = single_hex_polymesh();
+    (void)autan::io::read_mesh(dir);
+    const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(dir); });
+    std::string entries;
+    for (int i = 0; i < n; ++i) entries += "        k" + std::to_string(i) + " 0;\n";
+    const std::string boundary = foam_header("ascii", "polyBoundaryMesh", "boundary") +
+                                 "1\n(\n    walls\n    {\n        type wall;\n" + entries +
+                                 "        nFaces 6;\n        startFace 0;\n    }\n)\n";
+    write_temp("single-hex/boundary", boundary);
+    const auto added = static_cast<std::int64_t>(entries.size());
+    std::optional<autan::Mesh> mesh;
+    const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(dir); });
+    CAPTURE(before, after, added);
+    CHECK(after - before <= added + (std::int64_t{1} << 20));
+    CHECK(std::ranges::any_of(mesh->face_zones(), [](const auto& z) { return z.name == "walls"; }));
+  }
+}
+#endif

@@ -571,8 +571,9 @@ TEST_CASE("Zone names outside the node-name rule survive a write and read", "[cg
 
 TEST_CASE("Point and edge sections are skipped, and the ids after them still resolve", "[cgns]") {
   // mesh.md, Readers (CGNS): BAR_2 and NODE elements carry nothing the mesh uses. A tet whose
-  // face (1, 2, 3) a BC "wall" names by its element id, without and with three edges before that
-  // face, in a BAR_2 section or a MIXED one: the same mesh, the face still found by its id.
+  // face (1, 2, 3) a BC "wall" names by its element id, without and with three elements before
+  // that face, edges in a BAR_2 section or a point and two edges in a MIXED one: the same mesh,
+  // the face still found by its id.
   enum class Edges : std::uint8_t { none, section, mixed };
   const auto write = [](Edges edges) {
     const char* name = edges == Edges::none      ? "no-edges.cgns"
@@ -588,9 +589,9 @@ TEST_CASE("Point and edge sections are skipped, and the ids after them still res
                                  bars.data(), &section) == CG_OK);
         next += 3;
       } else if (edges == Edges::mixed) {
-        const cgsize_t bar = CGNS_ENUMV(BAR_2);
-        const std::array<cgsize_t, 9> bars{bar, 1, 2, bar, 2, 3, bar, 3, 1};
-        const std::array<cgsize_t, 4> offsets{0, 3, 6, 9};
+        const cgsize_t bar = CGNS_ENUMV(BAR_2), node = CGNS_ENUMV(NODE);
+        const std::array<cgsize_t, 8> bars{node, 1, bar, 2, 3, bar, 3, 1};
+        const std::array<cgsize_t, 4> offsets{0, 2, 5, 8};
         REQUIRE(cg_poly_section_write(fn, base, 1, "Edges", CGNS_ENUMV(MIXED), next, next + 2, 0,
                                       bars.data(), offsets.data(), &section) == CG_OK);
         next += 3;
@@ -865,6 +866,26 @@ TEST_CASE("A start solution holds only what the writer writes for its mesh", "[c
       .zones = static_cast<std::int64_t>(zones.boundary.size() + zones.cell.size()),
       .periodic_pairs = static_cast<std::int64_t>(mesh.periodic_pairs().size())};
   autan::io::check_start_solution(file, limits);
+  {
+    // More nodes than a mesh file may hold, as user data the writer never writes.
+    const fs::path crowded = temp_dir() / "start-crowded.cgns";
+    fs::copy_file(file, crowded, fs::copy_options::overwrite_existing);
+    const std::int64_t n = autan::io::cgns_logical_bytes(crowded).nodes;
+    int fn = 0;
+    REQUIRE(cg_open(crowded.string().c_str(), CG_MODE_MODIFY, &fn) == CG_OK);
+    for (std::int64_t i = n; i <= 16384; ++i) {
+      REQUIRE(cg_goto(fn, 1, "end") == CG_OK);
+      REQUIRE(cg_user_data_write(("u" + std::to_string(i)).c_str()) == CG_OK);
+    }
+    REQUIRE(cg_close(fn) == CG_OK);
+    REQUIRE(autan::io::cgns_logical_bytes(crowded).nodes == 16385);
+    try {
+      autan::io::check_start_solution(crowded, limits);
+      FAIL("expected E0132");
+    } catch (const autan::Error& e) {
+      CHECK(e.code() == autan::ErrorCode::io_malformed);
+    }
+  }
   const hid_t h5 = H5Fopen(file.string().c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
   REQUIRE(h5 >= 0);
   const char* path = "/Base/Zone/GridCoordinates/CoordinateX/ data";
@@ -944,28 +965,7 @@ TEST_CASE("A CGNS file's logical bytes do not depend on its compression", "[cgns
 }
 
 #if defined(__linux__)
-#include <malloc.h>
-
 namespace {
-
-// A /proc/self/status field, in bytes.
-std::int64_t status_bytes(const std::string& key) {
-  std::ifstream in("/proc/self/status");
-  for (std::string line; std::getline(in, line);) {
-    if (line.rfind(key + ":", 0) == 0) return std::stoll(line.substr(key.size() + 1)) * 1024;
-  }
-  return -1;
-}
-
-// The peak resident memory `run` adds while it runs.
-template <class Run>
-std::int64_t peak_of(const Run& run) {
-  malloc_trim(0);  // freed memory the allocator kept would otherwise hide what `run` allocates
-  const std::int64_t before = status_bytes("VmRSS");
-  std::ofstream("/proc/self/clear_refs") << "5";  // VmHWM := VmRSS
-  run();
-  return status_bytes("VmHWM") - before;
-}
 
 // The peak resident memory cg_open of `file` adds, until cg_close.
 std::int64_t open_peak(const fs::path& file) {
@@ -979,8 +979,9 @@ std::int64_t open_peak(const fs::path& file) {
 enum class Random { none, all, half };
 
 // `file`'s dataset at `path` rewritten as one deflated chunk, its bytes, all or the first half,
-// replaced by random ones, which deflate cannot shrink. Returns its stored size.
-std::int64_t deflate(const fs::path& file, const char* path, Random random) {
+// replaced by random ones, which deflate cannot shrink; with `chunk` values beyond its extent, in
+// a chunk that large, the dataset's extent unlimited. Returns its stored size.
+std::int64_t deflate(const fs::path& file, const char* path, Random random, hsize_t chunk = 0) {
   const hid_t h5 = H5Fopen(file.string().c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
   REQUIRE(h5 >= 0);
   const hid_t old = H5Dopen2(h5, path, H5P_DEFAULT);
@@ -998,15 +999,18 @@ std::int64_t deflate(const fs::path& file, const char* path, Random random) {
   }
   REQUIRE(H5Ldelete(h5, path, H5P_DEFAULT) >= 0);
   const hid_t properties = H5Pcreate(H5P_DATASET_CREATE);
-  const hsize_t chunk = n;
+  if (chunk == 0) chunk = n;
   H5Pset_chunk(properties, 1, &chunk);
   H5Pset_deflate(properties, 9);
-  const hid_t dataset = H5Dcreate2(h5, path, type, space, H5P_DEFAULT, properties, H5P_DEFAULT);
+  const hsize_t extent = n, unlimited = H5S_UNLIMITED;
+  const hid_t layout = H5Screate_simple(1, &extent, chunk > n ? &unlimited : nullptr);
+  const hid_t dataset = H5Dcreate2(h5, path, type, layout, H5P_DEFAULT, properties, H5P_DEFAULT);
   REQUIRE(dataset >= 0);
   REQUIRE(H5Dwrite(dataset, type, H5S_ALL, H5S_ALL, H5P_DEFAULT, bytes.data()) >= 0);
   const auto stored = static_cast<std::int64_t>(H5Dget_storage_size(dataset));
   H5Dclose(dataset);
   H5Pclose(properties);
+  H5Sclose(layout);
   H5Sclose(space);
   H5Tclose(type);
   H5Fclose(h5);
@@ -1054,6 +1058,21 @@ TEST_CASE(
       CHECK(added > logical.descriptors + caches);
     }
   }
+  SECTION("a short descriptor in one large deflated chunk") {
+    // HDF5 inflates the whole chunk, 128 MiB, for the descriptor's 15 bytes.
+    const std::int64_t baseline = open_peak(tet("about-none.cgns", 0));
+    constexpr hsize_t chunk = hsize_t{1} << 27;
+    const fs::path file = tet("about-chunk.cgns", 15);
+    const std::int64_t stored = deflate(file, "/Base/About/ data", Random::none, chunk);
+    const auto logical = autan::io::cgns_logical_bytes(file);
+    CHECK(logical.descriptors == 15);
+    CHECK(logical.filtered == 2 * static_cast<std::int64_t>(chunk) + stored);
+    const std::int64_t added = open_peak(file) - baseline;
+    CAPTURE(added, stored);
+    CHECK(added <= logical.descriptors + logical.filtered + caches);
+    // The dataset's extent alone would not bound it.
+    CHECK(added > logical.descriptors + 2 * 15 + stored + caches);
+  }
   SECTION("a deflated coordinate array, read with the mesh") {
     const autan::Mesh mesh = autan::assemble(
         autan::to_face_based(autan::test::box(80, autan::test::BoxFill::hexa, 0.2)));
@@ -1098,5 +1117,89 @@ TEST_CASE("Reading a MIXED section costs the elements it keeps, not its points a
   const std::int64_t after = peak_of([&] { CHECK(autan::io::read_mesh(padded).n_cells() == 1); });
   CAPTURE(before, after);
   CHECK(after - before <= buffers + caches);
+}
+TEST_CASE("Reading a CGNS file costs at most 1 MiB and 16 KiB a node, up to 16 384 nodes",
+          "[cgns]") {
+  // mesh.md, Memory of a CGNS read: cg_open allocates for every node it parses; families,
+  // sections, BCs, user data and descriptors mixed up to the limit stay within the bound, and one
+  // node more is refused before cg_open, at the cost of the walk alone.
+  fs::create_directories(temp_dir());
+  constexpr std::int64_t limit = 16384;
+  const fs::path plain =
+      cgns_file("nodes-none.cgns", [](int fn, int base) { unstructured_tet(fn, base, "Zone"); });
+  const std::int64_t n0 = autan::io::cgns_logical_bytes(plain).nodes;
+  const auto build = [&](const std::string& name, std::int64_t nodes) {
+    const fs::path file = cgns_file(name, [&](int fn, int base) {
+      unstructured_tet(fn, base, "Zone");
+      const std::array<cgsize_t, 2> bar{1, 2};
+      int section = 0, bc = 0, family = 0;
+      REQUIRE(cg_section_write(fn, base, 1, "Edge", CGNS_ENUMV(BAR_2), 2, 2, 0, bar.data(),
+                               &section) == CG_OK);
+      // Round robin of the kinds, 9 nodes a round (a section and a BC are 3 each), then
+      // families for the rest.
+      std::int64_t n = n0 + 4, i = 0;  // the edge section and ZoneBC_t's first BC
+      for (; n + 9 <= nodes; n += 9, ++i) {
+        const std::string tag = std::to_string(i);
+        REQUIRE(cg_family_write(fn, base, ("f" + tag).c_str(), &family) == CG_OK);
+        REQUIRE(cg_goto(fn, base, "end") == CG_OK);
+        REQUIRE(cg_descriptor_write(("d" + tag).c_str(), "a") == CG_OK);
+        REQUIRE(cg_goto(fn, base, "end") == CG_OK);
+        REQUIRE(cg_user_data_write(("u" + tag).c_str()) == CG_OK);
+        REQUIRE(cg_section_write(fn, base, 1, ("s" + tag).c_str(), CGNS_ENUMV(BAR_2), 3 + i, 3 + i,
+                                 0, bar.data(), &section) == CG_OK);
+        const std::array<cgsize_t, 2> range{2, 2};
+        REQUIRE(cg_boco_write(fn, base, 1, ("b" + tag).c_str(), CGNS_ENUMV(BCWall),
+                              CGNS_ENUMV(ElementRange), 2, range.data(), &bc) == CG_OK);
+      }
+      for (; n < nodes; ++n, ++i) {
+        REQUIRE(cg_family_write(fn, base, ("g" + std::to_string(i)).c_str(), &family) == CG_OK);
+      }
+    });
+    return file;
+  };
+  const fs::path full = build("nodes-limit.cgns", limit);
+  const std::int64_t nodes = autan::io::cgns_logical_bytes(full).nodes;
+  REQUIRE(nodes == limit);
+  (void)autan::io::read_mesh(plain);  // the libraries' first-use setup, outside both peaks
+  const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+  const std::int64_t after = peak_of([&] { CHECK(autan::io::read_mesh(full).n_cells() == 1); });
+  CAPTURE(before, after, nodes);
+  CHECK(after - before <= (std::int64_t{1} << 20) + (std::int64_t{16} << 10) * (nodes - n0));
+  const fs::path over = build("nodes-over.cgns", limit + 1);
+  REQUIRE(autan::io::cgns_logical_bytes(over).nodes == limit + 1);
+  constexpr std::int64_t caches = (std::int64_t{4} << 20) + (std::int64_t{8} << 20) + (64 << 10);
+  const std::int64_t refused =
+      peak_of([&] { require_error(autan::ErrorCode::io_unsupported, over); });
+  CHECK(refused <= (std::int64_t{1} << 20) + caches);
+}
+
+TEST_CASE("A BC range over points and edges is never expanded", "[cgns]") {
+  // mesh.md, Readers: a range of points or edges labels nothing; the reader judges it id by id.
+  // 2^22 skipped edges under one BC cost what one does, not 8 bytes each.
+  fs::create_directories(temp_dir());
+  constexpr cgsize_t edges = cgsize_t{1} << 22;
+  const auto with_bc = [&](const std::string& name, cgsize_t last) {
+    return cgns_file(name, [&](int fn, int base) {
+      unstructured_tet(fn, base, "Zone");
+      std::vector<cgsize_t> bar(2 * static_cast<std::size_t>(edges));
+      for (std::size_t e = 0; e < bar.size(); e += 2) {
+        bar[e] = 1;
+        bar[e + 1] = 2;
+      }
+      int section = 0, bc = 0;
+      REQUIRE(cg_section_write(fn, base, 1, "Edges", CGNS_ENUMV(BAR_2), 2, edges + 1, 0, bar.data(),
+                               &section) == CG_OK);
+      const std::array<cgsize_t, 2> range{2, last};
+      REQUIRE(cg_boco_write(fn, base, 1, "edges", CGNS_ENUMV(BCWall), CGNS_ENUMV(ElementRange), 2,
+                            range.data(), &bc) == CG_OK);
+    });
+  };
+  const fs::path one = with_bc("range-one.cgns", 2);
+  const fs::path all = with_bc("range-all.cgns", edges + 1);
+  (void)autan::io::read_mesh(one);  // the libraries' first-use setup, outside both peaks
+  const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(one); });
+  const std::int64_t after = peak_of([&] { CHECK(autan::io::read_mesh(all).n_cells() == 1); });
+  CAPTURE(before, after);
+  CHECK(after - before <= std::int64_t{1} << 20);  // the ids would be 32 MiB
 }
 #endif

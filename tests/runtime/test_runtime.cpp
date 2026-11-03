@@ -1236,6 +1236,17 @@ TEST_CASE("An initial-state file gives each fluid cell its state", "[runtime]") 
     nested["centroids"][0] = Json::array({Json{{"values", Json::array()}}});
     require_error(run(with_initial_state(input(inviscid), nested)), "E0508");
   }
+  SECTION("E0508: an oracle over 4096 bytes") {
+    // initial-state.md: the oracle, as every member name, at most 4096 bytes.
+    Json long_oracle = state;
+    long_oracle["oracle"] = std::string(4097, 'o');
+    require_error(run(with_initial_state(input(inviscid), long_oracle)), "E0508");
+    Json longest = state;
+    longest["oracle"] = std::string(4096, 'o');
+    const Outcome at_limit = run(with_initial_state(input(inviscid), longest));
+    INFO(at_limit.err);
+    CHECK(at_limit.status == ExitStatus::finished);
+  }
   SECTION("E0508: a member twice, the last empty") {
     for (const char* member : {"centroids", "values"}) {
       CAPTURE(member);
@@ -1624,6 +1635,17 @@ TEST_CASE("Face states that do not fit the case exit 2 before any directory", "[
     require_error(run(ringleb_input([](Json& s) { s["extra"] = 1; })), "E0420");
     require_error(run(ringleb_input([](Json& s) { s.erase("oracle"); })), "E0420");
     require_error(run(ringleb_input([](Json& s) { s["mesh_sha256"] = "abc"; })), "E0420");
+    // face-states.md: the oracle and every member name, zone names included, at most 4096 bytes;
+    // a longer zone name is refused as text before it is matched with the mesh's zones (E0421).
+    require_error(run(ringleb_input([](Json& s) { s["oracle"] = std::string(4097, 'o'); })),
+                  "E0420");
+    require_error(run(ringleb_input(
+                      [](Json& s) { s["zones"][std::string(4097, 'z')] = s["zones"]["inflow"]; })),
+                  "E0420");
+    const Outcome longest =
+        run(ringleb_input([](Json& s) { s["oracle"] = std::string(4096, 'o'); }));
+    INFO(longest.err);
+    CHECK(longest.status == ExitStatus::finished);
     // Rows, read as they stream: each an array of 3 (centroids) or 5 (values) finite numbers,
     // one per face of the zone.
     for (const auto& edit : std::vector<std::function<void(Json&)>>{

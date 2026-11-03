@@ -11,7 +11,7 @@ Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py
   "schema": "autan.mesh-info/1",
   "source": {"path": "crm-hl.cgns", "format": "cgns", "sha256": "9f2c…", "bytes": 28400000000, "logical_bytes": 28400000000,
              "descriptor_bytes": 0, "zone_names_bytes": 0,
-             "filtered_bytes": 0},
+             "filtered_bytes": 0, "cgns_nodes": 4032},
   "counts": {
     "cells": 48200000, "faces": 151000000, "nodes": 52000000, "source_nodes": 52000000,
     "face_nodes": 512000000,
@@ -45,7 +45,8 @@ Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py
 | `source.logical_bytes` | integer ≥ 0 | What the reader reads, at its stored size uncompressed: for CGNS, each HDF5 dataset it reads (the grid coordinates; element sections but their points and edges, of which it reads the header and range; BCs, connectivities, subregions, families) and every descriptor, each its element count times its element size from the metadata, whatever its compression. For every other format, `bytes`. |
 | `source.descriptor_bytes` | integer ≥ 0 | The logical bytes of every CGNS `Descriptor_t` at any level, which the CGNS library loads when it opens the file and holds until it closes it (part of `logical_bytes`); 0 for other formats. Opening the file costs at most `descriptor_bytes` + `filtered_bytes` + 12 MiB 64 KiB of HDF5 caches ([mesh.md](mesh.md#memory-of-a-cgns-read)). |
 | `source.zone_names_bytes` | integer ≥ 0 | The logical bytes of the `ZoneNames` descriptor, which the reader parses (part of `descriptor_bytes`); 0 when absent and for other formats. |
-| `source.filtered_bytes` | integer ≥ 0 | Of the filtered (compressed) HDF5 datasets of the file, the largest twice-logical plus stored size: what HDF5 holds beside the destination while it reads one ([mesh.md](mesh.md#memory-of-a-cgns-read)); 0 for an unfiltered file and for other formats. |
+| `source.filtered_bytes` | integer ≥ 0 | Of the filtered (compressed) HDF5 datasets of the file, the largest twice the logical size of one chunk (its extent, which may exceed the dataset's) plus the stored size: what HDF5 holds beside the destination while it reads one ([mesh.md](mesh.md#memory-of-a-cgns-read)); 0 for an unfiltered file and for other formats. |
+| `source.cgns_nodes` | integer ≥ 0 | Every node of a CGNS file's tree, for each of which the CGNS library allocates when it opens the file: reading costs at most 1 MiB + 16 KiB per node ([mesh.md](mesh.md#memory-of-a-cgns-read)); at most 16 384, beyond which the reader refuses the file (E0133). 0 for other formats. |
 | `counts.cells`, `counts.faces`, `counts.nodes` | integer ≥ 1 | Global counts after reading, before partitioning. `faces` counts each face once, interior and boundary. |
 | `counts.source_nodes` | integer ≥ `nodes` | The nodes the mesh file holds, those no face uses included: `nodes` counts only the nodes faces use, which assembly keeps ([mesh.md](mesh.md#building-a-mesh)). |
 | `counts.face_nodes` | integer ≥ 3 × `faces` | The nodes of every face, summed over the faces: the length of the face-to-node connectivity, which sizes the mesh in memory ([mesh.md](mesh.md)). |

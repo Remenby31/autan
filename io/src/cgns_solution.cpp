@@ -72,6 +72,9 @@ void check_start_solution(const std::filesystem::path& file, const StartLimits& 
     }
   };
   walk(walk, tree.root(), "");
+  if (const std::int64_t n = total(count_nodes(tree)); n > max_cgns_nodes) {
+    refuse(std::to_string(n) + " nodes (at most " + std::to_string(max_cgns_nodes) + ")");
+  }
   if (largest_filtered_bytes(file) > 0) refuse("a filtered (compressed) dataset");
 }
 

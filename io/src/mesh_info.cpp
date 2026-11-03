@@ -170,7 +170,7 @@ LogicalBytes mesh_logical_bytes(const fs::path& path) {
 #endif
     }
   }
-  return {.total = mesh_bytes(path), .descriptors = 0, .zone_names = 0, .filtered = 0};
+  return {.total = mesh_bytes(path), .descriptors = 0, .zone_names = 0, .filtered = 0, .nodes = 0};
 }
 
 std::string mesh_hash(const fs::path& path) {
@@ -269,7 +269,8 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256, std::int
         {"logical_bytes", logical.total},
         {"descriptor_bytes", logical.descriptors},
         {"zone_names_bytes", logical.zone_names},
-        {"filtered_bytes", logical.filtered}}},
+        {"filtered_bytes", logical.filtered},
+        {"cgns_nodes", logical.nodes}}},
       {"counts",
        {{"cells", mesh.n_cells()},
         {"faces", mesh.n_faces()},

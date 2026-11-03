@@ -391,11 +391,17 @@ std::size_t ordinal(const StateDocument& object, std::string_view key) {
   return std::string_view::npos;
 }
 
+// A free text of a state file, the oracle and every member name: at most 4096 bytes in UTF-8
+// (case-schema.md#free-texts, face-states.md, initial-state.md).
+constexpr std::size_t max_text_bytes = 4096;
+
 // `text` parsed (discarded if not JSON), every "centroids" and "values" array member streamed into
 // `streamed` under the ordinals of the members leading to it and left empty in the document:
 // what a state file holds in memory is then its text, 8 bytes per number of its rows, and its
-// other members once. `duplicate` is set when an object has a member twice.
-StateDocument parse_rows(const std::string& text, RowMap& streamed, bool& duplicate) {
+// other members once. `duplicate` is set when an object has a member twice; `longest` is the
+// longest member name.
+StateDocument parse_rows(const std::string& text, RowMap& streamed, bool& duplicate,
+                         std::size_t& longest) {
   enum class Kind : std::uint8_t { plain, rows, row };
   enum class Member : std::uint8_t { other, centroids, values };
   constexpr std::size_t none = std::string_view::npos;
@@ -415,6 +421,7 @@ StateDocument parse_rows(const std::string& text, RowMap& streamed, bool& duplic
     switch (event) {
       case Event::key: {
         const auto& key = parsed.get_ref<const std::string&>();
+        longest = std::max(longest, key.size());
         pending = key == "centroids" ? Member::centroids
                   : key == "values"  ? Member::values
                                      : Member::other;
@@ -510,7 +517,9 @@ std::map<std::string_view, ZoneStates> face_state_zones(const StateDocument& doc
     return doc.contains(key) && doc[key].is_string() ? doc[key].get<std::string>() : std::string();
   };
   if (string_at("schema") != "autan.face-states/1") return fail("schema");
-  if (!doc.contains("oracle") || !doc["oracle"].is_string()) return fail("oracle");
+  if (!doc.contains("oracle") || !doc["oracle"].is_string() ||
+      doc["oracle"].get_ref<const std::string&>().size() > max_text_bytes)
+    return fail("oracle");
   const std::string mesh = string_at("mesh_sha256");
   if (mesh.size() != 64 || mesh.find_first_not_of("0123456789abcdef") != std::string::npos)
     return fail("mesh_sha256");
@@ -576,9 +585,13 @@ void load_states(Prepared& p) {
     }
     RowMap rows;
     bool duplicate = false;
-    StateDocument doc = parse_rows(bytes, rows, duplicate);
+    std::size_t longest = 0;
+    StateDocument doc = parse_rows(bytes, rows, duplicate, longest);
     std::string why = doc.is_discarded() ? "not JSON" : "";
     if (why.empty() && duplicate) why = "an object has a member twice";
+    if (why.empty() && longest > max_text_bytes) {
+      why = "a member name of " + std::to_string(longest) + " bytes (at most 4096)";
+    }
     auto zones =
         why.empty() ? face_state_zones(doc, rows, why) : std::map<std::string_view, ZoneStates>{};
     if (!why.empty()) {
@@ -679,13 +692,17 @@ void load_initial(Prepared& p) {
   }
   RowMap streamed;
   bool duplicate = false;
-  StateDocument doc = parse_rows(bytes, streamed, duplicate);
+  std::size_t longest = 0;
+  StateDocument doc = parse_rows(bytes, streamed, duplicate, longest);
   const auto invalid_document = [&](const std::string& why) {
     fail("E0508", "'" + file.path + "' is not an autan.initial-state/1 document: " + why,
          {{"problem", why}});
   };
   if (doc.is_discarded() || !doc.is_object()) invalid_document("not a JSON object");
   if (duplicate) invalid_document("an object has a member twice");
+  if (longest > max_text_bytes) {
+    invalid_document("a member name of " + std::to_string(longest) + " bytes (at most 4096)");
+  }
   for (const auto& [key, value] : doc.items()) {
     if (key != "schema" && key != "oracle" && key != "mesh_sha256" && key != "variables" &&
         key != "cells" && key != "centroids" && key != "values")
@@ -693,7 +710,9 @@ void load_initial(Prepared& p) {
   }
   if (!doc.contains("schema") || doc["schema"] != "autan.initial-state/1")
     invalid_document("schema");
-  if (!doc.contains("oracle") || !doc["oracle"].is_string()) invalid_document("oracle");
+  if (!doc.contains("oracle") || !doc["oracle"].is_string() ||
+      doc["oracle"].get_ref<const std::string&>().size() > max_text_bytes)
+    invalid_document("oracle");
   if (!doc.contains("mesh_sha256") || !doc["mesh_sha256"].is_string() ||
       doc["mesh_sha256"].get<std::string>().size() != 64 ||
       doc["mesh_sha256"].get<std::string>().find_first_not_of("0123456789abcdef") !=

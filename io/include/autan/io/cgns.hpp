@@ -25,9 +25,11 @@ struct LogicalBytes {
   std::int64_t total = 0;
   std::int64_t descriptors = 0;
   std::int64_t zone_names = 0;
-  /// The largest twice-logical plus stored size of a filtered (compressed) dataset: what HDF5
-  /// holds beside the destination while it reads one. 0 for an unfiltered file.
+  /// Of the filtered (compressed) datasets, the largest twice-chunk-logical plus stored size: what
+  /// HDF5 holds beside the destination while it reads one. 0 for an unfiltered file.
   std::int64_t filtered = 0;
+  /// Every node of the file's tree, for each of which the CGNS library allocates at cg_open.
+  std::int64_t nodes = 0;
 };
 
 /// LogicalBytes of a CGNS file, from its node metadata only, through cgio (no cg_open).
@@ -82,7 +84,8 @@ struct StartLimits {
 /// descriptor or family beyond what results.md's writer writes for a mesh of `limits`:
 /// RunMetadata of at most 64 KiB and ZoneNames of at most (zones + 1) × 25 600 bytes in the base,
 /// at most 2 × periodic_pairs PeriodicTranslation of at most 4096 bytes, no other descriptor,
-/// at most `zones` Family_t, no filtered (compressed) dataset. Throws E0132 otherwise.
+/// at most `zones` Family_t, no filtered (compressed) dataset, at most 16 384 nodes. Throws E0132
+/// otherwise.
 void check_start_solution(const std::filesystem::path& file, const StartLimits& limits);
 
 /// The cells of a solution's zone, through cgio alone (no cg_open).

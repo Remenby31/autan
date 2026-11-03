@@ -190,19 +190,36 @@ class GmshReader {
     c_.advance(at + end.size() - c_.position());
   }
 
+  // $PhysicalNames comes before the elements that use them: the section is checked here and
+  // read again once the zones are known, so that a name no zone takes is never kept.
   void physical_names() {
-    const auto n = c_.integer<std::size_t>(10, "");
+    names_at_ = c_.position();
+    for_each_name(c_, [](int, int, std::string_view) {});
+  }
+
+  template <class Visit>
+  void for_each_name(Cursor& c, const Visit& visit) const {
+    const auto n = c.integer<std::size_t>(10, "");
     for (std::size_t i = 0; i < n; ++i) {
-      const int dim = c_.integer<int>(10, "");
-      const int tag = c_.integer<int>(10, "");
-      if (tag <= 0) c_.fail("non-positive physical tag " + std::to_string(tag));
-      c_.skip_space();
-      const std::string_view name = c_.line();
+      const int dim = c.integer<int>(10, "");
+      const int tag = c.integer<int>(10, "");
+      if (tag <= 0) c.fail("non-positive physical tag " + std::to_string(tag));
+      c.skip_space();
+      const std::string_view name = c.line();
       if (name.size() < 2 || name.front() != '"' || name.back() != '"')
-        c_.fail("unquoted physical name");
-      check_text(c_.path(), "physical name", name.size() - 2);
-      names_[{dim, tag}] = std::string(name.substr(1, name.size() - 2));
+        c.fail("unquoted physical name");
+      check_text(c.path(), "physical name", name.size() - 2);
+      visit(dim, tag, name.substr(1, name.size() - 2));
     }
+  }
+
+  // Every physical name, as for_each_name gives them, when the file has the section.
+  template <class Visit>
+  void names(const Visit& visit) const {
+    if (names_at_ == std::string::npos) return;
+    Cursor c(data_, c_.path());
+    c.advance(names_at_);
+    for_each_name(c, visit);
   }
 
   // Integers stored as int in binary files, ASCII text otherwise.
@@ -362,11 +379,6 @@ class GmshReader {
     if (binary_) c_.skip_space();
   }
 
-  std::string zone_name(int dim, int physical) {
-    const auto it = names_.find({dim, physical});
-    return it != names_.end() ? it->second : std::to_string(physical);
-  }
-
   index_t cell_zone(int physical) {
     const auto it = cell_zone_index_.find(physical);
     if (it != cell_zone_index_.end()) return it->second;
@@ -404,9 +416,12 @@ class GmshReader {
     if (mesh_.cell_zone.empty()) c_.fail("no volume elements");
     // Declared surface groups are zones even without elements, so that their
     // names stay visible; names are resolved once every section is read.
-    for (const auto& [key, name] : names_) {
-      if (key.first == 2) (void)face_zone(key.second);
-    }
+    std::vector<int> surfaces;  // each a zone: what MeshInfo's zones count
+    names([&](int dim, int tag, std::string_view) {
+      if (dim == 2) surfaces.push_back(tag);
+    });
+    std::ranges::sort(surfaces);
+    for (const int tag : surfaces) (void)face_zone(tag);
     for (const auto& [key, physical] : entity_physical_) {
       if (key.first == 2 && physical != 0) (void)face_zone(physical);
     }
@@ -416,13 +431,20 @@ class GmshReader {
       mesh_.face_zones[static_cast<std::size_t>(b)].kind = BcKind::periodic;
       mesh_.periodic.push_back({.zone_a = a, .zone_b = b, .translation = t});
     }
-    for (auto& zone : mesh_.cell_zones) {
-      if (zone.provenance.source_id > 0)
-        zone.name = zone_name(3, static_cast<int>(zone.provenance.source_id));
-    }
-    for (auto& zone : mesh_.face_zones) {
-      zone.name = zone_name(2, static_cast<int>(zone.provenance.source_id));
-    }
+    // A name names the zone of its group, the last one given winning, as a map would keep it.
+    names([&](int dim, int tag, std::string_view name) {
+      if (dim == 3) {
+        const auto it = cell_zone_index_.find(tag);
+        if (it != cell_zone_index_.end()) {
+          mesh_.cell_zones[static_cast<std::size_t>(it->second)].name = std::string(name);
+        }
+      } else if (dim == 2) {
+        const auto it = face_zone_index_.find(tag);
+        if (it != face_zone_index_.end()) {
+          mesh_.face_zones[static_cast<std::size_t>(it->second)].name = std::string(name);
+        }
+      }
+    });
     const std::size_t n = tags_.size();
     mesh_.x.resize(n);
     mesh_.y.resize(n);
@@ -439,7 +461,7 @@ class GmshReader {
   std::string data_;
   Cursor c_;
   bool binary_ = false;
-  std::map<std::pair<int, int>, std::string> names_;
+  std::size_t names_at_ = std::string::npos;  // where $PhysicalNames starts, when given
   std::map<std::pair<int, int>, int> entity_physical_;
   std::map<std::pair<int, int>, std::array<double, 3>> periodic_links_;  // (master, slave) groups
   std::vector<std::uint64_t> tags_;

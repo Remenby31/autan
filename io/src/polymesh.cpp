@@ -340,8 +340,10 @@ std::vector<NamedDict> read_dict_list(FoamFile& file, std::string_view label_key
         c.expect(';');
       } else if (c.peek() == '{') {
         file.skip_sub_dict();
-      } else {
+      } else if (key == "type" || key == "startFace" || key == "nFaces") {
         d.values[key] = file.value();
+      } else {
+        (void)file.value();  // read past, not kept: the reader uses no other entry
       }
     }
     out.push_back(std::move(d));

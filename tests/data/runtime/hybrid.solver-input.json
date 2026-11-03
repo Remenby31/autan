@@ -20,7 +20,8 @@
       "logical_bytes": 20388,
       "descriptor_bytes": 0,
       "zone_names_bytes": 0,
-      "filtered_bytes": 0
+      "filtered_bytes": 0,
+      "cgns_nodes": 0
     },
     "counts": {
       "cells": 216,

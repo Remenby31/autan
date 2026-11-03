@@ -122,8 +122,19 @@ class Reader {
   explicit Reader(const fs::path& path)
       : path_(path.string()), file_((check_links(path), path), CG_MODE_READ) {}
 
-  // E0134 before the library resolves any link or reads any data.
-  static void check_links(const fs::path& path) { reject_outside_data(path); }
+  // E0134 before the library resolves any link or reads any data; E0133 before it allocates for
+  // more nodes than max_cgns_nodes.
+  static void check_links(const fs::path& path) {
+    reject_outside_data(path);
+    const auto labels = count_nodes(CgioTree(path));
+    if (const std::int64_t n = total(labels); n > max_cgns_nodes) {
+      const auto most =
+          std::ranges::max_element(labels, {}, [](const auto& l) { return l.second; });
+      unsupported(path.string(), std::to_string(n) + " nodes, " + std::to_string(most->second) +
+                                     " of them " + most->first + " (at most " +
+                                     std::to_string(max_cgns_nodes) + ")");
+    }
+  }
 
   MeshInput read() {
     fn_ = file_.handle();
@@ -373,7 +384,7 @@ class Reader {
       const cgsize_t code = *first;
       ++first;
       int nodes = 0;
-      if (code <= CGNS_ENUMV(NODE) || code >= CGNS_ENUMV(MIXED) ||
+      if (code < CGNS_ENUMV(NODE) || code >= CGNS_ENUMV(MIXED) ||
           cg_npe(static_cast<CGNS_ENUMT(ElementType_t)>(code), &nodes) != CG_OK || nodes <= 0 ||
           last - first != nodes) {
         malformed(path_, std::string("MIXED element of section '") + name + "' is invalid");
@@ -429,6 +440,12 @@ class Reader {
       if (points.size() != 2 || points[1] < points[0] || points[0] < 1) {
         malformed(path_, "invalid range in '" + owner + "'");
       }
+      // A range of points or edges labels nothing: judged id by id, never expanded.
+      int dimension = -1;
+      for (cgsize_t i = points[0]; i <= points[1]; ++i) {
+        dimension = merged_dimension(dimension, i, owner.c_str());
+      }
+      if (dimension <= 1) return {};
       std::vector<cgsize_t> ids;
       for (cgsize_t i = points[0]; i <= points[1]; ++i) ids.push_back(i);
       return ids;
@@ -494,21 +511,24 @@ class Reader {
   // faces, 1 or less for points and edges.
   int dimension_of(const std::vector<cgsize_t>& ids, const char* owner) const {
     int dimension = -1;
-    for (const cgsize_t id : ids) {
-      if (element(id) == nullptr) {
-        malformed(path_, std::string("'") + owner + "' refers to element " + std::to_string(id) +
-                             " that does not exist");
-      }
-      const auto type = element(id)->type;
-      const int d = (type == CGNS_ENUMV(NFACE_n) || cell_shape(type))    ? 3
-                    : (type == CGNS_ENUMV(NGON_n) || is_face_type(type)) ? 2
-                                                                         : 1;
-      if (dimension != -1 && d != dimension) {
-        malformed(path_, std::string("'") + owner + "' mixes elements of different dimensions");
-      }
-      dimension = d;
-    }
+    for (const cgsize_t id : ids) dimension = merged_dimension(dimension, id, owner);
     return dimension;
+  }
+
+  // `dimension` (-1 for none yet) with that of element `id`, which must agree with it.
+  int merged_dimension(int dimension, cgsize_t id, const char* owner) const {
+    if (element(id) == nullptr) {
+      malformed(path_, std::string("'") + owner + "' refers to element " + std::to_string(id) +
+                           " that does not exist");
+    }
+    const auto type = element(id)->type;
+    const int d = (type == CGNS_ENUMV(NFACE_n) || cell_shape(type))    ? 3
+                  : (type == CGNS_ENUMV(NGON_n) || is_face_type(type)) ? 2
+                                                                       : 1;
+    if (dimension != -1 && d != dimension) {
+      malformed(path_, std::string("'") + owner + "' mixes elements of different dimensions");
+    }
+    return d;
   }
 
   void read_subregions() {
@@ -1053,6 +1073,7 @@ LogicalBytes cgns_logical_bytes(const fs::path& file) {
   reject_outside_data(file);
   const CgioTree tree(file);
   LogicalBytes out;
+  out.nodes = total(count_nodes(tree));
   // Every Descriptor_t, at any level: cg_open loads them all.
   const auto descriptors = [&](const auto& self, double node) -> void {
     for (const double child : tree.children(node)) {

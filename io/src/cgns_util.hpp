@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -180,5 +181,29 @@ class CgioTree {
   double root_ = 0.0;
   bool owned_ = false;
 };
+
+// The CGNS library allocates for every node of the tree when it opens a file, before the reader
+// can drop any: at most 1 MiB + 16 KiB a node, read_mesh included (mesh.md, Memory of a CGNS read).
+// A file of more nodes than four times the most a real grid holds (CRM-HL: 4032) is refused.
+constexpr std::int64_t max_cgns_nodes = 16384;
+
+// Every node of `tree`, counted by label.
+inline std::map<std::string, std::int64_t> count_nodes(const CgioTree& tree) {
+  std::map<std::string, std::int64_t> labels;
+  const auto walk = [&](const auto& self, double node) -> void {
+    for (const double child : tree.children(node)) {
+      ++labels[tree.label(child)];
+      self(self, child);
+    }
+  };
+  walk(walk, tree.root());
+  return labels;
+}
+
+inline std::int64_t total(const std::map<std::string, std::int64_t>& labels) {
+  std::int64_t n = 0;
+  for (const auto& [label, count] : labels) n += count;
+  return n;
+}
 
 }  // namespace autan::io

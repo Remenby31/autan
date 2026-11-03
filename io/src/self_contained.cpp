@@ -1,6 +1,7 @@
 #include "self_contained.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -155,14 +156,17 @@ std::int64_t largest_filtered_bytes(const std::filesystem::path& file) {
     }
     const hid_t properties = H5Dget_create_plist(dataset);
     if (properties >= 0 && H5Pget_nfilters(properties) > 0) {
-      const hid_t space = H5Dget_space(dataset);
+      // A filter applies to whole chunks: a read inflates each chunk it touches into a buffer of
+      // the chunk's logical size, whatever part of it the dataset's extent covers.
       const hid_t type = H5Dget_type(dataset);
-      const auto logical = static_cast<std::int64_t>(H5Sget_simple_extent_npoints(space)) *
-                           static_cast<std::int64_t>(H5Tget_size(type));
+      std::array<hsize_t, H5S_MAX_RANK> chunk{};
+      const int rank = H5Pget_chunk(properties, H5S_MAX_RANK, chunk.data());
+      std::int64_t logical = rank > 0 ? static_cast<std::int64_t>(H5Tget_size(type)) : 0;
+      for (int d = 0; d < rank; ++d)
+        logical *= static_cast<std::int64_t>(chunk[static_cast<std::size_t>(d)]);
       const auto stored = static_cast<std::int64_t>(H5Dget_storage_size(dataset));
       out.bytes = std::max(out.bytes, 2 * logical + stored);
       H5Tclose(type);
-      H5Sclose(space);
     }
     if (properties >= 0) H5Pclose(properties);
     H5Dclose(dataset);
