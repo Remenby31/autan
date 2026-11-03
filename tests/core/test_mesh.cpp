@@ -2,10 +2,16 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <fstream>
 #include <functional>
 #include <limits>
 #include <string>
 #include <vector>
+
+#if defined(__linux__)
+#include <malloc.h>
+#endif
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -516,3 +522,80 @@ TEST_CASE("A scaled mesh keeps its topology, scales lengths and periodic transla
     }
   }
 }
+
+#if defined(__linux__)
+namespace {
+
+std::int64_t status_bytes(const std::string& key) {
+  std::ifstream in("/proc/self/status");
+  for (std::string line; std::getline(in, line);) {
+    if (line.rfind(key + ":", 0) == 0) return std::stoll(line.substr(key.size() + 1)) * 1024;
+  }
+  return -1;
+}
+
+// The peak resident memory `run` adds while it runs.
+template <class Run>
+std::int64_t peak_of(const Run& run) {
+  malloc_trim(0);
+  const std::int64_t before = status_bytes("VmRSS");
+  std::ofstream("/proc/self/clear_refs") << "5";  // VmHWM := VmRSS
+  run();
+  return status_bytes("VmHWM") - before;
+}
+
+// One cell: a prism over a k-gon, its caps of k nodes, k side quadrilaterals.
+autan::MeshInput polygon_prism(index_t k) {
+  autan::MeshInput in;
+  const double step = 2.0 * std::acos(-1.0) / static_cast<double>(k);
+  for (int level = 0; level < 2; ++level) {
+    for (index_t i = 0; i < k; ++i) {
+      in.x.push_back(std::cos(step * static_cast<double>(i)));
+      in.y.push_back(std::sin(step * static_cast<double>(i)));
+      in.z.push_back(level);
+    }
+  }
+  in.face_node_offsets.push_back(0);
+  const auto close = [&] {
+    in.face_node_offsets.push_back(static_cast<offset_t>(in.face_nodes.size()));
+    in.face_cell0.push_back(0);
+    in.face_cell1.push_back(autan::no_cell);
+    in.face_zone.push_back(0);
+  };
+  for (index_t i = k; i-- > 0;) in.face_nodes.push_back(i);  // bottom, normal -z
+  close();
+  for (index_t i = 0; i < k; ++i) in.face_nodes.push_back(k + i);  // top, normal +z
+  close();
+  for (index_t i = 0; i < k; ++i) {
+    const index_t j = (i + 1) % k;
+    in.face_nodes.insert(in.face_nodes.end(), {i, j, k + j, k + i});
+    close();
+  }
+  in.cell_zone = {0};
+  in.face_zones = {autan::FaceZone{
+      .name = "walls", .bc_type = "wall", .kind = autan::BcKind::wall, .provenance = {}}};
+  in.cell_zones = {autan::CellZone{
+      .name = "fluid", .type = "", .kind = autan::CellKind::unspecified, .provenance = {}}};
+  in.source = autan::MeshSource{.format = "memory", .path = "", .nodes = 0};
+  return in;
+}
+
+}  // namespace
+
+TEST_CASE("Checking that a cell is closed costs 16 bytes an edge of its largest cell", "[mesh]") {
+  // setup-memory.md, Assembly: the edge records are sized once for the cell with the most face
+  // nodes. One cell of 6k edges, 6k just above 2^20: grown edge by edge, they would hold 2^20 and
+  // 2^21 records at once, three times 16 bytes an edge.
+  constexpr index_t k = 174763;
+  const std::int64_t edges = 6 * static_cast<std::int64_t>(k);
+  const autan::MeshInput in = polygon_prism(k);
+  (void)autan::assemble(polygon_prism(3));
+  std::int64_t cells = 0;
+  const std::int64_t peak = peak_of([&] { cells = autan::assemble(in).n_cells(); });
+  CHECK(cells == 1);
+  CAPTURE(peak, edges);
+  // 16 bytes an edge for the records, under 48 for the mesh and assemble's other arrays at this
+  // shape; grown, the records alone would add 32 more at their last reallocation.
+  CHECK(peak <= 64 * edges);
+}
+#endif
