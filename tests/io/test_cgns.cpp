@@ -917,6 +917,95 @@ TEST_CASE("A start solution holds only what the writer writes for its mesh", "[c
   }
 }
 
+namespace {
+
+// mesh-info.md, source.logical_bytes, counted through cgio by the contract's rule: every
+// Descriptor_t, and the datasets the reader reads (the base and zone headers, families,
+// coordinates, BCs, subregions, connectivities, and element sections, of whose points and edges
+// only the header and range), each its dimensions times its type's size.
+std::int64_t logical_total(const fs::path& file) {
+  int cgio = 0;
+  REQUIRE(cgio_open_file(file.string().c_str(), CGIO_MODE_READ, CGIO_FILE_NONE, &cgio) ==
+          CGIO_ERR_NONE);
+  const std::map<std::string, std::int64_t> size{{"C1", 1}, {"B1", 1},  {"I4", 4}, {"U4", 4},
+                                                 {"R4", 4}, {"I8", 8},  {"U8", 8}, {"R8", 8},
+                                                 {"X4", 8}, {"X8", 16}, {"MT", 0}, {"LK", 0}};
+  const auto children = [&](double node) {
+    int n = 0, got = 0;
+    REQUIRE(cgio_number_children(cgio, node, &n) == CGIO_ERR_NONE);
+    std::vector<double> ids(static_cast<std::size_t>(n));
+    if (n > 0) REQUIRE(cgio_children_ids(cgio, node, 1, n, &got, ids.data()) == CGIO_ERR_NONE);
+    ids.resize(static_cast<std::size_t>(got));
+    return ids;
+  };
+  const auto label = [&](double node) {
+    char text[CGIO_MAX_LABEL_LENGTH + 1] = {};
+    REQUIRE(cgio_get_label(cgio, node, text) == CGIO_ERR_NONE);
+    return std::string(text);
+  };
+  const auto bytes = [&](double node) {
+    char type[CGIO_MAX_DATATYPE_LENGTH + 1] = {};
+    int ndims = 0;
+    cgsize_t dims[CGIO_MAX_DIMENSIONS] = {};
+    REQUIRE(cgio_get_data_type(cgio, node, type) == CGIO_ERR_NONE);
+    REQUIRE(cgio_get_dimensions(cgio, node, &ndims, dims) == CGIO_ERR_NONE);
+    if (ndims == 0) return std::int64_t{0};
+    std::int64_t values = 1;
+    for (int d = 0; d < ndims; ++d) values *= dims[d];
+    return values * size.at(type);
+  };
+  std::int64_t total = 0;
+  // Every Descriptor_t, at any level.
+  const auto descriptors = [&](const auto& self, double node) -> void {
+    for (const double c : children(node)) {
+      if (label(c) == "Descriptor_t") total += bytes(c);
+      self(self, c);
+    }
+  };
+  const auto subtree = [&](const auto& self, double node) -> void {
+    total += bytes(node);
+    for (const double c : children(node)) {
+      if (label(c) != "Descriptor_t") self(self, c);
+    }
+  };
+  double root = 0;
+  REQUIRE(cgio_get_root_id(cgio, &root) == CGIO_ERR_NONE);
+  descriptors(descriptors, root);
+  for (const double base : children(root)) {
+    if (label(base) != "CGNSBase_t") continue;
+    total += bytes(base);
+    for (const double node : children(base)) {
+      const std::string kind = label(node);
+      if (kind == "Family_t") subtree(subtree, node);
+      if (kind != "Zone_t") continue;
+      total += bytes(node);
+      for (const double child : children(node)) {
+        const std::string what = label(child);
+        if (what == "ZoneType_t" || what == "GridCoordinates_t" || what == "ZoneBC_t" ||
+            what == "ZoneSubRegion_t" || what == "FamilyName_t" ||
+            what == "ZoneGridConnectivity_t") {
+          subtree(subtree, child);
+        } else if (what == "Elements_t") {
+          std::array<std::int64_t, 2> header{};
+          REQUIRE(cgio_read_all_data_type(cgio, child, "I8", header.data()) == CGIO_ERR_NONE);
+          if (header[0] == CGNS_ENUMV(NODE) || header[0] == CGNS_ENUMV(BAR_2)) {
+            total += bytes(child);
+            for (const double r : children(child)) {
+              if (label(r) == "IndexRange_t") total += bytes(r);
+            }
+          } else {
+            subtree(subtree, child);
+          }
+        }
+      }
+    }
+  }
+  REQUIRE(cgio_close_file(cgio) == CGIO_ERR_NONE);
+  return total;
+}
+
+}  // namespace
+
 TEST_CASE("A CGNS file's logical bytes do not depend on its compression", "[cgns]") {
   // mesh-info.md, source.logical_bytes: each dataset at its element count times its element
   // size. The coordinates of a 12^3 box rewritten as deflated chunks: a smaller file, the same
@@ -956,13 +1045,15 @@ TEST_CASE("A CGNS file's logical bytes do not depend on its compression", "[cgns
     H5Sclose(space);
   }
   H5Fclose(file);
-  CHECK(autan::io::cgns_logical_bytes(packed).total == autan::io::cgns_logical_bytes(plain).total);
+  // The total counted independently by the contract's rule, the same for both files.
+  const std::int64_t expected = logical_total(plain);
+  CHECK(logical_total(packed) == expected);
+  CHECK(autan::io::cgns_logical_bytes(plain).total == expected);
+  CHECK(autan::io::cgns_logical_bytes(packed).total == expected);
+  CHECK(autan::io::mesh_logical_bytes(packed).total == expected);
   CHECK(autan::io::cgns_logical_bytes(plain).filtered == 0);
   CHECK(autan::io::cgns_logical_bytes(packed).filtered == largest);
-  CHECK(autan::io::mesh_logical_bytes(packed).total == autan::io::cgns_logical_bytes(plain).total);
   CHECK(autan::io::read_mesh(packed).n_points() == mesh.n_points());
-  // The coordinates alone are 3 x 13^3 doubles.
-  CHECK(autan::io::cgns_logical_bytes(plain).total > 3 * 13 * 13 * 13 * 8);
 }
 
 #if defined(__linux__)

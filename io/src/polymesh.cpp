@@ -144,54 +144,72 @@ class FoamFile {
 
   // `N(v ...)`, `(v ...)`, `N{v}`; in binary files `N(<raw>)`, or a bare `0`.
   std::vector<std::int64_t> labels() {
+    std::vector<std::int64_t> out;
+    read_labels(&out);
+    return out;
+  }
+
+  // The same list read past, checked but not kept.
+  void skip_labels() { read_labels(nullptr); }
+
+ private:
+  void read_labels(std::vector<std::int64_t>* out) {
     skip_blank(cursor_);
     if (cursor_.accept("List<label>")) skip_blank(cursor_);
     const auto n = list_size();
-    std::vector<std::int64_t> out;
     if (!n) {
       cursor_.expect('(');
-      while (skip_blank(cursor_), cursor_.peek() != ')') out.push_back(label());
+      while (skip_blank(cursor_), cursor_.peek() != ')') {
+        const std::int64_t v = label();
+        if (out != nullptr) out->push_back(v);
+      }
       cursor_.expect(')');
-      return out;
+      return;
     }
     if (cursor_.accept('{')) {
       skip_blank(cursor_);
-      if (*n == 0 && cursor_.accept('}')) return out;
+      if (*n == 0 && cursor_.accept('}')) return;
       if (*n > uniform_most_) cursor_.fail("a uniform list of more labels than the mesh has");
       const std::int64_t v = label();
       skip_blank(cursor_);
       cursor_.expect('}');
-      out.assign(*n, v);
-      return out;
+      if (out != nullptr) out->assign(*n, v);
+      return;
     }
     if (header_.binary) {
       if (*n == 0) {
         if (cursor_.accept('(')) cursor_.expect(')');
-        return out;
+        return;
       }
       cursor_.expect('(');
       cursor_.check_fits(*n, static_cast<std::uint64_t>(header_.label_bytes));
-      out.resize(*n);
-      if (header_.label_bytes == 4) {
+      if (out == nullptr) {
+        cursor_.advance(*n * static_cast<std::size_t>(header_.label_bytes));
+      } else if (header_.label_bytes == 4) {
+        out->resize(*n);
         std::vector<std::int32_t> raw(*n);
         cursor_.binary(raw.data(), *n);
-        std::ranges::copy(raw, out.begin());
+        std::ranges::copy(raw, out->begin());
       } else {
-        cursor_.binary(out.data(), *n);
+        out->resize(*n);
+        cursor_.binary(out->data(), *n);
       }
       skip_blank(cursor_);
       cursor_.expect(')');
-      return out;
+      return;
     }
     cursor_.expect('(');
     cursor_.check_fits(*n, 2);
-    out.resize(*n);
-    for (auto& v : out) v = label();
+    if (out != nullptr) out->resize(*n);
+    for (std::size_t i = 0; i < *n; ++i) {
+      const std::int64_t v = label();
+      if (out != nullptr) (*out)[i] = v;
+    }
     skip_blank(cursor_);
     cursor_.expect(')');
-    return out;
   }
 
+ public:
   std::vector<double> points() {
     const auto n = list_size();
     if (!n) cursor_.fail("points list without a size");
@@ -332,6 +350,9 @@ void read_dict_list(FoamFile& file, std::string_view label_key, const Visit& vis
     skip_blank(c);
     if (c.accept(')')) break;
     NamedDict d;
+    // The labels' last occurrence, which wins as in OpenFOAM: each read past, the last parsed
+    // once the dictionary closes, so that a list another replaces is never held.
+    std::optional<Cursor> labels_at;
     const std::string_view name = c.token("{/");
     check_text(c.path(), "patch or zone name", name.size());
     d.name = std::string(name);
@@ -345,7 +366,8 @@ void read_dict_list(FoamFile& file, std::string_view label_key, const Visit& vis
       const std::string key(key_text);
       skip_blank(c);
       if (!label_key.empty() && key == label_key) {
-        d.labels = file.labels();
+        labels_at = c;
+        file.skip_labels();
         skip_blank(c);
         c.expect(';');
       } else if (c.peek() == '{') {
@@ -355,6 +377,12 @@ void read_dict_list(FoamFile& file, std::string_view label_key, const Visit& vis
       } else {
         (void)file.value();  // read past, not kept: the reader uses no other entry
       }
+    }
+    if (labels_at) {
+      const Cursor after = c;
+      c = *labels_at;
+      d.labels = file.labels();
+      c = after;
     }
     ++entries;
     visit(std::move(d));

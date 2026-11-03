@@ -654,6 +654,28 @@ TEST_CASE("Records a reader does not use cost their text, not a copy each", "[io
     REQUIRE(mesh->cell_zones().size() == 1);
     CHECK(mesh->cell_zones()[0].name == "block");
   }
+  SECTION("polyMesh cell labels given again") {
+    // The last occurrence of a keyword wins (OpenFOAM User Guide, 4.2.14): the list it replaces
+    // is read past, not held.
+    const fs::path dir = single_hex_polymesh();
+    (void)autan::io::read_mesh(dir);
+    const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(dir); });
+    std::string replaced = std::to_string(n) + "(";
+    for (int i = 0; i < n; ++i) replaced += "0 ";
+    replaced += ")";
+    const std::string cell_zones = foam_header("ascii", "cellZoneList", "cellZones") +
+                                   "1\n(\nblock\n{\n    type cellZone;\n    cellLabels "
+                                   "List<label> " +
+                                   replaced + ";\n    cellLabels List<label> 1(0);\n}\n)\n";
+    write_temp("single-hex/cellZones", cell_zones);
+    const auto added = static_cast<std::int64_t>(replaced.size());
+    std::optional<autan::Mesh> mesh;
+    const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(dir); });
+    CAPTURE(before, after, added);
+    CHECK(after - before <= added + (std::int64_t{1} << 20));  // held, 8 bytes a label
+    REQUIRE(mesh->cell_zones().size() == 1);
+    CHECK(mesh->cell_zones()[0].name == "block");
+  }
 }
 namespace {
 
