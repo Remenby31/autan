@@ -423,7 +423,11 @@ class FluentReader {
       if (face_zone_index.contains(block.zone)) continue;
       const auto info = zone_info(block.zone);
       const std::string type = info ? info->type : std::string(bc_type_from_code(block.bc_code));
-      const std::string name = info ? info->name : "zone-" + std::to_string(block.zone);
+      // An interior zone is named by its id, which no Fluent name can be (a name holds no
+      // parenthesis or space): nothing exposes it (mesh.md, Readers), so its name is not kept.
+      const std::string name = type == "interior" ? "(interior " + std::to_string(block.zone) + ")"
+                               : info             ? info->name
+                                                  : "zone-" + std::to_string(block.zone);
       face_zone_index[block.zone] = static_cast<index_t>(in.face_zones.size());
       in.face_zones.push_back(FaceZone{
           .name = name,

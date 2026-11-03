@@ -31,9 +31,9 @@ struct LogicalBytes {
   std::int64_t filtered = 0;
   /// Every node of the file's tree, for each of which the CGNS library allocates at cg_open.
   std::int64_t nodes = 0;
-  /// The IndexArray_t under the zone's BCs, subregions and connectivities (part of `total`), whose
-  /// ids the reader keeps to know which faces they name. 0 for a format without them.
-  std::int64_t point_lists = 0;
+  /// The entries of every IndexArray_t under the zone's BCs, subregions and connectivities, for
+  /// whose ids the reader holds 8 bytes each to know which faces they name. 0 for other formats.
+  std::int64_t point_list_ids = 0;
   /// The data cg_open reads beyond descriptors (mesh.md, Memory of a CGNS read): at most 1 MiB.
   std::int64_t eager = 0;
 };

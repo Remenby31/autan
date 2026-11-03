@@ -271,7 +271,7 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256, std::int
         {"zone_names_bytes", logical.zone_names},
         {"filtered_bytes", logical.filtered},
         {"cgns_nodes", logical.nodes},
-        {"point_list_bytes", logical.point_lists}}},
+        {"point_list_ids", logical.point_list_ids}}},
       {"counts",
        {{"cells", mesh.n_cells()},
         {"faces", mesh.n_faces()},
