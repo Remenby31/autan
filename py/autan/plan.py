@@ -245,7 +245,8 @@ def _check_groups_file(case: Case, mesh: MeshInfo, found: list[Diagnostic]) -> N
     source = mesh.groups_source
     if os.path.lexists(path):  # a dangling link is there but unreadable, not absent
         try:
-            digest: str | None = hashlib.sha256(path.read_bytes()).hexdigest()
+            with path.open("rb") as f:  # hashed in chunks: the file is not held
+                digest: str | None = hashlib.file_digest(f, "sha256").hexdigest()
         except OSError:
             digest = None
         if source is None or digest != source.sha256:

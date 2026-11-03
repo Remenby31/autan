@@ -70,7 +70,7 @@ A mesh whose file does not name its parts (the HLPW-5 CRM-HL grid has 668 zones 
 {"schema": "autan.zone-groups/1", "mesh_sha256": "9f2c…", "provenance": {"url": "https://…", "note": "from the mapbc"}, "groups": {"wing.main": ["TRI_bdy 12", "TRI_bdy 13"]}}
 ```
 
-The four keys are required and no other is allowed; `provenance` maps keys to strings, shown as given. `E0136`: the file cannot be read, is not JSON, or breaks this schema (a key missing, unknown or given twice, a wrong type). `E0137`: `mesh_sha256` is not the mesh hash. `E0138`: a zone that is not a boundary zone name (exact, spaces included), a zone twice in one group, an empty group, or a name outside `[A-Za-z0-9_.][A-Za-z0-9_.-]*`. `E0139`: a group name given twice. The run records the sidecar's hash (solver-input `mesh.groups_sha256`) and archives the groups with its MeshInfo.
+The four keys are required and no other is allowed; `provenance` maps keys to strings, shown as given. `E0136`: the file is larger than 1 MiB (checked before it is read: a hundred times a sidecar listing the 668 zones of the CRM-HL grid once), cannot be read, is not JSON, or breaks this schema (a key missing, unknown or given twice, a wrong type). `E0137`: `mesh_sha256` is not the mesh hash. `E0138`: a zone that is not a boundary zone name (exact, spaces included), a zone twice in one group, an empty group, or a name outside `[A-Za-z0-9_.][A-Za-z0-9_.-]*`. `E0139`: a group name given twice. The run records the sidecar's hash (solver-input `mesh.groups_sha256`) and archives the groups with its MeshInfo.
 
 ## Normalized boundary types
 

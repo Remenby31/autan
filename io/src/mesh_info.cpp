@@ -173,6 +173,13 @@ std::optional<ZoneGroups> read_zone_groups(const fs::path& mesh_path, const Mesh
   const auto invalid = [&](ErrorCode code, const std::string& why) -> Error {
     return {code, path.string() + ": " + why};
   };
+  // mesh-info.md, Zone groups: at most 1 MiB, a hundred times a sidecar listing the 668 zones of
+  // the CRM-HL grid once, checked before anything is read.
+  constexpr std::uintmax_t max_bytes = std::uintmax_t{1} << 20;
+  if (const auto size = fs::file_size(path, ec); ec || size > max_bytes) {
+    throw invalid(ErrorCode::zone_groups_invalid,
+                  ec ? ec.message() : std::to_string(size) + " bytes (at most 1 MiB)");
+  }
   const std::ifstream in(path, std::ios::binary);
   std::ostringstream bytes;
   bytes << in.rdbuf();

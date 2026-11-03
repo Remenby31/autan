@@ -417,6 +417,12 @@ TEST_CASE("A zone-groups sidecar gives MeshInfo its groups, checked", "[mesh-inf
   };
   using autan::ErrorCode;
   refused("{not json", ErrorCode::zone_groups_invalid);
+  // At most 1 MiB, the same document padded with whitespace: refused one byte over, read at it.
+  constexpr std::size_t limit = std::size_t{1} << 20;
+  const std::string compact = doc.dump();
+  refused(compact + std::string(limit + 1 - compact.size(), ' '), ErrorCode::zone_groups_invalid);
+  write(sidecar, compact + std::string(limit - compact.size(), ' '));
+  CHECK(info()["groups"] == with["groups"]);
   refused(edited([](auto& d) { d["extra"] = 1; }), ErrorCode::zone_groups_invalid);
   refused(edited([](auto& d) { d.erase("provenance"); }), ErrorCode::zone_groups_invalid);
   refused(edited([](auto& d) { d["schema"] = "autan.zone-groups/2"; }),
