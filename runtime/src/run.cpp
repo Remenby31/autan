@@ -1765,17 +1765,17 @@ class Run final : public Log {
     // that moment.
     ++write_failures_;
     if (write_failures_ == 1) first_failure_ = Json{{"iteration", it}, {"time", info_["time"]}};
-    const Diagnostic warning{.code = "W0714",
-                             .message = std::to_string(write_failures_) +
-                                        " checkpoint(s) not written, the last at " + "iteration " +
-                                        std::to_string(it) + ": " + failure,
-                             .path = "",
-                             .data_json = Json{{"failures", write_failures_},
-                                               {"first_iteration", first_failure_["iteration"]},
-                                               {"first_time", first_failure_["time"]},
-                                               {"last_iteration", it},
-                                               {"last_time", info_["time"]}}
-                                              .dump()};
+    const Diagnostic warning{
+        .code = "W0714",
+        .message = "checkpoint writes failed: " + std::to_string(write_failures_) +
+                   ", the last at iteration " + std::to_string(it) + ": " + failure,
+        .path = "",
+        .data_json = Json{{"failures", write_failures_},
+                          {"first_iteration", first_failure_["iteration"]},
+                          {"first_time", first_failure_["time"]},
+                          {"last_iteration", it},
+                          {"last_time", info_["time"]}}
+                         .dump()};
     std::string unlogged;
     try {
       note("warning", "solver", warning.message, warning.code, warning.data_json);
