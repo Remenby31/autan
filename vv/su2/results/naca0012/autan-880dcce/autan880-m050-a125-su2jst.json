@@ -12,7 +12,8 @@
   "su2": {
     "scheme": "jst",
     "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
-    "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
+    "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+    "report_sha256": "9f53a45bb89d3837846d3298390cb2bd3b11f6fe630d0a7693bdc4bed9433b67"
   },
   "levels": [
     {
@@ -34,7 +35,10 @@
         "precision": "fp64",
         "backend": "cpu",
         "case_sha256": "96ace455048d970de78d8e59b833177feaacfcf1bfddef578df72cb52e7119c7",
-        "mesh_sha256": "9845b8bda82f2367d6c982e84bc3fe24f31446dc77f8999072ebc85edf8bb4cb"
+        "mesh_sha256": "9845b8bda82f2367d6c982e84bc3fe24f31446dc77f8999072ebc85edf8bb4cb",
+        "problem": "{\"boundaries\": [{\"condition\": {\"kind\": \"slip\"}, \"zones\": \"airfoil\"}, {\"condition\": {\"kind\": \"farfield\", \"point_vortex\": {\"center\": [\"0.25 m\", \"0.0 m\", \"0.0 m\"], \"surfaces\": \"airfoil\"}}, \"zones\": \"farfield\"}, {\"condition\": {\"kind\": \"symmetry\"}, \"zones\": \"back\"}, {\"condition\": {\"kind\": \"symmetry\"}, \"zones\": \"front\"}], \"cell_zones\": [], \"freestream\": {\"aoa\": \"1.25 deg\", \"mach\": 0.5, \"pressure\": \"101325.0 Pa\", \"ref_length\": \"1.0 m\", \"sideslip\": \"0.0 deg\", \"temperature\": \"288.15 K\"}, \"monitors\": [{\"every\": 1, \"kind\": \"forces\", \"moment_center\": [\"0.25 m\", \"0.0 m\", \"0.0 m\"], \"name\": \"forces\", \"ref_area\": \"1.0 m ** 2\", \"surfaces\": \"airfoil\"}], \"name\": \"naca0012-m050-a125\", \"physics\": {\"gas\": {\"gamma\": 1.4, \"kind\": \"ideal-gas\", \"molar_mass\": \"0.0289647 kg / mol\", \"name\": \"air\", \"prandtl\": 0.72, \"viscosity\": {\"law\": \"sutherland\", \"mu_ref\": \"1.716e-05 Pa * s\", \"s\": \"110.4 K\", \"t_ref\": \"273.15 K\"}}, \"kind\": \"compressible\", \"precision\": \"fp64\", \"turbulence\": {\"model\": \"inviscid\"}}, \"schema\": \"autan.case/1\", \"time\": {\"kind\": \"steady\", \"residual_orders\": 10.0}}",
+        "run_json_sha256": "aa020e6f8e242d2fdefe00f3723abe0fcacdbb48089aab4fb729eb67278d5fdc",
+        "history_sha256": "32447ae15e2889bbe2991929fe47b5c0af50a46b7784c1d4e97daca95993ca9b"
       },
       "su2": {
         "run": "n0064",
@@ -109,7 +113,10 @@
         "precision": "fp64",
         "backend": "cpu",
         "case_sha256": "d26c8170aec3c1b8596f1b5fc90f5e427e69c8a8a24d25b8507eaecbc60cb330",
-        "mesh_sha256": "476de60d5060511adef8518982c91d738cd71731e6fbb8aa073455d580ecfb22"
+        "mesh_sha256": "476de60d5060511adef8518982c91d738cd71731e6fbb8aa073455d580ecfb22",
+        "problem": "{\"boundaries\": [{\"condition\": {\"kind\": \"slip\"}, \"zones\": \"airfoil\"}, {\"condition\": {\"kind\": \"farfield\", \"point_vortex\": {\"center\": [\"0.25 m\", \"0.0 m\", \"0.0 m\"], \"surfaces\": \"airfoil\"}}, \"zones\": \"farfield\"}, {\"condition\": {\"kind\": \"symmetry\"}, \"zones\": \"back\"}, {\"condition\": {\"kind\": \"symmetry\"}, \"zones\": \"front\"}], \"cell_zones\": [], \"freestream\": {\"aoa\": \"1.25 deg\", \"mach\": 0.5, \"pressure\": \"101325.0 Pa\", \"ref_length\": \"1.0 m\", \"sideslip\": \"0.0 deg\", \"temperature\": \"288.15 K\"}, \"monitors\": [{\"every\": 1, \"kind\": \"forces\", \"moment_center\": [\"0.25 m\", \"0.0 m\", \"0.0 m\"], \"name\": \"forces\", \"ref_area\": \"1.0 m ** 2\", \"surfaces\": \"airfoil\"}], \"name\": \"naca0012-m050-a125\", \"physics\": {\"gas\": {\"gamma\": 1.4, \"kind\": \"ideal-gas\", \"molar_mass\": \"0.0289647 kg / mol\", \"name\": \"air\", \"prandtl\": 0.72, \"viscosity\": {\"law\": \"sutherland\", \"mu_ref\": \"1.716e-05 Pa * s\", \"s\": \"110.4 K\", \"t_ref\": \"273.15 K\"}}, \"kind\": \"compressible\", \"precision\": \"fp64\", \"turbulence\": {\"model\": \"inviscid\"}}, \"schema\": \"autan.case/1\", \"time\": {\"kind\": \"steady\", \"residual_orders\": 10.0}}",
+        "run_json_sha256": "0e969a9d720c2611b860af588b3aa39b0a2119f8fbf607aec54c4db6f5d7cd2a",
+        "history_sha256": "def75f656f6d51180439079619c1e72b2356becc8143d0252490019c2976631f"
       },
       "su2": {
         "run": "n0128",
@@ -184,7 +191,10 @@
         "precision": "fp64",
         "backend": "cpu",
         "case_sha256": "551be0b97c4c41a1f56530f40b377adf8671e7d075d21589184b9a1c7e51dd28",
-        "mesh_sha256": "8f0987975993317e4ed1a31dfccafe539837cde52a13f69a99f3523d0302f8de"
+        "mesh_sha256": "8f0987975993317e4ed1a31dfccafe539837cde52a13f69a99f3523d0302f8de",
+        "problem": "{\"boundaries\": [{\"condition\": {\"kind\": \"slip\"}, \"zones\": \"airfoil\"}, {\"condition\": {\"kind\": \"farfield\", \"point_vortex\": {\"center\": [\"0.25 m\", \"0.0 m\", \"0.0 m\"], \"surfaces\": \"airfoil\"}}, \"zones\": \"farfield\"}, {\"condition\": {\"kind\": \"symmetry\"}, \"zones\": \"back\"}, {\"condition\": {\"kind\": \"symmetry\"}, \"zones\": \"front\"}], \"cell_zones\": [], \"freestream\": {\"aoa\": \"1.25 deg\", \"mach\": 0.5, \"pressure\": \"101325.0 Pa\", \"ref_length\": \"1.0 m\", \"sideslip\": \"0.0 deg\", \"temperature\": \"288.15 K\"}, \"monitors\": [{\"every\": 1, \"kind\": \"forces\", \"moment_center\": [\"0.25 m\", \"0.0 m\", \"0.0 m\"], \"name\": \"forces\", \"ref_area\": \"1.0 m ** 2\", \"surfaces\": \"airfoil\"}], \"name\": \"naca0012-m050-a125\", \"physics\": {\"gas\": {\"gamma\": 1.4, \"kind\": \"ideal-gas\", \"molar_mass\": \"0.0289647 kg / mol\", \"name\": \"air\", \"prandtl\": 0.72, \"viscosity\": {\"law\": \"sutherland\", \"mu_ref\": \"1.716e-05 Pa * s\", \"s\": \"110.4 K\", \"t_ref\": \"273.15 K\"}}, \"kind\": \"compressible\", \"precision\": \"fp64\", \"turbulence\": {\"model\": \"inviscid\"}}, \"schema\": \"autan.case/1\", \"time\": {\"kind\": \"steady\", \"residual_orders\": 10.0}}",
+        "run_json_sha256": "bac1ad3432e910a0d4d59c01733e63f72bdab7932f293ee5891221c542e88686",
+        "history_sha256": "53cb610aff9093ec7ee4c327e90445980901c6c213c5feffb01d69d3029c2c30"
       },
       "su2": {
         "run": "n0256",
@@ -259,7 +269,10 @@
         "precision": "fp64",
         "backend": "cpu",
         "case_sha256": "ef44b6f530ea44f7863ec5c190f6a87806990eb1892b99eefdd066387f84db75",
-        "mesh_sha256": "47f3a1e3b111a410029e4a10b442984018c68da483287e8298ab645a68075b1f"
+        "mesh_sha256": "47f3a1e3b111a410029e4a10b442984018c68da483287e8298ab645a68075b1f",
+        "problem": "{\"boundaries\": [{\"condition\": {\"kind\": \"slip\"}, \"zones\": \"airfoil\"}, {\"condition\": {\"kind\": \"farfield\", \"point_vortex\": {\"center\": [\"0.25 m\", \"0.0 m\", \"0.0 m\"], \"surfaces\": \"airfoil\"}}, \"zones\": \"farfield\"}, {\"condition\": {\"kind\": \"symmetry\"}, \"zones\": \"back\"}, {\"condition\": {\"kind\": \"symmetry\"}, \"zones\": \"front\"}], \"cell_zones\": [], \"freestream\": {\"aoa\": \"1.25 deg\", \"mach\": 0.5, \"pressure\": \"101325.0 Pa\", \"ref_length\": \"1.0 m\", \"sideslip\": \"0.0 deg\", \"temperature\": \"288.15 K\"}, \"monitors\": [{\"every\": 1, \"kind\": \"forces\", \"moment_center\": [\"0.25 m\", \"0.0 m\", \"0.0 m\"], \"name\": \"forces\", \"ref_area\": \"1.0 m ** 2\", \"surfaces\": \"airfoil\"}], \"name\": \"naca0012-m050-a125\", \"physics\": {\"gas\": {\"gamma\": 1.4, \"kind\": \"ideal-gas\", \"molar_mass\": \"0.0289647 kg / mol\", \"name\": \"air\", \"prandtl\": 0.72, \"viscosity\": {\"law\": \"sutherland\", \"mu_ref\": \"1.716e-05 Pa * s\", \"s\": \"110.4 K\", \"t_ref\": \"273.15 K\"}}, \"kind\": \"compressible\", \"precision\": \"fp64\", \"turbulence\": {\"model\": \"inviscid\"}}, \"schema\": \"autan.case/1\", \"time\": {\"kind\": \"steady\", \"residual_orders\": 10.0}}",
+        "run_json_sha256": "f8185930ba4cecc5afe6d3e4c799bce09605b88fb6ffaf4d7b68ea8604ed4998",
+        "history_sha256": "54e4e39427dfda9b06b1bbe582b99e25d4828724cfe9b38df2f2483c80158873"
       },
       "su2": {
         "run": "n0512",
@@ -334,7 +347,10 @@
         "precision": "fp64",
         "backend": "cpu",
         "case_sha256": "0bd296531eb11758da156e6679ec916c784fd4280df8e7053aa390e6e0bc28cb",
-        "mesh_sha256": "f49df038d5aa033a4aef353f834081688a212bc4691317d24800027f760a97e1"
+        "mesh_sha256": "f49df038d5aa033a4aef353f834081688a212bc4691317d24800027f760a97e1",
+        "problem": "{\"boundaries\": [{\"condition\": {\"kind\": \"slip\"}, \"zones\": \"airfoil\"}, {\"condition\": {\"kind\": \"farfield\", \"point_vortex\": {\"center\": [\"0.25 m\", \"0.0 m\", \"0.0 m\"], \"surfaces\": \"airfoil\"}}, \"zones\": \"farfield\"}, {\"condition\": {\"kind\": \"symmetry\"}, \"zones\": \"back\"}, {\"condition\": {\"kind\": \"symmetry\"}, \"zones\": \"front\"}], \"cell_zones\": [], \"freestream\": {\"aoa\": \"1.25 deg\", \"mach\": 0.5, \"pressure\": \"101325.0 Pa\", \"ref_length\": \"1.0 m\", \"sideslip\": \"0.0 deg\", \"temperature\": \"288.15 K\"}, \"monitors\": [{\"every\": 1, \"kind\": \"forces\", \"moment_center\": [\"0.25 m\", \"0.0 m\", \"0.0 m\"], \"name\": \"forces\", \"ref_area\": \"1.0 m ** 2\", \"surfaces\": \"airfoil\"}], \"name\": \"naca0012-m050-a125\", \"physics\": {\"gas\": {\"gamma\": 1.4, \"kind\": \"ideal-gas\", \"molar_mass\": \"0.0289647 kg / mol\", \"name\": \"air\", \"prandtl\": 0.72, \"viscosity\": {\"law\": \"sutherland\", \"mu_ref\": \"1.716e-05 Pa * s\", \"s\": \"110.4 K\", \"t_ref\": \"273.15 K\"}}, \"kind\": \"compressible\", \"precision\": \"fp64\", \"turbulence\": {\"model\": \"inviscid\"}}, \"schema\": \"autan.case/1\", \"time\": {\"kind\": \"steady\", \"residual_orders\": 10.0}}",
+        "run_json_sha256": "d5b946bf63fd4e491f9f9087dcc370e5bb19306fb6bb5745c731a8efadfdf2b2",
+        "history_sha256": "6d7be03cd142afc968d4c910c8b56721e5025b77056682e52a6873d31e6b8a65"
       },
       "su2": {
         "run": "n1024",
@@ -392,6 +408,11 @@
     }
   ],
   "continuum": {
+    "levels": [
+      256,
+      512,
+      1024
+    ],
     "autan": {
       "cl": {
         "estimate": 0.18033765251817283,
