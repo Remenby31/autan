@@ -458,7 +458,11 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
         + 16 * 30
         + 8 * 10
     )
-    for kind, halo_device in (("cpu", 0), ("cuda", 128 * sent + 128 * g)):
+    kinds: tuple[tuple[Literal["cpu", "cuda"], int], ...] = (
+        ("cpu", 0),
+        ("cuda", 128 * sent + 128 * g),
+    )
+    for kind, halo_device in kinds:
         planned = autan.load(write_case(TINY)).plan(two, gpus=2, device_kind=kind).memory
         part = {c.name: c for c in planned.components}
         assert part["partition"].bytes_host == kept
