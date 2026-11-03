@@ -100,6 +100,8 @@ class Parser {
     if (eat('-')) return add({.op = Op::neg, .a = unary()});
     return primary();
   }
+  // The recursion through parentheses and functions; the leaves, with their strings, are read
+  // by leaf() outside it, so that a level costs a small frame even unoptimised.
   int primary() {
     skip();
     if (eat('(')) {
@@ -107,6 +109,24 @@ class Parser {
       if (!eat(')')) fail("expected ')'");
       return e;
     }
+    const Leaf l = leaf();
+    if (!l.function) return l.node;
+    if (!eat('(')) fail("expected '(' after a function");
+    Node n{.op = l.op, .a = sum()};
+    if (l.op == Op::pow) {
+      if (!eat(',')) fail("pow takes two arguments");
+      n.b = sum();
+    }
+    if (!eat(')')) fail("expected ')'");
+    return add(n);
+  }
+  struct Leaf {
+    bool function = false;
+    Op op = Op::constant;
+    int node = -1;
+  };
+  // A number, pi or a name (its node), or a function's name (its operation).
+  [[gnu::noinline]] Leaf leaf() {
     if (i_ < s_.size() &&
         (std::isdigit(static_cast<unsigned char>(s_[i_])) != 0 || s_[i_] == '.')) {
       std::size_t j = i_;
@@ -120,7 +140,7 @@ class Parser {
       const double v = std::strtod(literal.c_str(), &end);
       if (end != literal.c_str() + literal.size()) fail("invalid number");
       i_ = j;
-      return add({.op = Op::constant, .value = v});
+      return {.node = add({.op = Op::constant, .value = v})};
     }
     std::size_t j = i_;
     while (j < s_.size() && (std::isalnum(static_cast<unsigned char>(s_[j])) != 0 || s_[j] == '_'))
@@ -132,19 +152,12 @@ class Parser {
                                                         {"sin", Op::sin}, {"cos", Op::cos},
                                                         {"exp", Op::exp}, {"log", Op::log}};
     if (const auto f = functions.find(name); f != functions.end()) {
-      if (!eat('(')) fail("expected '(' after a function");
-      Node n{.op = f->second, .a = sum()};
-      if (f->second == Op::pow) {
-        if (!eat(',')) fail("pow takes two arguments");
-        n.b = sum();
-      }
-      if (!eat(')')) fail("expected ')'");
-      return add(n);
+      return {.function = true, .op = f->second};
     }
-    if (name == "pi") return add({.op = Op::constant, .value = std::numbers::pi});
+    if (name == "pi") return {.node = add({.op = Op::constant, .value = std::numbers::pi})};
     const auto slot = slots_.find(name);
     if (slot == slots_.end()) fail("unknown name");
-    return add({.op = Op::slot, .slot = slot->second});
+    return {.node = add({.op = Op::slot, .slot = slot->second})};
   }
 
   std::string s_;
