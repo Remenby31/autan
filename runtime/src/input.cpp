@@ -175,7 +175,7 @@ void read_mesh_info(const Json& info, SolverInput& in) {
 
   const Object source(root.get("source"), root.at("source"),
                       {"path", "format", "sha256", "bytes", "logical_bytes", "descriptor_bytes",
-                       "zone_names_bytes", "filtered_bytes", "cgns_nodes", "point_list_bytes"});
+                       "zone_names_bytes", "filtered_bytes", "cgns_nodes", "point_list_ids"});
   (void)source.string("path");
   in.mesh_info_bytes = source.integer("bytes", 1);
   (void)source.integer("logical_bytes", 0);
@@ -183,7 +183,7 @@ void read_mesh_info(const Json& info, SolverInput& in) {
   (void)source.integer("zone_names_bytes", 0);
   (void)source.integer("filtered_bytes", 0);
   (void)source.integer("cgns_nodes", 0);
-  (void)source.integer("point_list_bytes", 0);
+  (void)source.integer("point_list_ids", 0);
   (void)source.tag("format", {"cgns", "gmsh", "fluent", "polymesh"});
   const std::string sha = sha256(source, "sha256");
   if (sha != in.mesh_sha256) {
@@ -320,11 +320,13 @@ void read_mesh_info(const Json& info, SolverInput& in) {
   if (info.contains("partition")) {
     const Object part(root.get("partition"), root.at("partition"),
                       {"ranks", "groups", "cells_by_rank", "ghosts_by_rank", "faces_by_rank",
-                       "interior_faces_by_rank", "stencil_entries_by_rank"});
+                       "interior_faces_by_rank", "stencil_entries_by_rank", "nodes_by_rank",
+                       "face_nodes_by_rank", "sent_cells_by_rank"});
     const std::int64_t ranks = part.integer("ranks", 2);
     (void)part.tag("groups", {"none", "lines"});
-    for (const char* key : {"cells_by_rank", "ghosts_by_rank", "faces_by_rank",
-                            "interior_faces_by_rank", "stencil_entries_by_rank"}) {
+    for (const char* key :
+         {"cells_by_rank", "ghosts_by_rank", "faces_by_rank", "interior_faces_by_rank",
+          "stencil_entries_by_rank", "nodes_by_rank", "face_nodes_by_rank", "sent_cells_by_rank"}) {
       const Json& v = list(part, key);
       if (static_cast<std::int64_t>(v.size()) != ranks)
         invalid(part.at(key), "expected one value per rank");

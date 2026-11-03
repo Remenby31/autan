@@ -115,10 +115,16 @@ TEST_CASE("MeshInfo counts each rank of a partitioned run", "[mesh-info]") {
   CHECK(p.ranks == 3);
   CHECK(p.groups == (groups == autan::io::RankGroups::lines ? "lines" : "none"));
   REQUIRE(p.cells.size() == 3);
-  std::int64_t owned = 0;
+  std::int64_t owned = 0, ghosts = 0, sent = 0;
   for (std::size_t r = 0; r < 3; ++r) {
     CAPTURE(r);
     owned += p.cells[r];
+    ghosts += p.ghosts[r];
+    sent += p.sent_cells[r];
+    // Hexahedra: every face has 4 nodes; a rank's nodes are some of the box's (n + 1)^3.
+    CHECK(p.face_nodes[r] == 4 * p.faces[r]);
+    CHECK(p.nodes[r] > 0);
+    CHECK(p.nodes[r] <= (n + 1) * (n + 1) * (n + 1));
     CHECK(p.ghosts[r] > 0);
     CHECK(p.interior_faces[r] < p.faces[r]);
     CHECK(p.stencil_entries[r] > 0);
@@ -126,6 +132,8 @@ TEST_CASE("MeshInfo counts each rank of a partitioned run", "[mesh-info]") {
     if (groups == autan::io::RankGroups::lines) CHECK(p.cells[r] % n == 0);
   }
   CHECK(owned == n * n * n);
+  // Each ghost is one cell its owner sends.
+  CHECK(sent == ghosts);
   // More ranks than cells: the partitioner's refusal (E0140).
   try {
     (void)counts(box(2, 1.0), CellOrder::rcm, autan::io::RanksRequest{.ranks = 9, .groups = {}});

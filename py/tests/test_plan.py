@@ -216,7 +216,7 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
                 "zone_names_bytes": 512,
                 "filtered_bytes": 0,
                 "cgns_nodes": 40,
-                "point_list_bytes": 1024,
+                "point_list_ids": 128,
             },
             "counts": {
                 "cells": 10,
@@ -355,8 +355,8 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     standard += 2**20 + 32 * 2**10 + 24 * (10 + 20 + 1)
     caches = 4 * 2**20 + 8 * 2**20 + 64 * 2**10
     # cg_open's tree of 40 nodes, 1 MiB and 16 KiB a node, and the 1 MiB of data it reads at once;
-    # the ids its 1 024 B of point lists name, twice that, read through a 1 MiB chunk
-    tree = 2**20 + 16 * 2**10 * 40 + 2**20 + 2 * 1024 + 2**20
+    # 8 B for each of its 128 point-list entries, read through a 1 MiB chunk
+    tree = 2**20 + 16 * 2**10 * 40 + 2**20 + 8 * 128 + 2**20
     assert by_name["mesh reading"].bytes_host == standard + 2048 + 40 * 512 + caches + tree
     # A Fluent file of 4 096 B: S + 53N_s + 20C + 16P + 45F, and 16 B for each of the 16 384
     # fluid and solid zone records it may hold.

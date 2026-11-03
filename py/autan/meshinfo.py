@@ -50,7 +50,7 @@ class Source(_Strict):
     zone_names_bytes: Count
     filtered_bytes: Count
     cgns_nodes: Count
-    point_list_bytes: Count
+    point_list_ids: Count
 
 
 class CellsByType(_Strict):
@@ -177,6 +177,9 @@ class Partition(_Strict):
     faces_by_rank: ByRank
     interior_faces_by_rank: ByRank
     stencil_entries_by_rank: ByRank
+    nodes_by_rank: ByRank
+    face_nodes_by_rank: ByRank
+    sent_cells_by_rank: ByRank
 
 
 class MeshInfo(_Strict):

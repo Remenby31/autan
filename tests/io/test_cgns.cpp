@@ -1357,6 +1357,31 @@ TEST_CASE("A BC point list over points and edges is read in chunks, never whole"
   const std::int64_t after = peak_of([&] { CHECK(autan::io::read_mesh(all).n_cells() == 1); });
   CAPTURE(before, after);
   CHECK(after - before <= std::int64_t{2} << 20);  // a 1 MiB chunk; the list would be 32 MiB
+  // In a MIXED section, whose ids the reader holds to know which are faces: 8 bytes an entry
+  // (source.point_list_ids), in storage that never grows, so never its old and new copies, which
+  // one entry past a power of two would make three times that.
+  constexpr cgsize_t mixed = edges + 1;
+  const auto mixed_bc = [&](const std::string& name, cgsize_t listed) {
+    const fs::path file = stored_edges(name, static_cast<hsize_t>(mixed));
+    int fn = 0, bc = 0;
+    REQUIRE(cg_open(file.string().c_str(), CG_MODE_MODIFY, &fn) == CG_OK);
+    std::vector<cgsize_t> ids(static_cast<std::size_t>(listed));
+    std::iota(ids.begin(), ids.end(), cgsize_t{2});
+    REQUIRE(cg_boco_write(fn, 1, 1, "edges", CGNS_ENUMV(BCWall), CGNS_ENUMV(PointList), listed,
+                          ids.data(), &bc) == CG_OK);
+    REQUIRE(cg_boco_gridlocation_write(fn, 1, 1, bc, CGNS_ENUMV(EdgeCenter)) == CG_OK);
+    REQUIRE(cg_close(fn) == CG_OK);
+    return file;
+  };
+  const fs::path mixed_one = mixed_bc("mixed-list-one.cgns", 1);
+  const fs::path mixed_all = mixed_bc("mixed-list-all.cgns", mixed);
+  CHECK(autan::io::cgns_logical_bytes(mixed_all).point_list_ids == mixed);
+  (void)autan::io::read_mesh(mixed_one);
+  const std::int64_t mixed_before = peak_of([&] { (void)autan::io::read_mesh(mixed_one); });
+  const std::int64_t mixed_after =
+      peak_of([&] { CHECK(autan::io::read_mesh(mixed_all).n_cells() == 1); });
+  CAPTURE(mixed_before, mixed_after);
+  CHECK(mixed_after - mixed_before <= 8 * mixed + (std::int64_t{2} << 20));
 }
 TEST_CASE("A section of boundary faces nothing names is skipped", "[cgns]") {
   // mesh.md, Readers: the faces come from the cells; 2^20 triangles no family, BC, subregion or
@@ -1451,8 +1476,8 @@ TEST_CASE("Faces of a section nothing names are skipped, one named is kept", "[c
   REQUIRE(wall != zones.end());
   const auto z = static_cast<std::size_t>(wall - zones.begin());
   CHECK(mesh->boundary_zone_offsets()[z + 1] - mesh->boundary_zone_offsets()[z] == 1);
-  // mesh-info.md, source.point_list_bytes: the BC's list of one 8-byte id; a range is no list.
-  CHECK(autan::io::cgns_logical_bytes(many).point_lists == (listed ? 8 : 0));
+  // mesh-info.md, source.point_list_ids: the BC's list of one id; a range is no list.
+  CHECK(autan::io::cgns_logical_bytes(many).point_list_ids == (listed ? 1 : 0));
 }
 
 TEST_CASE("Looking up many BCs among many families keeps no HDF5 handle", "[cgns]") {

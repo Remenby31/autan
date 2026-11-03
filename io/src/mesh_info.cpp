@@ -271,7 +271,7 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256, std::int
         {"zone_names_bytes", logical.zone_names},
         {"filtered_bytes", logical.filtered},
         {"cgns_nodes", logical.nodes},
-        {"point_list_bytes", logical.point_lists}}},
+        {"point_list_ids", logical.point_list_ids}}},
       {"counts",
        {{"cells", mesh.n_cells()},
         {"faces", mesh.n_faces()},
@@ -310,7 +310,10 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256, std::int
                         {"ghosts_by_rank", p.ghosts},
                         {"faces_by_rank", p.faces},
                         {"interior_faces_by_rank", p.interior_faces},
-                        {"stencil_entries_by_rank", p.stencil_entries}};
+                        {"stencil_entries_by_rank", p.stencil_entries},
+                        {"nodes_by_rank", p.nodes},
+                        {"face_nodes_by_rank", p.face_nodes},
+                        {"sent_cells_by_rank", p.sent_cells}};
   }
   return doc.dump(2);
 }

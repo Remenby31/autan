@@ -956,7 +956,10 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
                             {"ghosts_by_rank", {0}},
                             {"faces_by_rank", {0, 0}},
                             {"interior_faces_by_rank", {0, 0}},
-                            {"stencil_entries_by_rank", {0, 0}}};
+                            {"stencil_entries_by_rank", {0, 0}},
+                            {"nodes_by_rank", {0, 0}},
+                            {"face_nodes_by_rank", {0, 0}},
+                            {"sent_cells_by_rank", {0, 0}}};
         },
     };
     for (std::size_t k = 0; k < breaks.size(); ++k) {

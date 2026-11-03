@@ -66,7 +66,7 @@ TEST_CASE("Every format of a test mesh reads to the same mesh", "[io]") {
     CHECK(zone_named(fluent, "ymin").bc_type == "wall");
     CHECK(zone_named(fluent, "ymin").kind == autan::BcKind::wall);
     CHECK(zone_named(fluent, "zmax").kind == autan::BcKind::symmetry);
-    CHECK_FALSE(zone_named(fluent, "interior-1").boundary);
+    CHECK_FALSE(zone_named(fluent, "(interior 2)").boundary);  // named by its id (mesh.md, Readers)
     REQUIRE(fluent.cell_zones().size() == 1);
     CHECK(fluent.cell_zones()[0].kind == autan::CellKind::fluid);
   }
@@ -554,16 +554,18 @@ TEST_CASE("Records a reader does not use cost their text, not a copy each", "[io
     CHECK(std::ranges::any_of(mesh->cell_zones(),
                               [](const auto& z) { return z.name == "solid-block"; }));
   }
-  SECTION("Gmsh curve blocks and surface blocks without elements") {
+  SECTION("Gmsh curve blocks and surface blocks of entities in no group") {
+    // Each block one element: a curve, or a triangle of its own entity, which no group holds.
     std::string blocks;
     for (int i = 0; i < n / 2; ++i) {
-      blocks += "1 1 1 1\n" + std::to_string(i + 4) + " 10 20\n2 1 2 0\n";
+      blocks += "1 1 1 1\n" + std::to_string(i + 4) + " 10 20\n2 " + std::to_string(i + 2) +
+                " 2 1\n" + std::to_string(n / 2 + i + 4) + " 10 20 30\n";
     }
     const fs::path plain = write_temp("blocks-plain.msh", gmsh_tet);
     const std::string text =
         replace(replace(gmsh_tet, "$Elements\n3 3 1 3\n",
-                        "$Elements\n" + std::to_string(3 + n) + " " + std::to_string(3 + n / 2) +
-                            " 1 " + std::to_string(3 + n / 2) + "\n"),
+                        "$Elements\n" + std::to_string(3 + n) + " " + std::to_string(3 + n) +
+                            " 1 " + std::to_string(3 + n) + "\n"),
                 "$EndElements", blocks + "$EndElements");
     const fs::path padded = write_temp("blocks-padded.msh", text);
     const auto added = static_cast<std::int64_t>(text.size() - gmsh_tet.size());
@@ -660,6 +662,21 @@ TEST_CASE("Fluent interior zones no face is in are not kept", "[io]") {
   CAPTURE(before, after, added);
   CHECK(after - before <= added + (std::int64_t{1} << 20));
   CHECK(mesh->face_zones().size() == autan::io::read_mesh(plain).face_zones().size());
+}
+
+TEST_CASE("A Fluent interior zone keeps no name of its own", "[io]") {
+  // mesh.md, Readers: an interior zone, which nothing exposes, is named by its id, so its record's
+  // name, here 4096 bytes and the same as a boundary zone's, is neither kept nor checked.
+  const std::string name(4096, 'n');
+  std::ifstream in(data_dir / "hex" / "hex.fluent.msh", std::ios::binary);
+  std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  text =
+      replace(replace(text, "(39 (2 interior interior-1)())", "(39 (2 interior " + name + ")())"),
+              "(39 (10 pressure-outlet xmin)())", "(39 (10 pressure-outlet " + name + ")())");
+  const autan::Mesh mesh = autan::io::read_mesh(write_temp("interior-named.msh", text));
+  const auto named = std::ranges::count(mesh.face_zones(), name, &autan::FaceZone::name);
+  CHECK(named == 1);
+  CHECK(zone_named(mesh, name).boundary);
 }
 TEST_CASE("Sizes a text reader is told are checked before they are allocated", "[io]") {
   SECTION("a polyMesh uniform list longer than the mesh's faces") {

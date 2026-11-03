@@ -10,7 +10,7 @@
     "zone_names_bytes": 0,
     "filtered_bytes": 0,
     "cgns_nodes": 0,
-    "point_list_bytes": 0
+    "point_list_ids": 0
   },
   "counts": {
     "cells": 1200000,
