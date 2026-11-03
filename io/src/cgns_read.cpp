@@ -607,20 +607,22 @@ class Reader {
     }
   }
 
-  // The distinct ids of `owner`'s point list, ascending: read in chunks and made distinct each
-  // time they double, so that a list naming its faces many times holds them about twice, not as
-  // often as it names them.
+  // The distinct ids of `owner`'s point list, ascending: read in chunks, made distinct before the
+  // storage would grow, which it does only for distinct ids, to twice them and a chunk. A list
+  // naming its faces many times holds them about twice, not as often as it names them.
   std::vector<cgsize_t> listed_ids(const char* container, const char* owner) {
     std::vector<cgsize_t> ids;
-    std::size_t distinct = 0;
     const auto compact = [&] {
       std::ranges::sort(ids);
       ids.erase(std::ranges::unique(ids).begin(), ids.end());
-      distinct = ids.size();
     };
     each_listed(container, owner, [&](std::span<const cgsize_t> chunk) {
+      if (ids.size() + chunk.size() > ids.capacity()) {
+        compact();
+        if (ids.size() + chunk.size() > ids.capacity())
+          ids.reserve(2 * (ids.size() + static_cast<std::size_t>(chunk_entries)));
+      }
       ids.insert(ids.end(), chunk.begin(), chunk.end());
-      if (ids.size() >= 2 * distinct + static_cast<std::size_t>(chunk_entries)) compact();
     });
     compact();
     return ids;

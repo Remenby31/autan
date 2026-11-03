@@ -68,7 +68,7 @@ else()
   add_cli_test(partition-without-metis 1 "E0142" --json --ranks 2 ${mesh_dir}/hex/polyMesh)
 endif()
 add_cli_test(groups-without-ranks 2 "usage: autan-mesh-info" --json --groups lines ${mesh_dir}/hex/polyMesh)
-add_cli_test(one-rank 2 "usage: autan-mesh-info" --json --ranks 1 ${mesh_dir}/hex/polyMesh)
+add_cli_test(one-rank-groups 2 "usage: autan-mesh-info" --json --ranks 1 --groups lines ${mesh_dir}/hex/polyMesh)
 add_cli_test(counts-without-json 2 "usage: autan-mesh-info" --ranks 2 ${mesh_dir}/hex/polyMesh)
 
 # autan-mesh-prisms through its exit status and report.
