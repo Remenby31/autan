@@ -12,7 +12,8 @@
 #              turbulent; the C-grids of autan_vv.meshes.cgrid, farfield about 500 chords away.
 # T = 300 K throughout; the meshes are one layer of thickness $SPAN (default 1) between `sides`.
 # The flat plate with SA sets time.coupled_turbulence, the case docs/design/coupled-sa.md validated
-# (COUPLED=0: the loose step); laminar, time.matrix_free (docs/design/matrix-free-step.md;
+# (COUPLED=0: the loose step), and the RAE 2822 only with COUPLED=1 (its gate, #395); laminar,
+# time.matrix_free (docs/design/matrix-free-step.md;
 # MATRIX_FREE=0: the assembled operator).
 set -euo pipefail
 kind=$1 meshes=$2 out=$3 precision=${4:-fp64} iterations=${5:-20000}
@@ -21,6 +22,8 @@ span=${SPAN:-1.0}
 opt_in=""
 if [ "$kind" = flatplate ] && [[ $turbulence =~ model[[:space:]]*=[[:space:]]*[\"\']sa[\"\'] ]] &&
   [ "${COUPLED:-1}" = 1 ]; then
+  opt_in="coupled_turbulence = true"
+elif [ "$kind" = rae2822 ] && [ "${COUPLED:-0}" = 1 ]; then
   opt_in="coupled_turbulence = true"
 elif [ "$kind" = flatplate ] && [[ $turbulence =~ model[[:space:]]*=[[:space:]]*[\"\']laminar[\"\'] ]] &&
   [ "${MATRIX_FREE:-1}" = 1 ]; then
