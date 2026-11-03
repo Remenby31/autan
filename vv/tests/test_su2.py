@@ -320,6 +320,16 @@ def test_criterion_is_the_drop_below_the_first_residual() -> None:
     # ...and must drop ten orders below its first value once it has risen above it.
     zero.residuals["momentum-y"][5:] = 1e-11 * 0.5 ** np.arange(55)
     assert history.converged_at(zero, 10.0) == 5 + math.ceil(12 / math.log10(2))
+    # A continued run: an equation that woke before the stop (start.woken) is no longer exempt,
+    # even if it is back under its floor when the run resumes (case-schema.md, Time).
+    later = _geometric({"density": 1.0, "momentum-y": 1.0}, 0.5, 60)
+    later.residuals["density"][:] = 1e-12 * 0.5 ** np.arange(60)
+    later.residuals["momentum-y"][:] = 1e-14 * 0.5 ** np.arange(60)
+    reference = {"density": 1.0, "momentum-y": 1e-13}
+    assert history.converged_at(history.continued(later, reference), 10.0) == 1
+    woken = history.continued(later, reference, ["momentum-y"])
+    # momentum-y must reach 1e-23: 1e-14 * 0.5^k <= 1e-23 at k = 30, line 31 of the history.
+    assert history.converged_at(woken, 10.0) == 1 + math.ceil(9 / math.log10(2))
 
 
 def _watcher(script: str) -> str:
@@ -526,7 +536,7 @@ def test_compare_autan_with_an_su2_study(tmp_path: Path) -> None:
     assert whole.run.status == "converged"
     assert level.converged
     assert level.iterations == whole.run.iterations
-    report = compare.compare(runs, tmp_path / "su2.json")
+    report = compare.compare(runs, tmp_path / "su2.json", tmp_path / "su2")
     assert report["autan"]["point_vortex"]
     for row, run, cl, cd in zip(report["levels"], runs, FLO82_CL, FLO82_CD, strict=True):
         forces = autan.Results.open(run).forces
@@ -551,8 +561,20 @@ def test_compare_autan_with_an_su2_study(tmp_path: Path) -> None:
     )
     for odd in (autan_run(plain, 0), autan_run(cases.case("m050-a125", mesh(0)), 0)):
         with pytest.raises(VVError) as err:
-            compare.compare([*runs[1:], odd], tmp_path / "su2.json")
+            compare.compare([*runs[1:], odd], tmp_path / "su2.json", tmp_path / "su2")
         assert err.value.code == "V0905"
+    # SU2 runs that are not the study's (another scheme) or that read another mesh are refused.
+    level_json = tmp_path / "su2" / "m080-a125" / "n0008" / "level.json"
+    level = json.loads(level_json.read_text())
+    for bad in (
+        {**level, "scheme": "jst"},
+        {**level, "mesh": {**level["mesh"], "source_sha256": "0" * 64}},
+    ):
+        level_json.write_text(json.dumps(bad))
+        with pytest.raises(VVError) as err:
+            compare.compare(runs, tmp_path / "su2.json", tmp_path / "su2")
+        assert err.value.code == "V0905"
+    level_json.write_text(json.dumps(level))
 
 
 def test_wall_cp_is_compared_face_by_face(tmp_path: Path) -> None:
@@ -617,8 +639,9 @@ def test_wall_cp_is_compared_face_by_face(tmp_path: Path) -> None:
     assert same["all"]["max_abs"] == pytest.approx(0.25, abs=1e-9)
     assert same["outside_shocks"]["max_abs"] < 1e-9
     assert 0 < same["body"]["faces"] < nc
-    assert same["shock_upper"]["autan"] == same["shock_upper"]["su2"]
+    # SU2's nodal step reaches the face centres over two faces: the same shock, within one face.
     assert same["shock_upper"]["autan"] == pytest.approx(0.6, abs=0.1)
+    assert same["shock_upper"]["su2"] == pytest.approx(0.6, abs=0.1)
     shifted = compare.compare_cp(run, surface("shifted", 0.01, 0.6))
     assert shifted["outside_shocks"]["max_abs"] == pytest.approx(0.01, abs=1e-9)
     # A shock SU2 puts further aft: the faces between and around the two shocks are left out.

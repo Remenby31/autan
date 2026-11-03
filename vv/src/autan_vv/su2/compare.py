@@ -36,6 +36,8 @@ class AutanLevel:
     run: str
     n: int
     case: str
+    mach: float
+    alpha_deg: float
     point_vortex: bool
     converged: bool
     iterations: int
@@ -69,13 +71,17 @@ def read_autan(run: Path) -> AutanLevel:
     series = history.read_autan(run / "history.jsonl")
     start = info.get("start") or {}
     if start.get("residual_reference"):
-        series = history.continued(series, start["residual_reference"])
+        series = history.continued(series, start["residual_reference"], start.get("woken") or ())
     conv = history.convergence(series, cases.RESIDUAL_ORDERS)
     vortex = any("point_vortex" in rule["condition"] for rule in spec["boundaries"])
+    from autan.units import si, ureg  # noqa: PLC0415
+
     return AutanLevel(
         run=info["run_id"],
         n=n,
         case=info["case"]["name"],
+        mach=float(spec["freestream"]["mach"]),
+        alpha_deg=float(si(ureg(spec["freestream"]["aoa"]), "deg")),
         point_vortex=vortex,
         converged=conv.converged and info["status"] == "converged",
         iterations=conv.iterations,
@@ -98,15 +104,32 @@ def _forces(n: int, cl: float, cd: float, cmy: float, label: str) -> cases.Level
     )  # fmt: skip
 
 
-def compare(
-    autan_runs: Sequence[Path], su2_report: Path, su2_root: Path | None = None
-) -> dict[str, Any]:
+def _same_problem(a: AutanLevel, s: dict[str, Any], su2: dict[str, Any], run: Path) -> None:
+    """V0905 unless SU2's run `run` of this level is the study's (scheme, configuration) and was
+    converted from the mesh file Autan's run read."""
+    try:
+        level = json.loads((run / "level.json").read_text())
+    except FileNotFoundError:
+        msg = f"{run}: no level.json, not a prepared SU2 run of the study"
+        raise VVError(msg, code="V0905") from None
+    if level["scheme"] != su2["scheme"] or level["case_sha256"] != s["case_sha256"]:
+        msg = f"{run}: not the run of the study (scheme or configuration differs)"
+        raise VVError(msg, code="V0905")
+    if level["mesh"]["source_sha256"] != a.mesh_sha256:
+        msg = f"{run}: SU2's mesh was converted from another file than Autan run {a.run} read"
+        raise VVError(msg, code="V0905")
+
+
+def compare(autan_runs: Sequence[Path], su2_report: Path, su2_root: Path) -> dict[str, Any]:
     """Level by level and in the continuum, Autan against the SU2 study `su2_report` of the same
-    condition. The Autan runs must be one family: one case name, commit, precision and backend,
-    one point-vortex choice, distinct levels (V0905). Levels missing on either side, or not
-    converged on either side, are listed and left out of the differences and estimates. With
-    `su2_root`, the directory SU2's runs were prepared in, each level compared also gets its wall
-    Cp comparison (`compare_cp`) when the Autan run has its solution.cgns."""
+    condition, whose runs were prepared in `su2_root`. Both must solve one problem (V0905): the
+    Autan runs one family (case, commit, precision, backend, point-vortex choice, distinct levels)
+    at the Mach number and incidence of the study's condition, each level on the very mesh file
+    SU2's was converted from, and `su2_root` the study's own runs (scheme and configuration).
+    Levels missing on either side, or not converged on either side, are listed and left out of the
+    differences and estimates. Each compared level also gets its wall Cp comparison (`compare_cp`)
+    when the Autan run has its solution.cgns: Autan's state is that of the criterion, SU2's that of
+    the end of its run, a few iterations past the criterion at most."""
     read = [(read_autan(r), r) for r in autan_runs]
     paths = {level.run: r for level, r in read}
     autan = sorted((level for level, _ in read), key=lambda lv: lv.n)
@@ -116,24 +139,27 @@ def compare(
         msg = "the Autan runs are not one family (case, commit, precision, backend, vortex, level)"
         raise VVError(msg, code="V0905")
     condition = su2["condition"]
-    if not autan[0].case.startswith(f"naca0012-{condition}"):
-        msg = f"Autan case {autan[0].case} is not the condition {condition} of the SU2 report"
-        raise VVError(msg, code="V0905")
+    flow = cases.CONDITIONS[condition]
+    for a in autan:
+        if not (
+            math.isclose(a.mach, flow.mach, abs_tol=1e-12)
+            and math.isclose(a.alpha_deg, flow.alpha_deg, abs_tol=1e-9)
+        ):
+            msg = f"Autan run {a.run} is at M {a.mach}, {a.alpha_deg} deg, not the condition {condition}"
+            raise VVError(msg, code="V0905")
     by_n = {lv["n"]: lv for lv in su2["levels"]}
     rows = []
     both: list[tuple[AutanLevel, dict[str, Any]]] = []
     for a in autan:
         s = by_n.get(a.n)
         row: dict[str, Any] = {"n": a.n, "autan": asdict(a), "su2": s}
+        if s is not None:
+            _same_problem(a, s, su2, su2_root / condition / s["run"])
         if s is not None and a.converged and s["converged"]:
             row["difference"] = {k: a.__dict__[k] - s[k] for k in ("cl", "cd", "cmy")}
             both.append((a, s))
-            surface = None if su2_root is None else su2_root / condition / s["run"] / "surface.csv"
-            if (
-                surface is not None
-                and surface.exists()
-                and (paths[a.run] / "solution.cgns").exists()
-            ):
+            surface = su2_root / condition / s["run"] / "surface.csv"
+            if surface.exists() and (paths[a.run] / "solution.cgns").exists():
                 row["cp"] = compare_cp(paths[a.run], surface)
         rows.append(row)
     continuum = {}
@@ -227,16 +253,20 @@ def su2_wall_cp(surface: Path, mach: float, gamma: float) -> dict[tuple[float, f
 
 
 def _shock(xs: np.ndarray, cp: np.ndarray) -> float | None:
-    """x of the steepest pressure rise (largest dCp/dx) for 0.2 < x < 0.95, or None if none rises
-    by more than 0.1 between two faces (no shock)."""
+    """x of the steepest pressure rise (largest dCp/dx between neighbouring faces) for
+    0.2 < x < 0.95, or None when Cp rises by no more than 0.1 across the five faces around it
+    (no shock: a rise spread over a few faces still counts, a smooth recompression does not)."""
     order = np.argsort(xs)
     x, c = xs[order], cp[order]
-    keep = (x[1:] > 0.2) & (x[:-1] < 0.95)
-    rise = np.diff(c)[keep]
-    if rise.size == 0 or rise.max() <= 0.1:
+    slope = np.diff(c) / np.diff(x)
+    inside = np.flatnonzero((x[1:] > 0.2) & (x[:-1] < 0.95))
+    if inside.size == 0:
         return None
-    i = int(np.argmax(rise))
-    return float(0.5 * (x[1:][keep][i] + x[:-1][keep][i]))
+    i = int(inside[np.argmax(slope[inside])])
+    lo, hi = max(i - 2, 0), min(i + 3, len(c) - 1)
+    if c[hi] - c[lo] <= 0.1:
+        return None
+    return float(0.5 * (x[i] + x[i + 1]))
 
 
 def compare_cp(autan_run: Path, su2_surface: Path) -> dict[str, Any]:

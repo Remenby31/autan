@@ -21,6 +21,7 @@ import numpy.typing as npt
 from autan_vv.errors import VVError
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
 FloatArray = npt.NDArray[np.float64]
@@ -36,7 +37,9 @@ SU2_3D = {"rms[Rho]": "density", "rms[RhoU]": "momentum-x", "rms[RhoV]": "moment
 @dataclass(frozen=True)
 class History:
     """Iterations, residuals per equation (linear, not log10), CL, CD and the nose-up pitching
-    moment `cmy` of Autan's convention, and, when the code records it, the cumulative wall time."""
+    moment `cmy` of Autan's convention, and, when the code records it, the cumulative wall time.
+    `woken`: identically zero equations that already rose above their floor before this history
+    (a continued run's `start.woken`), which are no longer exempt."""
 
     iterations: npt.NDArray[np.int64]
     residuals: dict[str, FloatArray]
@@ -44,6 +47,7 @@ class History:
     cd: FloatArray
     cmy: FloatArray
     wall_seconds: FloatArray | None
+    woken: frozenset[str] = frozenset()
 
 
 def read_su2(path: Path) -> History:
@@ -105,11 +109,13 @@ def read_autan(path: Path, monitor: str = "forces") -> History:
         raise VVError(msg, code="V0904") from None
 
 
-def continued(history: History, residual_reference: dict[str, float]) -> History:
+def continued(
+    history: History, residual_reference: dict[str, float], woken: Sequence[str] = ()
+) -> History:
     """The history of a `continue` run with the residuals at iteration 1 of its original run
-    (run.json `start.residual_reference`, results.md) as its first line, so that the criterion is
-    judged as for the uninterrupted run and iterations count from the original's first; forces of
-    that line are not known (NaN)."""
+    (run.json `start.residual_reference`, results.md) as its first line and the equations of
+    `start.woken` no longer exempt, so that the criterion is judged as for the uninterrupted run
+    and iterations count from the original's first; forces of that line are not known (NaN)."""
     nan = np.array([np.nan])
     return History(
         iterations=np.concatenate([[1], history.iterations]).astype(np.int64),
@@ -120,6 +126,7 @@ def continued(history: History, residual_reference: dict[str, float]) -> History
         cd=np.concatenate([nan, history.cd]),
         cmy=np.concatenate([nan, history.cmy]),
         wall_seconds=None,
+        woken=frozenset(woken),
     )
 
 
@@ -132,7 +139,7 @@ def converged_at(history: History, orders: float) -> int | None:
         if first[eq] < IDENTICALLY_ZERO * largest:
             floor = IDENTICALLY_ZERO * largest
             # Exempt until it first rises above the floor; from then on it must drop like the rest.
-            risen = np.maximum.accumulate(r > floor)
+            risen = np.maximum.accumulate(r > floor) | (eq in history.woken)
             met &= ~risen | (r <= 10.0**-orders * first[eq])
         else:
             met &= r <= 10.0**-orders * first[eq]
