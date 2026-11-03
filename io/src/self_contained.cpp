@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <utility>
 #include <vector>
@@ -35,16 +36,26 @@ namespace {
               "cannot read the structure of '" + file.string() + "' in full");
 }
 
-// The first node whose data lives in another file, as an absolute path in the file.
+// The first node whose data lives in another file, as an absolute path in the file; or that the
+// file holds more links, or deeper, than a CGNS tree within max_cgns_nodes and max_cgns_depth can:
+// a node is at most three links (its group, " data", " link"), one path component deeper than its
+// node at most for the latter two, so the scan stops there, its cost bounded like the tree's.
 struct Scan {
   bool found = false;
   std::string outside;
+  std::int64_t links = 0;
+  bool beyond = false;
 };
 
 // H5Lvisit2 visits every link once, by name, without following soft or
 // external links (HDF5 reference manual, H5Lvisit2).
 herr_t visit(hid_t group, const char* name, const H5L_info2_t* info, void* data) {
   auto& scan = *static_cast<Scan*>(data);
+  const auto components = 1 + std::count(name, name + std::strlen(name), '/');
+  if (++scan.links > 3 * (max_cgns_nodes + 1) + 64 || components > max_cgns_depth + 1) {
+    scan.beyond = true;
+    return 1;  // stops the iteration
+  }
   const auto found = [&] {
     // CGNS keeps a link as an HDF5 external link named " link" in the node's
     // group (CGNS ADFH): the node is that group.
@@ -89,6 +100,11 @@ void scan_hdf5(const std::filesystem::path& file) {
   H5E_END_TRY
   H5PLset_loading_state(plugins);
   if (scan.found) outside(file, scan.outside);
+  if (scan.beyond) {
+    throw Error(ErrorCode::io_unsupported, file.string() + ": more than " +
+                                               std::to_string(max_cgns_nodes) + " nodes or " +
+                                               std::to_string(max_cgns_depth) + " levels");
+  }
   if (status < 0) unreadable(file);
 }
 
