@@ -1407,12 +1407,13 @@ TEST_CASE("A CGNS file reads at most 1 MiB of other data when it opens", "[cgns]
   require_error(autan::ErrorCode::io_unsupported, with_times("times-over.cgns", steps + 1));
 }
 TEST_CASE("Faces of a section nothing names are skipped, one named is kept", "[cgns]") {
-  // mesh.md, Readers: 2^20 triangles in a MIXED or a TRI_3 section, the first named by a BC: it
-  // labels its face, the others cost nothing kept, not 88 to 92 bytes each.
+  // mesh.md, Readers: 2^20 triangles in a MIXED or a TRI_3 section, the first named by a BC's
+  // list or range: it labels its face, the others cost nothing kept, not 88 to 92 bytes each.
   fs::create_directories(temp_dir());
   constexpr cgsize_t triangles = cgsize_t{1} << 20;
   const bool mixed_section = GENERATE(true, false);
-  CAPTURE(mixed_section);
+  const bool listed = GENERATE(true, false);
+  CAPTURE(mixed_section, listed);
   const auto mixed = [&](const std::string& name, cgsize_t count) {
     return cgns_file(name, [&](int fn, int base) {
       unstructured_tet(fn, base, "Zone");
@@ -1430,9 +1431,10 @@ TEST_CASE("Faces of a section nothing names are skipped, one named is kept", "[c
         REQUIRE(cg_section_write(fn, base, 1, "Faces", CGNS_ENUMV(TRI_3), 2, count + 1, 0,
                                  data.data(), &section) == CG_OK);
       }
-      const cgsize_t first = 2;
-      REQUIRE(cg_boco_write(fn, base, 1, "wall", CGNS_ENUMV(BCWall), CGNS_ENUMV(PointList), 1,
-                            &first, &bc) == CG_OK);
+      const cgsize_t first[] = {2, 2};
+      REQUIRE(cg_boco_write(fn, base, 1, "wall", CGNS_ENUMV(BCWall),
+                            listed ? CGNS_ENUMV(PointList) : CGNS_ENUMV(PointRange), listed ? 1 : 2,
+                            first, &bc) == CG_OK);
       REQUIRE(cg_boco_gridlocation_write(fn, base, 1, bc, CGNS_ENUMV(FaceCenter)) == CG_OK);
     });
   };
@@ -1449,8 +1451,8 @@ TEST_CASE("Faces of a section nothing names are skipped, one named is kept", "[c
   REQUIRE(wall != zones.end());
   const auto z = static_cast<std::size_t>(wall - zones.begin());
   CHECK(mesh->boundary_zone_offsets()[z + 1] - mesh->boundary_zone_offsets()[z] == 1);
-  // mesh-info.md, source.point_list_bytes: the BC's list of one 8-byte id.
-  CHECK(autan::io::cgns_logical_bytes(many).point_lists == 8);
+  // mesh-info.md, source.point_list_bytes: the BC's list of one 8-byte id; a range is no list.
+  CHECK(autan::io::cgns_logical_bytes(many).point_lists == (listed ? 8 : 0));
 }
 
 TEST_CASE("Looking up many BCs among many families keeps no HDF5 handle", "[cgns]") {
