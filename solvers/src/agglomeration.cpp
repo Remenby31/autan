@@ -394,7 +394,7 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
           if (i == 0 || better(run, c.best)) c.best = run;
           i = j;
         }
-        c.votes = {};
+        c.votes = std::vector<Key>();
       }
       auto hypothesis = [](const Candidate& c) { return c.best; };
       const std::size_t origin = line_node(s, 0);
@@ -762,9 +762,9 @@ std::vector<Level> agglomerate(const Mesh& mesh, const Geometry& geometry,
     if (static_cast<double>(coarse.n) > options.min_coarsening * static_cast<double>(g.n) ||
         static_cast<double>(coarse.owner.size()) >
             options.min_coarsening * static_cast<double>(g.owner.size())) {
-      fine.coarse_node = {};
-      fine.coarse_edge = {};
-      fine.coarse_flipped = {};
+      fine.coarse_node = std::vector<index_t>();
+      fine.coarse_edge = std::vector<index_t>();
+      fine.coarse_flipped = std::vector<std::uint8_t>();
       break;
     }
     g = std::move(coarse);

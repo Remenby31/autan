@@ -452,9 +452,9 @@ TEST_CASE("agglomerates are connected, stay in one cell zone and lines join adja
 
 TEST_CASE("each level keeps at most min_coarsening of the finer level's nodes and edges",
           "[multigrid]") {
-  // The option's contract (agglomeration.hpp). On tetrahedra a coarsening keeps about a fifth of
-  // the nodes but more than a quarter of the edges, so at 0.25 the edge rule is the one that ends
-  // the hierarchy.
+  // The option's contract (agglomeration.hpp). On the reference tetrahedra the first coarsening
+  // keeps 14 % of the nodes but 25.2 % of the edges, so at 0.25 the edge rule is the one that ends
+  // the hierarchy; the attempt it rejects leaves no storage in the coarsest level's maps.
   const char* file = GENERATE(from_range(meshes));
   const double ratio = GENERATE(0.8, 0.25);
   INFO(file << " min_coarsening " << ratio);
@@ -471,6 +471,9 @@ TEST_CASE("each level keeps at most min_coarsening of the finer level's nodes an
     CHECK(static_cast<double>(levels[k].owner.size()) <=
           ratio * static_cast<double>(levels[k - 1].owner.size()));
   }
+  CHECK(levels.back().coarse_node.capacity() == 0);
+  CHECK(levels.back().coarse_edge.capacity() == 0);
+  CHECK(levels.back().coarse_flipped.capacity() == 0);
 }
 
 TEST_CASE("wall layers form one line per wall cell, kept through the coarse levels",
