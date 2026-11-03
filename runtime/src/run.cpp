@@ -441,7 +441,9 @@ const Geometry& geometry_of(Prepared& p) {
 // mesh, precision and fields, and reads its state, before any directory exists.
 void load_start(Prepared& p) {
   const Start& start = *p.input.start;
-  const fs::path file = fs::path(start.run) / "solution.cgns";
+  const bool from_checkpoint = start.file == "checkpoint";
+  const fs::path file =
+      fs::path(start.run) / (from_checkpoint ? "checkpoint.cgns" : "solution.cgns");
   const auto unusable = [&](const std::string& why) {
     start_mismatch("E0707", file.string() + ": " + why, "start.run");
   };
@@ -485,6 +487,18 @@ void load_start(Prepared& p) {
   }
   if (stored.cells != p.mesh.n_cells()) {
     unusable(std::to_string(stored.cells) + " cells, the mesh " + std::to_string(p.mesh.n_cells()));
+  }
+  // A checkpoint names its iteration (results.md#checkpointcgns); a final solution does not.
+  if (from_checkpoint) {
+    const Json* c = metadata.contains("checkpoint") ? &metadata["checkpoint"] : nullptr;
+    if (c == nullptr || !c->is_object() || !c->contains("iteration") ||
+        !(*c)["iteration"].is_number_integer())
+      unusable("RunMetadata has no checkpoint iteration");
+    if ((*c)["iteration"].get<std::int64_t>() != start.iterations)
+      unusable("the checkpoint is of iteration " + (*c)["iteration"].dump() +
+               ", start.iterations " + std::to_string(start.iterations));
+  } else if (metadata.contains("checkpoint")) {
+    unusable("RunMetadata of a final solution has a checkpoint");
   }
   const std::string precision = text(metadata, "precision");
   if (precision != p.input.precision) {
@@ -1164,6 +1178,7 @@ class Run final : public Log {
                    {"iterations", s.iterations},
                    {"time", s.time ? Json(*s.time) : Json(nullptr)},
                    {"solution_sha256", s.solution_sha256},
+                   {"file", s.file},
                    {"residual_reference", reference},
                    {"woken", s.woken ? Json(*s.woken) : Json(nullptr)}};
     }
@@ -1186,6 +1201,7 @@ class Run final : public Log {
         {"time", in.time.kind == "unsteady" ? Json(0.0) : Json(nullptr)},
         {"averaging", nullptr},
         {"convergence", nullptr},
+        {"checkpoint", nullptr},
         {"start", start},
         {"monitors", nullptr},
         {"timing", nullptr},
@@ -1556,6 +1572,7 @@ class Run final : public Log {
       from = s.iterations + 1;
       if (!info_["averaging"].is_null()) average_start = info_["averaging"]["from_time"];
     }
+    last_checkpoint_ = std::chrono::steady_clock::now();
     for (std::int64_t it = from; it <= budget; ++it) {
       // A launcher forwards a signal to every rank, not at the same instant,
       // and may abort the job on one: the stop file asks for the same stop
@@ -1654,8 +1671,64 @@ class Run final : public Log {
         }
         if (converged) return "converged";
       }
+      if (it < budget && checkpoint_due(it)) write_checkpoint(it);
     }
     return "completed";
+  }
+
+  void remove_checkpoint() {
+    try {
+      dir_->remove_checkpoint();
+    } catch (const std::exception& e) {
+      add_diagnostic(
+          Diagnostic{.code = "W0711",
+                     .message = std::string("checkpoint.cgns was not removed: ") + e.what(),
+                     .path = "",
+                     .data_json = "{}"});
+    }
+  }
+
+  // Whether a checkpoint follows iteration `it` (case-schema.md#time): every `iterations`, or once
+  // `seconds` of wall-clock time have passed since the last one, as rank 0 measures it; every
+  // rank decides alike.
+  bool checkpoint_due(std::int64_t it) {
+    const auto& t = p_.input.time;
+    if (t.checkpoint_iterations) return it % *t.checkpoint_iterations == 0;
+    const std::int64_t due =
+        comm_.rank() == 0 && seconds_since(last_checkpoint_) >= *t.checkpoint_seconds ? 1 : 0;
+    return comm_.max(due) != 0;
+  }
+
+  // The state after iteration `it` to checkpoint.cgns, then run.json `checkpoint` and a log line
+  // (results.md#checkpointcgns). A failure of the physics fails the run; a failure to write
+  // leaves the previous checkpoint and goes on, with W0711.
+  void write_checkpoint(std::int64_t it) {
+    const auto start = std::chrono::steady_clock::now();
+    try {
+      write_solution(false, it);
+    } catch (const PhysicsFailure&) {
+      throw;
+    } catch (const std::exception& e) {
+      add_diagnostic(Diagnostic{.code = "W0711",
+                                .message = "the checkpoint of iteration " + std::to_string(it) +
+                                           " was not written: " + e.what(),
+                                .path = "",
+                                .data_json = Json{{"iteration", it}}.dump()});
+      last_checkpoint_ = std::chrono::steady_clock::now();
+      return;
+    }
+    last_checkpoint_ = std::chrono::steady_clock::now();
+    if (comm_.rank() != 0) return;
+    const double seconds = seconds_since(start);
+    std::error_code ec;
+    const auto bytes = fs::file_size(dir_->path() / "checkpoint.cgns", ec);
+    info_["checkpoint"] = Json{{"iteration", it}, {"time", info_["time"]}, {"seconds", seconds}};
+    dir_->write_run_json(info_.dump(2));
+    note("info", "writer", "checkpoint", "",
+         Json{{"iteration", it},
+              {"seconds", seconds},
+              {"bytes", ec ? Json(nullptr) : Json(static_cast<std::int64_t>(bytes))}}
+             .dump());
   }
 
   // The mesh index of the least diverged cell over all ranks, from the cell
@@ -1687,13 +1760,16 @@ class Run final : public Log {
 
   // Collects the solution from the physics (PhysicsFailure on any error of
   // its members) and writes it; skips a diverged state that is not finite.
-  void write_solution(bool diverged) {
+  // With `checkpoint`, the state after that iteration goes to checkpoint.cgns
+  // (results.md#checkpointcgns), which names the iteration.
+  void write_solution(bool diverged, std::optional<std::int64_t> checkpoint = std::nullopt) {
     const auto& in = p_.input;
     io::Solution s;
     Json metadata = info_;
     for (const char* key :
-         {"status", "finished", "iterations", "monitors", "timing", "diagnostics"})
+         {"status", "finished", "iterations", "monitors", "timing", "diagnostics", "checkpoint"})
       metadata.erase(key);
+    if (checkpoint) metadata["checkpoint"] = Json{{"iteration", *checkpoint}};
     // ASCII JSON, as readers decode CGNS descriptors.
     s.run_metadata = metadata.dump(-1, ' ', true);
     std::map<std::string, const BoundaryInput*> conditions;
@@ -1768,6 +1844,11 @@ class Run final : public Log {
       for (const auto& f : s.fields) {
         if (!std::ranges::all_of(f.values, [](double v) { return std::isfinite(v); })) return;
       }
+    }
+    if (checkpoint) {
+      io::write_solution(dir_->checkpoint_staging(), p_.mesh, s);
+      dir_->publish_checkpoint();
+      return;
     }
     io::write_solution(dir_->solution_staging(), p_.mesh, s);
     dir_->publish_solution();
@@ -1881,6 +1962,9 @@ class Run final : public Log {
     if (physics_ && status != "failed") {
       try {
         write_solution(status == "diverged");
+        // The final solution supersedes the checkpoint; a diverged run keeps it, its last
+        // resumable state (results.md#checkpointcgns).
+        if (comm_.rank() == 0 && status != "diverged") remove_checkpoint();
       } catch (const PhysicsFailure& e) {
         if (comm_.size() > 1) return fail(e.what(), done);
         record_failure(e.what());
@@ -1910,9 +1994,11 @@ class Run final : public Log {
   Prepared& p_;
   Comm& comm_;
   std::chrono::steady_clock::time_point launched_;  // run_case's entry
-  double log_seconds_ = 0.0;                        // spent in write()
-  fs::path stop_file_;                              // --stop-file; empty: none
-  double solve_seconds_ = 0.0;                      // this rank's step() and accumulate_average()
+  // The end of the last checkpoint, or the start of the iterations.
+  std::chrono::steady_clock::time_point last_checkpoint_ = std::chrono::steady_clock::now();
+  double log_seconds_ = 0.0;    // spent in write()
+  fs::path stop_file_;          // --stop-file; empty: none
+  double solve_seconds_ = 0.0;  // this rank's step() and accumulate_average()
   // Declared before the physics, so destroyed after it: its stream outlives the physics' use.
   std::optional<Gpu> gpu_;
   Geometry geometry_;

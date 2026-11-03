@@ -183,7 +183,10 @@
     "residual_orders": 8.0,
     "linear_solver": "multigrid",
     "coupled_turbulence": false,
-    "matrix_free": false
+    "matrix_free": false,
+    "checkpoint": {
+      "seconds": 1800.0
+    }
   },
   "monitors": [
     {

@@ -8,7 +8,7 @@ from pathlib import Path  # noqa: TC003 -- dataclass field type, resolved at run
 from typing import TYPE_CHECKING, Any, Literal
 
 from autan.errors import CaseError, Diagnostic, diagnostic
-from autan.results import StartInfo, residual_names
+from autan.results import ResumePoint, StartInfo, residual_names
 from autan.schema import Steady
 
 if TYPE_CHECKING:
@@ -32,6 +32,21 @@ def _without_budget(spec: CaseSpec) -> dict[str, Any]:
     return document
 
 
+def _resume_point(previous: Results) -> ResumePoint | None:
+    """Where ``previous`` can be continued from: its final solution when it ended converged,
+    completed or stopped, else its last checkpoint (results.md#checkpointcgns); ``None`` without
+    either. Raises ``CaseError`` when that file does not conform."""
+    run = previous.run
+    if run.status in RESUMABLE:
+        if not (previous.path / "solution.cgns").is_file():
+            return None
+        previous.field("Density")  # reads the solution and checks it against run.json
+        return ResumePoint(iteration=run.iterations, time=run.time, averaging=run.averaging)
+    if not (previous.path / "checkpoint.cgns").is_file():
+        return None
+    return previous.checkpoint()
+
+
 def problems(
     spec: CaseSpec, mesh_info: MeshInfo, previous: Results, mode: Mode
 ) -> list[Diagnostic]:
@@ -46,30 +61,28 @@ def problems(
         found.append(
             problem("E0512", "a case with an initial-state file cannot start from a previous run")
         )
-    if run.status not in RESUMABLE or not (previous.path / "solution.cgns").is_file():
-        found.append(
-            problem(
-                "E0707",
-                f"run {run.run_id} is {run.status}; a start needs a "
-                "converged, completed or stopped run with its solution",
-            )
+    point = None
+    try:
+        point = _resume_point(previous)
+    except CaseError as error:
+        outside = [d for d in error.diagnostics if d.code == "E0134"]
+        found.extend(
+            outside
+            or [problem("E0707", f"the state of run {run.run_id} does not conform: {error.codes}")]
         )
-    elif run.iterations == 0:
-        found.append(problem("E0707", f"run {run.run_id} stopped before its first iteration"))
     else:
-        try:
-            previous.field("Density")  # reads the solution and checks it against run.json
-        except CaseError as error:
-            outside = [d for d in error.diagnostics if d.code == "E0134"]
-            found.extend(
-                outside
-                or [
-                    problem(
-                        "E0707",
-                        f"the solution of run {run.run_id} does not conform: {error.codes}",
-                    )
-                ]
+        if point is None and run.status in RESUMABLE:
+            found.append(problem("E0707", f"run {run.run_id} is {run.status} but has no solution"))
+        elif point is None:
+            found.append(
+                problem(
+                    "E0707",
+                    f"run {run.run_id} is {run.status} and wrote no checkpoint before it ended: "
+                    "there is no state to start from",
+                )
             )
+        elif point.iteration == 0:
+            found.append(problem("E0707", f"run {run.run_id} stopped before its first iteration"))
     if run.mesh.sha256 != mesh_info.source.sha256:
         found.append(problem("E0203", f"run {run.run_id} was computed on another mesh"))
     old = previous.case
@@ -82,12 +95,12 @@ def problems(
                     "except its iteration or step budget",
                 )
             )
-        elif _budget(spec) <= run.iterations:
+        elif point is not None and _budget(spec) <= point.iteration:
             found.append(
                 problem(
                     "E0708",
                     f"the budget ({_budget(spec)}) must exceed the "
-                    f"{run.iterations} iterations already done",
+                    f"{point.iteration} iterations already done",
                 )
             )
     elif (old.physics.kind, residual_names(old)) != (spec.physics.kind, residual_names(spec)):
@@ -101,19 +114,26 @@ def problems(
 
 
 def start_info(previous: Results, mode: Mode) -> StartInfo:
-    """The provenance the new run records, with the hash of the solution it reads."""
+    """The provenance the new run records, with the hash of the file it reads: the final
+    solution, or the checkpoint of a run that did not end converged, completed or stopped."""
     run = previous.run
-    digest = hashlib.sha256((previous.path / "solution.cgns").read_bytes()).hexdigest()
+    final = run.status in RESUMABLE
+    point = _resume_point(previous)
+    if point is None:
+        raise CaseError([diagnostic("E0707", f"run {run.run_id} has no state to start from")])
+    file: Literal["solution", "checkpoint"] = "solution" if final else "checkpoint"
+    digest = hashlib.sha256((previous.path / f"{file}.cgns").read_bytes()).hexdigest()
     reference = _reference(previous) if mode == "continue" else None
     return StartInfo(
         run_id=run.run_id,
         identity=run.identity,
         mode=mode,
-        iterations=run.iterations,
-        time=run.time,
+        iterations=point.iteration,
+        time=point.time,
         solution_sha256=digest,
+        file=file,
         residual_reference=reference,
-        woken=None if reference is None else woken(previous, reference),
+        woken=None if reference is None else woken(previous, reference, point.iteration),
     )
 
 
@@ -134,15 +154,17 @@ def _reference(previous: Results) -> dict[str, float] | None:
 FLOOR = 1e-12
 
 
-def woken(previous: Results, reference: dict[str, float]) -> list[str]:
-    """The identically zero equations that rose above their floor during ``previous`` or the
-    runs it continues: they no longer have the exemption (case-schema.md#time)."""
+def woken(previous: Results, reference: dict[str, float], up_to: int) -> list[str]:
+    """The identically zero equations that rose above their floor during ``previous``, up to
+    iteration ``up_to``, or the runs it continues: they no longer have the exemption
+    (case-schema.md#time)."""
     floor = FLOOR * max(reference.values(), default=0.0)
     start = previous.run.start
     found = set(start.woken or []) if start is not None and start.mode == "continue" else set()
     history = previous.history
+    upto = history.iterations <= up_to
     for name, first in reference.items():
-        if first < floor and bool((history.residual(name) > floor).any()):
+        if first < floor and bool((history.residual(name)[upto] > floor).any()):
             found.add(name)
     return sorted(found)
 

@@ -12,7 +12,7 @@ import rfc8785
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
 
 from autan.errors import CaseError, Diagnostic, Location, diagnostic
-from autan.units import K, UnitOfLength, deg, fail, m, quantity, si, validate_number
+from autan.units import K, UnitOfLength, deg, fail, m, quantity, s, si, validate_number
 
 SCHEMA_ID = "autan.case/1"
 # Largest integer RFC 8785 canonicalizes exactly (IEEE 754 double, 2**53 - 1).
@@ -272,6 +272,31 @@ class Freestream(Spec):
 
 # --- time --------------------------------------------------------------------------------
 
+CHECKPOINT_SECONDS = (60.0, 86400.0)
+
+
+class Checkpoint(Spec):
+    """How often a running run writes its restart checkpoint (results.md#checkpointcgns): every
+    ``seconds`` of wall-clock time, in [60 s, 86400 s], or every ``iterations`` iterations;
+    exactly one. A checkpoint never changes the results, only when they are saved."""
+
+    seconds: Duration | None = None
+    iterations: Count | None = None
+
+    @model_validator(mode="after")
+    def _check(self) -> Self:
+        if (self.seconds is None) == (self.iterations is None):
+            fail("E0003", "give exactly one of seconds or iterations")
+        if self.seconds is not None:
+            low, high = CHECKPOINT_SECONDS
+            if not low <= si(self.seconds, "s") <= high:
+                fail("E0304", "checkpoint seconds must be in [60, 86400]")
+        return self
+
+
+def _default_checkpoint() -> Checkpoint:
+    return Checkpoint(seconds=1800.0 * s)
+
 
 class Steady(Spec):
     """Local time stepping until every residual drops ``residual_orders`` orders, at most
@@ -286,6 +311,7 @@ class Steady(Spec):
     linear_solver: Literal["multigrid", "gauss-seidel", "lines"] = "multigrid"
     coupled_turbulence: Annotated[bool, Field(strict=True)] = False
     matrix_free: Annotated[bool, Field(strict=True)] = False
+    checkpoint: Checkpoint = Field(default_factory=_default_checkpoint)
 
 
 class Unsteady(Spec):
@@ -296,6 +322,7 @@ class Unsteady(Spec):
     dt: Duration | None = None
     cfl: PositiveNumber | None = None
     average_from: Index | None = None
+    checkpoint: Checkpoint = Field(default_factory=_default_checkpoint)
 
     @model_validator(mode="after")
     def _check(self) -> Self:

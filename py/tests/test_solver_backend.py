@@ -12,7 +12,9 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import autan
 import autan.initial_state
@@ -297,6 +299,101 @@ def test_continue_through_the_runtime_matches_the_uninterrupted_run(
     assert lines(first) + lines(rest) == lines(whole)
     assert (rest.run.status, rest.run.iterations) == (whole.run.status, whole.run.iterations)
     assert rest.field("Density").tobytes() == whole.field("Density").tobytes()
+
+
+def _killed(
+    tmp_path: Path, name: str, every: int, ready: Callable[[dict[str, Any], list[str]], bool]
+) -> Path:
+    """A run of the hybrid case with a checkpoint every ``every`` iterations, its runtime killed
+    with SIGKILL once ``ready(run.json document, history lines)`` holds: its run directory."""
+    case = tmp_path / f"{name}.py"
+    case.write_text(
+        CASE + f"case.time = autan.Steady(max_iterations=200, checkpoint=autan.Checkpoint("
+        f"iterations={every}))\n"
+    )
+    runs = tmp_path / name
+    env = {**os.environ, "AUTAN_TEST_PAUSE_MS": "40", "AUTAN_TEST_FACTOR": "0.99"}
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            SCRIPT,
+            str(case),
+            str(tmp_path / "hybrid.meshinfo.json"),
+            str(RELAXATION),
+            str(runs),
+        ],
+        env=env,
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            dirs = list(runs.glob("run-*"))
+            if dirs and (dirs[0] / "history.jsonl").exists():
+                info = json.loads((dirs[0] / "run.json").read_text())
+                lines = (dirs[0] / "history.jsonl").read_text().splitlines()
+                if ready(info, lines):
+                    break
+            time.sleep(0.01)
+        else:
+            pytest.fail("the run never got ready")
+        found = subprocess.run(
+            ["pgrep", "-f", f"{RELAXATION} --input"], capture_output=True, text=True, check=True
+        )
+        for pid in found.stdout.split():
+            os.kill(int(pid), signal.SIGKILL)
+        process.wait(timeout=30)
+    finally:
+        process.kill()
+    [run_dir] = runs.glob("run-*")
+    return run_dir
+
+
+@pytest.mark.usefixtures("hybrid")
+def test_a_killed_run_continues_from_its_last_checkpoint(tmp_path: Path) -> None:
+    # results.md#checkpointcgns: a run killed between two checkpoints continues from the last
+    # one through --start, as if it had never stopped.
+    killed = _killed(
+        tmp_path, "killed", 4, lambda info, _: (info["checkpoint"] or {}).get("iteration", 0) >= 8
+    )
+    previous = autan.Results.open(killed)
+    assert previous.run.status == "running"
+    point = previous.checkpoint()
+    assert point.iteration % 4 == 0
+    assert point.iteration >= 8
+    case = autan.load(tmp_path / "killed.py")
+    mesh = autan.MeshInfo.load(tmp_path / "hybrid.meshinfo.json")
+    backend = autan.SolverBackend(executable=RELAXATION)
+    with pytest.MonkeyPatch.context() as env:
+        env.setenv("AUTAN_TEST_FACTOR", "0.99")
+        rest = case.run(mesh, backend=backend, runs=tmp_path / "rest", start=previous)
+        whole = case.run(mesh, backend=backend, runs=tmp_path / "whole")
+    assert rest.run.start is not None
+    assert (rest.run.start.file, rest.run.start.iterations) == ("checkpoint", point.iteration)
+
+    def lines(path: Path) -> list[str]:
+        return (path / "history.jsonl").read_text().splitlines()
+
+    assert lines(killed)[: point.iteration] + lines(rest.path) == lines(whole.path)
+    assert rest.field("Density").tobytes() == whole.field("Density").tobytes()
+    assert not (rest.path / "checkpoint.cgns").exists()  # removed with the final solution
+
+
+@pytest.mark.usefixtures("hybrid")
+def test_a_run_killed_before_its_first_checkpoint_has_nothing_to_continue(tmp_path: Path) -> None:
+    killed = _killed(tmp_path, "early", 100, lambda _, lines: len(lines) >= 3)
+    case = autan.load(tmp_path / "early.py")
+    mesh = autan.MeshInfo.load(tmp_path / "hybrid.meshinfo.json")
+    with pytest.raises(autan.CaseError) as error:
+        case.run(
+            mesh,
+            backend=autan.SolverBackend(executable=RELAXATION),
+            runs=tmp_path / "rest",
+            start=autan.Results.open(killed),
+        )
+    [found] = error.value.diagnostics
+    assert found.code == "E0707"
+    assert "no checkpoint" in found.message
 
 
 PERIODIC_BOX = ROOT / "tests" / "data" / "mesh" / "periodic-box" / "periodic-box.binary.msh"

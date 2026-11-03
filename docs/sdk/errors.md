@@ -788,6 +788,14 @@ An equation that was identically zero at iteration 1 (below 1e-12 times the larg
 
 Fix: Check the boundary conditions and the mesh: a symmetric or 2D problem whose symmetry breaks during the run usually means a boundary condition breaks it.
 
+## W0711
+
+**Checkpoint not written** (warning)
+
+Writing the restart checkpoint failed (results.md#checkpointcgns), or removing it once the final solution was written: the run goes on, and the previous checkpoint, if any, stays whole. `data` gives the iteration when a write failed.
+
+Fix: Check the space and permissions of the run directory's file system.
+
 ## W0801
 
 **No NVIDIA GPU found** (warning)

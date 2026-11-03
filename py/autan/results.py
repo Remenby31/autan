@@ -8,6 +8,7 @@ import math
 import re
 import secrets
 import tomllib
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NoReturn, Self
@@ -100,6 +101,7 @@ class StartInfo(_Strict):
     iterations: Annotated[int, Field(strict=True, ge=1)]
     time: float | None
     solution_sha256: Hex
+    file: Literal["solution", "checkpoint"]
     residual_reference: dict[str, float] | None
     woken: Annotated[
         list[str] | None, Field(json_schema_extra={"anyOf": [WOKEN_SCHEMA, {"type": "null"}]})
@@ -111,6 +113,34 @@ class StartInfo(_Strict):
         if problem:
             raise ValueError(problem)
         return self
+
+
+@dataclass(frozen=True)
+class ResumePoint:
+    """Where a run's checkpoint leaves it: the iteration it holds, its physical time (``None``
+    when steady) and its averaging."""
+
+    iteration: int
+    time: float | None
+    averaging: Averaging | None
+
+
+def _is_averaging(value: object) -> bool:
+    if value is None:
+        return True
+    try:
+        Averaging.model_validate(value)
+    except ValidationError:
+        return False
+    return True
+
+
+class CheckpointRecord(_Strict):
+    """The last checkpoint of a run (results.md#runjson, ``checkpoint``)."""
+
+    iteration: Annotated[int, Field(strict=True, ge=1)]
+    time: float | None
+    seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)]
 
 
 class Convergence(_Strict):
@@ -156,6 +186,7 @@ class RunInfo(_Strict):
     averaging: Averaging | None
     start: StartInfo | None = None
     convergence: Convergence | None = None
+    checkpoint: CheckpointRecord | None = None
     monitors: dict[str, FinalMonitor] | None = None
     timing: Timing | None = None
     diagnostics: tuple[Diagnostic, ...]
@@ -597,19 +628,43 @@ class Results:
             reason = "is still running" if self.run.status == "running" else "has no solution"
             message = f"run {self.run.run_id} ({self.run.status}) {reason}"
             raise CaseError([diagnostic("E0703", message, location=where)])
+        self._solution = self._read(path, checkpoint=False)
+        return self._solution
+
+    def _read(self, path: Path, *, checkpoint: bool) -> cgns.Node:
+        where = Location(file=str(path))
         try:
             tree = cgns.read(path)
         except cgns.OutsideFileError as error:
             diagnosed = diagnostic("E0134", str(error), location=where, node=error.nodes[0])
             raise CaseError([diagnosed]) from None
         except (OSError, ValueError, KeyError) as error:
-            message = f"cannot read solution.cgns: {error}"
+            message = f"cannot read {path.name}: {error}"
             raise CaseError([diagnostic("E0701", message, location=where)]) from None
-        problems = solution_problems(tree, self.run, self.case, self.mesh_info)
+        problems = solution_problems(
+            tree, self.run, self.case, self.mesh_info, checkpoint=checkpoint
+        )
         if problems:
             raise CaseError(diagnostic("E0701", p, location=where) for p in problems)
-        self._solution = tree
         return tree
+
+    def checkpoint(self) -> ResumePoint:
+        """The restart checkpoint a run wrote while running (results.md#checkpointcgns), read
+        and checked: the iteration it holds, its physical time and averaging. ``E0703`` when the
+        run has none."""
+        path = self.path / "checkpoint.cgns"
+        if not path.is_file():
+            message = f"run {self.run.run_id} ({self.run.status}) has no checkpoint"
+            raise CaseError([diagnostic("E0703", message, location=Location(file=str(path)))])
+        metadata = json.loads(
+            self._read(path, checkpoint=True).child("Base").child("RunMetadata").text()
+        )
+        averaging = metadata["averaging"]
+        return ResumePoint(
+            iteration=int(metadata["checkpoint"]["iteration"]),
+            time=metadata["time"],
+            averaging=None if averaging is None else Averaging.model_validate(averaging),
+        )
 
     def _zone(self) -> cgns.Node:
         return self._tree().child("Base").child("Zone")
@@ -844,7 +899,17 @@ def history_problems(records: list[dict[str, Any]], run: RunInfo, case: CaseSpec
 FINAL = frozenset({"converged", "completed", "stopped"})
 # run.json keys solution.cgns RunMetadata leaves out (results.md#solutioncgns): they change
 # after the solution is written, or name its final state.
-NOT_IN_METADATA = ("status", "finished", "iterations", "monitors", "timing", "diagnostics")
+NOT_IN_METADATA = (
+    "status",
+    "finished",
+    "iterations",
+    "checkpoint",
+    "monitors",
+    "timing",
+    "diagnostics",
+)
+# A checkpoint's RunMetadata gives the state at its own iteration (results.md#checkpointcgns).
+CHECKPOINT_STATE = ("time", "averaging", "checkpoint")
 
 
 def run_metadata(info: RunInfo) -> dict[str, Any]:
@@ -969,17 +1034,19 @@ SIDS_BC_TYPES = frozenset(
 
 
 def solution_problems(
-    tree: cgns.Node, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo
+    tree: cgns.Node, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo, *, checkpoint: bool = False
 ) -> list[str]:
-    """The solution.cgns layout of results.md: labels, sizes, connectivity, fields, names."""
+    """The solution.cgns layout of results.md: labels, sizes, connectivity, fields, names; with
+    ``checkpoint``, that of checkpoint.cgns, whose RunMetadata gives its own iteration, time and
+    averaging."""
     try:
-        return _solution_problems(tree, run, case, mesh_info)
+        return _solution_problems(tree, run, case, mesh_info, checkpoint)
     except (KeyError, IndexError, TypeError, ValueError) as error:
         return [f"missing or malformed node: {type(error).__name__}: {error}"]
 
 
 def _solution_problems(
-    tree: cgns.Node, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo
+    tree: cgns.Node, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo, checkpoint: bool
 ) -> list[str]:
     found: list[str] = []
     base = tree.child("Base")
@@ -989,7 +1056,23 @@ def _solution_problems(
             found.append(f"{node.name} is not a {label}")
     if base.child("DimensionalUnits").text_rows() != list(UNITS):
         found.append(f"DimensionalUnits must be {list(UNITS)}")
-    if json.loads(base.child("RunMetadata").text()) != run_metadata(run):
+    metadata = json.loads(base.child("RunMetadata").text())
+    expected = run_metadata(run)
+    if checkpoint:
+        mark = metadata.get("checkpoint")
+        iteration = mark.get("iteration") if isinstance(mark, dict) else None
+        if set(mark or {}) != {"iteration"} or type(iteration) is not int or iteration < 1:
+            found.append("RunMetadata of a checkpoint must give checkpoint.iteration >= 1")
+        if not _is_averaging(metadata.get("averaging", False)):
+            found.append("RunMetadata of a checkpoint must give averaging")
+        metadata = {k: v for k, v in metadata.items() if k not in CHECKPOINT_STATE}
+        expected = {k: v for k, v in expected.items() if k not in CHECKPOINT_STATE}
+    averaged = (
+        run.averaging is not None
+        if not checkpoint
+        else json.loads(base.child("RunMetadata").text()).get("averaging") is not None
+    )
+    if metadata != expected:
         found.append("RunMetadata does not match run.json")
     names = json.loads(base.child("ZoneNames").text())
     if sorted(names["boundary"].values()) != sorted(z.name for z in mesh_info.boundary_zones):
@@ -1018,7 +1101,7 @@ def _solution_problems(
         values = np.asarray(solution.children[name].data) if name in solution.children else None
         if values is None or values.size != cells or not np.all(np.isfinite(values)):
             found.append(f"FlowSolution {name} must hold {cells} finite values")
-    if ("FlowSolutionMean" in zone.children) != (run.averaging is not None):
+    if ("FlowSolutionMean" in zone.children) != averaged:
         found.append("FlowSolutionMean must exist exactly when run.json has averaging")
     periodic = {name for pair in mesh_info.periodic for name in pair.zones}
     zone_bc = zone.children.get("ZoneBC")

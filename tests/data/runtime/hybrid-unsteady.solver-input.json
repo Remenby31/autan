@@ -182,7 +182,10 @@
     "steps": 6,
     "dt": 0.01,
     "cfl": null,
-    "average_from": 3
+    "average_from": 3,
+    "checkpoint": {
+      "seconds": 1800.0
+    }
   },
   "monitors": [
     {
