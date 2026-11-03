@@ -309,6 +309,7 @@ class FluentReader {
     face_blocks_.push_back(FaceBlock{.zone = zone, .bc_code = bc_code});
     c_.expect('(');
     std::vector<std::int64_t> nodes;
+    bool interior = false;
     for (std::size_t f = 0; f < n; ++f) {
       const std::int64_t count = face_type == 0 || face_type == 5 ? next() : face_type;
       if (count < 3) c_.fail("face with fewer than 3 nodes");
@@ -321,6 +322,7 @@ class FluentReader {
         if (v < 1) c_.fail("node index must be at least 1");
       }
       if (c0 < 0 || c1 < 0 || (c0 == 0 && c1 == 0)) c_.fail("face without a cell");
+      interior = interior || (c0 != 0 && c1 != 0);
       // Normal points toward c0: c1 is the cell it leaves. On the boundary
       // (c1 = 0) the face is reversed so that it leaves c0.
       const bool reverse = c1 == 0;
@@ -330,6 +332,12 @@ class FluentReader {
       face_cell0_.push_back(reverse ? c0 : c1);
       face_cell1_.push_back(reverse ? 0 : c0);
       face_block_.push_back(block);
+    }
+    // A section of interior faces is its own zone, which MeshInfo does not show: real meshes have
+    // a few, at most 16 384 of them, as zone records (mesh.md, Readers).
+    if (interior && ++interior_sections_ > max_cell_zone_records) {
+      c_.unsupported("more than " + std::to_string(max_cell_zone_records) +
+                     " sections of interior faces");
     }
     if (binary) {
       end_binary(id);
@@ -559,6 +567,7 @@ class FluentReader {
   std::map<std::int64_t, std::size_t> records_;  // zone id -> offset of its last record
   static constexpr std::size_t max_cell_zone_records = 16384;
   std::size_t cell_zone_records_ = 0;  // fluid, solid and interior records among them
+  std::size_t interior_sections_ = 0;  // face sections holding an interior face
 };
 
 }  // namespace

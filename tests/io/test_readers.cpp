@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -654,6 +655,56 @@ TEST_CASE("Records a reader does not use cost their text, not a copy each", "[io
     CHECK(mesh->cell_zones()[0].name == "block");
   }
 }
+namespace {
+
+// A column of `cells` unit hexahedra along z, written as Fluent (hexadecimal indices, normals
+// toward c0): its boundary faces in one wall section, each interior face in a section and zone of
+// its own.
+std::string fluent_column(int cells) {
+  const auto hex = [](long long v) {
+    char buffer[32];
+    std::snprintf(buffer, sizeof buffer, "%llx", v);
+    return std::string(buffer);
+  };
+  const auto node = [](int layer, int corner) { return 4LL * layer + corner + 1; };
+  const auto face = [&](std::array<long long, 4> nodes, long long c0, long long c1) {
+    std::string row;
+    for (const long long v : nodes) row += hex(v) + " ";
+    return row + hex(c0) + " " + hex(c1) + "\n";
+  };
+  const long long n_nodes = 4LL * (cells + 1);
+  const long long n_boundary = 4LL * cells + 2;
+  const long long n_faces = n_boundary + cells - 1;
+  std::string out = "(0 \"column\")\n(2 3)\n(10 (0 1 " + hex(n_nodes) + " 0 3))\n(10 (1 1 " +
+                    hex(n_nodes) + " 1 3)(\n";
+  const std::array<std::array<int, 2>, 4> corners{{{0, 0}, {1, 0}, {1, 1}, {0, 1}}};
+  for (int layer = 0; layer <= cells; ++layer) {
+    for (const auto& [x, y] : corners) {
+      out += std::to_string(x) + " " + std::to_string(y) + " " + std::to_string(layer) + "\n";
+    }
+  }
+  out += "))\n(12 (0 1 " + hex(cells) + " 0))\n(12 (2 1 " + hex(cells) + " 1 4))\n";
+  out += "(13 (0 1 " + hex(n_faces) + " 0))\n(13 (3 1 " + hex(n_boundary) + " 3 4)(\n";
+  out += face({node(0, 0), node(0, 1), node(0, 2), node(0, 3)}, 1, 0);
+  out += face({node(cells, 3), node(cells, 2), node(cells, 1), node(cells, 0)}, cells, 0);
+  for (int c = 1; c <= cells; ++c) {
+    const int lo = c - 1;
+    for (int side = 0; side < 4; ++side) {
+      const int a = side, b = (side + 1) % 4;
+      out += face({node(lo, a), node(c, a), node(c, b), node(lo, b)}, c, 0);
+    }
+  }
+  out += "))\n";
+  for (int c = 1; c < cells; ++c) {
+    const long long f = n_boundary + c;
+    out += "(13 (" + hex(9 + c) + " " + hex(f) + " " + hex(f) + " 2 4)(\n" +
+           face({node(c, 0), node(c, 1), node(c, 2), node(c, 3)}, c + 1, c) + "))\n";
+  }
+  return out + "(45 (2 fluid column)())\n(45 (3 wall walls)())\n";
+}
+
+}  // namespace
+
 TEST_CASE("A Fluent file holds at most 16 384 fluid, solid or interior zone records", "[io]") {
   // mesh.md, Readers: a record each read again by offset for the cells that use it.
   std::string zones;
@@ -661,6 +712,14 @@ TEST_CASE("A Fluent file holds at most 16 384 fluid, solid or interior zone reco
   CHECK(autan::io::read_mesh(write_temp("fluid-limit.msh", fluent_tet + zones)).n_cells() == 1);
   require_error(autan::ErrorCode::io_unsupported,
                 write_temp("fluid-over.msh", fluent_tet + zones + "(45 (99999 solid s)())\n"));
+  // Likewise its sections of interior faces, each a zone MeshInfo does not show: a column whose
+  // 16 384 interior faces each have their own reads, one more is refused.
+  const autan::Mesh column =
+      autan::io::read_mesh(write_temp("sections-limit.msh", fluent_column(16385)));
+  CHECK(column.n_cells() == 16385);
+  CHECK(column.n_interior_faces() == 16384);
+  require_error(autan::ErrorCode::io_unsupported,
+                write_temp("sections-over.msh", fluent_column(16386)));
 }
 TEST_CASE("Fluent interior zones no face is in are not kept", "[io]") {
   // mesh.md, Readers: 16 383 empty interior zones of 1024-byte names cost their text.
