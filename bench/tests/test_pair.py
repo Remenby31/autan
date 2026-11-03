@@ -15,7 +15,7 @@ from autan_bench import gpu, pair, runner
 from autan_bench.cli import main
 from autan_bench.errors import BenchError, Code
 from conftest import bench, make_result
-from test_run import FAKE_SMI, fake_runnable, raw_output
+from test_run import FAKE_IOREG, FAKE_SMI, fake_runnable, raw_output
 
 
 def noisy(center: float, rng: random.Random, n: int = 20, spread: float = 0.005) -> list[float]:
@@ -258,9 +258,11 @@ def paired(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
     fake_runnable(tmp_path, monkeypatch, 3)
     busy = tmp_path / "busy"
-    smi = tmp_path / "nvidia-smi"
-    smi.write_text(FAKE_SMI.format(busy=busy))
-    smi.chmod(smi.stat().st_mode | stat.S_IEXEC)
+    # Both platforms' telemetry: a harness run as a subprocess keeps its own sys.platform.
+    for tool, text in (("nvidia-smi", FAKE_SMI), ("ioreg", FAKE_IOREG)):
+        path = tmp_path / tool
+        path.write_text(text.format(busy=busy))
+        path.chmod(path.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
     # The load and idle checks are test_run's; here they are made quick, not skipped.
     monkeypatch.setattr(gpu, "require_idle", functools.partial(gpu.require_idle, interval_s=0.02))
