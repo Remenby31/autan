@@ -122,3 +122,18 @@ The coarsening ratio is enforced for cells only (`cells_by_level[k+1]` ≤ 0.8 `
 | the weights' upload: the physics' FP64 weights and `DeviceMesh`'s copy, 24E each | stencil entries | E: `device setup` 48S |
 | `bind`'s staged chunk, at most `upload_chunk` values (2^20) in the device type | fixed | F: `device setup` 8 MiB |
 | a second-order run without limiter: the limiter's 5C ones, uploaded from a host vector in `s` | cells | M: `device setup`, weights phase n·C·s |
+
+## Per step (`runtime/src/run.cpp`, `physics/src/euler_physics.cpp`)
+
+What an iteration adds stays bounded by the case or the mesh, or leaves memory as it is written. No container grows with the number of steps.
+
+| Held | Grows with | Class |
+|---|---|---|
+| the history line, `record` with its residuals and the monitors due this step, appended to `history.jsonl` then dropped | equations, monitors | streamed |
+| log lines, appended to `log.jsonl` as they occur | — | streamed |
+| `info_["diagnostics"]`: W0150 once at setup; W0710 once per equation leaving its floor; D0107, E0704 once, ending the run | equations | F |
+| `info_["diagnostics"]`: W0714, one per failed checkpoint | checkpoints | gap: aggregated into one W0714 with a counter (« CFD - Générateur kernels ») |
+| `info_["monitors"]`, the final record of each monitor; `info_["averaging"]` and `info_["checkpoint"]`, replaced each step | monitors | F: `input` |
+| `woken`, `first`, the exemption's floors | equations | F |
+| the physics' solver state (`first_norms_`, penalty, CFL cap) and timing scalars (`solve_seconds_`, `log_seconds_`) | — | F |
+| the running averages, `accumulate_average` into arrays sized at setup | cells | M: `physics` |
