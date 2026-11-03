@@ -326,17 +326,32 @@ def pair_series(
     max_load_per_cpu: float | None = None,
     on_run: Callable[[int, str, dict[str, Any]], None] | None = None,
     ready_timeout_s: float | None = None,
+    hold_per_pair: bool = False,
 ) -> Series:
     """Run the change's and the base's binaries with the same arguments, in the order of
     ``sides``. Each run is the measurement :func:`run` makes, with its own campaign, idle and
     load checks. ``on_run(index, side, result)`` is called after each run.
 
     Ungated, the whole series is one hold of the GPU lock (#403), so no other job runs between
-    the two sides. Gated (``ready_timeout_s``, binaries run with their gate), each pair is one
+    the two sides; with ``hold_per_pair``, each pair is a hold of its own, as for gated binaries. Gated (``ready_timeout_s``, binaries run with their gate), each pair is one
     hold: both of its processes set up outside the lock (at most these two alive), then the lock
     is taken, both runs go, one after the other, and it is released; the statistic is per pair,
     so other jobs between pairs widen the interval without biasing the ratio (#403)."""
     binaries = {"change": change, "base": base}
+    if ready_timeout_s is None and hold_per_pair:
+        docs, waited_total, held_total = [], 0.0, 0.0
+        for first in range(0, len(sides), 2):
+            with gpu.gpu_lock(lock, lock_timeout_s) as waited:
+                start = time.monotonic()
+                for k, side in enumerate(sides[first : first + 2]):
+                    doc = _measure(binaries[side], args, None, None, suite, precision, lock,
+                                   waited if k == 0 else 0.0, max_load_per_cpu)  # fmt: skip
+                    docs.append(doc)
+                    if on_run:
+                        on_run(first + k, side, doc)
+                held_total += time.monotonic() - start
+            waited_total += waited
+        return Series(sides, docs, waited_total, held_total)
     if ready_timeout_s is None:
         with gpu.gpu_lock(lock, lock_timeout_s) as waited:
             start = time.monotonic()

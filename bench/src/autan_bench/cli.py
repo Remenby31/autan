@@ -195,6 +195,7 @@ def _pair(args: argparse.Namespace) -> int:
                 max_load_per_cpu=args.max_load,
                 on_run=keep,
                 ready_timeout_s=args.ready,
+                hold_per_pair=args.hold_per_pair,
             )
             sides = series.sides
             change = [d for s, d in zip(sides, series.docs, strict=True) if s == "change"]
@@ -464,6 +465,11 @@ def parser() -> argparse.ArgumentParser:
         type=Path,
         metavar="BASELINE",
         help="judge only the benchmarks this baseline holds (the tracked set); default: all",
+    )
+    a.add_argument(
+        "--hold-per-pair",
+        action="store_true",
+        help="one hold of the GPU lock per pair instead of one per series (gated binaries always)",
     )
     a.add_argument(
         "--ready",
