@@ -46,6 +46,9 @@ _CGNS_SECTION_BUFFERS = 2**20 + 32 * 2**10
 # « CFD - Noyau maillage » (mesh.md#memory-of-a-cgns-read): 1 MiB and 16 KiB a node.
 _CGNS_TREE = 2**20
 _CGNS_NODE = 16 * 2**10
+# The most nodes a CGNS file may hold (E0133 for a mesh, E0707 for a start file): four times the
+# largest shipped grid's 4 032 (CRM-HL), rounded to a power of two.
+_CGNS_NODES_MAX = 2**14
 # HDF5's defaults, which the CGNS library keeps (adfh/ADFH.c:64): a 4 MiB metadata cache
 # (H5Cprivate.h:85), an 8 MiB chunk cache (H5Pfapl.c:94) and a 64 KiB sieve (H5Pfapl.c:121).
 _HDF5_CACHE = 4 * 2**20 + 8 * 2**20 + 64 * 2**10
@@ -217,11 +220,9 @@ def _rank(
         zones = len(mesh.boundary_zones) + len(mesh.cell_zones)
         metadata = (1 + 1 + _JSON_DOCUMENT) * 64 * 2**10
         descriptors = 25_600 * (zones + 1) + 4096 * 2 * len(mesh.periodic) + _HDF5_CACHE
-        # cg_open's tree (mesh.md#memory-of-a-cgns-read): the nodes results.md#solutioncgns
-        # writes, at most 64 fixed, 8 per zone (its family, BC or subregion and their
-        # children), 16 per periodic pair and 2 per field.
-        nodes = 64 + 8 * zones + 16 * len(mesh.periodic) + 2 * fields
-        descriptors += _CGNS_TREE + _CGNS_NODE * nodes
+        # cg_open's tree (mesh.md#memory-of-a-cgns-read) at the node count the runtime accepts
+        # in a start file (E0707 beyond, before cg_open).
+        descriptors += _CGNS_TREE + _CGNS_NODE * _CGNS_NODES_MAX
         add("start", 8 * (cells + c) * read + metadata + descriptors, transient=True)
     # Files of the case, each read once at its size S (runtime.md): an initial state holds its
     # text, the document's strings (at most S), 1 KiB of members, its rows streamed into
