@@ -1438,8 +1438,7 @@ TEST_CASE("Faces of a section nothing names are skipped, one named is kept", "[c
   constexpr cgsize_t triangles = cgsize_t{1} << 20;
   const bool mixed_section = GENERATE(true, false);
   const bool listed = GENERATE(true, false);
-  const bool family = GENERATE(false, true);  // a section's family names cell zones only
-  CAPTURE(mixed_section, listed, family);
+  CAPTURE(mixed_section, listed);
   const auto mixed = [&](const std::string& name, cgsize_t count) {
     return cgns_file(name, [&](int fn, int base) {
       unstructured_tet(fn, base, "Zone");
@@ -1456,18 +1455,6 @@ TEST_CASE("Faces of a section nothing names are skipped, one named is kept", "[c
       } else {
         REQUIRE(cg_section_write(fn, base, 1, "Faces", CGNS_ENUMV(TRI_3), 2, count + 1, 0,
                                  data.data(), &section) == CG_OK);
-      }
-      if (family) {
-        // The mid-level library writes no FamilyName_t under Elements_t; other writers do.
-        int f = 0, cgio = 0;
-        double root = 0, faces = 0, node = 0;
-        REQUIRE(cg_family_write(fn, base, "Skin", &f) == CG_OK);
-        REQUIRE(cg_get_cgio(fn, &cgio) == CG_OK);
-        REQUIRE(cg_root_id(fn, &root) == CG_OK);
-        REQUIRE(cgio_get_node_id(cgio, root, "/Base/Zone/Faces", &faces) == CGIO_ERR_NONE);
-        const cgsize_t length = 4;
-        REQUIRE(cgio_new_node(cgio, faces, "FamilyName", "FamilyName_t", "C1", 1, &length, "Skin",
-                              &node) == CGIO_ERR_NONE);
       }
       const cgsize_t first[] = {2, 2};
       REQUIRE(cg_boco_write(fn, base, 1, "wall", CGNS_ENUMV(BCWall),

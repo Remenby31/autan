@@ -554,16 +554,18 @@ TEST_CASE("Records a reader does not use cost their text, not a copy each", "[io
     CHECK(std::ranges::any_of(mesh->cell_zones(),
                               [](const auto& z) { return z.name == "solid-block"; }));
   }
-  SECTION("Gmsh curve blocks and surface blocks without elements") {
+  SECTION("Gmsh curve blocks and surface blocks of entities in no group") {
+    // Each block one element: a curve, or a triangle of its own entity, which no group holds.
     std::string blocks;
     for (int i = 0; i < n / 2; ++i) {
-      blocks += "1 1 1 1\n" + std::to_string(i + 4) + " 10 20\n2 1 2 0\n";
+      blocks += "1 1 1 1\n" + std::to_string(i + 4) + " 10 20\n2 " + std::to_string(i + 2) +
+                " 2 1\n" + std::to_string(n / 2 + i + 4) + " 10 20 30\n";
     }
     const fs::path plain = write_temp("blocks-plain.msh", gmsh_tet);
     const std::string text =
         replace(replace(gmsh_tet, "$Elements\n3 3 1 3\n",
-                        "$Elements\n" + std::to_string(3 + n) + " " + std::to_string(3 + n / 2) +
-                            " 1 " + std::to_string(3 + n / 2) + "\n"),
+                        "$Elements\n" + std::to_string(3 + n) + " " + std::to_string(3 + n) +
+                            " 1 " + std::to_string(3 + n) + "\n"),
                 "$EndElements", blocks + "$EndElements");
     const fs::path padded = write_temp("blocks-padded.msh", text);
     const auto added = static_cast<std::int64_t>(text.size() - gmsh_tet.size());

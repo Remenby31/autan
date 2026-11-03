@@ -269,14 +269,9 @@ class Reader {
       ok(cg_section_read(fn_, 1, 1, s, name, &type, &start, &end, &boundary, &parent_flag),
          "read section");
       if (start < 1 || end < start) malformed(path_, std::string("section '") + name + "' range");
-      std::string family;
-      ok(cg_goto(fn_, 1, "Zone_t", 1, "Elements_t", s, "end"), "go to section", name);
-      char family_name[CG_MAX_GOTO_DEPTH * 33 + 1];
-      if (cg_famname_read(family_name) == CG_OK) family = family_name;
       const auto count = at(end - start + 1);
       // A section of boundary faces no point set names labels nothing: the faces come from the
-      // cells, and a section's family names cell zones only, so it is skipped as points and edges
-      // are.
+      // cells, so it is skipped as points and edges are.
       const bool unused_faces =
           is_face_type(type) && !referenced_sections_[static_cast<std::size_t>(s - 1)];
       if (is_ignored_type(type) || unused_faces) {
@@ -285,8 +280,7 @@ class Reader {
                                     .count = count,
                                     .elements = {},
                                     .skipped = {},
-                                    .ignored = Element{.type = type, .connectivity = {}},
-                                    .family = family});
+                                    .ignored = Element{.type = type, .connectivity = {}}});
         continue;
       }
 
@@ -326,8 +320,7 @@ class Reader {
                   .count = count,
                   .elements = {},
                   .skipped = {},
-                  .ignored = Element{.type = CGNS_ENUMV(BAR_2), .connectivity = {}},
-                  .family = family});
+                  .ignored = Element{.type = CGNS_ENUMV(BAR_2), .connectivity = {}}});
       // A section of faces, or a MIXED one, keeps the faces a point set names.
       pruning_ = type == CGNS_ENUMV(MIXED) || is_face_type(type);
       if (!pruning_) section.elements.resize(count);
@@ -441,13 +434,6 @@ class Reader {
     const cgsize_t index = id - section.start;
     if (!std::cmp_less(index, section.count)) return nullptr;
     return section.at(at(index));
-  }
-
-  // The family of the section holding element `id`, empty when it has none.
-  [[nodiscard]] const std::string& family_of(cgsize_t id) const {
-    static const std::string none;
-    const auto it = std::ranges::upper_bound(sections_, id, {}, &Section::start);
-    return it == sections_.begin() ? none : std::prev(it)->family;
   }
 
   void classify(const Element& element, const char* section) {
@@ -1022,21 +1008,13 @@ class Reader {
     }
   }
 
-  // Cell zone of every cell element, in element order; families of the
-  // sections name zones for cells no other source labels.
+  // Cell zone of every cell element, in element order (mesh.md, synthesised zones).
   std::vector<index_t> cell_zones_of(const std::vector<cgsize_t>& cells) {
     std::vector<index_t> zone(cells.size(), -1);
     for (std::size_t c = 0; c < cells.size(); ++c) {
       const auto it = cell_label_.find(cells[c]);
       if (it != cell_label_.end()) {
         zone[c] = it->second;
-        continue;
-      }
-      const std::string& family = family_of(cells[c]);
-      if (!family.empty()) {
-        add_cell_zone(group_of(family_key(family)), {cells[c]},
-                      "CGNS family '" + family + "' of an element section");
-        zone[c] = cell_label_.at(cells[c]);
       }
     }
     if (std::ranges::find(zone, -1) != zone.end()) {
@@ -1202,7 +1180,6 @@ class Reader {
     std::vector<Element> elements;
     std::vector<Run> skipped;  // ascending
     Element ignored;
-    std::string family;  // the section's FamilyName, once for all its elements
 
     void skip(std::size_t index) {
       if (!skipped.empty() && skipped.back().first + skipped.back().count == index) {

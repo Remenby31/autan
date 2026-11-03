@@ -28,7 +28,7 @@ A temporary that lives for one item of the input (one element, one face, one rec
 | `largest_filtered_bytes`'s object visit | HDF5 objects, after the link scan's bound | K |
 | `x_, y_, z_` and their copies into the mesh | nodes `N_s` | M |
 | `families_` | `Family_t` nodes | K |
-| `sections_`, one `Section` each, with its family once | `Elements_t` nodes | K |
+| `sections_`, one `Section` each | `Elements_t` nodes | K |
 | `Section::elements`, one `Element` and its connectivity per kept element: cells, and faces a point set names, in any section | cells and labelled faces | M |
 | `Section::skipped` runs | at most one per kept element of the section, plus one | M |
 | `referenced_sections_` | sections | K |
