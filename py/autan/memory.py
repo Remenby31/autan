@@ -49,6 +49,11 @@ _CGNS_NODE = 16 * 2**10
 # The most nodes a CGNS file may hold (E0133 for a mesh, E0707 for a start file): four times the
 # largest shipped grid's 4 032 (CRM-HL), rounded to a power of two.
 _CGNS_NODES_MAX = 2**14
+# The data cg_open reads at once beyond descriptors, point sets and the arrays it reads lazily
+# (cgns_internals.c cgi_read_array): at most 1 MiB a file (E0133, E0707 for a start).
+_CGNS_EAGER = 2**20
+# A Fluent file's fluid and solid zone records, 16 B each (id, offset), at most 16 384 (E0133).
+_FLUENT_ZONES = 16 * 16_384
 # HDF5's defaults, which the CGNS library keeps (adfh/ADFH.c:64): a 4 MiB metadata cache
 # (H5Cprivate.h:85), an 8 MiB chunk cache (H5Pfapl.c:94) and a 64 KiB sieve (H5Pfapl.c:121).
 _HDF5_CACHE = 4 * 2**20 + 8 * 2**20 + 64 * 2**10
@@ -222,7 +227,7 @@ def _rank(
         descriptors = 25_600 * (zones + 1) + 4096 * 2 * len(mesh.periodic) + _HDF5_CACHE
         # cg_open's tree (mesh.md#memory-of-a-cgns-read) at the node count the runtime accepts
         # in a start file (E0707 beyond, before cg_open).
-        descriptors += _CGNS_TREE + _CGNS_NODE * _CGNS_NODES_MAX
+        descriptors += _CGNS_TREE + _CGNS_NODE * _CGNS_NODES_MAX + _CGNS_EAGER
         add("start", 8 * (cells + c) * read + metadata + descriptors, transient=True)
     # Files of the case, each read once at its size S (runtime.md): an initial state holds its
     # text, the document's strings (at most S), 1 KiB of members, its rows streamed into
@@ -379,7 +384,7 @@ def _reading(mesh: MeshInfo, interior: int, boundary: int) -> int:
         reading = s + 60 * ns - 24 * n - 8 * c + 52 * f + 16 * p + 4 * p
     elif mesh.source.format == "fluent":
         # The end of assemble, with the reader's members alive; face_nodes_ may double.
-        reading = s + 53 * ns + 20 * c + 12 * p + 45 * f + 4 * p
+        reading = s + 53 * ns + 20 * c + 12 * p + 45 * f + 4 * p + _FLUENT_ZONES
     elif mesh.source.format == "cgns":
         by_type = counts.cells_by_type.model_dump()
         elements = sum((64 + _CGNS_BLOCK[t]) * m for t, m in by_type.items() if t in _CGNS_BLOCK)
@@ -401,7 +406,7 @@ def _reading(mesh: MeshInfo, interior: int, boundary: int) -> int:
         texts = source.descriptor_bytes + source.filtered_bytes
         # cg_open and the reader hold up to 16 KiB per node of the tree, which the MeshInfo
         # counts (at most _CGNS_NODES_MAX, E0133 beyond).
-        texts += _CGNS_TREE + _CGNS_NODE * source.cgns_nodes
+        texts += _CGNS_TREE + _CGNS_NODE * source.cgns_nodes + _CGNS_EAGER
         reading = (
             max(standard, ngon) + texts + _JSON_DOCUMENT * source.zone_names_bytes + _HDF5_CACHE
         )
