@@ -143,10 +143,12 @@ def _shares(mesh: MeshInfo, ranks: int) -> list[tuple[int, int, int, int, int | 
         ]
     interior = counts.faces - sum(zone.faces for zone in mesh.boundary_zones)
     if ranks == 1:
-        # A single rank's periodic images, each with at most max_faces_per_cell faces.
+        # A single rank's periodic images, each with at most max_faces_per_cell faces; the
+        # MeshInfo's one-part partition, when it gives one, for the part the runtime extracts.
         extra = counts.periodic_ghosts * mesh.quality.max_faces_per_cell
         cells = counts.cells + counts.periodic_ghosts
-        return [(cells, counts.faces + extra, interior + extra, counts.stencil_entries, None)]
+        one = 0 if partition is not None and partition.ranks == 1 else None
+        return [(cells, counts.faces + extra, interior + extra, counts.stencil_entries, one)]
     # No partition for these ranks: the plan refuses the run (E0210), the estimate omits halos.
     return [
         (
@@ -157,6 +159,12 @@ def _shares(mesh: MeshInfo, ranks: int) -> list[tuple[int, int, int, int, int | 
             None,
         )
     ]
+
+
+def extracts(spec: CaseSpec, mesh: MeshInfo, ranks: int) -> bool:
+    """Whether the runtime runs on an extracted partition: on several ranks, or on one with
+    periodic pairs or reproducibility "ranks" (runtime/src/run.cpp, make_part)."""
+    return ranks > 1 or bool(mesh.periodic) or spec.physics.reproducibility == "ranks"
 
 
 def _partition(mesh: MeshInfo, r: int) -> tuple[int, int, int]:
@@ -204,6 +212,7 @@ def _partition(mesh: MeshInfo, r: int) -> tuple[int, int, int]:
         + 6 * counts.faces
         + 16 * counts.nodes
         + 8 * counts.cells
+        + 16 * fn  # the local mesh's closure check, at most 16 B a face node
     )
     return kept, halo_device, max(extraction, 8 * counts.cells)
 
@@ -258,7 +267,7 @@ def _rank(
     # mesh beside the one it read, with the cell order and the face and point maps.
     if mesh.quality.lines.order == "rcm":
         add("renumbered mesh", mesh_bytes + 4 * cells + 5 * faces + 4 * nodes)
-    if ranks > 1 and rank is not None and mesh.partition is not None:
+    if rank is not None and mesh.partition is not None and extracts(spec, mesh, ranks):
         kept, halo_device, extraction = _partition(mesh, rank)
         add("partition", kept, halo_device if device_kind != "cpu" else 0)
         add("partition setup", extraction, transient=True)
@@ -491,7 +500,10 @@ def _reading(mesh: MeshInfo, interior: int, boundary: int) -> int:
         # cg_open and the reader hold up to 16 KiB per node of the tree, which the MeshInfo
         # counts (at most _CGNS_NODES_MAX, E0133 beyond).
         texts += _CGNS_TREE + _CGNS_NODE * source.cgns_nodes + _CGNS_EAGER
+        # The BC phase's labels: 16 B a distinct labelled face or cell (at most F_b + C), read
+        # in chunks of 2^17 ids (3 MiB); added to the prescan, whose release no test can see.
         texts += 8 * source.point_list_ids + _CGNS_POINT_LIST_CHUNK
+        texts += 3 * 2**20 + 16 * (boundary + c)
         reading = (
             max(standard, ngon) + texts + _JSON_DOCUMENT * source.zone_names_bytes + _HDF5_CACHE
         )
@@ -499,6 +511,9 @@ def _reading(mesh: MeshInfo, interior: int, boundary: int) -> int:
         # polyMesh: the end of assemble, with the owner, neighbour and boundary texts (at most
         # the files' bytes) and the 64-bit owner and neighbour arrays alive.
         reading = s + 52 * ns - 24 * n + 33 * f + 8 * interior + 4 * p + 8 * c
+    # Assembly checks every cell closed with 16 B an edge, reserved for the cell with the most
+    # face nodes (core/src/mesh.cpp, check_cells_closed): at most 16 B a face node.
+    reading += 16 * p
     if mesh.periodic and mesh.source.format in ("gmsh", "cgns"):
         # Periodic matching at the end of assemble, every node bounding the boundary ones.
         paired = sum(pair.faces for pair in mesh.periodic) * 2

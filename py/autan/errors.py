@@ -350,8 +350,9 @@ _CODES = [
         "MeshInfo prepared for another run",
         "The MeshInfo's derived counts are not for this run: its lines were computed at another "
         "scale than the case's `mesh_unit`, or a run on several ranks has no partition for that "
-        "rank count and the groups its linear solver keeps whole. The message names the "
-        "difference.",
+        "rank count and the groups its linear solver keeps whole, or a run on one rank with "
+        'periodic pairs or reproducibility `"ranks"` has no one-part partition. The message '
+        "names the difference.",
         "Run `autan-mesh-info --json --scale <metres per mesh unit>` again, with "
         "`--ranks N` (and `--groups lines` for a steady CPU run with the lines solver) for a run "
         "on N ranks.",

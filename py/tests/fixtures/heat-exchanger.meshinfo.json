@@ -134,5 +134,33 @@
         1898
       ]
     }
+  },
+  "partition": {
+    "ranks": 1,
+    "groups": "none",
+    "cells_by_rank": [
+      1200000
+    ],
+    "ghosts_by_rank": [
+      0
+    ],
+    "faces_by_rank": [
+      3900000
+    ],
+    "interior_faces_by_rank": [
+      3788000
+    ],
+    "stencil_entries_by_rank": [
+      43500000
+    ],
+    "nodes_by_rank": [
+      1400000
+    ],
+    "face_nodes_by_rank": [
+      15210000
+    ],
+    "sent_cells_by_rank": [
+      0
+    ]
   }
 }

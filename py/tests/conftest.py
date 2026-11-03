@@ -44,12 +44,34 @@ def mesh_document(name: str) -> dict[str, Any]:
     return document
 
 
+def one_part(document: dict[str, Any]) -> dict[str, Any]:
+    """The one-part partition autan-mesh-info writes without --ranks (mesh-info.md): the mesh
+    itself, its periodic ghosts the part's ghosts and the cells its self-exchange sends."""
+    counts = document["counts"]
+    interior = counts["faces"] - sum(z["faces"] for z in document["boundary_zones"])
+    ghosts = counts["periodic_ghosts"]
+    return {
+        "ranks": 1,
+        "groups": "none",
+        "cells_by_rank": [counts["cells"]],
+        "ghosts_by_rank": [ghosts],
+        "faces_by_rank": [counts["faces"]],
+        "interior_faces_by_rank": [interior],
+        "stencil_entries_by_rank": [counts["stencil_entries"]],
+        "nodes_by_rank": [counts["nodes"]],
+        "face_nodes_by_rank": [counts["face_nodes"]],
+        "sent_cells_by_rank": [ghosts],
+    }
+
+
 def prepared(document: dict[str, Any], *, scale: float = 1.0, ranks: int = 1) -> dict[str, Any]:
     """``document`` as autan-mesh-info writes it for a run at ``scale`` metres per mesh unit on
     ``ranks`` ranks (mesh-info.md): its lines' scale and, on several ranks, a partition. The
     partition is an even split without ghosts or groups: these tests plan something else."""
     document = copy.deepcopy(document)
     document["quality"]["lines"]["scale"] = scale
+    if ranks == 1:
+        document["partition"] = one_part(document)
     if ranks > 1:
         counts = document["counts"]
         interior = counts["faces"] - sum(z["faces"] for z in document["boundary_zones"])
@@ -89,6 +111,8 @@ def mesh_variant() -> Callable[..., autan.MeshInfo]:
     def build(name: str, edit: Callable[[dict[str, Any]], None]) -> autan.MeshInfo:
         document = copy.deepcopy(mesh_document(name))
         edit(document)
+        if (document.get("partition") or {}).get("ranks") == 1:
+            document["partition"] = one_part(document)
         # The finest multigrid level's edges are the interior faces the edit leaves, when the
         # edit keeps what they depend on (some edits break the document on purpose).
         with contextlib.suppress(KeyError, TypeError, IndexError):

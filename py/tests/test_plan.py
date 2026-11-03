@@ -8,7 +8,7 @@ from typing import Any, Literal
 import autan
 import pytest
 
-from tests.conftest import CRM_HL, FIXTURES, HEAT_EXCHANGER, mesh_document, prepared
+from tests.conftest import CRM_HL, FIXTURES, HEAT_EXCHANGER, mesh_document, one_part, prepared
 
 HEAT = HEAT_EXCHANGER
 
@@ -355,9 +355,14 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     standard += 2**20 + 32 * 2**10 + 24 * (10 + 20 + 1)
     caches = 4 * 2**20 + 8 * 2**20 + 64 * 2**10
     # cg_open's tree of 40 nodes, 1 MiB and 16 KiB a node, and the 1 MiB of data it reads at once;
-    # 8 B for each of its 128 point-list entries, read through a 1 MiB chunk
-    tree = 2**20 + 16 * 2**10 * 40 + 2**20 + 8 * 128 + 2**20
-    assert by_name["mesh reading"].bytes_host == standard + 2048 + 40 * 512 + caches + tree
+    # 8 B for each of its 128 point-list entries, read through a 1 MiB chunk, then the labels of
+    # at most its 20 boundary faces and 10 cells, 16 B each, read in chunks of 2^17 ids (3 MiB)
+    tree = 2**20 + 16 * 2**10 * 40 + 2**20 + 8 * 128 + 2**20 + 3 * 2**20 + 16 * (20 + 10)
+    # Every format's assembly checks the cells closed: 16 B for each of the 160 face nodes.
+    closure = 16 * 160
+    assert by_name["mesh reading"].bytes_host == (
+        standard + 2048 + 40 * 512 + caches + tree + closure
+    )
     # A Fluent file of 4 096 B: S + 53N_s + 20C + 16P + 45F, and 16 B for each of the 16 384
     # fluid and solid zone records it may hold.
     fluent: dict[str, Any] = tiny_mesh(20).document()
@@ -368,7 +373,7 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
         autan.MeshInfo.from_document(fluent, autan.Location()), device_kind="cpu"
     )
     reading = {c.name: c for c in read.memory.components}["mesh reading"].bytes_host
-    assert reading == 4096 + 53 * 30 + 20 * 10 + 16 * 160 + 45 * 40 + 16 * 16_384
+    assert reading == 4096 + 53 * 30 + 20 * 10 + 16 * 160 + 45 * 40 + 16 * 16_384 + closure
     # A Gmsh file of 4 096 B: S + 60N_s - 24N - 8C + 52F + 20P, and its batch of 65 536
     # element-block entities of 8 B.
     fluent["source"]["format"] = "gmsh"
@@ -376,7 +381,7 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
         autan.MeshInfo.from_document(fluent, autan.Location()), device_kind="cpu"
     )
     reading = {c.name: c for c in read.memory.components}["mesh reading"].bytes_host
-    assert reading == 4096 + 60 * 30 - 24 * 30 - 8 * 10 + 52 * 40 + 20 * 160 + 65_536 * 8
+    assert reading == 4096 + 60 * 30 - 24 * 30 - 8 * 10 + 52 * 40 + 20 * 160 + 65_536 * 8 + closure
     filtered: dict[str, Any] = tiny_mesh(20).document()
     filtered["source"]["filtered_bytes"] = 3 * 2**20  # a dataset inflated beside its input
     compressed = autan.load(write_case(TINY)).plan(
@@ -409,6 +414,19 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     keyed = {c.name: c for c in ranks.memory.components}
     assert keyed["physics"].bytes_host - by_name["physics"].bytes_host == 12 * 60 + 40
     assert keyed["physics setup"].bytes_host - expected_setup == 12 * 60
+    # One rank under "ranks" runs on its one-part partition (run.cpp make_part): the plan
+    # charges it from the MeshInfo's partition of one part, and refuses the run without one.
+    assert "E0210" in diagnostic_codes(ranks)
+    whole: dict[str, Any] = tiny_mesh(20).document()
+    whole["partition"] = one_part(whole)
+    parted = autan.load(
+        write_case(TINY.replace("Inviscid())", 'Inviscid(), reproducibility="ranks")'))
+    ).plan(autan.MeshInfo.from_document(whole, autan.Location()), device_kind="cpu")
+    assert "E0210" not in diagnostic_codes(parted)
+    one = {c.name: c for c in parted.memory.components}
+    kept_one = 24 * 30 + 4 * 160 + 20 * 40 + 8 * 20 + 20 * 10 + 56 * 40 + 32 * 10 + 9 * 40
+    assert one["partition"].bytes_host == kept_one
+    assert "partition" not in by_name  # a plain one-rank run extracts none
     # A device run's face scratch: 5 values of 8 B a face, on the device.
     cuda = autan.load(write_case(TINY)).plan(tiny_mesh(20), device_kind="cuda").memory
     assert {c.name: c for c in cuda.components}["device face scratch"].bytes_device == 40 * 40
@@ -457,6 +475,7 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
         + 6 * 40
         + 16 * 30
         + 8 * 10
+        + 16 * p
     )
     kinds: tuple[tuple[Literal["cpu", "cuda"], int], ...] = (
         ("cpu", 0),

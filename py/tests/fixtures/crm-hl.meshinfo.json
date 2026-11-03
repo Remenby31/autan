@@ -123,5 +123,33 @@
         1189
       ]
     }
+  },
+  "partition": {
+    "ranks": 1,
+    "groups": "none",
+    "cells_by_rank": [
+      48200000
+    ],
+    "ghosts_by_rank": [
+      0
+    ],
+    "faces_by_rank": [
+      151000000
+    ],
+    "interior_faces_by_rank": [
+      148390000
+    ],
+    "stencil_entries_by_rank": [
+      3856000000
+    ],
+    "nodes_by_rank": [
+      52000000
+    ],
+    "face_nodes_by_rank": [
+      513400000
+    ],
+    "sent_cells_by_rank": [
+      0
+    ]
   }
 }

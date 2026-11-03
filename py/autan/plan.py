@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 from autan import face_states, initial_state
 from autan.errors import Diagnostic, diagnostic
 from autan.manufactured import MMS_BYTES, too_deep
-from autan.memory import DeviceKind, Memory, StartMode, StateFileLoad, estimate
+from autan.memory import DeviceKind, Memory, StartMode, StateFileLoad, estimate, extracts
 from autan.meshinfo import mesh_sha256
 from autan.schema import (
     DDES,
@@ -325,6 +325,11 @@ def _check_prepared(
             f"the case's mesh_unit is {scale:g} m"
         )
     partition = mesh.partition
+    if gpus == 1 and extracts(spec, mesh, 1) and (partition is None or partition.ranks != 1):
+        problems.append(
+            'a run on one rank with periodic pairs or reproducibility "ranks" needs the '
+            "MeshInfo's one-part partition"
+        )
     if gpus > 1:
         groups = partition_groups(spec, device_kind)
         if partition is None:
