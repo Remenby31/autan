@@ -48,6 +48,7 @@ from autan.schema import (
     _caller_location,
     diagnostics_from,
 )
+from autan.texts import load_json
 from autan.units import UnitOfLength
 
 if TYPE_CHECKING:
@@ -471,7 +472,7 @@ def load(path: str | Path) -> Case:
     if path.suffix in (".toml", ".json"):
         try:
             text = path.read_text()
-            document = tomllib.loads(text) if path.suffix == ".toml" else json.loads(text)
+            document = tomllib.loads(text) if path.suffix == ".toml" else load_json(text)
         except (tomllib.TOMLDecodeError, json.JSONDecodeError, UnicodeDecodeError) as error:
             raise CaseError([diagnostic("E0001", f"{path}: {error}", location=where)]) from None
         if not isinstance(document, dict):

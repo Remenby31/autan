@@ -28,6 +28,8 @@ Producer: `autan.initial_state.write` in the SDK, called by the `autan-vv` expor
 | `centroids` | One `[x, y, z]` per row (m): the centroid of the row's cell. |
 | `values` | One row per cell in the order of `variables`, density and pressure > 0. Rows of `centroids` and `values` correspond; their order is free. |
 
+Every number is written in at most 64 characters (a double needs 24), and the document nests no deeper than the structure above. A reader refuses a longer number or a deeper nesting before it holds it (`E0508`).
+
 A cell is identified by its centroid, not by its rank, so the file does not depend on the solver's cell order or partitioning. The centroid of a cell is `cell_centroid` of [mesh.md](mesh.md#geometry). The values are the cell's state as given, with no projection: a value at the centroid stands for the cell average, which a second-order scheme sees as an O(h²) difference. Solid cells have no row and keep their zone's state.
 
 The solver pairs, on the whole mesh and whatever the partitioning, every fluid cell with exactly one row and every row with exactly one fluid cell, within 1e-9 times the largest extent of the mesh's bounding box. Two cells within that tolerance of each other make the pairing ambiguous (`E0511` otherwise, `data` naming the cells).

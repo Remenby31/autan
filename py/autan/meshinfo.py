@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
@@ -20,6 +19,7 @@ from pydantic import (
 from pydantic.json_schema import SkipJsonSchema  # noqa: TC002 -- pydantic reads it at runtime
 
 from autan.errors import CaseError, Location, diagnostic
+from autan.texts import load_json
 from autan.units import fail
 
 if TYPE_CHECKING:
@@ -281,7 +281,7 @@ class MeshInfo(_Strict):
         """Read a MeshInfo JSON file; any defect raises ``CaseError`` with ``E0202``."""
         location = Location(file=str(path))
         try:
-            document = json.loads(Path(path).read_text())
+            document = load_json(Path(path).read_text())
         except (OSError, ValueError) as error:
             raise CaseError(
                 [diagnostic("E0202", f"cannot read {path}: {error}", location=location)]

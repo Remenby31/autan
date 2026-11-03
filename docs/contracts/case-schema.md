@@ -90,7 +90,7 @@ Every table rejects unknown keys. Discriminated unions are tagged by `kind` (or 
 
 ### Free texts
 
-Every text of the case that is not a quantity, a unit or a keyword (the case `name`, material names, zone patterns, monitor names, file paths) is at most 4 096 bytes in UTF-8 (`E0003`). The solver allocates a text before it can check it, and the memory estimate bounds what it holds ([plan.md](../sdk/plan.md)); 4 096 bytes is a path's limit on Linux (`PATH_MAX`). The files the case names bound their texts the same way: the strings and member names of an initial-state or face-state file (`E0508`, `E0420`).
+Every text of the case that is not a quantity, a unit or a keyword (the case `name`, material names, zone patterns, monitor names, file paths) is at most 4 096 bytes in UTF-8 (`E0003`). The solver allocates a text before it can check it, and the memory estimate bounds what it holds ([plan.md](../sdk/plan.md)); 4 096 bytes is a path's limit on Linux (`PATH_MAX`). The files the case names bound their texts the same way: the strings and member names of an initial-state or face-state file (`E0508`, `E0420`), whose numbers are also at most 64 characters.
 
 ### Physics
 

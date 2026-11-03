@@ -46,6 +46,7 @@ from autan.schema import (
     Wall,
 )
 from autan.solver_input import gas_constant
+from autan.texts import load_json
 from autan.units import format_unit, metres_per, parse, si
 
 if TYPE_CHECKING:
@@ -235,7 +236,7 @@ def _names(data: bytes) -> int:
         total += sum(len(name.encode()) for name, _ in pairs)
         return dict(pairs)
 
-    json.loads(data, object_pairs_hook=note)
+    load_json(data, object_pairs_hook=note)
     return total
 
 
@@ -417,7 +418,7 @@ def _check_manufactured(
 
 def _document(path: Path) -> dict[str, Any] | None:
     try:
-        document = json.loads(path.read_text())
+        document = load_json(path.read_text())
     except (OSError, ValueError):
         return None
     return document if isinstance(document, dict) else None
