@@ -266,6 +266,13 @@ def test_defaults_are_materialized_before_hashing(tmp_path: Path) -> None:
         lambda d: d["physics"].update(
             turbulence={"model": "ddes", "base": {"model": "sa", "intensity": 0.1}}
         ),
+        lambda d: d["time"].update(matrix_free=True),  # an SA case
+        lambda d: d["time"].update(checkpoint={}),
+        lambda d: d["time"].update(checkpoint={"seconds": "100 s", "iterations": 5}),
+        lambda d: (
+            d["time"].update(coupled_turbulence=True),
+            d["physics"].update(turbulence={"model": "laminar"}),
+        ),
     ],
 )
 def test_published_json_schema_and_reader_reject_contract_violations(
@@ -306,6 +313,32 @@ def test_integers_are_strict_and_canonicalizable(
     with pytest.raises(autan.CaseError) as error:
         autan.load(path)
     assert codes(error) == [code]
+
+
+def test_the_checkpoint_cadence_defaults_to_half_an_hour_and_is_bounded(tmp_path: Path) -> None:
+    # case-schema.md#time: exactly one of seconds, in [60 s, 86400 s], or iterations >= 1.
+    document = autan.load(EXAMPLES / "crm_hl.py").spec.document()
+    assert document["time"]["checkpoint"] == {"seconds": "1800.0 s"}
+    edits: list[tuple[dict[str, Any], str | None]] = [
+        ({"seconds": "60 s"}, None),
+        ({"seconds": "1 d"}, None),
+        ({"iterations": 1}, None),
+        ({"seconds": "59 s"}, "E0304"),
+        ({"seconds": "86401 s"}, "E0304"),
+        ({"seconds": "100 s", "iterations": 5}, "E0003"),
+        ({}, "E0003"),
+        ({"iterations": 0}, "E0304"),
+    ]
+    for checkpoint, code in edits:
+        document["time"]["checkpoint"] = checkpoint
+        path = tmp_path / "case.json"
+        path.write_text(json.dumps(document))
+        if code is None:
+            autan.load(path)
+            continue
+        with pytest.raises(autan.CaseError) as error:
+            autan.load(path)
+        assert codes(error) == [code], checkpoint
 
 
 def test_error_paths_are_document_paths(tmp_path: Path) -> None:

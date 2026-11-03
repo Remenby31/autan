@@ -493,10 +493,10 @@ _CODES = [
     ),
     Code(
         "E0427",
-        "Coupled turbulence needs the host multigrid",
-        "The coupled turbulence step runs in the host multigrid on one rank: "
-        "`linear_solver` must be `multigrid`, on the CPU, on one rank. `autan plan` and the "
-        "physics both refuse other runs.",
+        "Opt-in step needs the host multigrid",
+        "The opt-in steady steps (`time.coupled_turbulence`, `time.matrix_free`) run in the "
+        "host multigrid on one rank: `linear_solver` must be `multigrid`, on the CPU, on one "
+        "rank. `autan plan` and the physics both refuse other runs; the message names the key.",
         "Use `linear_solver='multigrid'` and run on one CPU rank, or drop the option.",
     ),
     Code(
@@ -504,6 +504,21 @@ _CODES = [
         "Coupled turbulence outside its validated domain",
         "`time.coupled_turbulence` is on: the coupled step is validated on the TMR flat plate "
         "only (#429). `autan plan` reports it, and the run logs it at its first coupled step.",
+        "Compare with a run without the option before relying on the result.",
+    ),
+    Code(
+        "E0429",
+        "Matrix-free step not applicable",
+        "`time.matrix_free` is set on a case whose physics has no matrix-free step: only "
+        "compressible laminar physics has one.",
+        "Remove `matrix_free=True`, or use compressible laminar physics.",
+    ),
+    Code(
+        "W0429",
+        "Matrix-free step outside its validated domain",
+        "`time.matrix_free` is on: the matrix-free laminar step is validated on the TMR laminar "
+        "flat plate only (#429). `autan plan` reports it, and the run logs it at its first "
+        "matrix-free step.",
         "Compare with a run without the option before relying on the result.",
     ),
     Code(
@@ -691,6 +706,14 @@ _CODES = [
         "floor.",
         "Check the boundary conditions and the mesh: a symmetric or 2D problem whose symmetry "
         "breaks during the run usually means a boundary condition breaks it.",
+    ),
+    Code(
+        "W0714",
+        "Checkpoint not written",
+        "Writing the restart checkpoint failed (results.md#checkpointcgns), or removing it once "
+        "the final solution was written: the run goes on, and the previous checkpoint, if any, "
+        "stays whole. `data` gives the iteration when a write failed.",
+        "Check the space and permissions of the run directory's file system.",
     ),
     Code(
         "D0107",
