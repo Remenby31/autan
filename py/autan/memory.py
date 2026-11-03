@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from autan.manufactured import MMS_BYTES
 from autan.schema import Steady
 from autan.texts import TEXT_BYTES
 
@@ -41,6 +42,10 @@ _DENSE_UNKNOWNS = 1000
 _CGNS_BLOCK = {"tetra": 48, "pyramid": 48, "prism": 64, "hexa": 80}
 _CGNS_FACE_BLOCK = 48  # quad, the larger boundary element
 _CGNS_SECTION_BUFFERS = 2**20 + 32 * 2**10
+# What cg_open and the reader hold per node of a CGNS tree, the upper envelope measured by
+# « CFD - Noyau maillage » (mesh.md#memory-of-a-cgns-read): 1 MiB and 16 KiB a node.
+_CGNS_TREE = 2**20
+_CGNS_NODE = 16 * 2**10
 # HDF5's defaults, which the CGNS library keeps (adfh/ADFH.c:64): a 4 MiB metadata cache
 # (H5Cprivate.h:85), an 8 MiB chunk cache (H5Pfapl.c:94) and a 64 KiB sieve (H5Pfapl.c:121).
 _HDF5_CACHE = 4 * 2**20 + 8 * 2**20 + 64 * 2**10
@@ -212,12 +217,18 @@ def _rank(
         zones = len(mesh.boundary_zones) + len(mesh.cell_zones)
         metadata = (1 + 1 + _JSON_DOCUMENT) * 64 * 2**10
         descriptors = 25_600 * (zones + 1) + 4096 * 2 * len(mesh.periodic) + _HDF5_CACHE
+        # cg_open's tree (mesh.md#memory-of-a-cgns-read): the nodes results.md#solutioncgns
+        # writes, at most 64 fixed, 8 per zone (its family, BC or subregion and their
+        # children), 16 per periodic pair and 2 per field.
+        nodes = 64 + 8 * zones + 16 * len(mesh.periodic) + 2 * fields
+        descriptors += _CGNS_TREE + _CGNS_NODE * nodes
         add("start", 8 * (cells + c) * read + metadata + descriptors, transient=True)
     # Files of the case, each read once at its size S (runtime.md): an initial state holds its
     # text, the document's strings (at most S), 1 KiB of members, its rows streamed into
     # vectors (64 B a row, 128 B while one grows) and their pairing (138 B a row, 160 B per
     # cell); face states the same with 1 200 B a zone, then 40 B per face of its oracle zones,
-    # which a rank keeps; a manufactured solution's text stays for the run with its compiled
+    # which a rank keeps; a manufactured solution's text stays for the run, read into a buffer of
+    # the contract's bound, with its compiled
     # expressions, at most one 32 B node per byte of text in vectors up to twice that, and the
     # physics parses it once, at most 40 B of document per byte of text, while the node
     # vectors grow (the old buffer, half the new one, is freed after the copy).
@@ -239,7 +250,10 @@ def _rank(
     if any(x.kind == "faces" for x in files):
         add("face states", sum(40 * x.faces for x in files if x.kind == "faces"))
     if any(x.kind == "manufactured" for x in files):
-        add("manufactured solution", sum(65 * x.size for x in files if x.kind == "manufactured"))
+        # The text in a buffer of MMS_BYTES + 1, which the runtime reads into and keeps
+        # (runtime/src/run.cpp), and its compiled expressions.
+        texts = sum(MMS_BYTES + 1 + 64 * x.size for x in files if x.kind == "manufactured")
+        add("manufactured solution", texts)
 
     # The physics (Euler's inventory, scaled from its 5 equations to n): geometry, stencil
     # and state on the host, always; the same on the device for a device run.

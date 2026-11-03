@@ -72,12 +72,13 @@ def test_every_boundary_takes_the_manufactured_data(
     case = verified(write_case, name, turbulence)
     result = autan.load(case).plan(mesh_variant("crm-hl", untype))
     assert result.diagnostics == ()
-    # docs/sdk/plan.md: the run keeps the solution's text and its compiled expressions (one
+    # docs/sdk/plan.md: the run keeps the solution's text, in a buffer of the contract's 1 MiB and
+    # one byte, and its compiled expressions (one
     # 32 B node per byte at most, in vectors up to twice that), and parses it once, at most
     # 40 B of document per byte while the node vectors grow (32 B per byte more).
     size = (case.parent / f"{name}.mms.json").stat().st_size
     by_name = {c.name: c for c in result.memory.components}
-    assert by_name["manufactured solution"].bytes_host == size + 64 * size
+    assert by_name["manufactured solution"].bytes_host == 2**20 + 1 + 64 * size
     assert by_name["state files"].bytes_host == 40 * size + 32 * size
     assert {(b.condition or {}).get("kind") for b in result.boundaries} == {"manufactured"}
     assert {b.provenance for b in result.boundaries} == {"verification"}
