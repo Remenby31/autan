@@ -792,7 +792,7 @@ Fix: Check the boundary conditions and the mesh: a symmetric or 2D problem whose
 
 **Checkpoint not written** (warning)
 
-Writing the restart checkpoint failed (results.md#checkpointcgns), or removing it once the final solution was written: the run goes on, and the previous checkpoint, if any, stays whole. `data` gives the iteration when a write failed.
+Writing the restart checkpoint failed (results.md#checkpointcgns), or removing it once the final solution was written: the run goes on, and the previous checkpoint, if any, stays whole. For failed writes, `data` counts them and gives the first and the last (`failures`, `first_iteration`, `first_time`, `last_iteration`, `last_time`).
 
 Fix: Check the space and permissions of the run directory's file system.
 
