@@ -9,6 +9,7 @@ families are extrapolated with the same Richardson estimate as the gates
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import tomllib
@@ -50,6 +51,21 @@ class AutanLevel:
     backend: str
     case_sha256: str
     mesh_sha256: str
+    problem: str
+    run_json_sha256: str
+    history_sha256: str
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _problem(spec: dict[str, Any]) -> str:
+    """The case document without what may differ within one refinement family or continuation
+    chain (its mesh and iteration budget), as autan_vv.cases.naca0012 compares runs."""
+    document = {k: v for k, v in spec.items() if k not in ("mesh", "mesh_unit")}
+    document["time"] = {k: v for k, v in spec["time"].items() if k != "max_iterations"}
+    return json.dumps(document, sort_keys=True)
 
 
 def read_autan(run: Path) -> AutanLevel:
@@ -94,6 +110,9 @@ def read_autan(run: Path) -> AutanLevel:
         backend=info["solver"]["backend"],
         case_sha256=info["case"]["sha256"],
         mesh_sha256=info["mesh"]["sha256"],
+        problem=_problem(spec),
+        run_json_sha256=_sha256(run / "run.json"),
+        history_sha256=_sha256(run / "history.jsonl"),
     )
 
 
@@ -123,7 +142,8 @@ def _same_problem(a: AutanLevel, s: dict[str, Any], su2: dict[str, Any], run: Pa
 def compare(autan_runs: Sequence[Path], su2_report: Path, su2_root: Path) -> dict[str, Any]:
     """Level by level and in the continuum, Autan against the SU2 study `su2_report` of the same
     condition, whose runs were prepared in `su2_root`. Both must solve one problem (V0905): the
-    Autan runs one family (case, commit, precision, backend, point-vortex choice, distinct levels)
+    Autan runs one family (one case document apart from mesh and iteration budget, commit,
+    precision, backend, distinct levels)
     at the Mach number and incidence of the study's condition, each level on the very mesh file
     SU2's was converted from, and `su2_root` the study's own runs (scheme and configuration).
     Levels missing on either side, or not converged on either side, are listed and left out of the
@@ -134,9 +154,9 @@ def compare(autan_runs: Sequence[Path], su2_report: Path, su2_root: Path) -> dic
     paths = {level.run: r for level, r in read}
     autan = sorted((level for level, _ in read), key=lambda lv: lv.n)
     su2 = json.loads(su2_report.read_text())
-    identity = {(a.case, a.commit, a.precision, a.backend, a.point_vortex) for a in autan}
+    identity = {(a.problem, a.commit, a.precision, a.backend) for a in autan}
     if len(identity) != 1 or len({a.n for a in autan}) != len(autan):
-        msg = "the Autan runs are not one family (case, commit, precision, backend, vortex, level)"
+        msg = "the Autan runs are not one family (case document, commit, precision, backend, level)"
         raise VVError(msg, code="V0905")
     condition = su2["condition"]
     flow = cases.CONDITIONS[condition]
@@ -162,9 +182,10 @@ def compare(autan_runs: Sequence[Path], su2_report: Path, su2_root: Path) -> dic
             if surface.exists() and (paths[a.run] / "solution.cgns").exists():
                 row["cp"] = compare_cp(paths[a.run], surface)
         rows.append(row)
-    continuum = {}
+    continuum: dict[str, Any] = {}
     if len(both) >= cases.MIN_LEVELS:
         continuum = {
+            "levels": sorted(a.n for a, _ in both)[-3:],
             "autan": cases.continuum([_forces(a.n, a.cl, a.cd, a.cmy, a.run) for a, _ in both]),
             "su2": cases.continuum(
                 [_forces(s["n"], s["cl"], s["cd"], s["cmy"], s["run"]) for _, s in both]
@@ -181,7 +202,12 @@ def compare(autan_runs: Sequence[Path], su2_report: Path, su2_root: Path) -> dic
             "backend": autan[0].backend,
             "point_vortex": autan[0].point_vortex,
         },
-        "su2": {"scheme": su2["scheme"], "su2": su2["su2"], "image_id": su2["image_id"]},
+        "su2": {
+            "scheme": su2["scheme"],
+            "su2": su2["su2"],
+            "image_id": su2["image_id"],
+            "report_sha256": _sha256(su2_report),
+        },
         "levels": rows,
         "continuum": continuum,
     }

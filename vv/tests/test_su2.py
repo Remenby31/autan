@@ -544,6 +544,16 @@ def test_compare_autan_with_an_su2_study(tmp_path: Path) -> None:
         assert row["difference"]["cd"] == pytest.approx(float(forces.cd[-1]) - cd, abs=8 * EPS)
     # SU2's side is extrapolated as the gates do: FLO82's continuum of Table 3.
     assert report["continuum"]["su2"]["cl"]["estimate"] == pytest.approx(0.356208937, abs=2e-9)
+    assert report["continuum"]["levels"] == [16, 32, 64]
+    assert (
+        report["su2"]["report_sha256"]
+        == hashlib.sha256((tmp_path / "su2.json").read_bytes()).hexdigest()
+    )
+    assert all(
+        row["autan"]["history_sha256"]
+        == hashlib.sha256((run / "history.jsonl").read_bytes()).hexdigest()
+        for row, run in zip(report["levels"], runs, strict=True)
+    )
     # A family mixing the point-vortex far field with the plain one, or another condition, is refused.
     plain = autan.Case("naca0012-m080-a125", mesh=mesh(0))
     plain.physics = autan.Compressible(turbulence=autan.Inviscid(), precision="fp64")
@@ -559,7 +569,9 @@ def test_compare_autan_with_an_su2_study(tmp_path: Path) -> None:
     plain.monitor(
         autan.forces("airfoil", ref_area=1.0 * m * m, moment_center=(0.25 * m, 0 * m, 0 * m))
     )
-    for odd in (autan_run(plain, 0), autan_run(cases.case("m050-a125", mesh(0)), 0)):
+    # The same name with another case document (a looser criterion) is not the same problem.
+    loose = autan_run(cases.case("m080-a125", mesh(0), residual_orders=9.0), 0)
+    for odd in (autan_run(plain, 0), autan_run(cases.case("m050-a125", mesh(0)), 0), loose):
         with pytest.raises(VVError) as err:
             compare.compare([*runs[1:], odd], tmp_path / "su2.json", tmp_path / "su2")
         assert err.value.code == "V0905"

@@ -189,7 +189,11 @@ def _cmd_su2(args: argparse.Namespace) -> None:
                     f" body (rms {cp['body']['rms']:.5f}); upper shock x Autan"
                     f" {cp['shock_upper']['autan']}, SU2 {cp['shock_upper']['su2']}"
                 )
+        if report["continuum"]:
+            _say(f"continuum from levels {report['continuum']['levels']}")
         for code, estimates in report["continuum"].items():
+            if code == "levels":
+                continue
             for name, est in estimates.items():
                 value = f"{est['estimate']:.7f}" if "estimate" in est else est["error"]
                 _say(f"{code} continuum {name}: {value}")
