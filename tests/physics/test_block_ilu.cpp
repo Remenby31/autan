@@ -6,6 +6,7 @@
 #include <limits>
 #include <map>
 #include <random>
+#include <ranges>
 #include <string>
 #include <utility>
 #include <vector>
@@ -66,34 +67,6 @@ Block product(const Block& a, const Block& b) {
   return c;
 }
 
-// Inverse by Gauss-Jordan elimination: the test's own, independent of the library's.
-Block inverse_of(const Block& a) {
-  std::array<std::array<double, 10>, 5> m{};
-  for (int i = 0; i < 5; ++i) {
-    for (int j = 0; j < 5; ++j) m[i][j] = a[static_cast<std::size_t>(5 * i + j)];
-    m[i][5 + i] = 1.0;
-  }
-  for (int p = 0; p < 5; ++p) {
-    int best = p;
-    for (int r = p + 1; r < 5; ++r) {
-      if (std::abs(m[r][p]) > std::abs(m[best][p])) best = r;
-    }
-    std::swap(m[p], m[best]);
-    const double d = m[p][p];
-    for (double& v : m[p]) v /= d;
-    for (int r = 0; r < 5; ++r) {
-      if (r == p) continue;
-      const double f = m[r][p];
-      for (int j = 0; j < 10; ++j) m[r][j] -= f * m[p][j];
-    }
-  }
-  Block out{};
-  for (int i = 0; i < 5; ++i) {
-    for (int j = 0; j < 5; ++j) out[static_cast<std::size_t>(5 * i + j)] = m[i][5 + j];
-  }
-  return out;
-}
-
 }  // namespace
 
 TEST_CASE("block ILU(0) of a block-tridiagonal matrix is its exact LU", "[block-ilu]") {
@@ -128,6 +101,7 @@ TEST_CASE("block ILU(0) of a block-tridiagonal matrix is its exact LU", "[block-
                                inverse.data(), err.data(), err.size()) == 0);
   autan_mms_block_ilu0_solve(a.n, a.indptr.data(), a.indices.data(), blocks.data(), inverse.data(),
                              av.data(), x.data());
+  REQUIRE(std::ranges::all_of(x, [](double value) { return std::isfinite(value); }));
   double worst = 0.0;
   for (std::size_t i = 0; i < v.size(); ++i) worst = std::max(worst, std::abs(x[i] - v[i]));
   CHECK(worst <= 1000.0 * eps);
@@ -135,8 +109,9 @@ TEST_CASE("block ILU(0) of a block-tridiagonal matrix is its exact LU", "[block-
 
 TEST_CASE("block ILU(0) reproduces the matrix on its block pattern", "[block-ilu]") {
   // The defining property of ILU(0) (Saad 2003, section 10.3.2): (LU)_ij = A_ij for every (i, j)
-  // in the pattern of A, here on the 5-point pattern of a 4 x 4 grid of cells, whose elimination
-  // fills blocks outside the pattern.
+  // in the pattern of A. Here the pattern is a 4 x 4 grid of cells, each joined to its 4 neighbours
+  // and to one diagonal neighbour: its elimination fills blocks outside the pattern, and its
+  // triangles make the elimination update off-diagonal blocks the pattern keeps.
   std::mt19937_64 rng(7);
   const int side = 4, n = side * side;
   std::map<std::pair<int, int>, Block> entries;
@@ -147,6 +122,8 @@ TEST_CASE("block ILU(0) reproduces the matrix on its block pattern", "[block-ilu
     if (x > 0) entries[{i, i - 1}] = random_block(rng, 0.0);
     if (y + 1 < side) entries[{i, i + side}] = random_block(rng, 0.0);
     if (y > 0) entries[{i, i - side}] = random_block(rng, 0.0);
+    if (x + 1 < side && y + 1 < side) entries[{i, i + side + 1}] = random_block(rng, 0.0);
+    if (x > 0 && y > 0) entries[{i, i - side - 1}] = random_block(rng, 0.0);
   }
   const BlockCsr a(n, entries);
   auto blocks = a.blocks;
@@ -154,8 +131,10 @@ TEST_CASE("block ILU(0) reproduces the matrix on its block pattern", "[block-ilu
   std::array<char, 256> err{};
   REQUIRE(autan_mms_block_ilu0(a.n, a.indptr.data(), a.indices.data(), blocks.data(),
                                inverse.data(), err.data(), err.size()) == 0);
-  // The factors: L strictly lower with identity diagonal blocks; U upper, its diagonal blocks the
-  // inverses of the returned pivot inverses.
+  REQUIRE(std::ranges::all_of(blocks, [](double value) { return std::isfinite(value); }));
+  REQUIRE(std::ranges::all_of(inverse, [](double value) { return std::isfinite(value); }));
+  // The factors as returned: L strictly lower with identity diagonal blocks, U the upper blocks
+  // including the diagonal; each returned inverse times its pivot block is the identity.
   std::map<std::pair<int, int>, Block> lower, upper;
   for (int i = 0; i < n; ++i) {
     for (auto p = a.indptr[static_cast<std::size_t>(i)];
@@ -165,16 +144,17 @@ TEST_CASE("block ILU(0) reproduces the matrix on its block pattern", "[block-ilu
       std::copy_n(blocks.begin() + 25 * p, 25, b.begin());
       if (j < i) {
         lower[{i, j}] = b;
-      } else if (j > i) {
+      } else {
         upper[{i, j}] = b;
       }
     }
-    Block pivot{};
-    std::copy_n(inverse.begin() + 25 * i, 25, pivot.begin());
-    upper[{i, i}] = inverse_of(pivot);
     Block identity{};
-    for (int k = 0; k < 5; ++k) identity[static_cast<std::size_t>(6 * k)] = 1.0;
+    for (std::size_t k = 0; k < 5; ++k) identity[6 * k] = 1.0;
     lower[{i, i}] = identity;
+    Block pivot_inverse{};
+    std::copy_n(inverse.begin() + 25 * i, 25, pivot_inverse.begin());
+    const Block one = product(upper.at({i, i}), pivot_inverse);
+    for (std::size_t e = 0; e < 25; ++e) CHECK(std::abs(one[e] - identity[e]) <= 1000.0 * eps);
   }
   double worst = 0.0;
   for (const auto& [at, expected] : entries) {

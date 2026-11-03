@@ -89,30 +89,34 @@ void multiply(const double* a, const double* b, double* c) {
   }
 }
 
-// Inverse of a 5x5 block by Gauss-Jordan elimination with partial pivoting; false on a zero pivot.
+// Inverse of a 5x5 block by Gauss-Jordan elimination with partial pivoting; false on a zero pivot
+// or a non-finite inverse.
 bool invert(const double* a, double* inverse) {
   std::array<std::array<double, 10>, 5> m{};
-  for (int i = 0; i < 5; ++i) {
-    for (int j = 0; j < 5; ++j) m[i][j] = a[5 * i + j];
+  for (std::size_t i = 0; i < 5; ++i) {
+    for (std::size_t j = 0; j < 5; ++j) m[i][j] = a[5 * i + j];
     m[i][5 + i] = 1.0;
   }
-  for (int p = 0; p < 5; ++p) {
-    int best = p;
-    for (int r = p + 1; r < 5; ++r) {
+  for (std::size_t p = 0; p < 5; ++p) {
+    std::size_t best = p;
+    for (std::size_t r = p + 1; r < 5; ++r) {
       if (std::abs(m[r][p]) > std::abs(m[best][p])) best = r;
     }
     if (!(std::abs(m[best][p]) > 0.0) || !std::isfinite(m[best][p])) return false;
     std::swap(m[p], m[best]);
     const double d = m[p][p];
     for (double& v : m[p]) v /= d;
-    for (int r = 0; r < 5; ++r) {
+    for (std::size_t r = 0; r < 5; ++r) {
       if (r == p) continue;
       const double f = m[r][p];
-      for (int j = 0; j < 10; ++j) m[r][j] -= f * m[p][j];
+      for (std::size_t j = 0; j < 10; ++j) m[r][j] -= f * m[p][j];
     }
   }
-  for (int i = 0; i < 5; ++i) {
-    for (int j = 0; j < 5; ++j) inverse[5 * i + j] = m[i][5 + j];
+  for (std::size_t i = 0; i < 5; ++i) {
+    for (std::size_t j = 0; j < 5; ++j) {
+      if (!std::isfinite(m[i][5 + j])) return false;
+      inverse[5 * i + j] = m[i][5 + j];
+    }
   }
   return true;
 }
