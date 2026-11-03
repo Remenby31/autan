@@ -57,7 +57,7 @@ Next to `state` boundaries the face2 fit is one-sided: a cell whose stencil reac
 
 ## Warped faces
 
-The faces of polyhedral duals are not planar. A one-point flux at the face centroid then commits an O(h) relative error per face, and the solution converges at first order (measured: finest-pair order 1.05–1.26 on the `poly` family). Integrating the linear reconstruction over the fan triangles through the face moment M restores order 2 (2.1–2.6). On a mesh whose faces are all proven planar, M is an exact zero (`PackedGeometry::all_planar`: tetrahedra, axis-aligned and extruded faces), and the residual runs the face loops without that term (`*_planar`), the same values for a finite state, reading no face moments. The choice is one per run, the minimum over the ranks, and logged; the Jacobian and tangent loops keep their full form.
+The faces of polyhedral duals are not planar. A one-point flux at the face centroid then commits an O(h) relative error per face, and the solution converges at first order (measured: finest-pair order 1.05–1.26 on the `poly` family). Integrating the linear reconstruction over the fan triangles through the face moment M restores order 2 (2.1–2.6). On a mesh whose faces are all proven planar, M is an exact zero (`PackedGeometry::all_planar`: tetrahedra, axis-aligned and extruded faces), and the residual runs the face loops without that term (`*_planar`), the same values wherever the full loops' arithmetic stays finite, reading no face moments. The choice is one per run, the minimum over the ranks, and logged; the Jacobian and tangent loops keep their full form.
 
 ## Precision
 

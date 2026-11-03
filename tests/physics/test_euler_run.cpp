@@ -32,6 +32,7 @@ extern char** environ;
 #include "autan/core/geometry.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
+#include "autan/kernels/geometry.hpp"
 #include "autan/physics/euler_physics.hpp"
 #include "autan/physics/manufactured.hpp"
 #include "autan/runtime/run.hpp"
@@ -253,6 +254,39 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
     INFO(name);
     CHECK(std::abs(floor[name].get<double>() - value.get<double>()) <= 1e-12 * value.get<double>());
   }
+}
+
+TEST_CASE("a run takes the planar loops exactly when every face of the mesh is planar", "[euler]") {
+  // EulerPhysics logs its choice (#412): the loops without the warped-face terms on the
+  // axis-aligned hexahedra, never on the polyhedra's warped faces.
+  const bool hex = GENERATE(true, false);
+  const fs::path path = data_dir / "mesh" / (hex ? "hex/hex.ascii.msh" : "poly/polyMesh");
+  INFO(path);
+  const auto mesh = autan::io::read_mesh(path);
+  const bool planar = autan::kernels::pack_geometry(mesh, autan::compute_geometry(mesh)).all_planar;
+  REQUIRE(planar == hex);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, "fp64");
+    d["time"]["max_iterations"] = 2;
+    d["mesh"]["path"] = fs::absolute(path).string();
+    d["mesh"]["sha256"] = autan::io::mesh_hash(path);
+    Json zone = d["cell_zones"][0];
+    zone["zone"] = "fluid";
+    d["cell_zones"] = Json::array({zone});
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  int chosen = 0;
+  std::istringstream log(read(out.run / "log.jsonl"));
+  for (std::string l; std::getline(log, l);) {
+    const auto e = Json::parse(l);
+    if (e["source"] == "solver" &&
+        e["message"].get<std::string>().starts_with("every face is planar")) {
+      ++chosen;
+    }
+  }
+  CHECK(chosen == (planar ? 1 : 0));
 }
 
 TEST_CASE("a verification case converges to its discrete solution", "[euler]") {
