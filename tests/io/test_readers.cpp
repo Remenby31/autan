@@ -664,19 +664,23 @@ TEST_CASE("Fluent interior zones no face is in are not kept", "[io]") {
   CHECK(mesh->face_zones().size() == autan::io::read_mesh(plain).face_zones().size());
 }
 
-TEST_CASE("A Fluent interior zone keeps no name of its own", "[io]") {
-  // mesh.md, Readers: an interior zone, which nothing exposes, is named by its id, so its record's
-  // name, here 4096 bytes and the same as a boundary zone's, is neither kept nor checked.
+TEST_CASE("A Fluent zone of interior faces keeps no name of its own", "[io]") {
+  // mesh.md, Readers: a zone whose faces are interior, whatever its type (a fan here), which
+  // nothing exposes, is named by its id, so its record's name, here 4096 bytes and the same as a
+  // boundary zone's, is neither kept nor checked.
+  const std::string type = GENERATE("interior", "fan");
+  CAPTURE(type);
   const std::string name(4096, 'n');
   std::ifstream in(data_dir / "hex" / "hex.fluent.msh", std::ios::binary);
   std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
-  text =
-      replace(replace(text, "(39 (2 interior interior-1)())", "(39 (2 interior " + name + ")())"),
-              "(39 (10 pressure-outlet xmin)())", "(39 (10 pressure-outlet " + name + ")())");
+  text = replace(
+      replace(text, "(39 (2 interior interior-1)())", "(39 (2 " + type + " " + name + ")())"),
+      "(39 (10 pressure-outlet xmin)())", "(39 (10 pressure-outlet " + name + ")())");
   const autan::Mesh mesh = autan::io::read_mesh(write_temp("interior-named.msh", text));
   const auto named = std::ranges::count(mesh.face_zones(), name, &autan::FaceZone::name);
   CHECK(named == 1);
   CHECK(zone_named(mesh, name).boundary);
+  CHECK_FALSE(zone_named(mesh, "(interior 2)").boundary);
 }
 TEST_CASE("Sizes a text reader is told are checked before they are allocated", "[io]") {
   SECTION("a polyMesh uniform list longer than the mesh's faces") {

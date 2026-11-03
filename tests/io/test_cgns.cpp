@@ -1217,6 +1217,54 @@ std::int64_t tree_nodes(const fs::path& file) {
   return count;
 }
 
+// The bytes cg_open reads of `file`'s nodes, by mesh.md's rule (Memory of a CGNS read): every
+// node's data but descriptors', point lists' and the data arrays under the labels it reads
+// lazily, each its dimensions times its type's size, walked through cgio.
+std::int64_t open_bytes(const fs::path& file) {
+  int cgio = 0;
+  REQUIRE(cgio_open_file(file.string().c_str(), CGIO_MODE_READ, CGIO_FILE_NONE, &cgio) ==
+          CGIO_ERR_NONE);
+  double root = 0;
+  REQUIRE(cgio_get_root_id(cgio, &root) == CGIO_ERR_NONE);
+  const std::map<std::string, std::int64_t> size{{"C1", 1}, {"B1", 1},  {"I4", 4}, {"U4", 4},
+                                                 {"R4", 4}, {"I8", 8},  {"U8", 8}, {"R8", 8},
+                                                 {"X4", 8}, {"X8", 16}, {"MT", 0}, {"LK", 0}};
+  const std::vector<std::string> lazy{
+      "GridCoordinates_t", "FlowSolution_t",        "Elements_t",         "ZoneSubRegion_t",
+      "DiscreteData_t",    "ParticleCoordinates_t", "ParticleSolution_t", "UserDefinedData_t"};
+  std::int64_t bytes = 0;
+  std::vector<std::pair<double, std::string>> pending{{root, ""}};
+  while (!pending.empty()) {
+    const auto [node, parent] = pending.back();
+    pending.pop_back();
+    int n = 0;
+    REQUIRE(cgio_number_children(cgio, node, &n) == CGIO_ERR_NONE);
+    std::vector<double> ids(static_cast<std::size_t>(n));
+    int got = 0;
+    if (n > 0) REQUIRE(cgio_children_ids(cgio, node, 1, n, &got, ids.data()) == CGIO_ERR_NONE);
+    for (int i = 0; i < got; ++i) {
+      char label[CGIO_MAX_LABEL_LENGTH + 1] = {};
+      char type[CGIO_MAX_DATATYPE_LENGTH + 1] = {};
+      int ndims = 0;
+      cgsize_t dims[CGIO_MAX_DIMENSIONS] = {};
+      REQUIRE(cgio_get_label(cgio, ids[i], label) == CGIO_ERR_NONE);
+      REQUIRE(cgio_get_data_type(cgio, ids[i], type) == CGIO_ERR_NONE);
+      REQUIRE(cgio_get_dimensions(cgio, ids[i], &ndims, dims) == CGIO_ERR_NONE);
+      const std::string l = label;
+      const bool read = l != "Descriptor_t" && l != "IndexArray_t" &&
+                        (l != "DataArray_t" || std::ranges::find(lazy, parent) == lazy.end());
+      if (read && ndims > 0) {
+        std::int64_t values = 1;
+        for (int d = 0; d < ndims; ++d) values *= dims[d];
+        bytes += values * size.at(type);
+      }
+      pending.emplace_back(ids[i], l);
+    }
+  }
+  REQUIRE(cgio_close_file(cgio) == CGIO_ERR_NONE);
+  return bytes;
+}
+
 }  // namespace
 
 TEST_CASE("Reading a CGNS file costs at most 1 MiB and 16 KiB a node, up to 16 384 nodes",
@@ -1530,12 +1578,16 @@ TEST_CASE("A CGNS file reads at most 1 MiB of other data when it opens", "[cgns]
     });
   };
   constexpr std::int64_t limit = std::int64_t{1} << 20;
-  const std::int64_t one = autan::io::cgns_logical_bytes(with_times("times-1.cgns", 1)).eager;
+  // The steps that bring the file to the limit, from its bytes counted independently.
+  const std::int64_t one = open_bytes(with_times("times-1.cgns", 1));
   const auto steps = static_cast<cgsize_t>(1 + (limit - one) / 8);
   const fs::path at = with_times("times-at.cgns", steps);
-  CHECK(autan::io::cgns_logical_bytes(at).eager <= limit);
+  const fs::path over = with_times("times-over.cgns", steps + 1);
+  REQUIRE(open_bytes(at) <= limit);
+  REQUIRE(open_bytes(over) > limit);
+  CHECK(autan::io::cgns_logical_bytes(at).eager == open_bytes(at));
   CHECK(autan::io::read_mesh(at).n_cells() == 1);
-  require_error(autan::ErrorCode::io_unsupported, with_times("times-over.cgns", steps + 1));
+  require_error(autan::ErrorCode::io_unsupported, over);
 }
 TEST_CASE("Faces of a section nothing names are skipped, one named is kept", "[cgns]") {
   // mesh.md, Readers: 2^20 triangles in a MIXED or a TRI_3 section, the first named by a BC's
