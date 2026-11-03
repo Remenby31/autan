@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <limits>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -231,6 +232,27 @@ TEMPLATE_TEST_CASE("the device's planar loops give its full loops' residual", "[
     if (!(planar[i] == full[i])) ++differ;
   }
   CHECK(differ == 0);
+}
+
+TEST_CASE("the device refuses the planar loops on geometry that is not all planar",
+          "[euler][gpu]") {
+  // The stepper takes the host's choice but builds its own geometry: it checks the choice
+  // against it, before any device allocation, as Euler::set_planar does on the host.
+  const auto hex = autan::io::read_mesh(mesh_dir / "hex/hex.ascii.msh");
+  const auto poly = autan::io::read_mesh(mesh_dir / "poly/polyMesh");
+  const auto g_hex = autan::compute_geometry(hex);
+  const auto g_poly = autan::compute_geometry(poly);
+  Scheme s;
+  s.reference = conserved(flow(0.5, 0.5, 0.5));
+  Euler<autan::kernels::fp64> host(hex, g_hex, air, s);
+  host.set_planar(true);
+  Euler<autan::kernels::fp64> warped(poly, g_poly, air, s);
+  REQUIRE_FALSE(warped.all_planar());
+  autan::runtime::OneRank rank;
+  NoGhosts ghosts;
+  CHECK_THROWS_AS(autan::physics::make_device_stepper<autan::kernels::fp64>(
+                      poly, g_poly, host, air.gamma, true, rank, ghosts, nullptr),
+                  std::invalid_argument);
 }
 
 TEST_CASE("the device names the invalid cell of least global id, whatever the numbering",
