@@ -292,6 +292,7 @@ class SteadyInput(_Strict):
     residual_orders: Positive
     linear_solver: Literal["multigrid", "gauss-seidel", "lines"]
     coupled_turbulence: Annotated[bool, Field(strict=True)]
+    matrix_free: Annotated[bool, Field(strict=True)]
 
 
 class UnsteadyInput(_Strict):
@@ -767,6 +768,7 @@ def build(
             residual_orders=spec.time.residual_orders,
             linear_solver=spec.time.linear_solver,
             coupled_turbulence=spec.time.coupled_turbulence,
+            matrix_free=spec.time.matrix_free,
         )
         if isinstance(spec.time, Steady)
         else UnsteadyInput(

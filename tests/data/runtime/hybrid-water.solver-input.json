@@ -2,8 +2,8 @@
   "schema": "autan.solver-input/1",
   "case": {
     "name": "hybrid-water",
-    "sha256": "f46d886af77143b2b4131704621778636cade79d18ae2c7796337bf55c0c92c4",
-    "toml": "schema = \"autan.case/1\"\nname = \"hybrid-water\"\nmesh = \"../mesh/hybrid/polyMesh\"\nmesh_unit = \"m\"\nboundaries = [\n    { zones = \"xmin\", condition = { kind = \"velocity-inlet\", velocity = \"2.0 m / s\" } },\n    { zones = \"xmax\", condition = { kind = \"outlet\", static_pressure = \"100000.0 Pa\" } },\n    { zones = \"ymin\", condition = { kind = \"wall\" } },\n    { zones = \"ymax\", condition = { kind = \"wall\" } },\n    { zones = \"zmin\", condition = { kind = \"symmetry\" } },\n    { zones = \"zmax\", condition = { kind = \"symmetry\" } },\n]\ncell_zones = []\nmonitors = []\n\n[physics]\nkind = \"incompressible\"\nprecision = \"fp32+acc64\"\nreproducibility = \"run\"\n\n[physics.turbulence]\nmodel = \"laminar\"\n\n[physics.fluid]\nkind = \"constant-density-fluid\"\nname = \"water\"\ndensity = \"998.2 kg / m ** 3\"\nviscosity = \"0.001002 Pa * s\"\n\n[freestream]\nvelocity = \"2.0 m / s\"\naoa = \"0.0 deg\"\nsideslip = \"0.0 deg\"\n\n[time]\nkind = \"steady\"\nmax_iterations = 10000\nresidual_orders = 8.0\nlinear_solver = \"multigrid\"\ncoupled_turbulence = false\n"
+    "sha256": "ae48379300b69d036beb3dae46422b1de177c7b2885aa7e05ee14f72adafd247",
+    "toml": "schema = \"autan.case/1\"\nname = \"hybrid-water\"\nmesh = \"../mesh/hybrid/polyMesh\"\nmesh_unit = \"m\"\nboundaries = [\n    { zones = \"xmin\", condition = { kind = \"velocity-inlet\", velocity = \"2.0 m / s\" } },\n    { zones = \"xmax\", condition = { kind = \"outlet\", static_pressure = \"100000.0 Pa\" } },\n    { zones = \"ymin\", condition = { kind = \"wall\" } },\n    { zones = \"ymax\", condition = { kind = \"wall\" } },\n    { zones = \"zmin\", condition = { kind = \"symmetry\" } },\n    { zones = \"zmax\", condition = { kind = \"symmetry\" } },\n]\ncell_zones = []\nmonitors = []\n\n[physics]\nkind = \"incompressible\"\nprecision = \"fp32+acc64\"\nreproducibility = \"run\"\n\n[physics.turbulence]\nmodel = \"laminar\"\n\n[physics.fluid]\nkind = \"constant-density-fluid\"\nname = \"water\"\ndensity = \"998.2 kg / m ** 3\"\nviscosity = \"0.001002 Pa * s\"\n\n[freestream]\nvelocity = \"2.0 m / s\"\naoa = \"0.0 deg\"\nsideslip = \"0.0 deg\"\n\n[time]\nkind = \"steady\"\nmax_iterations = 10000\nresidual_orders = 8.0\nlinear_solver = \"multigrid\"\ncoupled_turbulence = false\nmatrix_free = false\n"
   },
   "mesh": {
     "path": "@MESH@",
@@ -295,7 +295,8 @@
     "max_iterations": 10000,
     "residual_orders": 8.0,
     "linear_solver": "multigrid",
-    "coupled_turbulence": false
+    "coupled_turbulence": false,
+    "matrix_free": false
   },
   "monitors": [],
   "verification": null,

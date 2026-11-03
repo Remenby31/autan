@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <csignal>
@@ -54,6 +55,183 @@ constexpr bool gpu_build = false;
 using Json = nlohmann::ordered_json;
 
 std::size_t at(index_t i) { return static_cast<std::size_t>(i); }
+
+// case-schema.md, `verification`: the bounds that make a manufactured solution's input space
+// finite, checked before the physics builds its expression trees.
+constexpr std::uintmax_t manufactured_max_bytes = 1U << 20U;
+constexpr int manufactured_max_depth = 1024;
+
+// The depth of the tree the manufactured solution's grammar (physics/src/manufactured.cpp)
+// builds for `e`: a number or a name is 1, a unary minus, a parenthesis or a one-argument
+// function adds 1, a binary operator (left-associative, * and / before + and -) or pow is 1 more
+// than its deeper operand. Evaluated with explicit stacks, never recursively, and stopped as soon
+// as it exceeds `limit`. Every operator still pending encloses what follows it, so the depth is at
+// least one more than their count: an expression is refused on that count too, finished or not,
+// before the parser's recursion could reach it. Otherwise a malformed expression is left to the
+// parser, which reports it.
+int expression_depth(std::string_view e, int limit) {
+  enum Kind : std::uint8_t { open, call, negate, add, multiply };
+  std::vector<Kind> ops;
+  std::vector<int> depth;          // operands' depths
+  std::vector<std::size_t> marks;  // depth.size() at each open parenthesis or call
+  int deepest = 0;
+  auto keep = [&](int d) {
+    depth.push_back(d);
+    deepest = std::max(deepest, d);
+    return d <= limit;
+  };
+  // Applies the operator on top of `ops` to the operands it takes.
+  auto reduce = [&] {
+    const Kind k = ops.back();
+    ops.pop_back();
+    if (depth.empty()) return true;
+    if (k == negate) {
+      const int a = depth.back();
+      depth.pop_back();
+      return keep(a + 1);
+    }
+    if (depth.size() < 2) return true;
+    const int b = depth.back();
+    depth.pop_back();
+    const int a = depth.back();
+    depth.pop_back();
+    return keep(1 + std::max(a, b));
+  };
+  auto binds = [](Kind k) { return k == add ? 1 : k == multiply ? 2 : 3; };
+  auto pending = [&] { return static_cast<int>(ops.size()) + 1 > limit; };
+  bool operand_expected = true;
+  std::size_t i = 0;
+  while (i < e.size()) {
+    const char c = e[i];
+    if (std::isspace(static_cast<unsigned char>(c)) != 0) {
+      ++i;
+      continue;
+    }
+    if (operand_expected && c == '-') {
+      ops.push_back(negate);
+      if (pending()) return limit + 1;
+      ++i;
+      continue;
+    }
+    if (operand_expected && c == '(') {
+      ops.push_back(open);
+      marks.push_back(depth.size());
+      if (pending()) return limit + 1;
+      ++i;
+      continue;
+    }
+    if (operand_expected) {
+      // A number or a name, as the parser reads them.
+      std::size_t j = i;
+      if (std::isdigit(static_cast<unsigned char>(c)) != 0 || c == '.') {
+        while (j < e.size() &&
+               (std::isdigit(static_cast<unsigned char>(e[j])) != 0 || e[j] == '.' || e[j] == 'e' ||
+                e[j] == 'E' ||
+                ((e[j] == '+' || e[j] == '-') && j > i && (e[j - 1] == 'e' || e[j - 1] == 'E'))))
+          ++j;
+      } else {
+        while (j < e.size() && (std::isalnum(static_cast<unsigned char>(e[j])) != 0 || e[j] == '_'))
+          ++j;
+      }
+      if (j == i) return deepest;
+      std::size_t k = j;
+      while (k < e.size() && std::isspace(static_cast<unsigned char>(e[k])) != 0) ++k;
+      if (k < e.size() && e[k] == '(' && std::isalpha(static_cast<unsigned char>(e[i])) != 0) {
+        ops.push_back(call);
+        marks.push_back(depth.size());
+        if (pending()) return limit + 1;
+        i = k + 1;
+        continue;
+      }
+      if (!keep(1)) return deepest;
+      i = j;
+      operand_expected = false;
+      continue;
+    }
+    // After an operand: a binary operator, a comma or a closing parenthesis.
+    if (c == ')' || c == ',') {
+      while (!ops.empty() && ops.back() != open && ops.back() != call) {
+        if (!reduce()) return deepest;
+      }
+      if (ops.empty()) return deepest;
+      if (c == ',') {
+        operand_expected = true;
+        ++i;
+        continue;
+      }
+      ops.pop_back();
+      // A parenthesis or a call is 1 more than its deepest argument (pow has two).
+      const std::size_t from = marks.back();
+      marks.pop_back();
+      if (depth.size() <= from) return deepest;
+      const int d =
+          *std::max_element(depth.begin() + static_cast<std::ptrdiff_t>(from), depth.end());
+      depth.resize(from);
+      if (!keep(d + 1)) return deepest;
+      ++i;
+      continue;
+    }
+    const Kind k = c == '+' || c == '-' ? add : c == '*' || c == '/' ? multiply : open;
+    if (k == open) return deepest;
+    while (!ops.empty() && ops.back() != open && ops.back() != call &&
+           binds(ops.back()) >= binds(k)) {
+      if (!reduce()) return deepest;
+    }
+    ops.push_back(k);
+    if (pending()) return limit + 1;
+    operand_expected = true;
+    ++i;
+  }
+  while (!ops.empty()) {
+    if (ops.back() == open || ops.back() == call) return deepest;
+    if (!reduce()) return deepest;
+  }
+  return deepest;
+}
+
+// E0208 for an expression of the manufactured solution deeper than the contract allows, before
+// the physics builds any of them. A document that is not JSON is not an autan.mms/1 document.
+void check_manufactured_depth(const std::string& text) {
+  auto refuse = [](const std::string& message, const nlohmann::json& data) {
+    throw InputError(Diagnostic{.code = "E0208",
+                                .message = message,
+                                .path = "verification.path",
+                                .data_json = data.dump()});
+  };
+  nlohmann::json doc;
+  try {
+    doc = nlohmann::json::parse(text);
+  } catch (const nlohmann::json::exception&) {
+    refuse("the manufactured solution is not JSON", nlohmann::json::object());
+  }
+  if (!doc.is_object()) return;
+  auto check = [&](const nlohmann::json& e, const std::string& where) {
+    if (!e.is_string()) return;
+    const int d = expression_depth(e.get_ref<const std::string&>(), manufactured_max_depth);
+    if (d > manufactured_max_depth) {
+      refuse("the manufactured solution's expression " + where + " is deeper than " +
+                 std::to_string(manufactured_max_depth),
+             {{"expression", where}, {"limit", manufactured_max_depth}});
+    }
+  };
+  for (const char* group : {"fields", "gradients", "conserved", "sources", "auxiliary"}) {
+    const auto g = doc.find(group);
+    if (g == doc.end() || !g->is_object()) continue;
+    if (const auto sub = g->find("subexpressions"); sub != g->end() && sub->is_array()) {
+      for (std::size_t k = 0; k < sub->size(); ++k) {
+        const auto& pair = (*sub)[k];
+        if (pair.is_array() && pair.size() == 2) {
+          check(pair[1], std::string(group) + ".subexpressions[" + std::to_string(k) + "]");
+        }
+      }
+    }
+    if (const auto out = g->find("outputs"); out != g->end() && out->is_object()) {
+      for (const auto& [name, e] : out->items()) {
+        check(e, std::string(group) + ".outputs." + name);
+      }
+    }
+  }
+}
 
 // Set by SIGINT and SIGTERM; the loop finalises the run as stopped.
 volatile std::sig_atomic_t stop_requested = 0;
@@ -1008,7 +1186,24 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
                                   .path = "verification.path",
                                   .data_json = "{}"});
     }
-    v.text = file_bytes(in);
+    auto too_large = [&](const std::string& bytes) {
+      throw InputError(
+          Diagnostic{.code = "E0208",
+                     .message = "the manufactured solution has " + bytes + " bytes, more than " +
+                                std::to_string(manufactured_max_bytes),
+                     .path = "verification.path",
+                     .data_json = nlohmann::json{{"limit", manufactured_max_bytes}}.dump()});
+    };
+    // A regular file's size is known before reading; anything else (a pipe) is read up to one
+    // byte past the limit.
+    std::error_code size_error;
+    const auto size = fs::file_size(v.path, size_error);
+    if (!size_error && size > manufactured_max_bytes) too_large(std::to_string(size));
+    v.text.assign(manufactured_max_bytes + 1, '\0');
+    in.read(v.text.data(), static_cast<std::streamsize>(v.text.size()));
+    v.text.resize(static_cast<std::size_t>(in.gcount()));
+    if (v.text.size() > manufactured_max_bytes)
+      too_large("at least " + std::to_string(v.text.size()));
     if (sha256_hex(v.text) != v.sha256) {
       throw InputError(Diagnostic{
           .code = "E0206",
@@ -1017,6 +1212,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
           .data_json =
               nlohmann::json{{"expected", v.sha256}, {"found", sha256_hex(v.text)}}.dump()});
     }
+    check_manufactured_depth(v.text);
   }
   const io::MeshInfoZones zones = io::meshinfo_zones(p.mesh);
   for (const index_t z : zones.boundary) p.face_zone[p.mesh.face_zones()[at(z)].name] = z;

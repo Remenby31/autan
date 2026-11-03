@@ -89,7 +89,8 @@ struct TimeInput {
   double residual_orders = 0.0;
   std::string linear_solver;  ///< steady: "multigrid" or "gauss-seidel" (global colours)
   bool coupled_turbulence =
-      false;  ///< steady: the flow and SA solved together (case-schema.md#time)
+      false;                 ///< steady: the flow and SA solved together (case-schema.md#time)
+  bool matrix_free = false;  ///< steady laminar: the matrix-free step (case-schema.md#time)
   std::int64_t steps = 0;
   std::optional<double> dt, cfl;
   std::optional<std::int64_t> average_from;
