@@ -171,12 +171,18 @@ struct NavierStokes<P>::Impl {
                                                         {1, 0, 2},
                                                         {0, 1, 2},
                                                         {1, 1, 1}}};
-    const auto& g = geo;
+    // The index in `power` of a derivative's multi-index.
+    auto unknown = [&](const std::array<int, 3>& p) {
+      for (std::size_t i = 0; i < nt; ++i) {
+        if (power[i] == p) return i;
+      }
+      return nt;
+    };
     // theta's weights per entry of c's stencil, or false if the entries leave it undetermined.
     auto solve = [&](std::size_t c, std::span<const index_t> entries,
                      std::vector<std::array<double, nt>>& coef) {
-      std::vector<std::array<double, nt>> rows(entries.size());
-      std::vector<double> w(entries.size());
+      const auto& g = geo;
+      std::vector<std::array<double, 3>> d(entries.size());
       std::array<double, 3> extent{};
       for (std::size_t k = 0; k < entries.size(); ++k) {
         const index_t e = entries[k];
@@ -188,23 +194,73 @@ struct NavierStokes<P>::Impl {
           const auto f = static_cast<std::size_t>(-e - 1);
           x = {g.face_centroid_x[f], g.face_centroid_y[f], g.face_centroid_z[f]};
         }
-        const double dx = x[0] - g.cell_centroid_x[c];
-        const double dy = x[1] - g.cell_centroid_y[c];
-        const double dz = x[2] - g.cell_centroid_z[c];
-        extent = {std::max(extent[0], std::abs(dx)), std::max(extent[1], std::abs(dy)),
-                  std::max(extent[2], std::abs(dz))};
+        d[k] = {x[0] - g.cell_centroid_x[c], x[1] - g.cell_centroid_y[c],
+                x[2] - g.cell_centroid_z[c]};
+        for (std::size_t a = 0; a < 3; ++a) {
+          extent[a] = std::max(extent[a], std::abs(d[k][a]));
+        }
+      }
+      // The weights 1/|d|^2, |d| measured with each axis scaled by the stencil's extent along it:
+      // in physical coordinates, the entries across a wall-resolved layer (10^3:1 and more) would
+      // outweigh the others by the aspect ratio squared.
+      const double widest = std::max({extent[0], extent[1], extent[2]});
+      std::vector<double> w(entries.size());
+      for (std::size_t k = 0; k < entries.size(); ++k) {
+        double s2 = 0.0;
+        for (std::size_t a = 0; a < 3; ++a) {
+          if (extent[a] > 1e-12 * widest) s2 += std::pow(d[k][a] / extent[a], 2);
+        }
+        w[k] = 1.0 / s2;
+      }
+      // The normal matrix is formed and solved in the frame of the wall: the unit normal of the
+      // stencil's boundary face nearest to the cell, completed by the global axis least aligned
+      // with it, each unknown scaled by the stencil's extent along its local directions. On a
+      // sloped or curved wall the global axes mix the wall-normal spacing with the slope, and the
+      // matrix scaled along them is singular to round-off (#448); on a wall along an axis the
+      // frame is the global one. The cubic monomials span the same space in any rotated frame, so
+      // with the same weights the fit is the same polynomial.
+      std::array<std::array<double, 3>, 3> axes{{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
+      double nearest = std::numeric_limits<double>::infinity();
+      for (std::size_t k = 0; k < entries.size(); ++k) {
+        if (entries[k] >= 0) continue;
+        const auto f = static_cast<std::size_t>(-entries[k] - 1);
+        const double r2 = d[k][0] * d[k][0] + d[k][1] * d[k][1] + d[k][2] * d[k][2];
+        const std::array<double, 3> s{g.face_area_x[f], g.face_area_y[f], g.face_area_z[f]};
+        const double area = std::sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
+        if (!(r2 < nearest) || !(area > 0.0)) continue;
+        nearest = r2;
+        const std::array<double, 3> n{s[0] / area, s[1] / area, s[2] / area};
+        std::size_t least = 0;
+        for (std::size_t ax = 1; ax < 3; ++ax) {
+          if (std::abs(n[ax]) < std::abs(n[least])) least = ax;
+        }
+        std::array<double, 3> t{};
+        t[least] = 1.0;
+        for (std::size_t ax = 0; ax < 3; ++ax) t[ax] -= n[least] * n[ax];
+        const double tn = std::sqrt(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+        for (auto& v : t) v /= tn;
+        axes = {{t,
+                 {n[1] * t[2] - n[2] * t[1], n[2] * t[0] - n[0] * t[2], n[0] * t[1] - n[1] * t[0]},
+                 n}};
+      }
+      std::vector<std::array<double, nt>> rows(entries.size());
+      std::array<double, 3> local{};
+      for (std::size_t k = 0; k < entries.size(); ++k) {
+        std::array<double, 3> r{};
+        for (std::size_t a = 0; a < 3; ++a) {
+          r[a] = axes[a][0] * d[k][0] + axes[a][1] * d[k][1] + axes[a][2] * d[k][2];
+          local[a] = std::max(local[a], std::abs(r[a]));
+        }
         for (std::size_t i = 0; i < nt; ++i) {
-          rows[k][i] = std::pow(dx, power[i][0]) * std::pow(dy, power[i][1]) *
-                       std::pow(dz, power[i][2]) /
+          rows[k][i] = std::pow(r[0], power[i][0]) * std::pow(r[1], power[i][1]) *
+                       std::pow(r[2], power[i][2]) /
                        (std::tgamma(power[i][0] + 1.0) * std::tgamma(power[i][1] + 1.0) *
                         std::tgamma(power[i][2] + 1.0));
         }
       }
-      // Each unknown scaled by the stencil's extent along its directions, and the weights 1/|d|^2
-      // taken in the scaled coordinates, keep the normal matrix of order one and well conditioned
-      // on stretched cells: in physical coordinates, the entries across a wall-resolved layer
-      // (10^3:1 and more) would outweigh the others by the aspect ratio squared.
-      const double widest = std::max({extent[0], extent[1], extent[2]});
+      // Monomials in a local direction where no entry extends (the span of a one-layer mesh) are
+      // left out, their derivatives zero.
+      const double wide = std::max({local[0], local[1], local[2]});
       std::array<double, nt> unit{};
       std::vector<std::size_t> used;
       for (std::size_t i = 0; i < nt; ++i) {
@@ -212,17 +268,10 @@ struct NavierStokes<P>::Impl {
         bool spans = true;
         for (std::size_t a = 0; a < 3; ++a) {
           if (power[i][a] == 0) continue;
-          spans = spans && extent[a] > 1e-12 * widest;
-          unit[i] *= std::pow(extent[a], power[i][a]);
+          spans = spans && local[a] > 1e-12 * wide;
+          unit[i] *= std::pow(local[a], power[i][a]);
         }
         if (spans) used.push_back(i);
-      }
-      for (std::size_t k = 0; k < rows.size(); ++k) {
-        double s2 = 0.0;
-        for (std::size_t a = 0; a < 3; ++a) {
-          if (extent[a] > 1e-12 * widest) s2 += std::pow(rows[k][a] / extent[a], 2);
-        }
-        w[k] = 1.0 / s2;
       }
       const auto m = used.size();
       std::vector<double> a(m * m, 0.0), inv(m * m, 0.0);
@@ -262,14 +311,44 @@ struct NavierStokes<P>::Impl {
           }
         }
       }
+      // Global derivatives from local ones: with y = axes x, d^n phi / dx_i1..dx_in =
+      // sum over a1..an of axes[a1][i1]..axes[an][in] d^n psi / dy_a1..dy_an.
+      std::array<std::array<double, nt>, nt> rotate{};
+      for (std::size_t i = 0; i < nt; ++i) {
+        std::array<std::size_t, 3> seq{};
+        std::size_t n = 0;
+        for (std::size_t ax = 0; ax < 3; ++ax) {
+          for (int r = 0; r < power[i][ax]; ++r) seq[n++] = ax;
+        }
+        std::size_t count = 1;
+        for (std::size_t r = 0; r < n; ++r) count *= 3;
+        for (std::size_t code = 0; code < count; ++code) {
+          std::array<int, 3> p{};
+          double f = 1.0;
+          std::size_t rest = code;
+          for (std::size_t r = 0; r < n; ++r) {
+            const std::size_t la = rest % 3;
+            rest /= 3;
+            ++p[la];
+            f *= axes[la][seq[r]];
+          }
+          rotate[i][unknown(p)] += f;
+        }
+      }
       coef.assign(entries.size(), {});
       for (std::size_t k = 0; k < entries.size(); ++k) {
+        std::array<double, nt> theta{};
         for (std::size_t i = 0; i < m; ++i) {
           double v = 0.0;
           for (std::size_t j = 0; j < m; ++j) {
             v += inv[m * i + j] * w[k] * rows[k][used[j]] / unit[used[j]];
           }
-          coef[k][used[i]] = v / unit[used[i]];
+          theta[used[i]] = v / unit[used[i]];
+        }
+        for (std::size_t i = 0; i < nt; ++i) {
+          double v = 0.0;
+          for (std::size_t j = 0; j < nt; ++j) v += rotate[i][j] * theta[j];
+          coef[k][i] = v;
         }
       }
       return true;

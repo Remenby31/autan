@@ -10,11 +10,9 @@ import pytest
 from autan.units import m
 from autan_vv.cases import naca0012 as cases
 from autan_vv.errors import VVError
-from autan_vv.meshes import naca0012
+from autan_vv.meshes import families, naca0012
 from autan_vv.runs import mesh_info
 from scipy import integrate, optimize
-
-gmsh = pytest.importorskip("gmsh", reason="gmsh (dev-only 'mesh' group) is not installed")
 
 EPS = float(np.finfo(np.float64).eps)
 
@@ -63,7 +61,7 @@ def _in_plane(mesh_points: np.ndarray, nc: int) -> np.ndarray:
 
 @pytest.mark.parametrize("nc", [32, 128])
 def test_o_mesh_has_the_papers_properties(nc: int) -> None:
-    mesh, _ = naca0012.generate_level(nc)
+    mesh = naca0012.generate_level(nc)
     z = _in_plane(mesh.points, nc)
     np.testing.assert_array_equal(mesh.points[: nc * (nc + 1), 1], 0.0)
     surface = z[:, 0]
@@ -110,6 +108,7 @@ def test_coarser_levels_are_the_finer_ones_with_every_other_line_removed() -> No
 
 
 def test_family_is_written_and_read_back_through_gmsh(tmp_path: Path) -> None:
+    gmsh = pytest.importorskip("gmsh", reason="gmsh (dev-only 'mesh' group) is not installed")
     family, meshes = naca0012.generate_family((8, 16), tmp_path)
     assert [lv.n_cells for lv in family.levels] == [64, 256]
     # sqrt(area / cells): the far-field polygon of 8 sides is 8 % smaller than that of 16.
@@ -291,3 +290,35 @@ def test_lifting_cases_carry_the_point_vortex_of_the_flo82_references() -> None:
             assert vortex is not None
             assert vortex.surfaces == "airfoil"
             assert [float(v.to("m").magnitude) for v in vortex.center] == [0.25, 0.0, 0.0]
+
+
+@pytest.mark.parametrize("nc", [8, 64])
+def test_python_writer_writes_the_file_gmsh_writes(nc: int, tmp_path: Path) -> None:
+    # The NACA 0012 levels are written without Gmsh (no linux-aarch64 build): the file must be the
+    # one Gmsh's own writer gives for the same arrays, byte for byte, so mesh hashes do not change.
+    gmsh = pytest.importorskip("gmsh", reason="gmsh (dev-only 'mesh' group) is not installed")
+    points, cells, boundary = naca0012.grid(nc)
+    points = np.array([float(f"{v:.16g}") for v in points.ravel()]).reshape(-1, 3)
+    ours = tmp_path / "python.msh"
+    naca0012.write_msh(points, cells["hex"], boundary, ours)
+    theirs = tmp_path / "gmsh.msh"
+    gmsh.initialize(readConfigFiles=False)
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.option.setNumber("Mesh.MshFileVersion", 4.1)
+        gmsh.option.setNumber("Mesh.Binary", 0)
+        families._write_msh(gmsh, points, cells, boundary, theirs)
+    finally:
+        gmsh.finalize()
+    assert ours.read_bytes() == theirs.read_bytes()
+
+
+def test_python_writer_refuses_what_it_does_not_reproduce(tmp_path: Path) -> None:
+    points, cells, boundary = naca0012.grid(8)
+    for zones in (
+        {**boundary, "extra": boundary["back"]},
+        {**boundary, "back": boundary["back"][:0]},
+    ):
+        with pytest.raises(VVError) as err:
+            naca0012.write_msh(points, cells["hex"], zones, tmp_path / "x.msh")
+        assert err.value.code == "V0310"
