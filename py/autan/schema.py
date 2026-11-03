@@ -277,13 +277,15 @@ class Steady(Spec):
     """Local time stepping until every residual drops ``residual_orders`` orders, at most
     ``max_iterations`` iterations; an implicit physics solves each step's linear system with
     ``linear_solver``. ``coupled_turbulence`` solves the flow and the SA variable together in
-    each step (validated on the TMR flat plate only)."""
+    each step (validated on the TMR flat plate only); ``matrix_free`` applies the laminar
+    step's Jacobian without assembling it (validated on the TMR laminar flat plate only)."""
 
     kind: Literal["steady"] = "steady"
     max_iterations: Count = 10000
     residual_orders: PositiveNumber = 8.0
     linear_solver: Literal["multigrid", "gauss-seidel", "lines"] = "multigrid"
     coupled_turbulence: Annotated[bool, Field(strict=True)] = False
+    matrix_free: Annotated[bool, Field(strict=True)] = False
 
 
 class Unsteady(Spec):
@@ -578,6 +580,13 @@ def consistency(spec: CaseSpec) -> list[tuple[str, str, str]]:
                 "only compressible SA has a coupled turbulence step",
             )
         )
+    matrix_free = isinstance(spec.time, Steady) and spec.time.matrix_free
+    if matrix_free and not (
+        isinstance(physics, Compressible) and isinstance(physics.turbulence, Laminar)
+    ):
+        found.append(
+            ("E0429", "time.matrix_free", "only compressible laminar flow has a matrix-free step")
+        )
     if isinstance(physics.turbulence, DDES | WMLES) and not isinstance(spec.time, Unsteady):
         found.append(
             ("E0305", "time", f"{physics.turbulence.model} needs case.time = autan.Unsteady(...)")
@@ -612,6 +621,15 @@ def json_schema() -> dict[str, Any]:
 
     def absent(*keys: str) -> dict[str, Any]:
         return {"not": {"anyOf": [{"required": [k]} for k in keys]}}
+
+    def opt_in(key: str, model: str) -> dict[str, Any]:
+        time = {"required": [key], "properties": {key: {"const": True}}}
+        turbulence = {"properties": {"model": {"const": model}}}
+        kind = {"kind": {"const": "compressible"}, "turbulence": turbulence}
+        return {
+            "if": {"required": ["time"], "properties": {"time": time}},
+            "then": {"properties": {"physics": {"properties": kind}}},
+        }
 
     def zone_states(rule: dict[str, Any]) -> dict[str, Any]:
         initial = {"properties": {"initial": {"anyOf": [{"type": "null"}, rule]}}}
@@ -680,5 +698,7 @@ def json_schema() -> dict[str, Any]:
                 "properties": {"time": {"properties": {"kind": {"const": "unsteady"}}}},
             },
         },
+        opt_in("coupled_turbulence", "sa"),
+        opt_in("matrix_free", "laminar"),
     ]
     return {"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": SCHEMA_ID, **schema}

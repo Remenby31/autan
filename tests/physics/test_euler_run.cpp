@@ -464,7 +464,7 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
   // The multigrid agglomerates one mesh's cells and takes no image ghosts: E0706 at
   // `time.linear_solver`. The multigrid sums in local cell order: reproducibility "ranks" is
   // E1109. The coupled turbulence step is SA's (case-schema.md#time): E0426 on inviscid flow.
-  const std::string reason = GENERATE("periodic", "ranks", "coupled");
+  const std::string reason = GENERATE("periodic", "ranks", "coupled", "matrix-free");
   CAPTURE(reason);
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     if (reason == "periodic") {
@@ -473,6 +473,7 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
       inviscid_along_x(d, "fp64");
       if (reason == "ranks") d["reproducibility"] = "ranks";
       if (reason == "coupled") d["time"]["coupled_turbulence"] = true;
+      if (reason == "matrix-free") d["time"]["matrix_free"] = true;
     }
   });
   const auto out = run(doc);
@@ -483,7 +484,8 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
   const std::map<std::string, std::pair<std::string, std::string>> expected = {
       {"periodic", {"E0706", "time.linear_solver"}},
       {"ranks", {"E1109", "reproducibility"}},
-      {"coupled", {"E0426", "time.coupled_turbulence"}}};
+      {"coupled", {"E0426", "time.coupled_turbulence"}},
+      {"matrix-free", {"E0429", "time.matrix_free"}}};
   CHECK(diagnostic["code"] == expected.at(reason).first);
   CHECK(diagnostic["location"]["path"] == expected.at(reason).second);
 }
