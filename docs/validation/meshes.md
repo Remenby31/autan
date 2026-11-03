@@ -40,6 +40,25 @@ Agreed with the core mesh readers (#1):
 - **Family.** R₁ comes from the paper's finest grid (NC = 4096), so level NC is the 4096² grid with lines removed: levels are nested bit for bit, refinement ratio exactly 2. The lower half mirrors the upper one exactly.
 - **Slab.** The airfoil lies in the x–z plane (lift along +z, as case-schema.md orients α), extruded over y ∈ [0, 1]. Zones `airfoil`, `farfield`, `back` (y = 0), `front` (y = 1). The manifest's `h` is the in-plane size √(area / cells).
 
+## RAE 2822 C-grids
+
+`python -m autan_vv.meshes.cgrid f8621.txt DIR` (source `vv/src/autan_vv/meshes/cgrid.py`) writes the three nested 2D PLOT3D levels of the RAE 2822 for the transonic gate of #395, `rae2822-{coarse,medium,fine}.p2dfmt`, and `quality.json`; `physics/tmr/plot3d.py --zones airfoil --plane xz` makes them one-layer slabs and `physics/tmr/case.sh rae2822` runs case 9. The tape is fetched by `autan-vv` from the pinned TMR copy (catalog `rae2822`, CC0-1.0) and never vendored. Decisions and criteria: #408.
+
+- **Surface.** File 1121 of the 1981 tape: the measured ordinates `YUS/C`, `YLS/C` at 65 stations (the design columns unused), the lower ones stored as magnitudes. The two surfaces' leading- and trailing-edge values differ by less than the tape's quantisation step (range/10 000) and take their mean; the trailing edge is closed and sharp. Each surface is a cubic spline in arc length.
+- **Nodes on the airfoil and wake cut.** 240 cells per surface (fine level), s = L[w(1 − cos(πt/2)) + (1 − w)(1 − cos πt)/2] with w = 0.5: 3.3 × 10⁻⁵ c at the leading edge, 3.35 × 10⁻³ c at the trailing edge. The plain cosine law (w = 0, 4 × 10⁻⁵ c at the trailing edge) let lines cross off the upper trailing edge, where the surface meets the wake in a corner concave on the fluid side. 128 wake cells per side, geometric from the trailing-edge spacing to 500 chords; the two halves coincide node for node and become interior faces.
+- **March.** Steger and Sorenson's volume–orthogonality system, linearised and solved implicitly line by line (block tridiagonal in i). Each line lies the prescribed step from the previous one: the cell area per node is rescaled twice by the step over the length obtained. Normal steps grow geometrically from Δy₁ = 10⁻⁶ c over 128 cells to 500 chords. A dissipation on each step, 0.3 times the node's step-to-spacing ratio and ramped in over the first 8 lines, is ours; the source gives none.
+- **Levels.** Fine 737 × 129 nodes; medium and coarse are every other line (Δy₁ = 2.15 × 10⁻⁶ c and 5.01 × 10⁻⁶ c).
+
+Measured on the generated grids (criteria of #408, blocking on the fine level, nested bounds on the others):
+
+| Level | Cells | Smallest cell area | Wall angle | Normal stretching |
+|---|---|---|---|---|
+| fine | 736 × 128 | 3.3 × 10⁻¹¹ | < 0.001° (≤ 2°) | 1.157 (≤ 1.25) |
+| medium | 368 × 64 | 2.8 × 10⁻¹⁰ | 0.68° | 1.338 (≤ 1.56) |
+| coarse | 184 × 32 | 2.6 × 10⁻⁹ | 3.3° | 1.787 (≤ 2.44) |
+
+The outer boundary lies 497–707 chords from mid-chord. The wall angle excludes the trailing-edge nodes; on the coarser levels it measures the coarser lines' own tangents. Tests (`vv/tests/test_cgrid.py`) run the generator on the sharp-trailing-edge NACA 0012 above: positive cells, orthogonality and stretching, nesting, the PLOT3D file through `plot3d.py` into a closed mesh whose wake cut is interior, the decoding of file 1121, and the refusals `V0310` (a first step too large for its length), `V0311` (surfaces not sharing their ends) and `V0312` (a line with coincident neighbours).
+
 ## Manifest and reproducibility
 
 Each family directory has `manifest.json` (schema `autan.mesh-family/1`): kind, perturbation, seed, Gmsh version, and per level the file name, `file_sha256`, `mesh_sha256` (topology and coordinates, format-independent), counts per cell type, total volume, h = (V/N)^(1/3) and `min_subvolume_ratio`. The same seed, Gmsh version and platform give byte-identical files; a different seed gives different files (`test_families_regenerate_bit_for_bit`).
@@ -57,6 +76,7 @@ Gmsh is GPL-2.0-or-later. It is a development-only dependency group of `vv/`, ne
 ## References
 
 - T. J. Barth, Aspects of unstructured grids and finite-volume solvers for the Euler and Navier-Stokes equations, VKI Lecture Series 1994-05, 1994 (median dual).
+- J. L. Steger and R. L. Sorenson, Use of hyperbolic partial differential equations to generate body fitted coordinates, NASA Langley Numerical Grid Generation Techniques, pp. 463–476, 1980 (NTRS 19810006209); the method of J. L. Steger and D. S. Chaussee, *SIAM J. Sci. Stat. Comput.* 1(4):431–437, 1980. doi:10.1137/0901031
 - C. Geuzaine and J.-F. Remacle, Gmsh: a 3-D finite element mesh generator with built-in pre- and post-processing facilities, *Int. J. Numer. Meth. Eng.* 79(11):1309–1331, 2009. doi:10.1002/nme.2579
 - H. W. Kuhn, Some combinatorial lemmas in topology, *IBM J. Res. Dev.* 4(5):518–524, 1960 (cube triangulation).
 - J. C. Vassberg and A. Jameson, In pursuit of grid convergence for two-dimensional Euler solutions, *J. Aircraft* 47(4):1152–1166, 2010. doi:10.2514/1.46737
