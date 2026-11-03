@@ -216,7 +216,7 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
                 "zone_names_bytes": 512,
                 "filtered_bytes": 0,
                 "cgns_nodes": 40,
-                "point_list_bytes": 0,
+                "point_list_bytes": 1024,
             },
             "counts": {
                 "cells": 10,
@@ -354,8 +354,9 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     # skip kept as runs, 24 B for each of the 30 elements and one more.
     standard += 2**20 + 32 * 2**10 + 24 * (10 + 20 + 1)
     caches = 4 * 2**20 + 8 * 2**20 + 64 * 2**10
-    # cg_open's tree of 40 nodes, 1 MiB and 16 KiB a node, and the 1 MiB of data it reads at once
-    tree = 2**20 + 16 * 2**10 * 40 + 2**20
+    # cg_open's tree of 40 nodes, 1 MiB and 16 KiB a node, and the 1 MiB of data it reads at once;
+    # the ids its 1 024 B of point lists name, twice that, read through a 1 MiB chunk
+    tree = 2**20 + 16 * 2**10 * 40 + 2**20 + 2 * 1024 + 2**20
     assert by_name["mesh reading"].bytes_host == standard + 2048 + 40 * 512 + caches + tree
     # A Fluent file of 4 096 B: S + 53N_s + 20C + 16P + 45F, and 16 B for each of the 16 384
     # fluid and solid zone records it may hold.
@@ -368,6 +369,14 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     )
     reading = {c.name: c for c in read.memory.components}["mesh reading"].bytes_host
     assert reading == 4096 + 53 * 30 + 20 * 10 + 16 * 160 + 45 * 40 + 16 * 16_384
+    # A Gmsh file of 4 096 B: S + 60N_s - 24N - 8C + 52F + 20P, and its batch of 65 536
+    # element-block entities of 8 B.
+    fluent["source"]["format"] = "gmsh"
+    read = autan.load(write_case(TINY)).plan(
+        autan.MeshInfo.from_document(fluent, autan.Location()), device_kind="cpu"
+    )
+    reading = {c.name: c for c in read.memory.components}["mesh reading"].bytes_host
+    assert reading == 4096 + 60 * 30 - 24 * 30 - 8 * 10 + 52 * 40 + 20 * 160 + 65_536 * 8
     filtered: dict[str, Any] = tiny_mesh(20).document()
     filtered["source"]["filtered_bytes"] = 3 * 2**20  # a dataset inflated beside its input
     compressed = autan.load(write_case(TINY)).plan(

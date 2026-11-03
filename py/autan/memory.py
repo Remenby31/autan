@@ -54,6 +54,11 @@ _CGNS_NODES_MAX = 2**14
 _CGNS_EAGER = 2**20
 # A Fluent file's fluid and solid zone records, 16 B each (id, offset), at most 16 384 (E0133).
 _FLUENT_ZONES = 16 * 16_384
+# Gmsh's batch of element-block entities looked up in $Entities: 65 536 pairs of 8 B.
+_GMSH_BATCH = 65_536 * 8
+# The CGNS reader keeps the distinct ids a point list names (16 B each, at most twice the 8-byte
+# ids listed) and reads them through a 1 MiB chunk (io/src/cgns_read.cpp).
+_CGNS_POINT_LIST_CHUNK = 2**20
 # HDF5's defaults, which the CGNS library keeps (adfh/ADFH.c:64): a 4 MiB metadata cache
 # (H5Cprivate.h:85), an 8 MiB chunk cache (H5Pfapl.c:94) and a 64 KiB sieve (H5Pfapl.c:121).
 _HDF5_CACHE = 4 * 2**20 + 8 * 2**20 + 64 * 2**10
@@ -381,7 +386,7 @@ def _reading(mesh: MeshInfo, interior: int, boundary: int) -> int:
     k = 2 * interior + boundary
     if mesh.source.format == "gmsh":
         # to_face_based, with the text, tags, points and order alive; face_nodes may double.
-        reading = s + 60 * ns - 24 * n - 8 * c + 52 * f + 16 * p + 4 * p
+        reading = s + 60 * ns - 24 * n - 8 * c + 52 * f + 16 * p + 4 * p + _GMSH_BATCH
     elif mesh.source.format == "fluent":
         # The end of assemble, with the reader's members alive; face_nodes_ may double.
         reading = s + 53 * ns + 20 * c + 12 * p + 45 * f + 4 * p + _FLUENT_ZONES
@@ -407,6 +412,7 @@ def _reading(mesh: MeshInfo, interior: int, boundary: int) -> int:
         # cg_open and the reader hold up to 16 KiB per node of the tree, which the MeshInfo
         # counts (at most _CGNS_NODES_MAX, E0133 beyond).
         texts += _CGNS_TREE + _CGNS_NODE * source.cgns_nodes + _CGNS_EAGER
+        texts += 2 * source.point_list_bytes + _CGNS_POINT_LIST_CHUNK
         reading = (
             max(standard, ngon) + texts + _JSON_DOCUMENT * source.zone_names_bytes + _HDF5_CACHE
         )
