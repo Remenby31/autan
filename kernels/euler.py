@@ -696,7 +696,8 @@ ausm_faces = face_loop(ausm_face, **FACE_ARGS, minf=mach_ref, out=Inc(res, left=
 
 
 # The same fluxes without the warped-face term, for meshes whose faces are all planar
-# (PackedGeometry::all_planar): there M = 0 exactly and that term is a signed zero.
+# (PackedGeometry::all_planar): there M = 0 exactly and that term is a signed zero wherever its
+# arithmetic stays finite.
 
 
 @pointwise
