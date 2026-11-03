@@ -19,13 +19,15 @@ StartMode = Literal["continue", "warm"]
 @dataclass(frozen=True)
 class StateFileLoad:
     """A file of the case the runtime reads: its bytes, its rows, the faces of the case's
-    oracle zones it gives states for and its zones, and its kind."""
+    oracle zones it gives states for and its zones, its kind, and the bytes of its member
+    names."""
 
     size: int
     rows: int
     faces: int
     zones: int
     kind: Literal["initial", "faces", "manufactured"]
+    names: int = 0
 
 
 _CUDA_CONTEXT = 512 * 2**20
@@ -223,8 +225,9 @@ def _rank(
     for x in files:
         # A string (a member name or the oracle, at most TEXT_BYTES) lives in the text, the
         # parser's token buffer (twice its length at most), the key or value it builds and the
-        # document's (runtime/src/run.cpp).
-        names = 4 * TEXT_BYTES
+        # document's (runtime/src/run.cpp); an object that grows copies all its member names
+        # beside the old ones (nlohmann/ordered_map.hpp), at most every name of the file once.
+        names = 4 * TEXT_BYTES + x.names
         if x.kind == "initial":
             loads += 2 * x.size + names + 1024 + 266 * x.rows + 160 * cells
         elif x.kind == "faces":

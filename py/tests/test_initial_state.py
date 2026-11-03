@@ -98,11 +98,14 @@ def test_the_state_reaches_the_solver_input_and_the_run(
     planned = loaded.plan(autan.MeshInfo.load(mesh))
     assert planned.ok
     # docs/sdk/plan.md: the text and its strings (2S), a string at its 4 096-byte bound four
-    # times, 1 KiB of members, 128 B a row streamed and 138 B a row paired, then 160 B per
-    # cell of the mesh paired with them.
+    # times, the document's member names once more (initial-state.md's seven keys), 1 KiB of
+    # members, 128 B a row streamed and 138 B a row paired, then 160 B per cell of the mesh
+    # paired with them.
     size = (case.parent / "state.json").stat().st_size
+    keys = ("schema", "oracle", "mesh_sha256", "variables", "cells", "centroids", "values")
     files = {c.name: c for c in planned.memory.components}["state files"]
-    assert files.bytes_host == 2 * size + 4 * 4096 + 1024 + (128 + 138) * CELLS + 160 * CELLS
+    expected = 2 * size + 4 * 4096 + sum(map(len, keys)) + 1024 + (128 + 138) * CELLS
+    assert files.bytes_host == expected + 160 * CELLS
     assert main(["prepare", str(case), "--mesh-info", str(mesh)]) == 0
     document = json.loads(capsys.readouterr().out)
     jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)

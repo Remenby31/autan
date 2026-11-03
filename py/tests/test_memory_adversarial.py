@@ -186,6 +186,32 @@ def long_zone_name(tmp_path: Path) -> tuple[Path, str]:
     )
 
 
+def many_long_zone_names(tmp_path: Path) -> tuple[Path, str]:
+    # 8 192 empty zones named at the 4 096-byte bound: the zone object, growing, copies every
+    # name beside the old ones and the text.
+    info = mesh_info(HEX, tmp_path)
+    centroids = [[0.0, (j + 0.5) / 3, (k + 0.5) / 3] for k in range(3) for j in range(3)]
+    zones: dict[str, object] = {
+        f"{i:05d}".rjust(4096, "z"): {"faces": 0, "centroids": [], "values": []}
+        for i in range(8192)
+    }
+    zones["xmin"] = {"faces": 9, "centroids": centroids, "values": [FREESTREAM] * 9}
+    document = {
+        "schema": "autan.face-states/1",
+        "oracle": "uniform",
+        "mesh_sha256": info.source.sha256,
+        "variables": VARIABLES,
+        "zones": zones,
+    }
+    (tmp_path / "states.json").write_text(json.dumps(document))
+    digest = hashlib.sha256((tmp_path / "states.json").read_bytes()).hexdigest()
+    return HEX, (
+        "for zone in ('xmax', 'ymin', 'ymax', 'zmin', 'zmax'):\n"
+        "    case.boundary(zone).farfield()\n"
+        f"case.boundary('xmin').oracle_state(path='states.json', sha256={digest!r})\n"
+    )
+
+
 def long_case_name(tmp_path: Path) -> tuple[Path, str]:
     del tmp_path
     return HEX, FARFIELD
@@ -221,6 +247,7 @@ def manufactured_at_bounds(tmp_path: Path) -> tuple[Path, str]:
         padded_initial_state,
         padded_face_states,
         long_zone_name,
+        many_long_zone_names,
         long_case_name,
         manufactured_at_bounds,
     ],

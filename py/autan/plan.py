@@ -226,6 +226,19 @@ def plan(
 _PATH_MAX = 4096
 
 
+def _names(data: bytes) -> int:
+    """The bytes of every member name of a valid JSON document, in UTF-8."""
+    total = 0
+
+    def note(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        nonlocal total
+        total += sum(len(name.encode()) for name, _ in pairs)
+        return dict(pairs)
+
+    json.loads(data, object_pairs_hook=note)
+    return total
+
+
 # A zone's or a monitor's entry in the solver input besides its texts: keys, a kind, at most
 # 20 numbers of at most 24 characters each (Python's repr of a double) and a SHA-256.
 _ENTRY = 1024
@@ -640,7 +653,7 @@ def _check_initial_state(
             "E0508", f"{str(source)!r} is not a valid {initial_state.SCHEMA} document: {document}"
         )
         return
-    files.append(StateFileLoad(len(data), document.cells, 0, 0, "initial"))
+    files.append(StateFileLoad(len(data), document.cells, 0, 0, "initial", _names(data)))
     if document.mesh_sha256 != mesh.source.sha256:
         problem("E0509", "the initial state was written for another mesh")
     if fluid_cells is not None and document.cells != fluid_cells:
@@ -683,7 +696,7 @@ def _check_oracle(
         return
     rows = sum(z.faces for z in document.zones.values())
     faces = sum(zones.values())
-    files.append(StateFileLoad(len(data), rows, faces, len(document.zones), "faces"))
+    files.append(StateFileLoad(len(data), rows, faces, len(document.zones), "faces", _names(data)))
     if document.mesh_sha256 != mesh.source.sha256:
         problem("E0422", "the face states were exported for another mesh")
     for zone, faces in zones.items():
