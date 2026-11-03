@@ -28,6 +28,7 @@
 #include <picosha2.h>
 #include <signal.h>
 #include <spawn.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -981,6 +982,75 @@ TEST_CASE("A verification case archives its manufactured solution", "[runtime]")
         run(input([](Json& d) { d["verification"]["path"] = "/nonexistent/euler.mms.json"; },
                   "hybrid-verification.solver-input.json")),
         "E0207");
+  }
+  // case-schema.md, `verification`: at most 1 MiB, and no expression whose tree is deeper than
+  // 1024, refused with E0208 before the physics reads the document.
+  auto with_mms = [](const std::string& text) {
+    const fs::path file = fresh_dir() / "solution.mms.json";
+    std::ofstream(file, std::ios::binary) << text;
+    return input(
+        [&](Json& d) {
+          d["verification"]["path"] = file.string();
+          d["verification"]["sha256"] = file_sha256(file);
+        },
+        "hybrid-verification.solver-input.json");
+  };
+  SECTION("E0208: the bounds on the manufactured solution") {
+    const std::string fixture = read(mms_path);
+    REQUIRE(fixture.size() < (std::size_t{1} << 20U));
+    const std::string padded = fixture + std::string((std::size_t{1} << 20U) - fixture.size(), ' ');
+    CHECK(run(with_mms(padded)).status == ExitStatus::finished);
+    require_error(run(with_mms(padded + " ")), "E0208");
+    auto repeat = [](const std::string& s, std::size_t n) {
+      std::string out;
+      for (std::size_t i = 0; i < n; ++i) out += s;
+      return out;
+    };
+    // An unused subexpression of the given depth.
+    auto deep = [&](const std::string& expr) {
+      Json doc = Json::parse(fixture);
+      doc["fields"]["subexpressions"].push_back(Json::array({"deep", expr}));
+      return doc.dump();
+    };
+    for (const std::size_t n : {std::size_t{1024}, std::size_t{1025}}) {
+      INFO("depth " << n);
+      const std::array<std::string, 3> shapes = {
+          "x" + repeat(" + x", n - 1),                    // left-deep chain
+          repeat("(", n - 1) + "x" + repeat(")", n - 1),  // parentheses
+          repeat("-", n - 1) + "x",                       // unary minus
+      };
+      for (const auto& expr : shapes) {
+        const Outcome bounded = run(with_mms(deep(expr)));
+        if (n == 1024) {
+          CHECK(bounded.status == ExitStatus::finished);
+        } else {
+          require_error(bounded, "E0208");
+        }
+      }
+    }
+    // Unfinished, the parser would recurse through all of it before reporting the syntax.
+    require_error(run(with_mms(deep(repeat("(", 100000) + "x"))), "E0208");
+    require_error(run(with_mms(deep(repeat("-", 100000)))), "E0208");
+    // A number with a leading dot and an exponent is one leaf, as the parser reads it.
+    CHECK(run(with_mms(deep(repeat("(", 1023) + ".1e-2" + repeat(")", 1023)))).status ==
+          ExitStatus::finished);
+    require_error(run(with_mms(deep(repeat("x*", 512) + ".1e-2" + repeat("*x", 512)))), "E0208");
+    require_error(run(with_mms("{not json")), "E0208");
+    // A file whose size is not known before reading (a pipe) is bounded by what is read.
+    const fs::path pipe = fresh_dir() / "solution.mms.json";
+    REQUIRE(mkfifo(pipe.c_str(), 0600) == 0);
+    const std::string over = padded + " ";
+    std::string over_sha;
+    picosha2::hash256_hex_string(over, over_sha);
+    std::thread writer([&] { std::ofstream(pipe, std::ios::binary) << over; });
+    const Outcome piped = run(input(
+        [&](Json& d) {
+          d["verification"]["path"] = pipe.string();
+          d["verification"]["sha256"] = over_sha;
+        },
+        "hybrid-verification.solver-input.json"));
+    writer.join();
+    require_error(piped, "E0208");
   }
   SECTION("E0705: manufactured boundaries without verification") {
     require_error(run(input([](Json& d) { d["verification"] = nullptr; },

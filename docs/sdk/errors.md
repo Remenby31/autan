@@ -614,9 +614,9 @@ Fix: Compare with a run without the option before relying on the result.
 
 ## E0427
 
-**Coupled turbulence needs the host multigrid** (error)
+**Opt-in step needs the host multigrid** (error)
 
-The coupled turbulence step runs in the host multigrid on one rank: `linear_solver` must be `multigrid`, on the CPU, on one rank. `autan plan` and the physics both refuse other runs.
+The opt-in steady steps (`time.coupled_turbulence`, `time.matrix_free`) run in the host multigrid on one rank: `linear_solver` must be `multigrid`, on the CPU, on one rank. `autan plan` and the physics both refuse other runs; the message names the key.
 
 Fix: Use `linear_solver='multigrid'` and run on one CPU rank, or drop the option.
 
@@ -627,6 +627,22 @@ Fix: Use `linear_solver='multigrid'` and run on one CPU rank, or drop the option
 A selection's `group` (a glob over the zone group names of the mesh's MeshInfo) matches no group. Groups come from the mesh's `<mesh>.zones.json`.
 
 Fix: Use one of the group names the message lists, or select zones by name.
+
+## E0429
+
+**Matrix-free step not applicable** (error)
+
+`time.matrix_free` is set on a case whose physics has no matrix-free step: only compressible laminar physics has one.
+
+Fix: Remove `matrix_free=True`, or use compressible laminar physics.
+
+## W0429
+
+**Matrix-free step outside its validated domain** (warning)
+
+`time.matrix_free` is on: the matrix-free laminar step is validated on the TMR laminar flat plate only (#429). `autan plan` reports it, and the run logs it at its first matrix-free step.
+
+Fix: Compare with a run without the option before relying on the result.
 
 ## E0501
 
