@@ -55,6 +55,9 @@ _CGNS_EAGER = 2**20
 # A Fluent file's fluid, solid and interior zone records, a 64 B map node each (id, offset), at
 # most 16 384 (E0133).
 _FLUENT_ZONES = 64 * 16_384
+# Its sections of interior faces, at most 16 384 (E0133), each a zone named by its id: 299 B
+# measured per zone (autan-mesh-info on a 16 385-cell column), charged 512 B.
+_FLUENT_INTERIOR_ZONES = 512 * 16_384
 # Gmsh's batch of element-block entities looked up in $Entities: 65 536 pairs of 8 B.
 _GMSH_BATCH = 65_536 * 8
 # The CGNS reader holds 8 B per entry its point lists give, in storage sized once, and reads them
@@ -478,7 +481,9 @@ def _reading(mesh: MeshInfo, interior: int, boundary: int) -> int:
         reading = s + 60 * ns - 24 * n - 8 * c + 52 * f + 16 * p + 4 * p + _GMSH_BATCH
     elif mesh.source.format == "fluent":
         # The end of assemble, with the reader's members alive; face_nodes_ may double.
-        reading = s + 53 * ns + 20 * c + 12 * p + 45 * f + 4 * p + _FLUENT_ZONES
+        reading = (
+            s + 53 * ns + 20 * c + 12 * p + 45 * f + 4 * p + _FLUENT_ZONES + _FLUENT_INTERIOR_ZONES
+        )
     elif mesh.source.format == "cgns":
         by_type = counts.cells_by_type.model_dump()
         elements = sum((64 + _CGNS_BLOCK[t]) * m for t, m in by_type.items() if t in _CGNS_BLOCK)

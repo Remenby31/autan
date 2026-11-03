@@ -373,7 +373,10 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
         autan.MeshInfo.from_document(fluent, autan.Location()), device_kind="cpu"
     )
     reading = {c.name: c for c in read.memory.components}["mesh reading"].bytes_host
-    assert reading == 4096 + 53 * 30 + 20 * 10 + 16 * 160 + 45 * 40 + 64 * 16_384 + closure
+    assert (
+        reading
+        == 4096 + 53 * 30 + 20 * 10 + 16 * 160 + 45 * 40 + 64 * 16_384 + 512 * 16_384 + closure
+    )
     # A Gmsh file of 4 096 B: S + 60N_s - 24N - 8C + 52F + 20P, and its batch of 65 536
     # element-block entities of 8 B.
     fluent["source"]["format"] = "gmsh"
