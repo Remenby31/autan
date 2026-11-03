@@ -87,9 +87,11 @@ def read_su2(path: Path) -> History:
     )
 
 
-def read_autan(path: Path, monitor: str = "forces") -> History:
-    """An Autan run's history.jsonl (results.md, History), forces from `monitor`."""
-    lines = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+def read_autan(path: Path, monitor: str = "forces", text: str | None = None) -> History:
+    """An Autan run's history.jsonl (results.md, History), forces from `monitor`; `text`, when
+    given, is the file's content already read."""
+    content = path.read_text() if text is None else text
+    lines = [json.loads(line) for line in content.splitlines() if line.strip()]
     if not lines:
         msg = f"{path}: no iteration recorded"
         raise VVError(msg, code="V0904")

@@ -56,15 +56,14 @@ class AutanLevel:
     history_sha256: str
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def _problem(spec: dict[str, Any]) -> str:
     """The case document without what may differ within one refinement family or continuation
-    chain (its mesh and iteration budget), as autan_vv.cases.naca0012 compares runs."""
-    document = {k: v for k, v in spec.items() if k not in ("mesh", "mesh_unit")}
-    document["time"] = {k: v for k, v in spec["time"].items() if k != "max_iterations"}
+    chain: its mesh file, iteration budget and checkpoint cadence (`mesh_unit` stays: it scales
+    the geometry)."""
+    document = {k: v for k, v in spec.items() if k != "mesh"}
+    document["time"] = {
+        k: v for k, v in spec["time"].items() if k not in ("max_iterations", "checkpoint")
+    }
     return json.dumps(document, sort_keys=True)
 
 
@@ -73,7 +72,9 @@ def read_autan(run: Path) -> AutanLevel:
     judged against the residuals of its original run. V0904 if a file the results contract
     requires is missing or the run is not a one-layer NACA 0012 slab."""
     try:
-        info = json.loads((run / "run.json").read_text())
+        run_bytes = (run / "run.json").read_bytes()
+        history_bytes = (run / "history.jsonl").read_bytes()
+        info = json.loads(run_bytes)
         mesh = json.loads((run / "mesh-info.json").read_text())
         spec = tomllib.loads((run / "case.toml").read_text())
     except FileNotFoundError as err:
@@ -84,7 +85,7 @@ def read_autan(run: Path) -> AutanLevel:
     if n * n != cells:
         msg = f"{run}: {cells} cells is not an NC x NC slab"
         raise VVError(msg, code="V0904")
-    series = history.read_autan(run / "history.jsonl")
+    series = history.read_autan(run / "history.jsonl", text=history_bytes.decode())
     start = info.get("start") or {}
     if start.get("residual_reference"):
         series = history.continued(series, start["residual_reference"], start.get("woken") or ())
@@ -111,8 +112,8 @@ def read_autan(run: Path) -> AutanLevel:
         case_sha256=info["case"]["sha256"],
         mesh_sha256=info["mesh"]["sha256"],
         problem=_problem(spec),
-        run_json_sha256=_sha256(run / "run.json"),
-        history_sha256=_sha256(run / "history.jsonl"),
+        run_json_sha256=hashlib.sha256(run_bytes).hexdigest(),
+        history_sha256=hashlib.sha256(history_bytes).hexdigest(),
     )
 
 
@@ -153,7 +154,8 @@ def compare(autan_runs: Sequence[Path], su2_report: Path, su2_root: Path) -> dic
     read = [(read_autan(r), r) for r in autan_runs]
     paths = {level.run: r for level, r in read}
     autan = sorted((level for level, _ in read), key=lambda lv: lv.n)
-    su2 = json.loads(su2_report.read_text())
+    su2_bytes = su2_report.read_bytes()
+    su2 = json.loads(su2_bytes)
     identity = {(a.problem, a.commit, a.precision, a.backend) for a in autan}
     if len(identity) != 1 or len({a.n for a in autan}) != len(autan):
         msg = "the Autan runs are not one family (case document, commit, precision, backend, level)"
@@ -206,7 +208,7 @@ def compare(autan_runs: Sequence[Path], su2_report: Path, su2_root: Path) -> dic
             "scheme": su2["scheme"],
             "su2": su2["su2"],
             "image_id": su2["image_id"],
-            "report_sha256": _sha256(su2_report),
+            "report_sha256": hashlib.sha256(su2_bytes).hexdigest(),
         },
         "levels": rows,
         "continuum": continuum,

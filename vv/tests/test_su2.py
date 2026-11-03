@@ -569,9 +569,27 @@ def test_compare_autan_with_an_su2_study(tmp_path: Path) -> None:
     plain.monitor(
         autan.forces("airfoil", ref_area=1.0 * m * m, moment_center=(0.25 * m, 0 * m, 0 * m))
     )
-    # The same name with another case document (a looser criterion) is not the same problem.
+    # The same name with another case document (a looser criterion, coordinates read in
+    # millimetres) is not the same problem.
     loose = autan_run(cases.case("m080-a125", mesh(0), residual_orders=9.0), 0)
-    for odd in (autan_run(plain, 0), autan_run(cases.case("m050-a125", mesh(0)), 0), loose):
+    millimetres = autan.Case("naca0012-m080-a125", mesh=mesh(0), mesh_unit="mm")
+    millimetres.physics = autan.Compressible(turbulence=autan.Inviscid(), precision="fp64")
+    millimetres.freestream(
+        mach=0.8, aoa=1.25 * autan.units.deg, pressure=101325.0 * autan.units.ureg.Pa,
+        ref_length=1.0 * m,
+    )  # fmt: skip
+    millimetres.time = autan.Steady(max_iterations=200000, residual_orders=10.0)
+    millimetres.boundary("airfoil").slip()
+    vortex = autan.PointVortex(surfaces="airfoil", center=(0.25 * m, 0.0 * m, 0.0 * m))
+    millimetres.boundary("farfield").farfield(point_vortex=vortex)
+    millimetres.boundary("back").symmetry()
+    millimetres.boundary("front").symmetry()
+    millimetres.monitor(
+        autan.forces("airfoil", ref_area=1.0 * m * m, moment_center=(0.25 * m, 0 * m, 0 * m))
+    )
+    scaled = autan_run(millimetres, 0)
+    odd_runs = (autan_run(plain, 0), autan_run(cases.case("m050-a125", mesh(0)), 0), loose, scaled)
+    for odd in odd_runs:
         with pytest.raises(VVError) as err:
             compare.compare([*runs[1:], odd], tmp_path / "su2.json", tmp_path / "su2")
         assert err.value.code == "V0905"
