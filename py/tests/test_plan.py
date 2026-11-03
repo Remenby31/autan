@@ -278,6 +278,10 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     cuda = memory(device_kind="cuda")
     assert not names(cuda) & {"jacobian", "multigrid"}
     assert cuda.bytes_device > 0
+    # The device frees nothing before the iterations: its components add up, all of them.
+    on_device = [c.bytes_device for c in cuda.components if c.bytes_device]
+    assert len(on_device) > 1
+    assert cuda.bytes_device == sum(on_device)
     assert cuda.bytes_per_gpu == cuda.bytes_host + cuda.bytes_device
     gs = memory(
         CRM_HL + "case.time = autan.Steady(linear_solver='gauss-seidel')\n", device_kind="cpu"
