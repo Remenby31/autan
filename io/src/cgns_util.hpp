@@ -75,6 +75,8 @@ class CgioTree {
   }
   [[nodiscard]] double root() const { return root_; }
 
+  /// Closes the HDF5 object behind a node id `children` gave; the id is not used after.
+  void release(double node) const { (void)cgio_release_id(cgio_, node); }
   [[nodiscard]] std::int64_t number_of_children(double node) const {
     int n = 0;
     check(cgio_number_children(cgio_, node, &n), "count children");
@@ -236,19 +238,32 @@ inline TreeCount count_nodes(const CgioTree& tree) {
     int depth;
     std::string label;
   };
+  // Every id the walk opens is released once its children are listed (a leaf's at once): what
+  // the walk holds is the ids still to visit, not every node seen.
   std::vector<Pending> pending{{tree.root(), 0, ""}};
+  const auto done = [&](double node) {
+    if (node != tree.root()) tree.release(node);
+  };
   while (!pending.empty()) {
     const auto [node, depth, parent] = pending.back();
     pending.pop_back();
     const std::int64_t n = tree.number_of_children(node);
-    if (n == 0) continue;
+    if (n == 0) {
+      done(node);
+      continue;
+    }
+    const auto stop = [&] {
+      done(node);
+      for (const auto& p : pending) done(p.node);
+      return out;
+    };
     if (depth == max_cgns_depth) {
       out.too_deep = true;
-      return out;
+      return stop();
     }
     if (out.nodes + n > max_cgns_nodes) {
       out.nodes = max_cgns_nodes + 1;
-      return out;
+      return stop();
     }
     for (const double child : tree.children(node)) {
       std::string label = tree.label(child);
@@ -257,6 +272,7 @@ inline TreeCount count_nodes(const CgioTree& tree) {
       if (read_at_open(label, parent)) out.eager_bytes += tree.logical_bytes(child);
       pending.push_back({child, depth + 1, std::move(label)});
     }
+    done(node);
   }
   return out;
 }
