@@ -102,7 +102,7 @@ class GmshReader {
         seen_nodes = true;
       } else if (section == "Elements") {
         if (!seen_nodes) c_.fail("$Elements before $Nodes");
-        if (entities_at_ != std::string::npos) entities(entities_used());
+        if (entities_at_ != std::string::npos) block_entities();
         elements();
         seen_elements = true;
       } else if (section == "Periodic") {
@@ -257,9 +257,12 @@ class GmshReader {
     return values * (binary_ ? 4 : 2);
   }
 
-  // The (dim, tag) of the entities the element blocks name, sorted: one per block, which the
-  // elements bound. The blocks' elements are read past.
-  std::vector<std::pair<int, int>> entities_used() {
+  // The physical groups of the entities of dimension 2 or 3 that a block of elements names
+  // (entities): the blocks' (dim, tag) are gathered max_block_entities distinct at a time and
+  // looked up in $Entities, so what is held beside the groups kept is fixed. The blocks'
+  // elements are read past.
+  void block_entities() {
+    constexpr std::size_t max_block_entities = std::size_t{1} << 16;
     const Cursor at = c_;
     if (binary_) (void)c_.line();
     const std::uint64_t n_blocks = next_size();
@@ -268,6 +271,15 @@ class GmshReader {
     (void)next_size();
     c_.check_fits(n_blocks, min_bytes(4));
     std::vector<std::pair<int, int>> used;
+    const auto distinct = [&] {
+      std::ranges::sort(used);
+      used.erase(std::ranges::unique(used).begin(), used.end());
+    };
+    const auto flush = [&] {
+      distinct();
+      entities(used);
+      used.clear();
+    };
     for (std::uint64_t b = 0; b < n_blocks; ++b) {
       const int dim = next_int();
       const int entity = next_int();
@@ -277,15 +289,20 @@ class GmshReader {
       c_.check_fits(n, min_bytes(2));
       if (!element_type(type, et))
         c_.unsupported("element type " + std::to_string(type) + " (linear elements only)");
-      used.emplace_back(dim, entity);
+      // Points and curves label nothing, nor does a block without elements.
+      if (dim >= 2 && n > 0) {
+        used.emplace_back(dim, entity);
+        if (used.size() == max_block_entities) {
+          distinct();
+          if (used.size() > max_block_entities / 2) flush();
+        }
+      }
       for (std::uint64_t v = 0; v < n * (1 + static_cast<std::uint64_t>(et.nodes)); ++v) {
         (void)next_size();
       }
     }
+    flush();
     c_ = at;
-    std::ranges::sort(used);
-    used.erase(std::ranges::unique(used).begin(), used.end());
-    return used;
   }
 
   // $Entities, from where it starts: the physical group of each entity of dimension 2 or 3 that

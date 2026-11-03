@@ -327,9 +327,9 @@ class Reader {
                   .skipped = {},
                   .ignored = Element{.type = CGNS_ENUMV(BAR_2), .connectivity = {}},
                   .family = family});
-      if (type != CGNS_ENUMV(MIXED)) section.elements.resize(count);
-      const auto& bits = referenced_elements_[static_cast<std::size_t>(s - 1)];
-      current_referenced_ = bits.size() == count ? &bits : nullptr;
+      // A section of faces no family names keeps those a point set names, as a MIXED one.
+      pruning_ = family.empty() && (type == CGNS_ENUMV(MIXED) || is_face_type(type));
+      if (type != CGNS_ENUMV(MIXED) && !pruning_) section.elements.resize(count);
       // The section in chunks of at most chunk_elements elements and chunk_entries connectivity
       // entries, so that reading costs a constant beside what is kept; a larger element is read
       // into its own storage.
@@ -358,7 +358,7 @@ class Reader {
           if (b[hi] - b[lo] > chunk_entries) {
             std::vector<cgsize_t> own(static_cast<std::size_t>(b[hi] - b[lo]));
             tree.read_integers(connectivity, b[lo], own);
-            read_element(section, type, first + lo, own, &own, family, name);
+            read_element(section, type, first + lo, own, &own, name);
             lo = hi;
             continue;
           }
@@ -369,7 +369,7 @@ class Reader {
                 section, type, first + e,
                 std::span<const cgsize_t>(data).subspan(static_cast<std::size_t>(b[e] - b[lo]),
                                                         static_cast<std::size_t>(b[e + 1] - b[e])),
-                nullptr, family, name);
+                nullptr, name);
           }
           lo = hi;
         }
@@ -393,11 +393,12 @@ class Reader {
               std::string("ElementStartOffset of section '") + section + "' is inconsistent");
   }
 
-  // Element `e` of `section`, its entries `entries`: kept, or a point or an edge of a MIXED
-  // section, skipped. With `owner`, the vector `entries` views, whose storage the element takes.
+  // Element `e` of `section`, its entries `entries`: kept, or skipped when it is a point or an
+  // edge of a MIXED section or a face that labels nothing. With `owner`, the vector `entries`
+  // views, whose storage the element takes.
   void read_element(Section& section, CGNS_ENUMT(ElementType_t) type, std::size_t e,
                     std::span<const cgsize_t> entries, std::vector<cgsize_t>* owner,
-                    const std::string& family, const char* name) {
+                    const char* name) {
     CGNS_ENUMT(ElementType_t) element_type = type;
     auto first = entries.begin();
     const auto last = entries.end();
@@ -411,17 +412,17 @@ class Reader {
         malformed(path_, std::string("MIXED element of section '") + name + "' is invalid");
       }
       element_type = static_cast<CGNS_ENUMT(ElementType_t)>(code);
-      // Points and edges of a MIXED section, and its faces no family and no point set names (the
-      // faces come from the cells): their index alone, as in a section of them.
-      if (is_ignored_type(element_type) ||
-          (is_face_type(element_type) && family.empty() && current_referenced_ != nullptr &&
-           !(*current_referenced_)[e])) {
-        section.skip(e);
-        return;
-      }
-      section.elements.emplace_back();
     }
-    Element& element = type == CGNS_ENUMV(MIXED) ? section.elements.back() : section.elements[e];
+    // Points and edges of a MIXED section, and faces no family and no point set names (the faces
+    // come from the cells): their index alone, as in a section of them.
+    if (is_ignored_type(element_type) || (pruning_ && is_face_type(element_type) &&
+                                          !referenced(section.start + static_cast<cgsize_t>(e)))) {
+      section.skip(e);
+      return;
+    }
+    const bool sparse = type == CGNS_ENUMV(MIXED) || pruning_;
+    if (sparse) section.elements.emplace_back();
+    Element& element = sparse ? section.elements.back() : section.elements[e];
     element.type = element_type;
     if (owner != nullptr) {
       owner->erase(owner->begin(), owner->begin() + (first - entries.begin()));
@@ -469,7 +470,7 @@ class Reader {
     int n = 0;
     ok(cg_nsections(fn_, 1, 1, &n), "count sections");
     std::vector<std::pair<cgsize_t, cgsize_t>> ranges;  // [start, end] of section s - 1
-    std::vector<bool> mixed;
+    std::vector<bool> prunable;  // a section of faces or a MIXED one: pruned element by element
     for (int s = 1; s <= n; ++s) {
       char name[33];
       CGNS_ENUMT(ElementType_t) type{};
@@ -478,33 +479,35 @@ class Reader {
       ok(cg_section_read(fn_, 1, 1, s, name, &type, &start, &end, &boundary, &parent_flag),
          "read section");
       ranges.emplace_back(start, end);
-      mixed.push_back(type == CGNS_ENUMV(MIXED));
+      prunable.push_back(type == CGNS_ENUMV(MIXED) || is_face_type(type));
     }
     referenced_sections_.assign(ranges.size(), false);
-    // A MIXED section's elements one bit each: which of its faces a point set names.
-    referenced_elements_.assign(ranges.size(), {});
-    for (std::size_t s = 0; s < ranges.size(); ++s) {
-      if (mixed[s] && ranges[s].second >= ranges[s].first) {
-        referenced_elements_[s].assign(at(ranges[s].second - ranges[s].first + 1), false);
-      }
-    }
+    referenced_ranges_.clear();
+    referenced_ids_.clear();
+    // The listed ids of prunable sections, sorted and distinct, each time they double: at most
+    // twice the distinct ids the lists name, plus a chunk.
+    std::size_t distinct = 0;
+    const auto compact = [&] {
+      std::ranges::sort(referenced_ids_);
+      referenced_ids_.erase(std::ranges::unique(referenced_ids_).begin(), referenced_ids_.end());
+      distinct = referenced_ids_.size();
+    };
     std::vector<std::size_t> by_start(ranges.size());
     std::iota(by_start.begin(), by_start.end(), std::size_t{0});
     std::ranges::sort(by_start, {}, [&](std::size_t s) { return ranges[s].first; });
+    // The sections overlapping [lo, hi] marked; whether one of them is prunable.
     const auto mark = [&](cgsize_t lo, cgsize_t hi) {
-      // The sections overlapping [lo, hi]: from the last one starting at or before lo.
+      bool any = false;
+      // From the last section starting at or before lo.
       auto it = std::ranges::upper_bound(by_start, lo, {},
                                          [&](std::size_t s) { return ranges[s].first; });
       if (it != by_start.begin()) --it;
       for (; it != by_start.end() && ranges[*it].first <= hi; ++it) {
         if (ranges[*it].second < lo) continue;
         referenced_sections_[*it] = true;
-        auto& bits = referenced_elements_[*it];
-        if (bits.empty()) continue;
-        const cgsize_t from = std::max(lo, ranges[*it].first),
-                       to = std::min(hi, ranges[*it].second);
-        for (cgsize_t id = from; id <= to; ++id) bits[at(id - ranges[*it].first)] = true;
+        any = any || prunable[*it];
       }
+      return any;
     };
     const CgioTree tree(fn_);
     const auto base = tree.child(tree.root(), "CGNSBase_t");
@@ -517,13 +520,17 @@ class Reader {
         if (label == "IndexRange_t") {
           std::array<cgsize_t, 2> range{};
           tree.read_integers(child, 0, range);
-          mark(std::min(range[0], range[1]), std::max(range[0], range[1]));
+          const cgsize_t lo = std::min(range[0], range[1]), hi = std::max(range[0], range[1]);
+          if (mark(lo, hi)) referenced_ranges_.emplace_back(lo, hi);
         } else if (label == "IndexArray_t") {
           const std::int64_t count = tree.values(child);
           for (std::int64_t first = 0; first < count; first += chunk_entries) {
             chunk.resize(static_cast<std::size_t>(std::min(chunk_entries, count - first)));
             tree.read_integers(child, first, chunk);
-            for (const cgsize_t id : chunk) mark(id, id);
+            for (const cgsize_t id : chunk) {
+              if (mark(id, id)) referenced_ids_.push_back(id);
+            }
+            if (referenced_ids_.size() >= 2 * distinct + chunk_entries) compact();
           }
         } else {
           self(self, child);
@@ -536,6 +543,28 @@ class Reader {
         walk(walk, child);
       }
     }
+    compact();
+    // The ranges merged, disjoint and ascending: at most one per IndexRange_t node.
+    std::ranges::sort(referenced_ranges_);
+    std::size_t kept = 0;
+    for (const auto& r : referenced_ranges_) {
+      if (kept > 0 && r.first <= referenced_ranges_[kept - 1].second) {
+        referenced_ranges_[kept - 1].second =
+            std::max(referenced_ranges_[kept - 1].second, r.second);
+      } else {
+        referenced_ranges_[kept++] = r;
+      }
+    }
+    referenced_ranges_.resize(kept);
+  }
+
+  // Whether a point set names element `id` (mark_referenced_sections), for an id of a prunable
+  // section.
+  [[nodiscard]] bool referenced(cgsize_t id) const {
+    if (std::ranges::binary_search(referenced_ids_, id)) return true;
+    const auto it =
+        std::ranges::upper_bound(referenced_ranges_, id, {}, &std::pair<cgsize_t, cgsize_t>::first);
+    return it != referenced_ranges_.begin() && std::prev(it)->second >= id;
   }
 
   // The dimension of the elements the point set of BC or subregion `owner` designates, as
@@ -1184,8 +1213,9 @@ class Reader {
   };
   std::vector<Section> sections_;
   std::vector<bool> referenced_sections_;  // by section index - 1, mark_referenced_sections
-  std::vector<std::vector<bool>> referenced_elements_;     // a MIXED section's, by element index
-  const std::vector<bool>* current_referenced_ = nullptr;  // the section read_element reads
+  std::vector<std::pair<cgsize_t, cgsize_t>> referenced_ranges_;  // [lo, hi], disjoint, ascending
+  std::vector<cgsize_t> referenced_ids_;                          // listed, sorted, distinct
+  bool pruning_ = false;  // the section read_element reads drops the faces no point set names
   bool has_ngon_ = false, has_nface_ = false, has_standard_cells_ = false;
   std::vector<FaceZone> face_zones_;
   std::map<std::string, index_t> face_zone_index_;

@@ -29,9 +29,11 @@ A temporary that lives for one item of the input (one element, one face, one rec
 | `x_, y_, z_` and their copies into the mesh | nodes `N_s` | M |
 | `families_` | `Family_t` nodes | K |
 | `sections_`, one `Section` each, with its family once | `Elements_t` nodes | K |
-| `Section::elements`, one `Element` and its connectivity per kept element | cells and labelled faces | M |
+| `Section::elements`, one `Element` and its connectivity per kept element: cells, and faces a family or a point set names, in any section | cells and labelled faces | M |
 | `Section::skipped` runs | at most one per kept element of the section, plus one | M |
-| `referenced_sections_`, `referenced_elements_` (one bit per element of a `MIXED` section) | sections; elements of `MIXED` sections, 1/128 of their stored connectivity at least | K, D |
+| `referenced_sections_` | sections | K |
+| `referenced_ranges_`, one interval per `IndexRange_t` naming a face or `MIXED` section | point-set nodes | K |
+| `referenced_ids_`, the listed ids of face and `MIXED` sections, sorted and distinct, compacted as they double | 16 bytes per distinct listed id, plus a chunk: labelled faces, but for the points and edges a list names in a `MIXED` section, at most twice the lists' logical bytes | M, D |
 | section chunk buffers `bounds`, `data`; an element larger than 2^17 entries read into its own storage | 1 MiB 32 KiB; that element is kept | C, M |
 | BC and subregion point sets: ranges judged id by id, lists in chunks, read whole only for faces or cells | labelled faces and cells | C, M |
 | `face_label_`, `cell_label_` | labelled faces and cells | M |
@@ -58,8 +60,8 @@ A temporary that lives for one item of the input (one element, one face, one rec
 | `data_`, the file | its size | S |
 | section names | 4096 bytes, checked before they are copied | T |
 | `$PhysicalNames`, read again for the zones the elements make | names the zones take | M, T |
-| `entity_physical_`, 12 bytes per entity an element block names and a group holds | element blocks | M |
-| `entities_used`, one pair per element block | element blocks | M |
+| `entity_physical_`, 12 bytes per entity of a group that a block of surface or volume elements names, once per 65 536 distinct blocks | blocks of kept elements | M |
+| `block_entities`' pairs, of blocks of surface or volume elements | at most 65 536 | F |
 | `tags_`, `order_`, `xyz_` and the mesh's copy | nodes `N_s` | M |
 | `periodic_links_`, one per distinct group pair | `$Periodic` records, each longer than its entry | S |
 | a periodic link's node pairs | that link's records | S |
@@ -96,7 +98,7 @@ A temporary that lives for one item of the input (one element, one face, one rec
 | the file's text, kept for the run's archive | its size | S |
 | the scan before the parse | none | F |
 | the parser's stacks and token buffer | nesting ≤ 3 or 5, a string ≤ 6 × 4096 bytes, a number ≤ 64 characters | R, T |
-| `RowMap`, one entry per `centroids` or `values` member, and its numbers | at most 2 × 16 384 members; 8 bytes per number of the rows | R, M |
+| `RowMap`, one entry per `centroids` or `values` member holding an array, and its numbers | at most 2 × 16 384 such members, counted by the scan; 8 bytes per number of the rows | R, M |
 | the DOM of the members that are not rows | the text | S |
 | the paired face states and initial fields | faces of the zone, cells | M |
 | the manufactured solution's text and DOM | 1 MiB | T |

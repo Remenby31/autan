@@ -606,7 +606,8 @@ struct TextScan {
   std::size_t number = 0;
   std::size_t depth = 0;
   std::size_t string = 0;  // the longest string's raw bytes, escapes included
-  std::size_t rows = 0;    // the strings "centroids" and "values": rows members at most
+  std::size_t rows =
+      0;  // members "centroids" and "values" holding an array: what parse_rows streams
 };
 
 TextScan scan_text(std::string_view text) {
@@ -624,7 +625,17 @@ TextScan scan_text(std::string_view text) {
         in_string = false;
         const std::string_view s = text.substr(start, i - start);
         out.string = std::max(out.string, s.size());
-        if (s == "centroids" || s == "values") ++out.rows;
+        if (s == "centroids" || s == "values") {
+          // A member name followed by an array, past the white space JSON allows.
+          const auto next = [&](std::size_t from) {
+            return text.find_first_not_of(" \t\n\r", from);
+          };
+          const std::size_t colon = next(i + 1);
+          if (colon != std::string_view::npos && text[colon] == ':') {
+            const std::size_t value = next(colon + 1);
+            if (value != std::string_view::npos && text[value] == '[') ++out.rows;
+          }
+        }
       }
       continue;
     }

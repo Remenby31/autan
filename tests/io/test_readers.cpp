@@ -495,9 +495,9 @@ TEST_CASE("A zone name longer than 4096 bytes is E0122 in the text readers", "[i
 
 #if defined(__linux__)
 TEST_CASE("Records a reader does not use cost their text, not a copy each", "[io]") {
-  // mesh.md, Readers: Gmsh physical names no zone takes and polyMesh dictionary entries the
-  // reader does not use are read past, so 2^19 of them cost the file's text, held once, and the
-  // mesh reads the same.
+  // mesh.md, Readers: Gmsh physical names no zone takes, element blocks that label nothing and
+  // polyMesh dictionary entries the reader does not use are read past, so 2^19 of them cost the
+  // file's text, held once, and the mesh reads the same.
   constexpr int n = 1 << 19;
   SECTION("Gmsh physical names of points and of volumes no element uses") {
     std::string names;
@@ -553,6 +553,28 @@ TEST_CASE("Records a reader does not use cost their text, not a copy each", "[io
     CHECK(after - before <= added + (std::int64_t{1} << 20));
     CHECK(std::ranges::any_of(mesh->cell_zones(),
                               [](const auto& z) { return z.name == "solid-block"; }));
+  }
+  SECTION("Gmsh curve blocks and surface blocks without elements") {
+    std::string blocks;
+    for (int i = 0; i < n / 2; ++i) {
+      blocks += "1 1 1 1\n" + std::to_string(i + 4) + " 10 20\n2 1 2 0\n";
+    }
+    const fs::path plain = write_temp("blocks-plain.msh", gmsh_tet);
+    const std::string text =
+        replace(replace(gmsh_tet, "$Elements\n3 3 1 3\n",
+                        "$Elements\n" + std::to_string(3 + n) + " " + std::to_string(3 + n / 2) +
+                            " 1 " + std::to_string(3 + n / 2) + "\n"),
+                "$EndElements", blocks + "$EndElements");
+    const fs::path padded = write_temp("blocks-padded.msh", text);
+    const auto added = static_cast<std::int64_t>(text.size() - gmsh_tet.size());
+    (void)autan::io::read_mesh(plain);
+    const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+    std::optional<autan::Mesh> mesh;
+    const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(padded); });
+    CAPTURE(before, after, added);
+    CHECK(after - before <= added + (std::int64_t{1} << 20));
+    CHECK(mesh->n_cells() == 1);
+    CHECK(std::ranges::any_of(mesh->face_zones(), [](const auto& z) { return z.name == "base"; }));
   }
   SECTION("Gmsh volume entities in a physical group without elements") {
     std::string entities;

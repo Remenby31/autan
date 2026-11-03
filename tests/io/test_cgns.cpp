@@ -1018,6 +1018,67 @@ std::int64_t deflate(const fs::path& file, const char* path, Random random, hsiz
   return stored;
 }
 
+// A one-cell file with a MIXED section of `edges` BAR_2 [3, 3]: its connectivity a chunked
+// dataset never written, which reads as its fill value 3, its offsets deflated. The file holds
+// little more than the offsets, however many edges.
+fs::path stored_edges(const std::string& name, hsize_t edges) {
+  const fs::path file = cgns_file(name, [](int fn, int base) {
+    unstructured_tet(fn, base, "Zone");
+    const cgsize_t connectivity[] = {CGNS_ENUMV(BAR_2), 3, 3}, offsets[] = {0, 3};
+    int section = 0;
+    REQUIRE(cg_poly_section_write(fn, base, 1, "Edges", CGNS_ENUMV(MIXED), 2, 2, 0, connectivity,
+                                  offsets, &section) == CG_OK);
+  });
+  const hid_t h5 = H5Fopen(file.string().c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
+  REQUIRE(h5 >= 0);
+  const auto recreate = [&](const char* path, hsize_t n, bool filled) {
+    const hid_t old = H5Dopen2(h5, path, H5P_DEFAULT);
+    REQUIRE(old >= 0);
+    const hid_t type = H5Dget_type(old);
+    H5Dclose(old);
+    REQUIRE(H5Ldelete(h5, path, H5P_DEFAULT) >= 0);
+    const hid_t properties = H5Pcreate(H5P_DATASET_CREATE);
+    const hsize_t chunk = std::min<hsize_t>(n, hsize_t{1} << 17);
+    H5Pset_chunk(properties, 1, &chunk);
+    if (filled) {
+      const std::int64_t fill = 3;
+      H5Pset_fill_value(properties, H5T_NATIVE_INT64, &fill);
+    } else {
+      H5Pset_shuffle(properties);
+      H5Pset_deflate(properties, 1);
+    }
+    const hid_t space = H5Screate_simple(1, &n, nullptr);
+    const hid_t dataset = H5Dcreate2(h5, path, type, space, H5P_DEFAULT, properties, H5P_DEFAULT);
+    REQUIRE(dataset >= 0);
+    if (!filled) {
+      std::vector<std::int64_t> values;
+      for (hsize_t first = 0; first < n; first += hsize_t{1} << 20) {
+        const hsize_t count = std::min<hsize_t>(n - first, hsize_t{1} << 20);
+        values.resize(count);
+        for (hsize_t i = 0; i < count; ++i) values[i] = static_cast<std::int64_t>(3 * (first + i));
+        const hid_t memory = H5Screate_simple(1, &count, nullptr);
+        REQUIRE(H5Sselect_hyperslab(space, H5S_SELECT_SET, &first, nullptr, &count, nullptr) >= 0);
+        REQUIRE(H5Dwrite(dataset, H5T_NATIVE_INT64, memory, space, H5P_DEFAULT, values.data()) >=
+                0);
+        H5Sclose(memory);
+      }
+    }
+    H5Dclose(dataset);
+    H5Sclose(space);
+    H5Pclose(properties);
+    H5Tclose(type);
+  };
+  recreate("/Base/Zone/Edges/ElementConnectivity/ data", 3 * edges, true);
+  recreate("/Base/Zone/Edges/ElementStartOffset/ data", edges + 1, false);
+  const hid_t range = H5Dopen2(h5, "/Base/Zone/Edges/ElementRange/ data", H5P_DEFAULT);
+  REQUIRE(range >= 0);
+  const std::int64_t bounds[] = {2, static_cast<std::int64_t>(edges) + 1};
+  REQUIRE(H5Dwrite(range, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT, bounds) >= 0);
+  H5Dclose(range);
+  H5Fclose(h5);
+  return file;
+}
+
 }  // namespace
 
 TEST_CASE(
@@ -1118,6 +1179,15 @@ TEST_CASE("Reading a MIXED section costs the elements it keeps, not its points a
   const std::int64_t after = peak_of([&] { CHECK(autan::io::read_mesh(padded).n_cells() == 1); });
   CAPTURE(before, after);
   CHECK(after - before <= buffers + caches);
+  // Nor anything per edge beyond them: 2^26 edges cost what 2^25 do, where a bit each would be
+  // 4 MiB more.
+  const fs::path half = stored_edges("edges-half.cgns", hsize_t{1} << 25);
+  const fs::path full = stored_edges("edges-full.cgns", hsize_t{1} << 26);
+  (void)autan::io::read_mesh(half);
+  const std::int64_t at_half = peak_of([&] { CHECK(autan::io::read_mesh(half).n_cells() == 1); });
+  const std::int64_t at_full = peak_of([&] { CHECK(autan::io::read_mesh(full).n_cells() == 1); });
+  CAPTURE(at_half, at_full);
+  CHECK(at_full - at_half <= std::int64_t{1} << 20);
 }
 TEST_CASE("Reading a CGNS file costs at most 1 MiB and 16 KiB a node, up to 16 384 nodes",
           "[cgns]") {
@@ -1336,22 +1406,30 @@ TEST_CASE("A CGNS file reads at most 1 MiB of other data when it opens", "[cgns]
   CHECK(autan::io::read_mesh(at).n_cells() == 1);
   require_error(autan::ErrorCode::io_unsupported, with_times("times-over.cgns", steps + 1));
 }
-TEST_CASE("Faces of a MIXED section nothing names are skipped, one named is kept", "[cgns]") {
-  // mesh.md, Readers: 2^20 triangles in a MIXED section, the first named by a BC: it labels its
-  // face, the others cost a bit each, not 92 bytes.
+TEST_CASE("Faces of a section nothing names are skipped, one named is kept", "[cgns]") {
+  // mesh.md, Readers: 2^20 triangles in a MIXED or a TRI_3 section, the first named by a BC: it
+  // labels its face, the others cost nothing kept, not 88 to 92 bytes each.
   fs::create_directories(temp_dir());
   constexpr cgsize_t triangles = cgsize_t{1} << 20;
+  const bool mixed_section = GENERATE(true, false);
+  CAPTURE(mixed_section);
   const auto mixed = [&](const std::string& name, cgsize_t count) {
     return cgns_file(name, [&](int fn, int base) {
       unstructured_tet(fn, base, "Zone");
       std::vector<cgsize_t> data, offsets{0};
       for (cgsize_t t = 0; t < count; ++t) {
-        data.insert(data.end(), {CGNS_ENUMV(TRI_3), 1, 3, 2});
-        offsets.push_back(offsets.back() + 4);
+        if (mixed_section) data.push_back(CGNS_ENUMV(TRI_3));
+        data.insert(data.end(), {1, 3, 2});
+        offsets.push_back(static_cast<cgsize_t>(data.size()));
       }
       int section = 0, bc = 0;
-      REQUIRE(cg_poly_section_write(fn, base, 1, "Faces", CGNS_ENUMV(MIXED), 2, count + 1, 0,
-                                    data.data(), offsets.data(), &section) == CG_OK);
+      if (mixed_section) {
+        REQUIRE(cg_poly_section_write(fn, base, 1, "Faces", CGNS_ENUMV(MIXED), 2, count + 1, 0,
+                                      data.data(), offsets.data(), &section) == CG_OK);
+      } else {
+        REQUIRE(cg_section_write(fn, base, 1, "Faces", CGNS_ENUMV(TRI_3), 2, count + 1, 0,
+                                 data.data(), &section) == CG_OK);
+      }
       const cgsize_t first = 2;
       REQUIRE(cg_boco_write(fn, base, 1, "wall", CGNS_ENUMV(BCWall), CGNS_ENUMV(PointList), 1,
                             &first, &bc) == CG_OK);

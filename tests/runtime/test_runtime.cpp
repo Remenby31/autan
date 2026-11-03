@@ -1825,6 +1825,19 @@ TEST_CASE("Face states that do not fit the case exit 2 before any directory", "[
                     }
                   })),
                   "E0420");
+    // 16 384 zones, one named "values", and the oracle named "values": past the scan, which
+    // counts rows members, not strings, to the mesh hash (E0422).
+    require_error(run(ringleb_input([](Json& s) {
+                    s["oracle"] = "values";
+                    s["mesh_sha256"] = std::string(64, '0');
+                    for (auto z = s["zones"].size(); z < 16384; ++z) {
+                      const std::string name = z == 16383 ? "values" : "z" + std::to_string(z);
+                      s["zones"][name] = {
+                          {"faces", 0}, {"centroids", Json::array()}, {"values", Json::array()}};
+                    }
+                    REQUIRE(s["zones"].size() == 16384);
+                  })),
+                  "E0422");
 #endif
     // Rows, read as they stream: each an array of 3 (centroids) or 5 (values) finite numbers,
     // one per face of the zone.
