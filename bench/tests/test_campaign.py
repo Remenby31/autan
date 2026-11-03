@@ -300,10 +300,14 @@ def test_only_a_hold_that_says_it_is_untimed_leaves_campaigns_running(
     assert wanted()
 
 
+WRAPPER = Path(__file__).parents[1] / "lock" / "autan-gpu-lock"
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="/proc/locks and cgroups are Linux's")
 def test_the_watcher_freezes_for_a_measurement_not_for_a_build(tmp_path, monkeypatch, holders):
     # Through the CLI and its detached watcher; docker faked at the boundary (it records its
-    # calls and reports the container running as this test's own process, a real cgroup).
+    # calls and reports the container running as this test's own process, a real cgroup). The
+    # build is the real wrapper with --untimed.
     calls = tmp_path / "calls"
     fake = tmp_path / "docker"
     fake.write_text(f'#!/bin/sh\necho "$*" >> {calls}\n'
@@ -311,14 +315,15 @@ def test_the_watcher_freezes_for_a_measurement_not_for_a_build(tmp_path, monkeyp
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
     monkeypatch.setenv("HOME", str(tmp_path))
-    lock, untimed = tmp_path / "gpu.lock", tmp_path / "untimed.lock"
-    lock.touch()
-    untimed.touch()
+    lock = tmp_path / "gpu.lock"
+    for name in ("gpu.lock", "untimed.lock", "holders.log"):
+        (tmp_path / name).touch()
     monkeypatch.setenv("AUTAN_GPU_LOCK", str(lock))
     monkeypatch.setattr(campaign, "LOCK", lock)
-    monkeypatch.setattr(campaign, "UNTIMED", untimed)
+    monkeypatch.setattr(campaign, "UNTIMED", tmp_path / "untimed.lock")
     monkeypatch.setattr(campaign, "STATE", tmp_path / "autan-campaigns")
     monkeypatch.setattr(campaign, "STATES", tmp_path / "campaigns")
+    state = tmp_path / "campaigns" / "c3.state"
 
     def calls_of() -> list[str]:
         if not calls.exists():
@@ -327,16 +332,59 @@ def test_the_watcher_freezes_for_a_measurement_not_for_a_build(tmp_path, monkeyp
                 if c.endswith("autan-campaign-c3")]  # fmt: skip
 
     assert campaign.main(["start", "c3", "--free", "0G", "--dir", str(tmp_path), "--", "x"]) == 0
-    assert until(lambda: "start" in calls_of())
-    build = holders((lock, "ex"), (untimed, "sh"))
-    time.sleep(2)  # twenty polls of the watcher: a build never pauses the campaign
-    assert "pause" not in calls_of()
-    build.kill()
-    build.wait()
-    measurement = holders((lock, "ex"))
-    assert until(lambda: "pause" in calls_of())
-    assert (tmp_path / "campaigns" / "c3.state").read_text().strip() == "frozen"
-    measurement.kill()
-    measurement.wait()
-    assert until(lambda: "unpause" in calls_of())
-    campaign.main(["stop", "c3"])
+    try:
+        assert until(lambda: "start" in calls_of())
+        build = subprocess.run(
+            [str(WRAPPER), "--untimed", "-f", "0G", "-m", "a build", "--", "sleep", "3"],
+            env={**os.environ, "AUTAN_AGENT": "tester"}, check=False, timeout=60,
+        )  # fmt: skip
+        assert build.returncode == 0
+        assert "pause" not in calls_of()  # thirty polls of the watcher: never paused
+        measurement = holders((lock, "ex"))
+        assert until(lambda: state.read_text().strip() == "frozen")
+        assert "pause" in calls_of()
+        measurement.kill()
+        measurement.wait()
+        assert until(lambda: "unpause" in calls_of())
+        assert until(lambda: state.read_text().strip() == "running")
+    finally:
+        campaign.main(["stop", "c3"])
+
+
+def test_an_owner_without_a_pid_never_says_untimed(tmp_path, monkeypatch):
+    """Codex on #452: OFD locks read PID -1; one on untimed.lock must not cover another on the
+    GPU lock."""
+    lock, untimed = tmp_path / "gpu.lock", tmp_path / "untimed.lock"
+    lock.touch()
+    untimed.touch()
+    monkeypatch.setattr(campaign, "LOCK", lock)
+    monkeypatch.setattr(campaign, "UNTIMED", untimed)
+
+    def key(path: Path) -> str:
+        st = path.stat()
+        return f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
+
+    ofd = (f"1: OFDLCK ADVISORY WRITE -1 {key(lock)} 0 EOF\n"
+           f"2: OFDLCK ADVISORY READ -1 {key(untimed)} 0 EOF\n")  # fmt: skip
+    assert campaign.freeze_wanted(ofd)
+    same = (f"1: FLOCK ADVISORY WRITE 4242 {key(lock)} 0 EOF\n"
+            f"2: FLOCK ADVISORY READ 4242 {key(untimed)} 0 EOF\n")  # fmt: skip
+    assert not campaign.freeze_wanted(same)
+
+
+@pytest.mark.parametrize("paused", [True, False])
+def test_an_untimed_hold_s_load_never_ends_a_campaign(paused):
+    """Codex on #452: a build's compilers, once it no longer freezes the campaign, counted as a
+    foreign load and removed it after a minute. Not while an untimed hold runs."""
+    load = campaign.ForeignLoad()
+    ended = None
+    now = 0.0
+    while now < 300 and ended is None:
+        ended = load.update(paused, now, lambda: campaign.MAX_OTHER_LOAD + 10)
+        now += campaign.POLL_S
+    if paused:
+        assert ended is None
+    else:
+        # Foreign: the campaign gives way after its grace.
+        assert ended == campaign.MAX_OTHER_LOAD + 10
+        assert campaign.LOAD_GRACE_S <= now <= campaign.LOAD_GRACE_S + 30

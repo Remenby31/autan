@@ -29,6 +29,10 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # autan_memfloor sits beside this script once installed, in bench/lock/ in the repository.
 sys.path.append(str(Path(__file__).resolve().parents[1] / "lock"))
@@ -86,10 +90,10 @@ def _key(path: Path) -> str | None:
     return f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
 
 
-def freeze_wanted(proc_locks: str) -> bool:
-    """Whether a process holds or waits for the GPU lock without holding ``untimed.lock``: a
-    timed measurement, or any holder that did not say it times nothing. Fail-safe: a holder
-    unknown to this rule (an older wrapper, a raw flock, autan-bench) freezes campaigns."""
+def lock_users(proc_locks: str) -> tuple[set[str], set[str]]:
+    """PIDs that hold or wait for the GPU lock, and those among them that also hold
+    ``untimed.lock``. An owner without a PID (an OFD lock reads -1) is never matched: it counts
+    as timed, the safe side."""
     gpu, untimed_key = _key(LOCK), _key(UNTIMED)
     users: set[str] = set()
     untimed: set[str] = set()
@@ -98,7 +102,19 @@ def freeze_wanted(proc_locks: str) -> bool:
         if gpu is not None and gpu in fields:
             users.add(fields[fields.index(gpu) - 1])
         if untimed_key is not None and untimed_key in fields and "->" not in fields:
-            untimed.add(fields[fields.index(untimed_key) - 1])
+            pid = fields[fields.index(untimed_key) - 1]
+            if pid.isdigit() and int(pid) > 0:
+                untimed.add(pid)
+    return users, users & untimed
+
+
+def freeze_wanted(proc_locks: str) -> bool:
+    """Whether a process holds or waits for the GPU lock without holding ``untimed.lock``: a
+    timed measurement, or any holder that did not say it times nothing. Fail-safe: a holder
+    unknown to this rule (an older wrapper, a raw flock, autan-bench) freezes campaigns. Only
+    holders and blocked waiters are seen: a waiter that polls (autan-gpu-lock, autan-bench)
+    appears once it holds, and autan-bench then waits for every campaign to read frozen."""
+    users, untimed = lock_users(proc_locks)
     return bool(users - untimed)
 
 
@@ -132,6 +148,39 @@ def campaigns_running() -> int:
         except (OSError, ValueError):
             continue
     return sum(1 for tid in tids if _state_of(Path(f"/proc/{tid}/stat")) == b"R")
+
+
+class ForeignLoad:
+    """The rule that stops a campaign beside another project's load: the median of
+    LOAD_SAMPLES samples, one every LOAD_EVERY_S, above MAX_OTHER_LOAD for LOAD_GRACE_S. Not
+    counted while the campaign is frozen, nor while an untimed hold (a build, a test) runs:
+    that load is admitted work."""
+
+    def __init__(self) -> None:
+        self.samples: list[int] = []
+        self.busy_since: float | None = None
+        self.next_sample = 0.0
+
+    def update(self, paused: bool, now: float, sample: Callable[[], int]) -> int | None:
+        """The foreign load that ends the campaign, or None."""
+        if paused:
+            self.samples.clear()
+            self.busy_since = None
+            return None
+        if now >= self.next_sample:
+            self.samples.append(sample())
+            self.next_sample = now + LOAD_EVERY_S
+        if len(self.samples) < LOAD_SAMPLES:
+            return None
+        load = sorted(self.samples)[len(self.samples) // 2]
+        self.samples.clear()
+        if load <= MAX_OTHER_LOAD:
+            self.busy_since = None
+        elif self.busy_since is None:
+            self.busy_since = now
+        elif now - self.busy_since >= LOAD_GRACE_S:
+            return load
+        return None
 
 
 def docker(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -266,9 +315,7 @@ def watch(name: str, floor: int) -> int:
         frozen = False
         # No docker call in the steady state: the CLI would load the CPU at every poll,
         # measurements included. The cgroup directory disappears with the container.
-        samples: list[int] = []
-        next_sample = time.monotonic()
-        busy_since: float | None = None
+        foreign = ForeignLoad()
         while not stopping:
             heartbeat.touch()
             if breached.is_set():
@@ -279,7 +326,10 @@ def watch(name: str, floor: int) -> int:
                 ended = True
                 log(name, "campaign ended; `docker logs` keeps its output")
                 return 0
-            wanted = freeze_wanted(Path("/proc/locks").read_text())
+            users, untimed = lock_users(Path("/proc/locks").read_text())
+            wanted = bool(users - untimed)
+            # An untimed hold's own load (a build, a test) is admitted work, not a foreign load.
+            admitted = bool(untimed)
             if wanted and not frozen:
                 docker("pause", container)
                 publish(name, "frozen")
@@ -295,23 +345,10 @@ def watch(name: str, floor: int) -> int:
                     docker("unpause", container)
                     frozen = False
                     log(name, "GPU lock free: thawed")
-            if frozen:
-                samples.clear()
-                busy_since = None
-            elif time.monotonic() >= next_sample:
-                samples.append(other_runnable())
-                next_sample = time.monotonic() + LOAD_EVERY_S
-            if len(samples) >= LOAD_SAMPLES:
-                load = sorted(samples)[len(samples) // 2]
-                samples.clear()
-                now = time.monotonic()
-                if load <= MAX_OTHER_LOAD:
-                    busy_since = None
-                elif busy_since is None:
-                    busy_since = now
-                elif now - busy_since >= LOAD_GRACE_S:
-                    log(name, f"{load} runnable threads outside the campaign for a minute")
-                    return 1
+            over = foreign.update(frozen or admitted, time.monotonic(), other_runnable)
+            if over is not None:
+                log(name, f"{over} runnable threads outside the campaign for a minute")
+                return 1
             time.sleep(POLL_S)
         log(name, "stopped")
         return 0
