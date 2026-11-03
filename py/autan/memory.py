@@ -52,8 +52,9 @@ _CGNS_NODES_MAX = 2**14
 # The data cg_open reads at once beyond descriptors, point sets and the arrays it reads lazily
 # (cgns_internals.c cgi_read_array): at most 1 MiB a file (E0133, E0707 for a start).
 _CGNS_EAGER = 2**20
-# A Fluent file's fluid and solid zone records, 16 B each (id, offset), at most 16 384 (E0133).
-_FLUENT_ZONES = 16 * 16_384
+# A Fluent file's fluid, solid and interior zone records, a 64 B map node each (id, offset), at
+# most 16 384 (E0133).
+_FLUENT_ZONES = 64 * 16_384
 # Gmsh's batch of element-block entities looked up in $Entities: 65 536 pairs of 8 B.
 _GMSH_BATCH = 65_536 * 8
 # The CGNS reader holds 8 B per entry its point lists give, in storage sized once, and reads them
