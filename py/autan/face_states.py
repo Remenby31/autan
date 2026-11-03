@@ -33,6 +33,11 @@ class ZoneStates(_Strict):
         return self
 
 
+# The zones a face-state file may give: the runtime holds about 120 B per zone member before it
+# pairs them (face-states.md).
+ZONES_MAX = 16_384
+
+
 class FaceStates(_Strict):
     schema_: Literal["autan.face-states/1"] = Field(alias="schema")
     oracle: Text
@@ -44,7 +49,7 @@ class FaceStates(_Strict):
         Literal["velocity-z"],
         Literal["pressure"],
     ]
-    zones: dict[str, ZoneStates]
+    zones: Annotated[dict[str, ZoneStates], Field(max_length=ZONES_MAX)]
 
 
 def parse(data: bytes) -> FaceStates | str:

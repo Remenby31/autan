@@ -30,7 +30,7 @@ Producer: `autan-vv` (owner: CFD - Euler for the exporters). Consumers: `autan p
 | `variables` | Exactly `["density", "velocity-x", "velocity-y", "velocity-z", "pressure"]`, in SI (kg/m³, m/s, Pa), velocity in mesh axes. |
 | `zones` | One entry per boundary zone given: `faces`, the zone's face count; `centroids`, one `[x, y, z]` per face (m); `values`, one row per face in the order of `variables`. Rows of `centroids` and `values` correspond. |
 
-Every number is written in at most 64 characters (a double needs 24), and the document nests no deeper than the structure above. A reader refuses a longer number or a deeper nesting before it holds it (`E0420`).
+Every string is at most 4 096 bytes once decoded, so at most 6 × 4 096 as written (an escape takes at most 6 bytes a character); every number is written in at most 64 characters (a double needs 24); and the document nests no deeper than the structure above. A file gives at most 16 384 zones. A reader refuses a longer string or number, a deeper nesting or more zones before it holds it (`E0420`).
 
 A face is identified by its centroid, not by its rank, so the file does not depend on the solver's internal face order. The centroid of a face is `face_centroid` of [mesh.md](mesh.md#geometry): the centroids of the triangles of a fan from the mean of the face nodes, weighted by their area projected on the face normal. The solver pairs every boundary face of the zone with exactly one row, within 1e-9 times the largest extent of the bounding box of the zone's nodes in the whole mesh, whatever the partitioning (`E0421` otherwise).
 
