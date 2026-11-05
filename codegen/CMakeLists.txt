@@ -38,7 +38,7 @@ set(AUTAN_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
 set(AUTAN_GENERATED_FILES)
 set(AUTAN_GENERATED_GPU_UNITS)
 # Test kernels (codegen/tests/kernels) are built into the spike library and the loop benchmark only.
-set(AUTAN_TEST_KERNEL_MODULES diagonal_only face_weighted)
+set(AUTAN_TEST_KERNEL_MODULES diagonal_only face_flags face_weighted)
 # Modules with bodies computing in the accumulation type, which Metal cannot divide in (E1013).
 set(AUTAN_ACCUM_MODULES blocks diagonal_only)
 foreach(module IN LISTS AUTAN_KERNEL_MODULES AUTAN_TEST_KERNEL_MODULES)

@@ -366,18 +366,49 @@ def global_left(face: str = "f") -> str:
     )
 
 
-def boundary_write_body(lm: LoopModel, indent: str) -> list[str]:
-    """Body of a boundary loop writing face datasets, for boundary face f."""
-    lines = [f"{indent}[[maybe_unused]] const index_t l = d.topo.owner[f];"]
+def stored(role: dsl.Role, value: str) -> str:
+    """C++ expression: `value` (compute type) converted to the storage type of `role`; a Flag
+    stores 1 where the value is > 0 (real part in complex-step), 0 otherwise and on NaN."""
+    if role is dsl.Role.FLAG:
+        one, zero = f"{ctype(role)}(1)", f"{ctype(role)}(0)"
+        return f"(::autan::kernels::gt({value}, typename P::compute(0)) ? {one} : {zero})"
+    return f"static_cast<{ctype(role)}>({value})"
+
+
+def face_write_body(lm: LoopModel, indent: str) -> list[str]:
+    """Body of a loop writing face datasets, for face f: an interior face (kind face_write, its
+    left and right cells in the face's global orientation) or a boundary face."""
+    if lm.kind == "face_write":
+        lines = [
+            (
+                f"{indent}[[maybe_unused]] const bool rev = "
+                "d.topo.face_reversed != nullptr && d.topo.face_reversed[f] != 0;"
+            ),
+            f"{indent}[[maybe_unused]] const index_t l = rev ? d.topo.neighbour[f] : d.topo.owner[f];",
+            f"{indent}[[maybe_unused]] const index_t r = rev ? d.topo.owner[f] : d.topo.neighbour[f];",
+        ]
+        args = call_args(
+            lm.sig, lm.loop.bindings, {"left": "l", "right": "r", "direct": "f"}, reversible=True
+        )
+    else:
+        lines = [f"{indent}[[maybe_unused]] const index_t l = d.topo.owner[f];"]
+        args = call_args(lm.sig, lm.loop.bindings, {"left": "l", "direct": "f"})
     lines.append(f"{indent}typename P::compute out[{n_out(lm)}];")
-    args = call_args(lm.sig, lm.loop.bindings, {"left": "l", "direct": "f"})
     lines.append(f"{indent}{lm.fn.name}<P>({', '.join([*args, 'out'])});")
     lines.extend(
-        f"{indent}{at(o.dataset, 'f', c)} = static_cast<{ctype(o.dataset.type.role)}>(out[{off + c}]);"
+        f"{indent}{at(o.dataset, 'f', c)} = {stored(o.dataset.type.role, f'out[{off + c}]')};"
         for o, off in zip(lm.loop.outputs, offsets(lm.loop.outputs), strict=True)
         for c in range(o.dataset.type.size)
     )
     return lines
+
+
+def face_write_range(kind: str) -> tuple[str, str]:
+    """First and end face of a loop writing face datasets: the owned interior faces, or every
+    boundary face."""
+    if kind == "face_write":
+        return "0", "d.topo.n_owned_interior_faces"
+    return "d.topo.n_interior_faces", "d.topo.n_faces"
 
 
 def jacobian_lines(lm: LoopModel, args: list[str], index: str, indent: str) -> list[str]:
@@ -431,9 +462,10 @@ def emit_loop(e: Emitter, lm: LoopModel) -> None:
             for s in inc_lines(lm, "right", "r"):
                 e.w(s)
         e.w("  }")
-    elif lm.kind == "boundary_write":
-        e.w("  for (index_t f = d.topo.n_interior_faces; f < d.topo.n_faces; ++f) {")
-        for s in boundary_write_body(lm, "    "):
+    elif lm.kind in ("face_write", "boundary_write"):
+        lo, hi = face_write_range(lm.kind)
+        e.w(f"  for (index_t f = {lo}; f < {hi}; ++f) {{")
+        for s in face_write_body(lm, "    "):
             e.w(s)
         e.w("  }")
     elif lm.kind == "cell":
