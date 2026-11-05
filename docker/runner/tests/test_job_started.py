@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -10,13 +11,16 @@ REPO = "Remenby31/autan"
 
 
 def run_hook(
-    tmp_path: Path, event: str, payload: dict, repository: str = REPO
+    tmp_path: Path, event: str, payload: dict, repository: str = REPO, **beside: str
 ) -> subprocess.CompletedProcess:
-    # The hook reads the allowed repository from a file beside it. Outside a runner it has no
-    # Runner.Worker ancestor to kill; that part is checked on a real runner.
+    # The hook reads the allowed repository, and its memory admission settings, from files beside
+    # it. Outside a runner it has no Runner.Worker ancestor to kill; that part is checked on a
+    # real runner.
     hook = tmp_path / "job-started.sh"
     hook.write_text(HOOK.read_text())
     (tmp_path / "repository").write_text(REPO + "\n")
+    for name, text in beside.items():
+        (tmp_path / name.replace("_", "-")).write_text(text)
     path = tmp_path / "event.json"
     path.write_text(json.dumps(payload))
     env = {
@@ -65,3 +69,53 @@ def test_hook_refuses_another_repository(tmp_path):
         ).returncode
         != 0
     )
+
+
+def meminfo(available_gib: float) -> str:
+    return f"MemTotal: {128 << 20} kB\nMemAvailable: {int(available_gib * (1 << 20))} kB\n"
+
+
+PUSH = {"repository": {"full_name": REPO}}
+
+
+@pytest.mark.parametrize(("available", "accepted"), [(30.0, True), (29.9, False)])
+def test_a_job_waits_for_the_host_memory_floor_then_is_refused(tmp_path, available, accepted):
+    start = time.monotonic()
+    out = run_hook(tmp_path, "push", PUSH, min_available_gib="30\n", admit_wait_s="2\n",
+                   meminfo=meminfo(available))  # fmt: skip
+    assert (out.returncode == 0) == accepted
+    if not accepted:
+        assert time.monotonic() - start >= 2  # it waited before refusing
+
+
+def test_a_job_starts_once_memory_comes_back(tmp_path):
+    # Memory comes back only once the hook is seen waiting for it.
+    hook = tmp_path / "job-started.sh"
+    hook.write_text(HOOK.read_text())
+    (tmp_path / "repository").write_text(REPO + "\n")
+    (tmp_path / "min-available-gib").write_text("30\n")
+    (tmp_path / "admit-wait-s").write_text("60\n")
+    (tmp_path / "meminfo").write_text(meminfo(10))
+    event = tmp_path / "event.json"
+    event.write_text(json.dumps(PUSH))
+    env = {"PATH": os.environ["PATH"], "GITHUB_REPOSITORY": REPO, "GITHUB_EVENT_NAME": "push",
+           "GITHUB_EVENT_PATH": str(event)}  # fmt: skip
+    proc = subprocess.Popen(["bash", str(hook)], env=env, stdout=subprocess.PIPE, text=True)
+    try:
+        assert "WAITING FOR MEMORY" in proc.stdout.readline()
+        (tmp_path / "meminfo").write_text(meminfo(40))
+        assert proc.wait(timeout=30) == 0
+    finally:
+        proc.kill()
+
+
+def test_a_fork_is_refused_without_waiting_for_memory(tmp_path):
+    start = time.monotonic()
+    out = run_hook(tmp_path, "pull_request", pull_request("attacker/autan"),
+                   min_available_gib="30\n", admit_wait_s="30\n", meminfo=meminfo(1))  # fmt: skip
+    assert out.returncode != 0
+    assert time.monotonic() - start < 5
+
+
+def test_no_floor_no_wait(tmp_path):
+    assert run_hook(tmp_path, "push", PUSH, meminfo=meminfo(1)).returncode == 0
