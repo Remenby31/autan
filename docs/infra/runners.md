@@ -13,7 +13,7 @@ The repository is public, so anyone can open a pull request, and a pull request 
 | Trigger | Only `push`, `workflow_dispatch`, `schedule`, and `pull_request` whose head is a branch of this repository run. Fork pull requests, `pull_request_target`, `workflow_run`, `issue_comment` and everything else are refused before the first step: the hook kills the job's `Runner.Worker`, because a failing hook alone would still let `if: always()` steps run. The allowed repository comes from a root-owned file in the image, never from the environment a workflow controls. | the job-started hook `docker/runner/job-started.sh`, baked into the runner image; a workflow cannot change or skip it |
 | Trigger | GPU jobs carry `if: github.event_name != 'pull_request' \|\| github.event.pull_request.head.repo.full_name == github.repository`, so fork runs are skipped rather than failed. | the workflow (convenience only: a fork can edit it) |
 | Trigger | Workflows from first-time and external contributors wait for a maintainer's approval (`fork-pr-contributor-approval: all_external_contributors`). Never approve a fork run that touches `.github/`. | repository setting |
-| Host | The runner runs in a container as an unprivileged user (uid 1001), with every capability dropped, `no-new-privileges`, 64 GiB memory, 8192 processes and rotated logs. No Docker socket, no host mount except its own volumes and, read-only, the GPU lock's directory. A job cannot see or touch other containers. | `docker/runner/deploy.sh` |
+| Host | The runner runs in a container as an unprivileged user (uid 1001), with every capability dropped, `no-new-privileges`, 64 GiB memory (less on a shared Spark, below), 8192 processes and rotated logs. No Docker socket, no host mount except its own volumes and, read-only, the GPU lock's directory. A job cannot see or touch other containers. | `docker/runner/deploy.sh` |
 | Network | The runner sits on an internal Docker network with no route out and an isolated gateway (the host has no address on it). Its only egress is a Squid proxy that allows ports 80 and 443 to public addresses and refuses, after DNS resolution, loopback, RFC 1918, Tailscale (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`), link-local and multicast destinations. `deploy.sh` replaces a proxy whose image is out of date and refuses an internal network without these properties. | `docker/runner/proxy/squid.conf`, `deploy.sh` |
 | Token | Workflows run with `permissions: contents: read` and `actions/checkout` with `persist-credentials: false`. The registration token is single-use and expires after one hour; it is piped on stdin and handed to the runner through its environment, never on a command line or on disk. | workflows, `deploy.sh register` |
 | Supply chain | Third-party actions are pinned by commit SHA; images by digest; downloads by SHA-256. | workflow and Dockerfile review |
@@ -25,6 +25,21 @@ Residual risks, accepted because only trusted triggers run code: jobs run as the
 ## Writing GPU jobs
 
 Jobs run directly in the runner container, which is the dev image with the GPU attached: no `docker run` inside a job. Wrap GPU work in `flock /home/admin/autan-gpu/gpu.lock <cmd>`; `autan-bench` takes the lock itself. The runner refuses to start if it cannot open the lock.
+
+## On a Spark shared with other teams
+
+The runner of spark-5512 (`spark`) is a guest on a host whose other teams come first. Its placement comes from the environment of every `deploy.sh` command:
+
+| Variable | spark-5512 | Effect |
+|---|---|---|
+| `AUTAN_RUNNER_HOME` | `~/cfd/autan-runner` | the lock's directory (`autan-gpu/`) under it, mounted where jobs expect it (`/home/admin/autan-gpu`); no guard cron, the host's crontab is not ours |
+| `AUTAN_RUNNER_CPUSET` | `10-18` | `--cpuset-cpus` for the runner and its proxy: cores 0–9 belong to another team, core 19 to a campaign |
+| `AUTAN_RUNNER_MEMORY` | `16g` | `--memory` and `--memory-swap` |
+| `AUTAN_RUNNER_NICE` | `10` | the runner, and so every job step, runs at this niceness; without `CAP_SYS_NICE` no job can lower it |
+| `AUTAN_RUNNER_BUILD_JOBS` | `6` | `CMAKE_BUILD_PARALLEL_LEVEL` for the jobs: a CUDA compiler process takes up to 2 GB, so 6 fit in 16 GiB |
+| `AUTAN_RUNNER_MIN_AVAILABLE_GIB` (`build`) | `30` | the job-started hook holds each job until the host's `MemAvailable` reaches 30 GiB, at most 15 minutes, then refuses it before its first step; the value is baked root-owned into the image, so no workflow changes it |
+
+Everything it creates is named `autan-runner*`: the containers, the networks, the images, and its two volumes (`autan-runner-state`, `autan-runner-work`), which stay Docker volumes because the runner's uid cannot write a directory of the host's user without root. Removing it: `deploy.sh stop`, `docker volume rm autan-runner-state autan-runner-work`, `docker network rm autan-runner-internal autan-runner-egress`, `docker image rm autan-runner:local autan-runner-proxy:local`, `rm -rf ~/cfd/autan-runner`, and deleting the runner in the repository settings.
 
 ## Install or update a runner
 
