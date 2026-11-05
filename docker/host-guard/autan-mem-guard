@@ -5,18 +5,20 @@
 
 Every 30 s it reads the host's MemAvailable. Below 30 GiB it stops (docker stop -t 60: a pause
 frees no memory) every running container of the next level, one level at a time, at least 60 s
-apart, re-reading memory in between:
+apart. The stops run beside the guard, which keeps reading memory while they take effect:
   1. autan-noyau-mut*
   2. autan-noyau-*, and any other autan-* container not named below
   3. autan-ns-*
   4. autan-m2-rae*
   5. autan-runner (its job-started hook already refuses jobs below the floor)
-Once MemAvailable has stayed above 40 GiB for 120 s, it starts the last level it stopped again,
-the same containers, then waits another 120 s above 40 GiB before the next one. It never touches
-autan-m2-h1*, autan-runner-proxy, or any container not named autan-*. Every stop and start is
-logged in DIR/guard.log with the time, MemAvailable and, read before a stop, the container's
-memory peak (its cgroup's memory.peak). What it stopped is kept in DIR/stopped.json, so a
-restarted guard still starts them again. --dry-run logs every decision and acts on none.
+Once MemAvailable has stayed above 40 GiB for 120 s, it starts again the containers of the last
+level it stopped, then waits another 120 s above 40 GiB before the next one. It never touches
+autan-m2-h1*, autan-runner-proxy, autan-campaign-* (their watchers handle the floor themselves),
+or any container not named autan-*. Every stop and start is logged in DIR/guard.log with the time,
+MemAvailable and, read before a stop, the container's memory peak (its cgroup's memory.peak).
+What it stopped, by container ID with the time docker recorded the stop, is kept in
+DIR/stopped.json: a restarted guard still starts it again, and a container removed, started or
+stopped again by someone else meanwhile is left alone. --dry-run logs every decision, acts on none.
 """
 
 from __future__ import annotations
@@ -26,11 +28,12 @@ import fnmatch
 import json
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 GIB = 1 << 30
-NEVER = ("autan-m2-h1*", "autan-runner-proxy")
+NEVER = ("autan-m2-h1*", "autan-runner-proxy", "autan-campaign-*")
 # Level 2 also takes every autan-* container no other level names.
 LEVELS = (("autan-noyau-mut*",), ("autan-noyau-*",), ("autan-ns-*",), ("autan-m2-rae*",),
           ("autan-runner",))  # fmt: skip
@@ -39,6 +42,7 @@ CGROUPS = (
     Path("/sys/fs/cgroup/system.slice/docker-{id}.scope"),
     Path("/sys/fs/cgroup/docker/{id}"),
 )
+START_ATTEMPTS = 3
 
 
 def level_of(name: str) -> int | None:
@@ -65,21 +69,35 @@ def gib(value: int | None) -> str:
     return "unknown" if value is None else f"{value / GIB:.1f} GiB"
 
 
-def docker(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["docker", *args], capture_output=True, text=True, timeout=120, check=False
-    )
+def docker(*args: str, timeout: float = 120) -> tuple[int, str]:
+    """docker's exit status and output; a hung or missing CLI is a failure, never a crash."""
+    try:
+        out = subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout,
+                             check=False)  # fmt: skip
+    except subprocess.TimeoutExpired:
+        return 124, f"docker {args[0]} timed out after {timeout:.0f} s"
+    except OSError as error:
+        return 127, str(error)
+    return out.returncode, out.stdout if out.returncode == 0 else out.stderr
 
 
-def running() -> list[str]:
-    out = docker("ps", "--format", "{{.Names}}")
-    return out.stdout.split() if out.returncode == 0 else []
+def running() -> list[tuple[str, str]]:
+    """(ID, name) of every running container."""
+    status, out = docker("ps", "--no-trunc", "--format", "{{.ID}} {{.Names}}", timeout=30)
+    if status != 0:
+        return []
+    return [tuple(line.split(maxsplit=1)) for line in out.splitlines() if " " in line]
 
 
-def peak(name: str, cgroups: tuple[Path, ...]) -> int | None:
-    cid = docker("inspect", "-f", "{{.Id}}", name).stdout.strip()
-    if not cid:
-        return None
+def inspect(cid: str) -> tuple[str, str] | None:
+    """(state, finished-at) of a container, None if it no longer exists or docker failed."""
+    status, out = docker("inspect", "-f", "{{.State.Status}} {{.State.FinishedAt}}", cid,
+                         timeout=30)  # fmt: skip
+    parts = out.split()
+    return (parts[0], parts[1]) if status == 0 and len(parts) == 2 else None
+
+
+def peak(cid: str, cgroups: tuple[Path, ...]) -> int | None:
     for template in cgroups:
         try:
             return int((Path(str(template).format(id=cid)) / "memory.peak").read_text())
@@ -90,22 +108,29 @@ def peak(name: str, cgroups: tuple[Path, ...]) -> int | None:
 
 class Guard:
     def __init__(self, state_dir: Path, *, dry_run: bool, meminfo: Path, cgroups: tuple[Path, ...],
-                 low: int = 30 * GIB, high: int = 40 * GIB, level_wait_s: float = 60.0,
-                 hysteresis_s: float = 120.0) -> None:  # fmt: skip
+                 low: int, high: int, level_wait_s: float, hysteresis_s: float,
+                 stop_timeout_s: int, clock=time.monotonic) -> None:  # fmt: skip
         self.dir, self.dry_run, self.meminfo, self.cgroups = state_dir, dry_run, meminfo, cgroups
         self.low, self.high = low, high
-        self.level_wait_s, self.hysteresis_s = level_wait_s, hysteresis_s
+        self.level_wait_s, self.hysteresis_s, self.stop_timeout_s = (
+            level_wait_s,
+            hysteresis_s,
+            stop_timeout_s,
+        )
+        self.clock = clock
         self.state = state_dir / "stopped.json"
-        # [[level, [names]], ...], the last stopped last.
-        self.stopped: list[list] = json.loads(self.state.read_text()) if self.state.exists() else []
-        self.last_action = float("-inf")
+        # [{"level", "id", "name", "finished", "attempts"}], the last stopped last.
+        self.stopped: list[dict] = json.loads(self.state.read_text()) if self.state.exists() else []
+        self.lock = threading.Lock()
+        self.stopping: list[threading.Thread] = []
+        self.last_stop = float("-inf")
         self.above_since: float | None = None
         self.said_nothing_left = float("-inf")
 
     def log(self, message: str) -> None:
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         prefix = "DRY-RUN " if self.dry_run else ""
-        with (self.dir / "guard.log").open("a") as handle:
+        with self.lock, (self.dir / "guard.log").open("a") as handle:
             handle.write(f"{stamp} {prefix}{message}\n")
 
     def save(self) -> None:
@@ -113,56 +138,95 @@ class Guard:
         tmp.write_text(json.dumps(self.stopped) + "\n")
         tmp.replace(self.state)
 
-    def tick(self, now: float) -> None:
+    def tick(self) -> None:
+        self.stopping = [t for t in self.stopping if t.is_alive()]
         free = available(self.meminfo)
+        now = self.clock()
         if free is None or free < self.low:
             self.above_since = None
-            if now - self.last_action >= self.level_wait_s:
+            if now - self.last_stop >= self.level_wait_s:
                 self.stop_next(free, now)
         elif free > self.high:
             if self.above_since is None:
                 self.above_since = now
-            if self.stopped and now - self.above_since >= self.hysteresis_s:
+            with self.lock:
+                pending = bool(self.stopped)
+            if pending and not self.stopping and now - self.above_since >= self.hysteresis_s:
                 self.start_last(free)
-                self.above_since = now
+                self.above_since = self.clock()  # the next level waits its own full 120 s
         else:
             self.above_since = None
         if self.dry_run:
             self.log(f"MemAvailable {gib(free)}")
 
     def stop_next(self, free: int | None, now: float) -> None:
-        live = [(level_of(n), n) for n in running()]
-        live = [(lv, n) for lv, n in live if lv is not None]
+        live = [(level_of(name), cid, name) for cid, name in running()]
+        live = [entry for entry in live if entry[0] is not None]
         if not live:
             if now - self.said_nothing_left >= 600:
                 self.log(f"MemAvailable {gib(free)}, below {gib(self.low)}: nothing left to stop")
                 self.said_nothing_left = now
             return
-        level = min(lv for lv, _ in live)
-        names = sorted(n for lv, n in live if lv == level)
-        for name in names:
+        level = min(entry[0] for entry in live)
+        self.last_stop = now
+        for _, cid, name in sorted(e for e in live if e[0] == level):
             self.log(f"STOP level {level + 1} {name}: MemAvailable {gib(free)}, below "
-                     f"{gib(self.low)}; its memory peak {gib(peak(name, self.cgroups))}")  # fmt: skip
+                     f"{gib(self.low)}; its memory peak {gib(peak(cid, self.cgroups))}")  # fmt: skip
             if not self.dry_run:
-                out = docker("stop", "-t", "60", name)
-                if out.returncode != 0:
-                    self.log(f"FAILED to stop {name}: {out.stderr.strip()[:200]}")
-        self.last_action = now
-        if not self.dry_run:
-            self.stopped.append([level, names])
+                thread = threading.Thread(
+                    target=self.stop_one, args=(level, cid, name), daemon=True
+                )
+                thread.start()
+                self.stopping.append(thread)
+
+    def stop_one(self, level: int, cid: str, name: str) -> None:
+        status, out = docker(
+            "stop", "-t", str(self.stop_timeout_s), cid, timeout=self.stop_timeout_s + 60
+        )
+        state = inspect(cid)
+        if status != 0 or state is None or state[0] != "exited":
+            self.log(
+                f"FAILED to stop {name} ({out.strip()[:200]}); not recorded as stopped by the guard"
+            )
+            return
+        with self.lock:
+            self.stopped.append({"level": level, "id": cid, "name": name, "finished": state[1],
+                                 "attempts": 0})  # fmt: skip
             self.save()
 
     def start_last(self, free: int) -> None:
-        level, names = self.stopped[-1]
-        for name in names:
+        with self.lock:
+            level = self.stopped[-1]["level"]
+            batch = [entry for entry in self.stopped if entry["level"] == level]
+        kept = []
+        for entry in batch:
+            name, state = entry["name"], inspect(entry["id"])
+            if state is None or state[0] != "exited" or state[1] != entry["finished"]:
+                self.log(
+                    f"LEFT {name}: removed, started or stopped again since the guard stopped it"
+                )
+                continue
             self.log(f"START level {level + 1} {name}: MemAvailable {gib(free)}, above "
                      f"{gib(self.high)} for {self.hysteresis_s:.0f} s")  # fmt: skip
-            if not self.dry_run:
-                out = docker("start", name)
-                if out.returncode != 0:
-                    self.log(f"FAILED to start {name}: {out.stderr.strip()[:200]}")
-        if not self.dry_run:
-            self.stopped.pop()
+            if self.dry_run:
+                kept.append(entry)
+                continue
+            status, out = docker("start", entry["id"])
+            if status != 0:
+                entry["attempts"] += 1
+                if entry["attempts"] < START_ATTEMPTS:
+                    kept.append(entry)
+                    self.log(
+                        f"FAILED to start {name} ({out.strip()[:200]}); retried at the next level's turn"
+                    )
+                else:
+                    self.log(
+                        f"FAILED to start {name} {START_ATTEMPTS} times ({out.strip()[:200]}); given up"
+                    )
+        if self.dry_run:
+            return
+        with self.lock:
+            self.stopped = [e for e in self.stopped if e not in batch] + kept
             self.save()
 
 
@@ -171,20 +235,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--state-dir", type=Path, default=Path.home() / "cfd" / "guard")
     parser.add_argument("--interval", type=float, default=30.0)
+    parser.add_argument("--low-gib", type=float, default=30.0)
+    parser.add_argument("--high-gib", type=float, default=40.0)
+    parser.add_argument("--level-wait", type=float, default=60.0)
+    parser.add_argument("--hysteresis", type=float, default=120.0)
+    parser.add_argument("--stop-timeout", type=int, default=60)
     parser.add_argument("--meminfo", type=Path, default=Path("/proc/meminfo"))
-    parser.add_argument("--cgroup-root", type=Path, default=None,
-                        help="replaces /sys/fs/cgroup, for the tests")  # fmt: skip
+    parser.add_argument("--cgroup-root", type=Path, default=Path("/sys/fs/cgroup"))
+    parser.add_argument("--ticks", type=int, default=0, help="stop after this many (0: never)")
     args = parser.parse_args(argv)
     args.state_dir.mkdir(parents=True, exist_ok=True)
-    cgroups = CGROUPS
-    if args.cgroup_root is not None:
-        cgroups = tuple(args.cgroup_root / t.relative_to("/sys/fs/cgroup") for t in CGROUPS)
-    guard = Guard(args.state_dir, dry_run=args.dry_run, meminfo=args.meminfo, cgroups=cgroups)
+    cgroups = tuple(args.cgroup_root / t.relative_to("/sys/fs/cgroup") for t in CGROUPS)
+    guard = Guard(args.state_dir, dry_run=args.dry_run, meminfo=args.meminfo, cgroups=cgroups,
+                  low=int(args.low_gib * GIB), high=int(args.high_gib * GIB),
+                  level_wait_s=args.level_wait, hysteresis_s=args.hysteresis,
+                  stop_timeout_s=args.stop_timeout)  # fmt: skip
     guard.log(f"started: floor {gib(guard.low)}, restart above {gib(guard.high)}; "
-              f"{len(guard.stopped)} level(s) stopped by an earlier guard")  # fmt: skip
-    while True:
-        guard.tick(time.monotonic())
+              f"{len(guard.stopped)} container(s) stopped by an earlier guard")  # fmt: skip
+    tick = 0
+    while args.ticks == 0 or tick < args.ticks:
+        guard.tick()
+        tick += 1
         time.sleep(args.interval)
+    for thread in guard.stopping:
+        thread.join()
+    return 0
 
 
 if __name__ == "__main__":

@@ -179,7 +179,7 @@ jobs:
         with:
           version: "0.13.6"
           enable-cache: false
-      - run: uv run --project bench --locked pytest -rs bench/tests docker/runner/tests
+      - run: uv run --project bench --locked pytest -rs bench/tests docker/runner/tests docker/host-guard/tests
 
   ui:
     # No path filter: the UI reads the SDK, the contracts and the fake backend, which live outside ui/.

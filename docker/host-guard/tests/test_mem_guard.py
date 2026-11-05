@@ -1,8 +1,9 @@
-import importlib.machinery
-import importlib.util
+import itertools
 import json
 import os
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -10,174 +11,208 @@ import pytest
 SCRIPT = Path(__file__).resolve().parents[1] / "autan-mem-guard"
 GIB = 1 << 30
 
-
-def load():
-    loader = importlib.machinery.SourceFileLoader("autan_mem_guard", str(SCRIPT))
-    spec = importlib.util.spec_from_loader("autan_mem_guard", loader)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["autan_mem_guard"] = module
-    loader.exec_module(module)
-    return module
-
-
-guard_module = load()
-
-# docker at the boundary: the containers and whether they run in a JSON file, every stop and
-# start recorded; a container's id is its name.
-FAKE_DOCKER = """#!/usr/bin/env python3
-import json, sys, pathlib
-state = pathlib.Path(sys.argv[0]).parent / "containers.json"
-calls = pathlib.Path(sys.argv[0]).parent / "calls"
+# docker at the boundary: each container's ID, state and stop time in a JSON file; every stop
+# and start recorded with its time. Names in fail-start never start.
+FAKE_DOCKER = r"""#!/usr/bin/env python3
+import fcntl, json, sys, time, pathlib
+here = pathlib.Path(sys.argv[0]).parent
+state, calls = here / "containers.json", here / "calls"
+held = (here / "lock").open("a")
+fcntl.flock(held, fcntl.LOCK_EX)  # docker serialises its own state; concurrent calls here too
 c = json.loads(state.read_text())
+by_id = {v["id"]: k for k, v in c.items()}
 a = sys.argv[1:]
 if a[0] == "ps":
-    print("\\n".join(n for n, up in c.items() if up))
+    print("\n".join(f"{v['id']} {k}" for k, v in c.items() if v["status"] == "running"))
 elif a[0] == "inspect":
-    print(a[-1] if a[-1] in c else "")
+    name = by_id.get(a[-1])
+    if name is None:
+        sys.exit(1)
+    print(c[name]["status"], c[name]["finished"])
 elif a[0] in ("stop", "start"):
+    name = by_id[a[-1]]
     with calls.open("a") as h:
-        h.write(f"{a[0]} {a[-1]}\\n")
-    c[a[-1]] = a[0] == "start"
+        h.write(f"{time.monotonic()} {a[0]} {name}\n")
+    if a[0] == "start" and name in json.loads((here / "fail-start.json").read_text()):
+        sys.exit(1)
+    c[name]["status"] = "running" if a[0] == "start" else "exited"
+    if a[0] == "stop":
+        c[name]["finished"] = f"t{time.monotonic()}"
     state.write_text(json.dumps(c))
 """
 
-CONTAINERS = {
-    "autan-noyau-mut1": True, "autan-noyau-mut2": True, "autan-noyau-release": True,
-    "autan-sdk-build": True, "autan-ns-nssa": True, "autan-m2-rae2822": True,
-    "autan-m2-h1-2048": True, "autan-runner": True, "autan-runner-proxy": True,
-    "robostral-api": True, "excalibur-mcp": True,
-}  # fmt: skip
+NAMES = ["autan-noyau-mut1", "autan-noyau-mut2", "autan-noyau-release", "autan-sdk-build",
+         "autan-ns-nssa", "autan-m2-rae2822", "autan-runner", "autan-m2-h1-2048", "autan-m2-h1",
+         "autan-runner-proxy", "autan-campaign-c440f", "robostral-api", "excalibur-mcp"]  # fmt: skip
 LEVEL = {"autan-noyau-mut1": 1, "autan-noyau-mut2": 1, "autan-noyau-release": 2,
          "autan-sdk-build": 2, "autan-ns-nssa": 3, "autan-m2-rae2822": 4, "autan-runner": 5}  # fmt: skip
+WAIT = 0.6  # the tests' --level-wait and --hysteresis, in seconds
+
+
+class Host:
+    def __init__(self, tmp_path):
+        self.bin = tmp_path / "bin"
+        self.bin.mkdir()
+        (self.bin / "docker").write_text(
+            FAKE_DOCKER.replace("#!/usr/bin/env python3", f"#!{sys.executable}")
+        )
+        (self.bin / "docker").chmod(0o755)
+        self.containers = self.bin / "containers.json"
+        self.containers.write_text(json.dumps(
+            {n: {"id": f"id{k:02d}" + "0" * 60, "status": "running", "finished": "-"}
+             for k, n in enumerate(NAMES)}))  # fmt: skip
+        (self.bin / "fail-start.json").write_text("[]")
+        self.cgroup = tmp_path / "cgroup"
+        for k in range(len(NAMES)):
+            scope = self.cgroup / "system.slice" / f"docker-id{k:02d}{'0' * 60}.scope"
+            scope.mkdir(parents=True)
+            (scope / "memory.peak").write_text(f"{(k + 1) * GIB}\n")
+        self.state = tmp_path / "guard"
+        self.meminfo = tmp_path / "meminfo"
+        self.free(100)
+
+    def free(self, gib_):
+        tmp = self.meminfo.with_suffix(".tmp")
+        tmp.write_text(f"MemTotal: {128 << 20} kB\nMemAvailable: {int(gib_ * (1 << 20))} kB\n")
+        tmp.replace(self.meminfo)
+
+    def calls(self, verb=None):
+        path = self.bin / "calls"
+        rows = [line.split() for line in path.read_text().splitlines()] if path.exists() else []
+        return [(float(t), v, n) for t, v, n in rows if verb in (None, v)]
+
+    def guard(self, *extra, ticks=0, path=None):
+        env = {
+            **os.environ,
+            "PATH": path if path is not None else f"{self.bin}:{os.environ['PATH']}",
+        }
+        args = [sys.executable, str(SCRIPT), "--state-dir", str(self.state), "--meminfo", str(self.meminfo),
+                "--cgroup-root", str(self.cgroup), "--interval", "0.05", "--level-wait", str(WAIT),
+                "--hysteresis", str(WAIT), "--stop-timeout", "1", "--ticks", str(ticks), *extra]  # fmt: skip
+        return subprocess.Popen(
+            args, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+
+    def log(self):
+        path = self.state / "guard.log"
+        return path.read_text() if path.exists() else ""
+
+
+def until(predicate, timeout=20.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return False
 
 
 @pytest.fixture
-def host(tmp_path, monkeypatch):
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    (bin_dir / "docker").write_text(FAKE_DOCKER)
-    (bin_dir / "docker").chmod(0o755)
-    (bin_dir / "containers.json").write_text(json.dumps(CONTAINERS))
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
-    cgroups = tmp_path / "cgroup"
-    for k, name in enumerate(CONTAINERS):
-        scope = cgroups / "system.slice" / f"docker-{name}.scope"
-        scope.mkdir(parents=True)
-        (scope / "memory.peak").write_text(f"{(k + 1) * GIB}\n")
-    state = tmp_path / "guard"
-    state.mkdir()
-
-    class Host:
-        meminfo = tmp_path / "meminfo"
-        log = state / "guard.log"
-
-        def free(self, gib_):
-            self.meminfo.write_text(
-                f"MemTotal: {128 << 20} kB\nMemAvailable: {int(gib_ * (1 << 20))} kB\n"
-            )
-
-        def calls(self):
-            path = bin_dir / "calls"
-            return path.read_text().splitlines() if path.exists() else []
-
-        def guard(self, dry_run=False):
-            templates = tuple(
-                cgroups / t.relative_to("/sys/fs/cgroup") for t in guard_module.CGROUPS
-            )
-            return guard_module.Guard(
-                state, dry_run=dry_run, meminfo=self.meminfo, cgroups=templates
-            )
-
-    return Host()
+def host(tmp_path):
+    return Host(tmp_path)
 
 
-def test_levels_and_what_is_never_touched():
-    for name, level in LEVEL.items():
-        assert guard_module.level_of(name) == level - 1
-    for name in (
-        "autan-m2-h1-2048",
-        "autan-m2-h1",
-        "autan-runner-proxy",
-        "robostral-api",
-        "excalibur-mcp",
-    ):
-        assert guard_module.level_of(name) is None
+def levels_in_order(calls, reverse=False):
+    levels = [LEVEL[n] for _, _, n in calls]
+    return levels == sorted(levels, reverse=reverse)
 
 
-def test_below_the_floor_one_level_at_a_time_then_back_in_reverse(host):
-    guard = host.guard()
+def first_of_each_level(calls, reverse=False):
+    seen = {}
+    for t, _, n in calls:
+        seen.setdefault(LEVEL[n], t)
+    return [seen[k] for k in sorted(seen, reverse=reverse)]
+
+
+def test_below_the_floor_level_by_level_then_back_in_reverse(host):
+    proc = host.guard()
+    try:
+        host.free(25)
+        assert until(lambda: {n for _, _, n in host.calls("stop")} == set(LEVEL))
+        stops = host.calls("stop")
+        # In order, each level whole, at least --level-wait apart; H1, the proxy, campaigns and
+        # foreign containers never.
+        assert levels_in_order(stops)
+        starts_of_levels = first_of_each_level(stops)
+        assert all(b - a >= WAIT * 0.9 for a, b in itertools.pairwise(starts_of_levels))
+        # The peak read before the stop is the container's own: autan-ns-nssa's is 5 GiB.
+        assert (
+            "autan-ns-nssa: MemAvailable 25.0 GiB, below 30.0 GiB; its memory peak 5.0 GiB"
+            in host.log()
+        )
+        # Between the thresholds, nothing comes back.
+        host.free(35)
+        time.sleep(3 * WAIT)
+        assert host.calls("start") == []
+        # Above 40 GiB: last level first, each level a full hysteresis after the previous one.
+        host.free(45)
+        assert until(lambda: {n for _, _, n in host.calls("start")} == set(LEVEL))
+        starts = host.calls("start")
+        assert levels_in_order(starts, reverse=True)
+        firsts = first_of_each_level(starts, reverse=True)
+        assert all(b - a >= WAIT * 0.9 for a, b in itertools.pairwise(firsts))
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_what_someone_else_removed_or_cycled_is_left_alone_and_failed_starts_are_retried(host):
+    (host.bin / "fail-start.json").write_text(json.dumps(["autan-noyau-mut2"]))
+    proc = host.guard()
+    try:
+        host.free(25)
+        assert until(lambda: len(host.calls("stop")) >= 2)
+        host.free(35)
+        time.sleep(4 * WAIT)
+        # Someone removes mut1 meanwhile; mut2's start fails until the guard gives up.
+        c = json.loads(host.containers.read_text())
+        del c["autan-noyau-mut1"]
+        host.containers.write_text(json.dumps(c))
+        host.free(45)
+        assert until(lambda: "given up" in host.log())
+        mut = [n for _, _, n in host.calls("start") if n.startswith("autan-noyau-mut")]
+        assert mut == ["autan-noyau-mut2"] * 3
+        assert "LEFT autan-noyau-mut1" in host.log()
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_a_restarted_guard_starts_what_an_earlier_one_stopped(host):
     host.free(25)
-    for t in range(0, 600, 30):
-        guard.tick(float(t))
-    # One level per 60 s, in order, each level whole; H1, the proxy and foreign containers never.
-    stops = [c.split()[1] for c in host.calls()]
-    assert [LEVEL[n] for n in stops] == sorted(LEVEL[n] for n in stops)
-    assert set(stops) == set(LEVEL)
-    times = {}
-    for line in host.log.read_text().splitlines():
-        if " STOP " in line:
-            times.setdefault(line.split()[3], line)
-    assert len(times) == 5
-    # The peak read before the stop is logged: autan-ns-nssa's is 5 GiB (the fixture's order).
-    assert "5.0 GiB" in next(
-        line for line in host.log.read_text().splitlines() if "autan-ns-nssa" in line
-    )
-    # Between the two thresholds: nothing. Above 40 GiB for 120 s: the last level comes back,
-    # then the next 120 s later, the same containers.
-    host.free(35)
-    before = len(host.calls())
-    for t in range(600, 900, 30):
-        guard.tick(float(t))
-    assert len(host.calls()) == before
+    first = host.guard(ticks=3)
+    assert first.wait(timeout=30) == 0
+    stopped = {n for _, _, n in host.calls("stop")}
+    assert stopped == {"autan-noyau-mut1", "autan-noyau-mut2"}
+    # Cycled by someone else meanwhile: started and stopped again, so no longer the guard's.
+    c = json.loads(host.containers.read_text())
+    c["autan-noyau-mut2"]["finished"] = "later"
+    host.containers.write_text(json.dumps(c))
     host.free(45)
-    started = []
-    for t in range(900, 900 + 5 * 120 + 60, 30):
-        guard.tick(float(t))
-        started = [c.split()[1] for c in host.calls() if c.startswith("start")]
-    assert [LEVEL[n] for n in started] == sorted((LEVEL[n] for n in started), reverse=True)
-    assert set(started) == set(LEVEL)
-
-
-def test_a_dip_restarts_the_hysteresis(host):
-    guard = host.guard()
-    host.free(25)
-    guard.tick(0.0)
-    host.free(45)
-    guard.tick(60.0)
-    guard.tick(150.0)
-    host.free(38)
-    guard.tick(170.0)
-    host.free(45)
-    guard.tick(200.0)
-    guard.tick(300.0)
-    assert not any(c.startswith("start") for c in host.calls())
-    guard.tick(320.0)
-    assert any(c.startswith("start") for c in host.calls())
-
-
-def test_a_restarted_guard_still_starts_what_an_earlier_one_stopped(host):
-    host.free(25)
-    host.guard().tick(0.0)
-    host.free(45)
-    again = host.guard()
-    again.tick(1000.0)
-    again.tick(1120.0)
-    assert sorted(c for c in host.calls() if c.startswith("start")) == [
-        "start autan-noyau-mut1", "start autan-noyau-mut2"]  # fmt: skip
+    second = host.guard()
+    try:
+        assert until(lambda: "LEFT autan-noyau-mut2" in host.log())
+        assert until(lambda: [n for _, _, n in host.calls("start")] == ["autan-noyau-mut1"])
+    finally:
+        second.kill()
+        second.wait()
 
 
 def test_dry_run_decides_and_logs_but_never_acts(host):
-    guard = host.guard(dry_run=True)
     host.free(25)
-    for t in range(0, 300, 30):
-        guard.tick(float(t))
+    assert host.guard("--dry-run", ticks=20).wait(timeout=30) == 0
     assert host.calls() == []
-    log = host.log.read_text()
-    assert "DRY-RUN" in log
-    assert "autan-noyau-mut1" in log
+    assert "DRY-RUN STOP level 1 autan-noyau-mut1" in host.log()
 
 
 def test_unknown_memory_counts_as_below_the_floor(host):
     host.meminfo.write_text("garbage\n")
-    host.guard().tick(0.0)
-    assert "stop autan-noyau-mut1" in host.calls()
+    assert host.guard(ticks=2).wait(timeout=30) == 0
+    assert {n for _, _, n in host.calls("stop")} == {"autan-noyau-mut1", "autan-noyau-mut2"}
+
+
+def test_a_missing_docker_is_logged_not_a_crash(host):
+    host.free(25)
+    out = host.guard(ticks=3, path="/nonexistent")
+    assert out.wait(timeout=30) == 0, out.stderr.read()
+    assert "nothing left to stop" in host.log()
