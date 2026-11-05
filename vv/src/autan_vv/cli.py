@@ -253,6 +253,44 @@ def _cmd_su2(args: argparse.Namespace) -> None:
         _say(f"gate {verdict['gate']}: {'PASS' if verdict['pass'] else 'FAIL'}")
 
 
+def _cmd_su2_flatplate(args: argparse.Namespace) -> None:
+    from autan_vv.su2 import flatplate  # noqa: PLC0415
+
+    if args.action == "prepare":
+        if args.published is None:
+            msg = "su2-flatplate prepare takes --published (SU2's turb_SA_flatplate.cfg)"
+            raise VVError(msg, code="V0903")
+        for run in flatplate.prepare(
+            args.cache, args.published, args.root, args.su2_mesh, args.max_iterations
+        ):
+            _say(str(run.relative_to(args.root)))
+        return
+    report = flatplate.results(args.root, args.cache)
+    if args.out is not None:
+        args.out.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+    for model, data in report["models"].items():
+        for lv in data["levels"]:
+            state = "converged" if lv["converged"] else "NOT converged"
+            gaps = ", ".join(
+                f"{code} cf {g['cf'] * 100:+.2f} %, CD {g['cd'] * 100:+.2f} %"
+                for code, g in lv["gap"].items()
+            )
+            _say(
+                f"{model} {lv['grid']}: {state} in {lv['iterations']} iterations, "
+                f"cf {lv['cf']:.6e}, CD {lv['cd']:.6e}; vs {gaps}"
+            )
+        for key, est in data["continuum"].items():
+            value = (
+                f"{est['estimate']:.6e}, p = {est['order']:.2f}"
+                if "estimate" in est
+                else est["error"]
+            )
+            _say(f"{model} continuum {key}: {value}")
+        _say(f"{model} gate M3: {'PASS' if data['pass'] else 'FAIL'}")
+    if not all(data["pass"] for data in report["models"].values()):
+        raise SystemExit(1)
+
+
 def _cmd_sections(args: argparse.Namespace) -> None:
     from autan_vv.cases import onera_m6  # noqa: PLC0415
 
@@ -486,6 +524,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--out", type=Path, help="prepare: output root; study: report JSON")
     p.set_defaults(func=_cmd_su2)
+
+    p = sub.add_parser(
+        "su2-flatplate",
+        help="SU2 on the TMR 2DZP flat plate: prepare its grids and cases, or report its runs",
+    )
+    p.add_argument("action", choices=("prepare", "results"))
+    p.add_argument("root", type=Path, help="the directory prepare writes and the runs fill")
+    p.add_argument("--published", type=Path, help="prepare: SU2's turb_SA_flatplate.cfg")
+    p.add_argument("--su2-mesh", type=Path, help="prepare: SU2's 137x97 mesh, to cross-check")
+    p.add_argument("--max-iterations", type=int, default=50000)
+    p.add_argument("--cache", type=Path, default=Path("~/.cache/autan-vv").expanduser())
+    p.add_argument("--out", type=Path, help="results: report JSON (exit 1 if a gate fails)")
+    p.set_defaults(func=_cmd_su2_flatplate)
 
     p = sub.add_parser(
         "order", help="observed order from errors on a mesh family (JSON in, JSON out)"
