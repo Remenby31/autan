@@ -32,6 +32,8 @@ SU2_2D = {"rms[Rho]": "density", "rms[RhoU]": "momentum-x", "rms[RhoV]": "moment
           "rms[RhoE]": "energy"}  # fmt: skip
 SU2_3D = {"rms[Rho]": "density", "rms[RhoU]": "momentum-x", "rms[RhoV]": "momentum-y",
           "rms[RhoW]": "momentum-z", "rms[RhoE]": "energy"}  # fmt: skip
+# Turbulence equations, read when the run solves them.
+SU2_TURBULENCE = {"rms[nu]": "nu-tilde"}
 
 
 @dataclass(frozen=True)
@@ -51,7 +53,8 @@ class History:
 
 
 def read_su2(path: Path) -> History:
-    """SU2's history.csv (HISTORY_OUTPUT with ITER, RMS_RES, AERO_COEFF and WALL_TIME).
+    """SU2's history.csv (HISTORY_OUTPUT with ITER, RMS_RES, AERO_COEFF and WALL_TIME), with the
+    SA equation's residual (`nu-tilde`) when the run solves it.
 
     In 2D the plane (x, y) of SU2 is Autan's (x, z), so the nose-up moment is -CMz; in 3D it is
     CMy. The cumulative wall time is SU2's average time per iteration times the iterations done.
@@ -73,7 +76,8 @@ def read_su2(path: Path) -> History:
         return np.asarray(data[:, found[occurrence]])
 
     three_d = "rms[RhoW]" in header
-    names = SU2_3D if three_d else SU2_2D
+    names = {**(SU2_3D if three_d else SU2_2D),
+             **{col: eq for col, eq in SU2_TURBULENCE.items() if col in header}}  # fmt: skip
     iterations = column("Inner_Iter").astype(np.int64)
     # WALL_TIME's two columns are both "Time(sec)": this iteration's, then the running average.
     average = column("Time(sec)", 1)

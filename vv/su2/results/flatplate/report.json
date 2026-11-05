@@ -1,0 +1,376 @@
+{
+  "schema": "autan.su2-flatplate/1",
+  "orders": 10.0,
+  "models": {
+    "sa-noft2": {
+      "levels": [
+        {
+          "grid": "35x25",
+          "cells": 816,
+          "converged": true,
+          "iterations": 703,
+          "drop": {
+            "density": 11.754246827000001,
+            "momentum-x": 11.216247465399999,
+            "momentum-z": 11.921812066000001,
+            "energy": 11.782520565,
+            "nu-tilde": 10.011902494000001
+          },
+          "cd": 0.002805294895,
+          "cf": 0.0027005692879576338,
+          "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+          "case_sha256": "e98dbcffc739c51e9ed3d6337b13555146e7446ec311c118c1649a2649033037",
+          "mesh_sha256": "fcc48ec6866e10e5f7d6318dc78df42d64ddcc35e7b5347a8926c5472839b480",
+          "source_sha256": "41c409f49afca8affaafd4a0a49c6ba934eca9007da502fe0c20afbd091500b0",
+          "gap": {
+            "CFL3D": {
+              "cf": -0.03402235563755496,
+              "cd": -0.0504628884220748
+            },
+            "FUN3D": {
+              "cf": 0.012443513246382265,
+              "cd": 0.011332910216417025
+            }
+          }
+        },
+        {
+          "grid": "69x49",
+          "cells": 3264,
+          "converged": true,
+          "iterations": 808,
+          "drop": {
+            "density": 11.217307203,
+            "momentum-x": 10.939472646099999,
+            "momentum-z": 11.4698196929,
+            "energy": 11.4865067,
+            "nu-tilde": 10.005513634
+          },
+          "cd": 0.002836048272,
+          "cf": 0.0027149587161734334,
+          "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+          "case_sha256": "f01815cfae4cc9b9e78dc18d9035e6c42f31316a669d8c8647fa3dedcc1bce82",
+          "mesh_sha256": "983e6cc0a8661d04b92b7f24f3519ab63fe1dfba155646c0ef77b45794691fd0",
+          "source_sha256": "18c1d1c82cf91bdad89b2c2963129fc992fcd8b98fda4b3e79b7397ee52ba223",
+          "gap": {
+            "CFL3D": {
+              "cf": -0.0049070935529019755,
+              "cd": -0.016755974340887936
+            },
+            "FUN3D": {
+              "cf": 0.007414824536849274,
+              "cd": 0.0047499033706377425
+            }
+          }
+        },
+        {
+          "grid": "137x97",
+          "cells": 13056,
+          "converged": true,
+          "iterations": 949,
+          "drop": {
+            "density": 11.174816664,
+            "momentum-x": 10.28186698175,
+            "momentum-z": 11.1724604174,
+            "energy": 11.176560742,
+            "nu-tilde": 10.005844387
+          },
+          "cd": 0.00285023041,
+          "cf": 0.0027190881387978093,
+          "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+          "case_sha256": "0cd835ff5c7e16f894c6838e977aed66884c48eeacec49bdb31c1225cdf46a35",
+          "mesh_sha256": "410003c8a7476e029e7f12203c09961fce34c788a85916a2d65ac22f43660d85",
+          "source_sha256": "55ae965f2151e5644e3c7c1b6fecea7ce0a16cf4c34eae6997f27683a4e2ac44",
+          "gap": {
+            "CFL3D": {
+              "cf": 0.002927320042618753,
+              "cd": -0.005574875751304553
+            },
+            "FUN3D": {
+              "cf": 0.0062668911419125894,
+              "cd": 0.003586355145781317
+            }
+          }
+        },
+        {
+          "grid": "273x193",
+          "cells": 52224,
+          "converged": true,
+          "iterations": 1694,
+          "drop": {
+            "density": 10.984353775,
+            "momentum-x": 10.0001151285,
+            "momentum-z": 11.0097305224,
+            "energy": 10.98881032,
+            "nu-tilde": 10.16341116
+          },
+          "cd": 0.002858512318,
+          "cf": 0.0027207427675400354,
+          "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+          "case_sha256": "77d534ac3f215303e387153a13f021b1a937cfa91b7bb5873f4841902b484bcd",
+          "mesh_sha256": "275dc1368f8d5d867cc354c4312396ab2e52458dbbaff3866b50d85b61308d24",
+          "source_sha256": "40be4c0a92b75892189263a5c3efb63fa112030912480427e1e0787c6cb97955",
+          "gap": {
+            "CFL3D": {
+              "cf": 0.0051742282329843015,
+              "cd": -0.0009775915503806853
+            },
+            "FUN3D": {
+              "cf": 0.006011503373213545,
+              "cd": 0.003714735564354976
+            }
+          }
+        },
+        {
+          "grid": "545x385",
+          "cells": 208896,
+          "converged": true,
+          "iterations": 3458,
+          "drop": {
+            "density": 11.125123168,
+            "momentum-x": 10.000489495899998,
+            "momentum-z": 11.1342153314,
+            "energy": 11.047403299,
+            "nu-tilde": 10.582014417
+          },
+          "cd": 0.002863919133,
+          "cf": 0.002721554261625333,
+          "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+          "case_sha256": "372d5ead15a5522c56984766a6fa31eec39ad0915fb7f60bd1db284c44d6420a",
+          "mesh_sha256": "9306d888b472d27c394201afbfa7b1fad520692cefe7e1e3d29b715286c6f999",
+          "source_sha256": "a2b2075ac51944ca2c845b9dfe12129337cee7abe15ec0cd77fc3576640ee889",
+          "gap": {
+            "CFL3D": {
+              "cf": 0.0058887510498679685,
+              "cd": 0.0014218399234577905
+            },
+            "FUN3D": {
+              "cf": 0.005969360333609952,
+              "cd": 0.004014113036811207
+            }
+          }
+        }
+      ],
+      "continuum": {
+        "cf": {
+          "estimate": 0.00272233530252439,
+          "order": 1.0278550636362183,
+          "gci_fine": 9.76301123820881e-07
+        },
+        "cd": {
+          "estimate": 0.0028740870296364626,
+          "order": 0.6151841826456397,
+          "gci_fine": 1.270987079557867e-05
+        }
+      },
+      "gate": {
+        "cf": {
+          "pass": false,
+          "relative": 0.006185431151829457
+        },
+        "cd": {
+          "pass": false,
+          "relative": 0.0053121933738369265
+        }
+      },
+      "pass": false
+    },
+    "sa": {
+      "levels": [
+        {
+          "grid": "35x25",
+          "cells": 816,
+          "converged": true,
+          "iterations": 703,
+          "drop": {
+            "density": 11.753541947,
+            "momentum-x": 11.2134244954,
+            "momentum-z": 11.915572105999999,
+            "energy": 11.781456536,
+            "nu-tilde": 10.00893487
+          },
+          "cd": 0.002805269219,
+          "cf": 0.002700544970220002,
+          "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+          "case_sha256": "a7ba068591eb5ca527d0b90d2bd282ca89d39f8180f1221e80d1277293a09ac8",
+          "mesh_sha256": "fcc48ec6866e10e5f7d6318dc78df42d64ddcc35e7b5347a8926c5472839b480",
+          "source_sha256": "41c409f49afca8affaafd4a0a49c6ba934eca9007da502fe0c20afbd091500b0",
+          "gap": {
+            "CFL3D": {
+              "cf": -0.03403105394832173,
+              "cd": -0.05047157924275125
+            },
+            "FUN3D": {
+              "cf": 0.01243439652575895,
+              "cd": 0.011323653797831845
+            }
+          }
+        },
+        {
+          "grid": "69x49",
+          "cells": 3264,
+          "converged": true,
+          "iterations": 808,
+          "drop": {
+            "density": 11.216289743,
+            "momentum-x": 10.9389414961,
+            "momentum-z": 11.4688355929,
+            "energy": 11.484609991000001,
+            "nu-tilde": 10.004551253
+          },
+          "cd": 0.002836042146,
+          "cf": 0.0027149533858877657,
+          "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+          "case_sha256": "efe677086e2b6fc73b1d00bc3c729603d32bc79526672ca17a600d2a79738b84",
+          "mesh_sha256": "983e6cc0a8661d04b92b7f24f3519ab63fe1dfba155646c0ef77b45794691fd0",
+          "source_sha256": "18c1d1c82cf91bdad89b2c2963129fc992fcd8b98fda4b3e79b7397ee52ba223",
+          "gap": {
+            "CFL3D": {
+              "cf": -0.004909047221451579,
+              "cd": -0.01675809819504126
+            },
+            "FUN3D": {
+              "cf": 0.007412846676645213,
+              "cd": 0.0047477330627592185
+            }
+          }
+        },
+        {
+          "grid": "137x97",
+          "cells": 13056,
+          "converged": true,
+          "iterations": 949,
+          "drop": {
+            "density": 11.176512774,
+            "momentum-x": 10.28435257175,
+            "momentum-z": 11.1744135874,
+            "energy": 11.178353315,
+            "nu-tilde": 10.008006338000001
+          },
+          "cd": 0.002850229183,
+          "cf": 0.0027190876868709536,
+          "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+          "case_sha256": "a951cb55be5fbc0c159622039cfb72711249d37ad188d041a82ef5ceee96fc01",
+          "mesh_sha256": "410003c8a7476e029e7f12203c09961fce34c788a85916a2d65ac22f43660d85",
+          "source_sha256": "55ae965f2151e5644e3c7c1b6fecea7ce0a16cf4c34eae6997f27683a4e2ac44",
+          "gap": {
+            "CFL3D": {
+              "cf": 0.002927153350784195,
+              "cd": -0.005575303842880408
+            },
+            "FUN3D": {
+              "cf": 0.006266723895023585,
+              "cd": 0.0035859231103732014
+            }
+          }
+        },
+        {
+          "grid": "273x193",
+          "cells": 52224,
+          "converged": true,
+          "iterations": 1696,
+          "drop": {
+            "density": 10.987358415000001,
+            "momentum-x": 10.001135548499999,
+            "momentum-z": 11.015111942399999,
+            "energy": 10.993056053,
+            "nu-tilde": 10.165120757
+          },
+          "cd": 0.002858511489,
+          "cf": 0.0027207435543654384,
+          "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+          "case_sha256": "4e789aed680733ff80a28cd1df259f0eec8ada7d093265bd69a6b83e959d3067",
+          "mesh_sha256": "275dc1368f8d5d867cc354c4312396ab2e52458dbbaff3866b50d85b61308d24",
+          "source_sha256": "40be4c0a92b75892189263a5c3efb63fa112030912480427e1e0787c6cb97955",
+          "gap": {
+            "CFL3D": {
+              "cf": 0.0051745189244185585,
+              "cd": -0.0009778812778629131
+            },
+            "FUN3D": {
+              "cf": 0.006011794306783669,
+              "cd": 0.003714444476046408
+            }
+          }
+        },
+        {
+          "grid": "545x385",
+          "cells": 208896,
+          "converged": true,
+          "iterations": 3462,
+          "drop": {
+            "density": 11.126519628,
+            "momentum-x": 10.000232625899999,
+            "momentum-z": 11.1353592214,
+            "energy": 11.049587419,
+            "nu-tilde": 10.580841166999999
+          },
+          "cd": 0.002863916675,
+          "cf": 0.0027215557747863137,
+          "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+          "case_sha256": "7089b11da3aa8bad45836ad1539da8458560269a4ace1b0010765453c0a4dc41",
+          "mesh_sha256": "9306d888b472d27c394201afbfa7b1fad520692cefe7e1e3d29b715286c6f999",
+          "source_sha256": "a2b2075ac51944ca2c845b9dfe12129337cee7abe15ec0cd77fc3576640ee889",
+          "gap": {
+            "CFL3D": {
+              "cf": 0.0058893103154429305,
+              "cd": 0.0014209804386862146
+            },
+            "FUN3D": {
+              "cf": 0.005969919644003063,
+              "cd": 0.0040132513271837755
+            }
+          }
+        }
+      ],
+      "continuum": {
+        "cf": {
+          "estimate": 0.002722337739227042,
+          "order": 1.0276440252646664,
+          "gci_fine": 9.774555509100923e-07
+        },
+        "cd": {
+          "estimate": 0.0028740712864498514,
+          "order": 0.6156882418727556,
+          "gci_fine": 1.269326431231442e-05
+        }
+      },
+      "gate": {
+        "cf": {
+          "pass": false,
+          "relative": 0.006186331766351971
+        },
+        "cd": {
+          "pass": false,
+          "relative": 0.005306686645161207
+        }
+      },
+      "pass": false
+    }
+  },
+  "references": {
+    "CFL3D": {
+      "cf": {
+        "estimate": 0.0027052439493453558,
+        "order": 1.9838797536101658,
+        "gci_fine": 4.71975818305278e-07
+      },
+      "cd": {
+        "estimate": 0.0028592366289197303,
+        "order": 1.7500471768149262,
+        "gci_fine": 7.703138503367965e-07
+      }
+    },
+    "FUN3D": {
+      "cf": {
+        "estimate": 0.0027060046668089996,
+        "order": 1.3411017732433166,
+        "gci_fine": 7.499260515243229e-07
+      },
+      "cd": {
+        "estimate": 0.002858607214797135,
+        "order": 0.7982389114357564,
+        "gci_fine": 7.672768496418893e-06
+      }
+    }
+  }
+}

@@ -253,7 +253,8 @@ def test_published_configuration_is_run_as_it_is() -> None:
     may_change = {"MESH_FILENAME", "MESH_FORMAT", "MACH_NUMBER", "AOA", "FREESTREAM_PRESSURE",
                   "FREESTREAM_TEMPERATURE", "ITER", "CONV_FIELD", "CONV_RESIDUAL_MINVAL",
                   "HISTORY_OUTPUT", "TABULAR_FORMAT", "CONV_FILENAME", "OUTPUT_FILES",
-                  "OUTPUT_WRT_FREQ"}  # fmt: skip
+                  "OUTPUT_WRT_FREQ", "SURFACE_FILENAME", "VOLUME_OUTPUT",
+                  "WRT_RESTART_COMPACT"}  # fmt: skip
     assert {k: v for k, v in before.items() if k not in may_change} == {
         k: v for k, v in opts.items() if k in before and k not in may_change
     }
@@ -725,6 +726,33 @@ def test_flat_plate_grid_converts_with_the_tmr_boundaries(tmp_path: Path) -> Non
     directed = {(int(q[k]), int(q[(k + 1) % 4])) for q in elements[:, 1:5] for k in range(4)}
     for marker in markers.values():
         assert all((int(a), int(b)) in directed for _, a, b in marker)
+    # The same grid written otherwise (points renumbered, farfield edges reversed, as in SU2's own
+    # 137x97 file) is the same grid; a moved point is not.
+    perm = np.random.default_rng(0).permutation(len(points))
+    new = np.empty_like(perm)
+    new[perm] = np.arange(len(perm))
+
+    def rewrite(path: Path, pts: np.ndarray) -> None:
+        lines = ["NDIME= 2", f"NELEM= {len(elements)}"]
+        lines += [f"9 {' '.join(str(new[v]) for v in q[1:5])} {k}" for k, q in enumerate(elements)]
+        lines += [f"NPOIN= {len(pts)}"]
+        lines += [f"{pts[p, 0]:.17g} {pts[p, 1]:.17g} {k}" for k, p in enumerate(perm)]
+        lines += [f"NMARK= {len(markers)}"]
+        for name, m in markers.items():
+            edges = m[:, [2, 1]] if name == "farfield" else m[:, 1:]
+            lines += [f"MARKER_TAG= {name}", f"MARKER_ELEMS= {len(m)}"]
+            lines += [f"3 {new[a]} {new[b]}" for a, b in edges]
+        path.write_text("\n".join(lines) + "\n")
+
+    pts = points[:, :2].astype(float)
+    rewrite(tmp_path / "theirs.su2", pts)
+    check = flatplate.same_grid(tmp_path / "plate.su2", tmp_path / "theirs.su2")
+    assert check["same"]
+    assert check["markers_oriented_otherwise"] == ["farfield"]
+    moved = pts.copy()
+    moved[markers["wall"][0, 2], 0] += 1e-3
+    rewrite(tmp_path / "moved.su2", moved)
+    assert not flatplate.same_grid(tmp_path / "plate.su2", tmp_path / "moved.su2")["same"]
     # A grid whose plate does not reach x = 2 is not the 2DZP case.
     _plot3d_2d(grid, x * 0.9, y)
     with pytest.raises(VVError) as err:
@@ -745,7 +773,8 @@ def test_flat_plate_configuration_and_skin_friction(tmp_path: Path) -> None:
     after = config.options(flatplate.configure(published, "plate.su2"))
     may_change = {"MESH_FILENAME", "MESH_FORMAT", "ITER", "CONV_FIELD", "CONV_RESIDUAL_MINVAL",
                   "HISTORY_OUTPUT", "TABULAR_FORMAT", "CONV_FILENAME", "OUTPUT_FILES",
-                  "OUTPUT_WRT_FREQ"}  # fmt: skip
+                  "OUTPUT_WRT_FREQ", "SURFACE_FILENAME", "VOLUME_OUTPUT",
+                  "WRT_RESTART_COMPACT"}  # fmt: skip
     assert {k: v for k, v in before.items() if k not in may_change} == {
         k: v for k, v in after.items() if k in before and k not in may_change
     }
@@ -758,8 +787,23 @@ def test_flat_plate_configuration_and_skin_friction(tmp_path: Path) -> None:
     surface = tmp_path / "surface.csv"
     xs = np.linspace(0.0, 2.0, 9)
     rows = ['"PointID","x","y","Skin_Friction_Coefficient_x"']
-    rows += [f"{k}, {xv!r}, 0.0, {0.004 - 0.001 * xv!r}" for k, xv in enumerate(xs[::-1])]
+    rows += [f"{k}, {xv:.17g}, 0.0, {0.004 - 0.001 * xv:.17g}" for k, xv in enumerate(xs[::-1])]
     surface.write_text("\n".join(rows) + "\n")
     assert flatplate.skin_friction(surface) == pytest.approx(
         0.004 - 0.001 * flatplate.CF_STATION, rel=1e-14
     )
+    # SU2 v8.6.0's own outputs of the 35x25 grid, configured by `configure`: the surface file
+    # carries the skin friction, the history the SA residual.
+    real = DATA / "su2-v8.6.0-flatplate-35x25-surface.csv"
+    with real.open() as f:
+        wall = sorted(
+            (float(r["x"]), float(r["Skin_Friction_Coefficient_x"]))
+            for r in csv.DictReader(f, skipinitialspace=True)
+        )
+    left = max(w for w in wall if w[0] <= flatplate.CF_STATION)
+    right = min(w for w in wall if w[0] > flatplate.CF_STATION)
+    cf = flatplate.skin_friction(real)
+    assert min(left[1], right[1]) <= cf <= max(left[1], right[1])
+    run = history.read_su2(DATA / "su2-v8.6.0-flatplate-35x25-history.csv")
+    assert set(run.residuals) == {"density", "momentum-x", "momentum-z", "energy", "nu-tilde"}
+    assert history.converged_at(run, 10.0) == len(run.iterations) - 1

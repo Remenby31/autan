@@ -1,0 +1,13 @@
+{
+  "ours": "flatplate_clust2_2levelsdown_137x97.su2",
+  "theirs": "mesh_flatplate_turb_137x97.su2",
+  "theirs_sha256": "8c720c21c0fc5a84f33565df9c0b0b361e4d3ac67d97fa96ab928783a52c6707",
+  "same": true,
+  "max_coordinate_difference": 2.220446049250313e-16,
+  "tolerance": 2e-12,
+  "markers_differing": [],
+  "markers_oriented_otherwise": [
+    "inlet",
+    "farfield"
+  ]
+}
