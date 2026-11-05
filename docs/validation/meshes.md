@@ -42,22 +42,22 @@ Agreed with the core mesh readers (#1):
 
 ## RAE 2822 C-grids
 
-`python -m autan_vv.meshes.cgrid f8621.txt DIR` (source `vv/src/autan_vv/meshes/cgrid.py`) writes the three nested 2D PLOT3D levels of the RAE 2822 for the transonic gate of #395, `rae2822-{coarse,medium,fine}.p2dfmt`, and `quality.json`; `physics/tmr/plot3d.py --zones airfoil --plane xz` makes them one-layer slabs and `physics/tmr/case.sh rae2822` runs case 9. The tape is fetched by `autan-vv` from the pinned TMR copy (catalog `rae2822`, CC0-1.0) and never vendored. Decisions and criteria: #408.
+`python -m autan_vv.meshes.construct2d CONSTRUCT2D f8621.txt DIR` (source `vv/src/autan_vv/meshes/construct2d.py`) runs Construct2D 2.1.4 on the RAE 2822 and writes the three nested 2D PLOT3D levels for the transonic gate of #395, `rae2822-{coarse,medium,fine}.p2dfmt`, and `quality.json`; `physics/tmr/plot3d.py --zones airfoil --plane xz` makes them one-layer slabs and `physics/tmr/case.sh rae2822` runs case 9. The tape is fetched by `autan-vv` from the pinned TMR copy (catalog `rae2822`, CC0-1.0) and never vendored. Criteria and the three rounds that selected these parameters: #408, #449.
 
-- **Surface.** File 1121 of the 1981 tape: the measured ordinates `YUS/C`, `YLS/C` at 65 stations (the design columns unused), the lower ones stored as magnitudes. The two surfaces' leading- and trailing-edge values differ by less than the tape's quantisation step (range/10 000) and take their mean; the trailing edge is closed and sharp. Each surface is a cubic spline in arc length.
-- **Nodes on the airfoil and wake cut.** 240 cells per surface (fine level), s = L[w(1 − cos(πt/2)) + (1 − w)(1 − cos πt)/2] with w = 0.5: 3.3 × 10⁻⁵ c at the leading edge, 3.35 × 10⁻³ c at the trailing edge. The plain cosine law (w = 0, 4 × 10⁻⁵ c at the trailing edge) let lines cross off the upper trailing edge, where the surface meets the wake in a corner concave on the fluid side. 128 wake cells per side, geometric from the trailing-edge spacing to 500 chords; the two halves coincide node for node and become interior faces.
-- **March.** Steger and Sorenson's volume–orthogonality system, linearised and solved implicitly line by line (block tridiagonal in i). Each line lies the prescribed step from the previous one: the cell area per node is rescaled twice by the step over the length obtained. Normal steps grow geometrically from Δy₁ = 10⁻⁶ c over 128 cells to 500 chords. A dissipation on each step, 0.3 times the node's step-to-spacing ratio and ramped in over the first 8 lines, is ours; the source gives none.
+- **Tool.** Construct2D (D. Prosser) is GPL-3.0: a development tool run offline, like Gmsh, never vendored, linked or shipped. The module pins the release (`Construct2D_2.1.4.zip`, SHA-256 `9926dd6c…3159`) and each level's SHA-256; a level that differs is `V0312`, a run that writes no grid `V0311`. The pinned grids come from the release's `Makefile_Linux_MacOSX` unchanged, built with `gfortran-13` 13.3.0-6ubuntu2~24.04.1 in an image derived from `autan-dev:local` on linux-aarch64. A build in a fixed directory is byte-reproducible (its debug information records the path), and two runs give byte-identical grids.
+- **Surface.** File 1121 of the 1981 tape: the measured ordinates `YUS/C`, `YLS/C` at 65 stations (the design columns unused), the lower ones stored as magnitudes. The two surfaces' leading- and trailing-edge values differ by less than the tape's quantisation step (range/10 000) and take their mean; the trailing edge is closed and sharp. Construct2D re-panels it with XFoil's routines: 481 points, 5 × 10⁻⁴ c at the leading edge, 10⁻³ c at the trailing edge.
+- **Grid.** Elliptic (`slvr = 'ELLP'`): an algebraic C-grid normal to the wall, smoothed by the Laplace system for 5 000 iterations, then the normal spacing (Δy₁ = 10⁻⁶ c, geometric to the outer boundary) and 20 more iterations. 128 wake cells per side; the two halves coincide node for node and become interior faces. The outer boundary is a half-circle of 500 c about mid-chord ahead of the airfoil and the lines y = ±500 c of the 2D grid (z in the slab) behind it; its points on those lines start at 700 times the wake cut's first spacing at the trailing edge (`fwki`), which sets the outer line's uniformity.
 - **Levels.** Fine 737 × 129 nodes; medium and coarse are every other line (Δy₁ = 2.15 × 10⁻⁶ c and 5.01 × 10⁻⁶ c).
 
-Measured on the generated grids (criteria of #408, blocking on the fine level, nested bounds on the others):
+Measured on the generated grids; bounds in brackets (N1–N4 from #449, the others from #408):
 
-| Level | Cells | Smallest cell area | Wall angle | Normal stretching |
-|---|---|---|---|---|
-| fine | 736 × 128 | 3.3 × 10⁻¹¹ | < 0.001° (≤ 2°) | 1.157 (≤ 1.25) |
-| medium | 368 × 64 | 2.8 × 10⁻¹⁰ | 0.68° | 1.338 (≤ 1.56) |
-| coarse | 184 × 32 | 2.6 × 10⁻⁹ | 3.3° | 1.787 (≤ 2.44) |
+| Level | Cells | N2 [≥ 0.1] | N3 [≤ 100] | N4 [≥ 55°] | Normal stretching | Wall angle | Smallest cell area |
+|---|---|---|---|---|---|---|---|
+| fine | 736 × 128 | 0.200 | 95.7 | 56.1° | 1.153 [≤ 1.25] | 0.06° [≤ 2°] | 5.0 × 10⁻¹⁰ |
+| medium | 368 × 64 | 0.201 | 89.2 | 56.1° | 1.330 [≤ 1.56] | 0.19° | 2.2 × 10⁻⁹ |
+| coarse | 184 × 32 | 0.201 | 78.0 | 56.3° | 1.769 [≤ 2.44] | 0.19° | 1.0 × 10⁻⁸ |
 
-The outer boundary lies 497–707 chords from mid-chord. The wall angle excludes the trailing-edge nodes; on the coarser levels it measures the coarser lines' own tangents. Tests (`vv/tests/test_cgrid.py`) run the generator on the sharp-trailing-edge NACA 0012 above: positive cells, orthogonality and stretching, nesting, the PLOT3D file through `plot3d.py` into a closed mesh whose wake cut is interior, the decoding of file 1121, and the refusals `V0310` (a first step too large for its length), `V0311` (surfaces not sharing their ends) and `V0312` (a line with coincident neighbours).
+N1 (shortest edge over the extent) is above 10⁻⁹ on every level and the outer boundary lies 500–707 c from mid-chord. **The margins on N3 and N4 are thin**: `fwki` trades one against the other (350: N3 191; 1 400: N4 51°), and 700 is the only value of the declared grid inside both bounds. The wall angle excludes the trailing-edge nodes; on the coarser levels it measures the coarser lines' own tangents. Tests (`vv/tests/test_construct2d.py`): the criteria on an orthogonal polar grid against their closed forms; the TMR NACA 0012 113 × 33 (not ours) passing N1–N4 and converted by `plot3d.py` into a closed slab whose wake cut is interior; Construct2D's output format, read right-handed; the namelist, the surface order Construct2D expects and the y⁺ that gives Δy₁ = 10⁻⁶ c through its own formula; the decoding of file 1121.
 
 ## Manifest and reproducibility
 
@@ -76,7 +76,7 @@ Gmsh is GPL-2.0-or-later. It is a development-only dependency group of `vv/`, ne
 ## References
 
 - T. J. Barth, Aspects of unstructured grids and finite-volume solvers for the Euler and Navier-Stokes equations, VKI Lecture Series 1994-05, 1994 (median dual).
-- J. L. Steger and R. L. Sorenson, Use of hyperbolic partial differential equations to generate body fitted coordinates, NASA Langley Numerical Grid Generation Techniques, pp. 463–476, 1980 (NTRS 19810006209); the method of J. L. Steger and D. S. Chaussee, *SIAM J. Sci. Stat. Comput.* 1(4):431–437, 1980. doi:10.1137/0901031
+- D. Prosser, Construct2D 2.1.4, a structured grid generator for 2D airfoils, 2018. https://sourceforge.net/projects/construct2d/
 - C. Geuzaine and J.-F. Remacle, Gmsh: a 3-D finite element mesh generator with built-in pre- and post-processing facilities, *Int. J. Numer. Meth. Eng.* 79(11):1309–1331, 2009. doi:10.1002/nme.2579
 - H. W. Kuhn, Some combinatorial lemmas in topology, *IBM J. Res. Dev.* 4(5):518–524, 1960 (cube triangulation).
 - J. C. Vassberg and A. Jameson, In pursuit of grid convergence for two-dimensional Euler solutions, *J. Aircraft* 47(4):1152–1166, 2010. doi:10.2514/1.46737

@@ -9,7 +9,7 @@
 #   naca0012   2DN00: M 0.15, Re 6e6 per chord, farfield 500 chords away, adiabatic airfoil.
 #   rae2822    RAE 2822 case 9 (Cook, McDonald and Firmin, 1981 tape file 1122): M 0.730,
 #              alpha 2.79 deg (corrected) unless ALPHA_DEG is given, Re 6.5e6 per chord, fully
-#              turbulent; the C-grids of autan_vv.meshes.cgrid, farfield about 500 chords away.
+#              turbulent; the C-grids of autan_vv.meshes.construct2d, farfield 500 to 707 chords away.
 # T = 300 K throughout; the meshes are one layer of thickness $SPAN (default 1) between `sides`.
 set -euo pipefail
 kind=$1 meshes=$2 out=$3 precision=${4:-fp64} iterations=${5:-20000}
