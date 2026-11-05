@@ -170,10 +170,10 @@ struct NavierStokes<P>::Impl {
           const auto f = static_cast<std::size_t>(-e - 1);
           x = {g.face_centroid_x[f], g.face_centroid_y[f], g.face_centroid_z[f]};
         }
-        d[k] = {x[0] - g.cell_centroid_x[c], x[1] - g.cell_centroid_y[c],
-                x[2] - g.cell_centroid_z[c]};
+        off[k] = {x[0] - g.cell_centroid_x[c], x[1] - g.cell_centroid_y[c],
+                  x[2] - g.cell_centroid_z[c]};
         for (std::size_t a = 0; a < 3; ++a) {
-          extent[a] = std::max(extent[a], std::abs(d[k][a]));
+          extent[a] = std::max(extent[a], std::abs(off[k][a]));
         }
       }
       // The weights 1/|d|^2, |d| measured with each axis scaled by the stencil's extent along it:
@@ -184,7 +184,7 @@ struct NavierStokes<P>::Impl {
       for (std::size_t k = 0; k < entries.size(); ++k) {
         double s2 = 0.0;
         for (std::size_t a = 0; a < 3; ++a) {
-          if (extent[a] > 1e-12 * widest) s2 += std::pow(d[k][a] / extent[a], 2);
+          if (extent[a] > 1e-12 * widest) s2 += std::pow(off[k][a] / extent[a], 2);
         }
         w[k] = 1.0 / s2;
       }
@@ -200,7 +200,7 @@ struct NavierStokes<P>::Impl {
       for (std::size_t k = 0; k < entries.size(); ++k) {
         if (entries[k] >= 0) continue;
         const auto f = static_cast<std::size_t>(-entries[k] - 1);
-        const double r2 = d[k][0] * d[k][0] + d[k][1] * d[k][1] + d[k][2] * d[k][2];
+        const double r2 = off[k][0] * off[k][0] + off[k][1] * off[k][1] + off[k][2] * off[k][2];
         const std::array<double, 3> s{g.face_area_x[f], g.face_area_y[f], g.face_area_z[f]};
         const double area = std::sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
         if (!(r2 < nearest) || !(area > 0.0)) continue;
@@ -224,7 +224,7 @@ struct NavierStokes<P>::Impl {
       for (std::size_t k = 0; k < entries.size(); ++k) {
         std::array<double, 3> r{};
         for (std::size_t a = 0; a < 3; ++a) {
-          r[a] = axes[a][0] * d[k][0] + axes[a][1] * d[k][1] + axes[a][2] * d[k][2];
+          r[a] = axes[a][0] * off[k][0] + axes[a][1] * off[k][1] + axes[a][2] * off[k][2];
           local[a] = std::max(local[a], std::abs(r[a]));
         }
         for (std::size_t i = 0; i < nt; ++i) {
