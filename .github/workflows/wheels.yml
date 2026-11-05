@@ -19,8 +19,10 @@ on:
 
 permissions: {}
 
+# A push runs in a group of its own commit: a group holds one pending run, which the next one
+# replaces, so a group shared by pushes would leave commits of main untested.
 concurrency:
-  group: wheels-${{ github.ref }}-${{ github.event_name }}
+  group: wheels-${{ github.event_name == 'pull_request' && github.ref || github.sha }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

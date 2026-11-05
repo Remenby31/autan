@@ -14,9 +14,10 @@ on:
 
 permissions: {}
 
-# Pull requests cancel their older run; runs on main queue, each checking a merged commit.
+# Pull requests cancel their older run. A push runs in a group of its own commit, so every merged
+# commit is checked: a group holds one pending run, which the next one replaces.
 concurrency:
-  group: gpu-hip-${{ github.ref }}
+  group: gpu-hip-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
