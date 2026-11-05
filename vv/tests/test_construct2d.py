@@ -46,24 +46,67 @@ def test_the_criteria_of_an_orthogonal_polar_grid_take_their_closed_forms() -> N
     assert m["first_step_max"] == pytest.approx(r0 * (q - 1), rel=tol)
 
 
+def test_a_sheared_uneven_grid_has_its_closed_form_criteria_and_fails_n2_to_n4() -> None:
+    # x = s_i + t_j cos(phi), y = t_j sin(phi): xi-lines along x with steps ds_i, eta-lines at phi
+    # with geometric steps dt_j, so N1 to N4, the stretching and the wall angle are closed forms.
+    phi, q, dt0 = math.radians(40.0), 1.5, 0.2
+    ds = np.array([1.0, 1.0, 0.01, 1.0, 1.0, 1.0, 1.0, 1.0])
+    s = np.concatenate([[0.0], np.cumsum(ds)])
+    dt = dt0 * q ** np.arange(6)
+    t = np.concatenate([[0.0], np.cumsum(dt)])
+    grid = construct2d.CGrid(
+        s[None, :] + t[:, None] * math.cos(phi),
+        np.broadcast_to(t[:, None] * math.sin(phi), (7, 9)),
+        0,
+    )
+    m = construct2d.criteria(grid)
+    tol = 1e3 * np.finfo(np.float64).eps
+    extent = max(s[-1] + t[-1] * math.cos(phi), t[-1] * math.sin(phi))
+    assert m["min_area"] == pytest.approx(ds.min() * dt0 * math.sin(phi), rel=tol)
+    assert m["n1_min_edge_over_extent"] == pytest.approx(ds.min() / extent, rel=tol)
+    assert m["n2_outer_min_over_mean"] == pytest.approx(ds.min() / ds.mean(), rel=tol)
+    assert m["n3_outer_aspect"] == pytest.approx(dt[-1] / ds.min(), rel=tol)
+    assert m["n4_min_angle_deg"] == pytest.approx(40.0, rel=tol)
+    assert m["wall_angle_deg"] == pytest.approx(50.0, rel=tol)
+    assert m["max_stretch"] == pytest.approx(q, rel=tol)
+    checks = construct2d.passes("fine", m)
+    keys = ("N1", "N2", "N3", "N4", "areas", "stretch", "wall_angle")
+    assert {k: checks[k] for k in keys} == {
+        "N1": True,
+        "N2": False,
+        "N3": False,
+        "N4": False,
+        "areas": True,
+        "stretch": False,
+        "wall_angle": False,
+    }
+
+
+def _construct2d_file(path: Path, grid: construct2d.CGrid) -> list[str]:
+    # Construct2D 2.1.4 (util.f90, write_srf_grid) writes `imax jmax`, then x and y over j with i
+    # from imax down to 1, in ES17.8: a right-handed grid written that way reads left-handed.
+    nj, ni = grid.x.shape
+    values = [f"{v:17.8E}" for a in (grid.x, grid.y) for v in a[:, ::-1].ravel()]
+    path.write_text(f" {ni} {nj}\n" + "\n".join(values) + "\n")
+    return values
+
+
 def test_construct2d_output_is_read_right_handed_and_a_short_file_is_refused(
     tmp_path: Path,
 ) -> None:
-    # Construct2D 2.1.4 (util.f90, write_srf_grid) writes `imax jmax`, then x and y over j with i
-    # from imax down to 1, in ES17.8: a right-handed grid written that way reads left-handed.
     ni = construct2d.NSRF + 2 * 4
     grid = _polar(ni, 3, 1.0, 1.5, math.pi / ni)
-    values = [f"{v:17.8E}" for a in (grid.x, grid.y) for v in a[:, ::-1].ravel()]
     path = tmp_path / "rae2822.p3d"
-    path.write_text(f" {ni} 3\n" + "\n".join(values) + "\n")
+    values = _construct2d_file(path, grid)
     read = construct2d.read_grid(path)
     np.testing.assert_allclose(read.x, grid.x, rtol=1e-8, atol=1e-12)
     np.testing.assert_allclose(read.y, grid.y, rtol=1e-8, atol=1e-12)
     assert read.wake_cells == 4
-    path.write_text(f" {ni} 3\n" + "\n".join(values[:-1]) + "\n")
-    with pytest.raises(VVError) as err:
-        construct2d.read_grid(path)
-    assert err.value.code == "V0311"
+    for text in (f" {ni} 3\n" + "\n".join(values[:-1]), "", f" {ni}\n", " 3 x\n", f" {ni} 3\n NaN"):
+        path.write_text(text + "\n")
+        with pytest.raises(VVError) as err:
+            construct2d.read_grid(path)
+        assert err.value.code == "V0311"
 
 
 def test_the_inputs_are_the_selected_namelist_and_a_surface_in_construct2d_order(
@@ -95,9 +138,7 @@ def test_the_inputs_are_the_selected_namelist_and_a_surface_in_construct2d_order
     assert ypls * cfrc / (re_c * math.sqrt(0.5 * cf)) == pytest.approx(1.0e-6, rel=1e-14)
 
 
-def test_the_rae2822_section_is_the_measured_columns_with_the_lower_surface_negative(
-    tmp_path: Path,
-) -> None:
+def _tape(tmp_path: Path) -> Path:
     # File 1121 holds X/C, YUS/C, YLS/C and the two design columns (the tape's write-up).
     tape = tmp_path / "f8621.txt"
     tape.write_text(
@@ -109,7 +150,13 @@ def test_the_rae2822_section_is_the_measured_columns_with_the_lower_surface_nega
         " 10000     0    10     0     0\n"
         "-------------- END OF FILE NUMBER  1121-------------\n"
     )
-    upper, lower = construct2d.rae2822(tape, ())
+    return tape
+
+
+def test_the_rae2822_section_is_the_measured_columns_with_the_lower_surface_negative(
+    tmp_path: Path,
+) -> None:
+    upper, lower = construct2d.rae2822(_tape(tmp_path), ())
     np.testing.assert_allclose(upper[:, 0], [0.0, 0.5, 1.0])
     np.testing.assert_allclose(upper[1], [0.5, 0.06])
     np.testing.assert_allclose(lower[1], [0.5, -0.05])
@@ -148,3 +195,19 @@ def test_the_tmr_naca0012_grid_passes_n1_to_n4_and_converts_to_a_closed_slab(
     assert set(zones) == {"airfoil", "farfield", "sides"}
     # Only the airfoil's faces remain on j = 0: the wake's are interior.
     assert zones["airfoil"].count == ni - 1 - 2 * w
+
+
+def test_a_run_that_writes_no_grid_fails_even_beside_an_earlier_grid(tmp_path: Path) -> None:
+    # A Construct2D that exits 0 without writing (the 2.1.4 behaviour when its spline fails): the
+    # earlier run's grid in the same directory must not be taken for this run's.
+    exe = tmp_path / "construct2d"
+    exe.write_text("#!/bin/sh\nexit 0\n")
+    exe.chmod(0o755)
+    out = tmp_path / "out"
+    out.mkdir()
+    ni = construct2d.NSRF + 2 * 4
+    _construct2d_file(out / "rae2822.p3d", _polar(ni, 3, 1.0, 1.5, math.pi / ni))
+    with pytest.raises(VVError) as err:
+        construct2d.generate(exe, _tape(tmp_path), out)
+    assert err.value.code == "V0311"
+    assert not (out / "rae2822.p3d").exists()

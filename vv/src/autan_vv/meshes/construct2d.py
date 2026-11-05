@@ -15,6 +15,7 @@ interior faces.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import math
@@ -26,7 +27,7 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 
-from autan_vv.cases import read_tape_1981
+from autan_vv.cases import fetch, get_case, read_tape_1981
 from autan_vv.errors import VVError
 
 FloatArray = npt.NDArray[np.float64]
@@ -92,6 +93,14 @@ class CGrid:
         return CGrid(self.x[::2, ::2], self.y[::2, ::2], self.wake_cells // 2)
 
 
+def tape(cache: Path) -> Path:
+    """The 1981 tape (Bradshaw's f8621.txt) from the catalog's pinned TMR copy, CC0-1.0, verified by
+    its SHA-256; the catalog's other `rae2822` files, from NPARC, are not fetched (#408)."""
+    case = get_case("rae2822")
+    only = dataclasses.replace(case, files=(case.file("f8621.txt"),))
+    return fetch(only, cache, roles=(only.files[0].role,))[0]
+
+
 def rae2822(tape: Path, corrupt: tuple[int, ...] = (1124,)) -> tuple[FloatArray, FloatArray]:
     """Upper and lower surfaces of the RAE 2822 from file 1121 of the 1981 tape (Bradshaw's
     f8621.txt): X/C, YUS/C, YLS/C as measured (the design columns are not used), the lower
@@ -145,12 +154,16 @@ def _areas(x: FloatArray, y: FloatArray) -> FloatArray:
 
 def read_grid(path: Path) -> CGrid:
     """Construct2D's 2D PLOT3D file (`imax jmax`, then x and y with i fastest), oriented so that
-    cells are right-handed in i, j. VVError V0311 if its values do not fill the grid."""
+    cells are right-handed in i, j. VVError V0311 if it is not such a file."""
     values = path.read_text().split()
-    ni, nj = int(values[0]), int(values[1])
-    data = np.array(values[2:], dtype=np.float64)
-    if data.size != 2 * ni * nj:
-        msg = f"{path} holds {data.size} values for a {ni} x {nj} grid"
+    try:
+        ni, nj = int(values[0]), int(values[1])
+        data = np.array(values[2:], dtype=np.float64)
+    except (IndexError, ValueError) as exc:
+        msg = f"{path} is not a 2D PLOT3D grid of Construct2D"
+        raise VVError(msg, code="V0311") from exc
+    if ni < 3 or nj < 2 or data.size != 2 * ni * nj or not np.isfinite(data).all():
+        msg = f"{path} holds {data.size} values for a {ni} x {nj} grid, or non-finite ones"
         raise VVError(msg, code="V0311")
     x = data[: ni * nj].reshape(nj, ni)
     y = data[ni * nj :].reshape(nj, ni)
@@ -233,6 +246,9 @@ def generate(exe: Path, tape: Path, out: Path) -> dict[str, object]:
     level's measures. VVError V0311 if Construct2D writes no grid, V0312 if a level's SHA-256
     differs from its pinned value (a build or input other than the pinned ones)."""
     out.mkdir(parents=True, exist_ok=True)
+    stale = ["rae2822.p3d", "rae2822_stats.p3d", "rae2822.nmf", "quality.json"]
+    for name in stale + [f"rae2822-{level}.p2dfmt" for level in GRIDS]:
+        (out / name).unlink(missing_ok=True)
     write_inputs(*rae2822(tape), out)
     run = subprocess.run(
         [str(exe), "rae2822.dat"],
@@ -275,10 +291,10 @@ def main(argv: list[str] | None = None) -> None:
     """Writes the three nested RAE 2822 levels (issues #408, #449) and their measures as JSON."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("exe", type=Path, help=f"construct2d built from Construct2D {VERSION}")
-    parser.add_argument("tape", type=Path, help="Bradshaw/d2/f8621.txt as fetched by autan-vv")
     parser.add_argument("out", type=Path)
+    parser.add_argument("--cache", type=Path, default=Path("~/.cache/autan-vv").expanduser())
     args = parser.parse_args(argv)
-    report = generate(args.exe.resolve(), args.tape, args.out)
+    report = generate(args.exe.resolve(), tape(args.cache), args.out)
     (args.out / "quality.json").write_text(json.dumps(report, indent=1) + "\n")
     sys.stdout.write(json.dumps(report, indent=1) + "\n")
 
