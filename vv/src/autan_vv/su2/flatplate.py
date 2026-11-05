@@ -38,6 +38,8 @@ CF_STATION = 0.970084071
 # acceptance.md, M3: the gate's centres and its 0.5 % half-width.
 GATE = {"cf": 2.7056e-3, "cd": 2.8589e-3}
 GATE_TOLERANCE = 0.005
+# case-schema.md (Time): the criterion the gate is registered with.
+ORDERS = 10.0
 # Primary: SU2's published configuration (SA-noft2 in v8.6.0); secondary: standard SA, TMR's model.
 MODELS: dict[str, str | None] = {"sa-noft2": None, "sa": "WITHFT2"}
 # What `configure` changes in SU2's published configuration; nothing that sets the model, the
@@ -145,9 +147,9 @@ def convert(grid: Path, out: Path) -> Record:
     return record
 
 
-def read_su2_2d(path: Path) -> tuple[FloatArray, int, dict[str, IntArray]]:
-    """Points, number of elements and marker edges of an SU2 native 2D mesh (SU2's format: NDIME,
-    NELEM, NPOIN with an optional trailing index, NMARK). V0902 if it is not 2D."""
+def read_su2_2d(path: Path) -> tuple[FloatArray, IntArray, dict[str, IntArray]]:
+    """Points, quadrangles and marker edges of an SU2 native 2D mesh of quadrangles (SU2's format:
+    NDIME, NELEM, NPOIN with an optional trailing index, NMARK). V0902 otherwise."""
     lines = iter(path.read_text().splitlines())
 
     def value(key: str) -> str:
@@ -160,9 +162,12 @@ def read_su2_2d(path: Path) -> tuple[FloatArray, int, dict[str, IntArray]]:
     if int(value("NDIME")) != 2:
         msg = f"{path}: not a 2D SU2 mesh"
         raise VVError(msg, code="V0902")
-    nelem = int(value("NELEM"))
-    for _ in range(nelem):
-        next(lines)
+    cells = np.array(
+        [[int(t) for t in next(lines).split()[:5]] for _ in range(int(value("NELEM")))]
+    )
+    if np.any(cells[:, 0] != VTK_QUAD):
+        msg = f"{path}: elements other than quadrangles"
+        raise VVError(msg, code="V0902")
     npoin = int(value("NPOIN").split()[0])
     points = np.array([[float(t) for t in next(lines).split()[:2]] for _ in range(npoin)])
     markers = {}
@@ -170,22 +175,31 @@ def read_su2_2d(path: Path) -> tuple[FloatArray, int, dict[str, IntArray]]:
         tag = value("MARKER_TAG")
         n = int(value("MARKER_ELEMS"))
         markers[tag] = np.array([[int(t) for t in next(lines).split()[1:3]] for _ in range(n)])
-    return points, nelem, markers
+    return points, cells[:, 1:], markers
 
 
 def same_grid(ours: Path, theirs: Path) -> dict[str, Any]:
     """Compare two SU2 2D meshes of one grid as geometry: the point sets matched by sorted
-    coordinates, the element counts, and each marker's edges as unordered pairs of coordinates
-    (SU2 does not orient boundary edges). Returns the largest coordinate difference over matched
-    points, the markers that differ, and those whose edges run the other way."""
-    p1, e1, m1 = read_su2_2d(ours)
-    p2, e2, m2 = read_su2_2d(theirs)
-    if len(p1) != len(p2) or e1 != e2 or set(m1) != set(m2):
-        return {"same": False, "points": [len(p1), len(p2)], "elements": [e1, e2],
+    coordinates, the cells as sets of matched points, and each marker's edges as unordered pairs
+    of coordinates (SU2 does not orient boundary edges). Returns the largest coordinate difference
+    over matched points, whether the cells agree, the markers that differ, and those whose edges
+    run the other way."""
+    p1, c1, m1 = read_su2_2d(ours)
+    p2, c2, m2 = read_su2_2d(theirs)
+    if len(p1) != len(p2) or len(c1) != len(c2) or set(m1) != set(m2):
+        return {"same": False, "points": [len(p1), len(p2)], "cells": [len(c1), len(c2)],
                 "markers": [sorted(m1), sorted(m2)]}  # fmt: skip
     o1, o2 = np.lexsort(p1.T[::-1]), np.lexsort(p2.T[::-1])
     gap = float(np.max(np.abs(p1[o1] - p2[o2])))
     tol = 1e-12 * float(np.max(np.abs(p1)))
+
+    def cells(order: IntArray, conn: IntArray) -> IntArray:
+        rank = np.empty_like(order)
+        rank[order] = np.arange(len(order))
+        c = np.sort(rank[conn], axis=1)
+        return c[np.lexsort(c.T[::-1])]
+
+    same_cells = bool(np.array_equal(cells(o1, c1), cells(o2, c2)))
 
     def edges(points: FloatArray, conn: IntArray, oriented: bool) -> FloatArray:
         e = points[conn]
@@ -206,8 +220,9 @@ def same_grid(ours: Path, theirs: Path) -> dict[str, Any]:
         ]  # fmt: skip
 
     unoriented = differ(oriented=False)
-    return {"same": gap <= tol and not unoriented, "max_coordinate_difference": gap,
-            "tolerance": tol, "markers_differing": unoriented,
+    return {"same": gap <= tol and same_cells and not unoriented,
+            "max_coordinate_difference": gap, "tolerance": tol, "same_cells": same_cells,
+            "markers_differing": unoriented,
             "markers_oriented_otherwise": differ(oriented=True)}  # fmt: skip
 
 
@@ -353,51 +368,69 @@ def references(cache: Path) -> dict[str, dict[str, dict[int, float]]]:
     return out
 
 
-def results(root: Path, cache: Path, orders: float = 10.0) -> dict[str, Any]:
+def _run(run: Path, model: str) -> dict[str, Any]:
+    level = json.loads((run / "level.json").read_text())
+    prov: dict[str, Any] = history.provenance(run)["provenance"]  # type: ignore[assignment]
+    mesh = run / options((run / "case.cfg").read_text())["MESH_FILENAME"]
+    on_disk = (_sha256((run / "case.cfg").read_bytes()), _sha256(mesh.read_bytes()))
+    prepared = (level["case_sha256"], level["mesh"]["file_sha256"])
+    ran = (prov["case_sha256"], prov["mesh_sha256"])
+    if level["model"] != model or not on_disk == prepared == ran:
+        msg = f"{run}: the run's model, configuration or mesh is not the prepared one"
+        raise VVError(msg, code="V0904")
+    if prov["exit_status"] != 0:
+        msg = f"{run}: SU2 exited with {prov['exit_status']}"
+        raise VVError(msg, code="V0904")
+    runs = history.read_su2(run / "history.csv")
+    if "nu-tilde" not in runs.residuals:
+        msg = f"{run}: history.csv has no SA residual"
+        raise VVError(msg, code="V0904")
+    conv = history.convergence(runs, ORDERS)
+    # The surface file is written at the run's last iteration, so CD is read there too.
+    return {
+        "grid": run.name, "cells": level["cells"], "converged": conv.converged,
+        "iterations": conv.iterations, "last_iteration": int(runs.iterations[-1]),
+        "drop": conv.drop, "cd": float(runs.cd[-1]),
+        "cf": skin_friction(run / f"{SURFACE}.csv"),
+        "su2": prov["su2"], "image_id": prov["image_id"], "precision": "fp64",
+        "case_sha256": level["case_sha256"], "mesh_sha256": level["mesh"]["file_sha256"],
+        "source_sha256": level["mesh"]["source_sha256"],
+    }  # fmt: skip
+
+
+def results(root: Path, cache: Path) -> dict[str, Any]:
     """The report (autan.su2-flatplate/1) on the runs `prepare` wrote under `root`: per model and
-    grid, convergence by the protocol's criterion, cf at CF_STATION and CD at the converged
-    iteration and their gaps to CFL3D and FUN3D on the same grid; the continuum from the three
-    finest converged grids (h = N^-1/2) for SU2 and for both references; the M3 gate on each model.
-    V0904 if a run's configuration or mesh is not the prepared one or SU2 failed."""
+    grid, convergence by the protocol's criterion (ORDERS), cf at CF_STATION and CD at the run's
+    last iteration, and their gaps to CFL3D and FUN3D on the same grid; the continuum from the
+    three finest of the five grids (h = N^-1/2), for SU2 and for both references, none for a model
+    one of whose three finest runs did not converge; the M3 gate on each model. V0904 if a run's
+    model, configuration or mesh, as prepared, as run and as on disk, differ, if SU2 failed, or if
+    the SA residual is missing; V0905 if a model does not have the five grids or mixes SU2 builds.
+    """
     refs = references(cache)
-    report: dict[str, Any] = {"schema": REPORT_SCHEMA, "orders": orders, "models": {}}
+    report: dict[str, Any] = {"schema": REPORT_SCHEMA, "orders": ORDERS, "models": {}}
     report["references"] = {
         code: {key: _richardson([n**-0.5 for n in sorted(v)[-3:]],
                                 [v[n] for n in sorted(v)[-3:]]) for key, v in data.items()}
         for code, data in refs.items()
     }  # fmt: skip
     for model in MODELS:
-        levels = []
-        for run in sorted((root / model).iterdir(), key=lambda p: json.loads(
-                (p / "level.json").read_text())["cells"]):  # fmt: skip
-            level = json.loads((run / "level.json").read_text())
-            prov: dict[str, Any] = history.provenance(run)["provenance"]  # type: ignore[assignment]
-            mesh_sha = level["mesh"]["file_sha256"]
-            if prov["case_sha256"] != level["case_sha256"] or prov["mesh_sha256"] != mesh_sha:
-                msg = f"{run}: the run's configuration or mesh is not the prepared one"
-                raise VVError(msg, code="V0904")
-            if prov["exit_status"] != 0:
-                msg = f"{run}: SU2 exited with {prov['exit_status']}"
-                raise VVError(msg, code="V0904")
-            conv = history.convergence(history.read_su2(run / "history.csv"), orders)
-            cells = level["cells"]
-            row: dict[str, Any] = {
-                "grid": run.name, "cells": cells, "converged": conv.converged,
-                "iterations": conv.iterations, "drop": conv.drop, "cd": conv.cd,
-                "cf": skin_friction(run / f"{SURFACE}.csv"),
-                "image_id": prov["image_id"], "case_sha256": level["case_sha256"],
-                "mesh_sha256": mesh_sha, "source_sha256": level["mesh"]["source_sha256"],
-            }  # fmt: skip
-            row["gap"] = {
-                code: {k: row[k] / data[k][cells] - 1.0 for k in ("cf", "cd")}
-                for code, data in refs.items() if cells in data["cf"]
-            }  # fmt: skip
-            levels.append(row)
-        fine = [lv for lv in levels if lv["converged"]][-3:]
-        continuum = (
-            {k: _richardson([lv["cells"] ** -0.5 for lv in fine], [lv[k] for lv in fine])
-             for k in ("cf", "cd")} if len(fine) == 3 else {}
-        )  # fmt: skip
+        levels = sorted((_run(run, model) for run in (root / model).iterdir() if run.is_dir()),
+                        key=lambda lv: lv["cells"])  # fmt: skip
+        grids = sorted(refs["CFL3D"]["cf"])
+        if [lv["cells"] for lv in levels] != grids or len({(lv["su2"], lv["image_id"])
+                                                           for lv in levels}) != 1:  # fmt: skip
+            msg = f"{root / model}: not the five TMR grids run by one SU2 build"
+            raise VVError(msg, code="V0905")
+        for lv in levels:
+            lv["gap"] = {code: {k: lv[k] / data[k][lv["cells"]] - 1.0 for k in ("cf", "cd")}
+                         for code, data in refs.items()}  # fmt: skip
+        fine = levels[-3:]
+        continuum: dict[str, dict[str, Any]] = {
+            k: _richardson([lv["cells"] ** -0.5 for lv in fine], [lv[k] for lv in fine])
+            if all(lv["converged"] for lv in fine) else {"error": "not converged"}
+            for k in ("cf", "cd")
+        }  # fmt: skip
         verdicts = {
             k: {"pass": "estimate" in est
                 and abs(est["estimate"] / GATE[k] - 1.0) <= GATE_TOLERANCE,
@@ -406,6 +439,6 @@ def results(root: Path, cache: Path, orders: float = 10.0) -> dict[str, Any]:
         }  # fmt: skip
         report["models"][model] = {
             "levels": levels, "continuum": continuum, "gate": verdicts,
-            "pass": bool(verdicts) and all(v["pass"] for v in verdicts.values()),
+            "pass": all(v["pass"] for v in verdicts.values()),
         }  # fmt: skip
     return report

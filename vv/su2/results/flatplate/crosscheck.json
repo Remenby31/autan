@@ -9,5 +9,6 @@
   "markers_oriented_otherwise": [
     "inlet",
     "farfield"
-  ]
+  ],
+  "same_cells": true
 }

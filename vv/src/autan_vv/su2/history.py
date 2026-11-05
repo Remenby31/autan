@@ -32,7 +32,6 @@ SU2_2D = {"rms[Rho]": "density", "rms[RhoU]": "momentum-x", "rms[RhoV]": "moment
           "rms[RhoE]": "energy"}  # fmt: skip
 SU2_3D = {"rms[Rho]": "density", "rms[RhoU]": "momentum-x", "rms[RhoV]": "momentum-y",
           "rms[RhoW]": "momentum-z", "rms[RhoE]": "energy"}  # fmt: skip
-# Turbulence equations, read when the run solves them.
 SU2_TURBULENCE = {"rms[nu]": "nu-tilde"}
 
 
