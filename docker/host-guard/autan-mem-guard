@@ -8,9 +8,11 @@ frees no memory) every running container of the next level, one level at a time,
 apart. The stops run beside the guard, which keeps reading memory while they take effect:
   1. autan-noyau-mut*
   2. autan-noyau-*, and any other autan-* container not named below
-  3. autan-ns-*
-  4. autan-m2-rae*
-  5. autan-runner (its job-started hook already refuses jobs below the floor)
+  3. autan-su2-*
+  4. autan-mg-*
+  5. autan-ns-*
+  6. autan-m2-rae*
+  7. autan-runner (its job-started hook already refuses jobs below the floor)
 Once MemAvailable has stayed above 40 GiB for 120 s, it starts again the containers of the last
 level it stopped, then waits another 120 s above 40 GiB before the next one. It never touches
 autan-m2-h1*, autan-runner-proxy, autan-campaign-* (their watchers handle the floor themselves),
@@ -45,8 +47,8 @@ from pathlib import Path
 GIB = 1 << 30
 NEVER = ("autan-m2-h1*", "autan-runner-proxy", "autan-campaign-*")
 # Level 2 also takes every autan-* container no other level names.
-LEVELS = (("autan-noyau-mut*",), ("autan-noyau-*",), ("autan-ns-*",), ("autan-m2-rae*",),
-          ("autan-runner",))  # fmt: skip
+LEVELS = (("autan-noyau-mut*",), ("autan-noyau-*",), ("autan-su2-*",), ("autan-mg-*",),
+          ("autan-ns-*",), ("autan-m2-rae*",), ("autan-runner",))  # fmt: skip
 OTHER_LEVEL = 1
 CGROUPS = (
     Path("/sys/fs/cgroup/system.slice/docker-{id}.scope"),
@@ -92,11 +94,11 @@ def docker(*args: str, timeout: float = 120) -> tuple[int, str]:
     return out.returncode, out.stdout if out.returncode == 0 else out.stderr
 
 
-def running() -> list[tuple[str, str]]:
-    """(ID, name) of every running container."""
+def running() -> list[tuple[str, str]] | str:
+    """(ID, name) of every running container, or why docker could not list them."""
     status, out = docker("ps", "--no-trunc", "--format", "{{.ID}} {{.Names}}", timeout=30)
     if status != 0:
-        return []
+        return out.strip()[:200] or f"docker ps exited {status}"
     return [tuple(line.split(maxsplit=1)) for line in out.splitlines() if " " in line]
 
 
@@ -268,7 +270,14 @@ class Guard:
     def stop_next(self, reason: str, now: float) -> None:
         with self.lock:
             passed = {c for c, t in self.unstoppable.items() if now - t < UNSTOPPABLE_S}
-        live = [(level_of(name), cid, name) for cid, name in running() if cid not in passed]
+        listed = running()
+        if isinstance(listed, str):
+            # Never "nothing left": a guard that cannot list containers cannot protect the host.
+            if now - self.said_nothing_left >= 60:
+                self.log(f"ERROR {reason}, and docker cannot list the containers: {listed}")
+                self.said_nothing_left = now
+            return
+        live = [(level_of(name), cid, name) for cid, name in listed if cid not in passed]
         live = [entry for entry in live if entry[0] is not None]
         if not live:
             if now - self.said_nothing_left >= 600:
@@ -416,6 +425,9 @@ def main(argv: list[str] | None = None) -> int:
                                                args.disk_max_pct, args.disk_every))  # fmt: skip
     guard.log(f"started: floor {gib(guard.low)}, restart above {gib(guard.high)}; "
               f"{len(guard.stopped)} container(s) stopped by an earlier guard")  # fmt: skip
+    listed = running()
+    if isinstance(listed, str):
+        guard.log(f"ERROR docker cannot list the containers, so nothing can be stopped: {listed}")
     tick = 0
     while args.ticks == 0 or tick < args.ticks:
         guard.tick()

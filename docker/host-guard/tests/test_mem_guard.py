@@ -23,6 +23,9 @@ c = json.loads(state.read_text())
 by_id = {v["id"]: k for k, v in c.items()}
 a = sys.argv[1:]
 if a[0] == "ps":
+    if (here / "deny").exists():
+        sys.stderr.write("permission denied while trying to connect to the docker API\n")
+        sys.exit(1)
     print("\n".join(f"{v['id']} {k}" for k, v in c.items() if v["status"] == "running"))
 elif a[0] == "inspect":
     flaky = here / "fail-inspect"
@@ -53,10 +56,11 @@ elif a[0] in ("stop", "start"):
 """
 
 NAMES = ["autan-noyau-mut1", "autan-noyau-mut2", "autan-noyau-release", "autan-sdk-build",
-         "autan-ns-nssa", "autan-m2-rae2822", "autan-runner", "autan-m2-h1-2048", "autan-m2-h1",
+         "autan-su2-901598", "autan-mg-vvC", "autan-ns-nssa", "autan-m2-rae2822", "autan-runner", "autan-m2-h1-2048", "autan-m2-h1",
          "autan-runner-proxy", "autan-campaign-c440f", "robostral-api", "excalibur-mcp"]  # fmt: skip
 LEVEL = {"autan-noyau-mut1": 1, "autan-noyau-mut2": 1, "autan-noyau-release": 2,
-         "autan-sdk-build": 2, "autan-ns-nssa": 3, "autan-m2-rae2822": 4, "autan-runner": 5}  # fmt: skip
+         "autan-sdk-build": 2, "autan-su2-901598": 3, "autan-mg-vvC": 4, "autan-ns-nssa": 5,
+         "autan-m2-rae2822": 6, "autan-runner": 7}  # fmt: skip
 WAIT = 0.6  # the tests' --level-wait and --hysteresis, in seconds
 
 
@@ -148,9 +152,9 @@ def test_below_the_floor_level_by_level_then_back_in_reverse(host):
         assert levels_in_order(stops)
         starts_of_levels = first_of_each_level(stops)
         assert all(b - a >= WAIT * 0.9 for a, b in itertools.pairwise(starts_of_levels))
-        # The peak read before the stop is the container's own: autan-ns-nssa's is 5 GiB.
+        # The peak read before the stop is the container's own: autan-ns-nssa's is 7 GiB.
         assert (
-            "autan-ns-nssa: MemAvailable 25.0 GiB, below 30.0 GiB; its memory peak 5.0 GiB"
+            "autan-ns-nssa: MemAvailable 25.0 GiB, below 30.0 GiB; its memory peak 7.0 GiB"
             in host.log()
         )
         # Between the thresholds, nothing comes back.
@@ -224,11 +228,17 @@ def test_unknown_memory_counts_as_below_the_floor(host):
     assert {n for _, _, n in host.calls("stop")} == {"autan-noyau-mut1", "autan-noyau-mut2"}
 
 
-def test_a_missing_docker_is_logged_not_a_crash(host):
+def test_docker_unreachable_is_an_error_not_nothing_left(host):
+    # A missing CLI, and a socket the guard may not use (a user service without the docker group).
     host.free(25)
     out = host.guard(ticks=3, path="/nonexistent")
     assert out.wait(timeout=30) == 0, out.stderr.read()
-    assert "nothing left to stop" in host.log()
+    (host.bin / "deny").touch()
+    assert host.guard(ticks=3).wait(timeout=30) == 0
+    log = host.log()
+    assert "nothing left to stop" not in log
+    assert log.count("ERROR docker cannot list") == 2  # at the start of each guard
+    assert "permission denied" in log
 
 
 def test_a_container_that_will_not_stop_does_not_hold_back_the_next_levels(host):
