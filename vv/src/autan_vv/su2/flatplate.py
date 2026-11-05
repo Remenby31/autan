@@ -25,6 +25,7 @@ from autan_vv.su2.config import options
 from autan_vv.su2.mesh import VTK_LINE, VTK_QUAD, _write
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from autan_vv.su2.msh import FloatArray, IntArray
@@ -42,6 +43,7 @@ GATE_TOLERANCE = 0.005
 ORDERS = 10.0
 # Primary: SU2's published configuration (SA-noft2 in v8.6.0); secondary: standard SA, TMR's model.
 MODELS: dict[str, str | None] = {"sa-noft2": None, "sa": "WITHFT2"}
+MODEL_REFERENCE = "sa-noft2"
 # What `configure` changes in SU2's published configuration; nothing that sets the model, the
 # scheme or the solver.
 ADOPTED_KEYS = ("MESH_FILENAME", "MESH_FORMAT", "ITER", "CONV_FIELD", "CONV_RESIDUAL_MINVAL",
@@ -368,7 +370,7 @@ def references(cache: Path) -> dict[str, dict[str, dict[int, float]]]:
     return out
 
 
-def _run(run: Path, model: str) -> dict[str, Any]:
+def _history(run: Path, model: str) -> tuple[dict[str, Any], history.History]:
     level = json.loads((run / "level.json").read_text())
     prov: dict[str, Any] = history.provenance(run)["provenance"]  # type: ignore[assignment]
     mesh = run / options((run / "case.cfg").read_text())["MESH_FILENAME"]
@@ -385,9 +387,15 @@ def _run(run: Path, model: str) -> dict[str, Any]:
     if "nu-tilde" not in runs.residuals:
         msg = f"{run}: history.csv has no SA residual"
         raise VVError(msg, code="V0904")
+    return {"level": level, "provenance": prov}, runs
+
+
+def _run(run: Path, model: str, reference: Path | None) -> dict[str, Any]:
+    meta, runs = _history(run, model)
+    level, prov = meta["level"], meta["provenance"]
     conv = history.convergence(runs, ORDERS)
     # The surface file is written at the run's last iteration, so CD is read there too.
-    return {
+    row = {
         "grid": run.name, "cells": level["cells"], "converged": conv.converged,
         "iterations": conv.iterations, "last_iteration": int(runs.iterations[-1]),
         "drop": conv.drop, "cd": float(runs.cd[-1]),
@@ -396,16 +404,58 @@ def _run(run: Path, model: str) -> dict[str, Any]:
         "case_sha256": level["case_sha256"], "mesh_sha256": level["mesh"]["file_sha256"],
         "source_sha256": level["mesh"]["source_sha256"],
     }  # fmt: skip
+    if reference is not None:
+        _, theirs = _history(reference, MODEL_REFERENCE)
+        at = history.converged_at(theirs, ORDERS)
+        if at is None:
+            msg = f"{reference}: the reference run did not meet the criterion"
+            raise VVError(msg, code="V0904")
+        met = np.ones(len(runs.iterations), dtype=bool)
+        for eq, r in runs.residuals.items():
+            met &= r <= theirs.residuals[eq][at]
+        hits = np.flatnonzero(met)
+        row["amended"] = {
+            "converged": bool(hits.size),
+            "iterations": int(runs.iterations[hits[0]] - runs.iterations[0]) + 1
+            if hits.size else None,
+        }  # fmt: skip
+    return row
 
 
-def results(root: Path, cache: Path) -> dict[str, Any]:
-    """The report (autan.su2-flatplate/1) on the runs `prepare` wrote under `root`: per model and
-    grid, convergence by the protocol's criterion (ORDERS), cf at CF_STATION and CD at the run's
-    last iteration, and their gaps to CFL3D and FUN3D on the same grid; the continuum from the
-    three finest of the five grids (h = N^-1/2), for SU2 and for both references, none for a model
-    one of whose three finest runs did not converge; the M3 gate on each model. V0904 if a run's
-    model, configuration or mesh, as prepared, as run and as on disk, differ, if SU2 failed, or if
-    the SA residual is missing; V0905 if a model does not have the five grids or mixes SU2 builds.
+def _assess(
+    levels: list[dict[str, Any]], converged: Callable[[dict[str, Any]], bool]
+) -> dict[str, Any]:
+    fine = levels[-3:]
+    continuum: dict[str, dict[str, Any]] = {
+        k: _richardson([lv["cells"] ** -0.5 for lv in fine], [lv[k] for lv in fine])
+        if all(converged(lv) for lv in fine) else {"error": "not converged"}
+        for k in ("cf", "cd")
+    }  # fmt: skip
+    verdicts = {
+        k: {"pass": "estimate" in est
+            and abs(est["estimate"] / GATE[k] - 1.0) <= GATE_TOLERANCE,
+            "relative": est["estimate"] / GATE[k] - 1.0 if "estimate" in est else None}
+        for k, est in continuum.items()
+    }  # fmt: skip
+    return {"continuum": continuum, "gate": verdicts,
+            "pass": all(v["pass"] for v in verdicts.values())}  # fmt: skip
+
+
+def results(
+    root: Path, cache: Path, models: tuple[str, ...] = tuple(MODELS), reference: Path | None = None
+) -> dict[str, Any]:
+    """The report (autan.su2-flatplate/1) on the runs `prepare` wrote under `root`, for `models`:
+    per model and grid, convergence by the protocol's criterion (ORDERS), cf at CF_STATION and CD
+    at the run's last iteration, and their gaps to CFL3D and FUN3D on the same grid; the continuum
+    from the three finest of the five grids (h = N^-1/2), for SU2 and for both references, none
+    for a model one of whose three finest runs did not converge; the M3 gate on each model. With
+    `reference`, the root of the published configuration's runs, each run is also judged by the
+    amended criterion of #195 (`amended`): converged once every residual is at or below the one
+    the published SA-noft2 run on the same grid had when it met the protocol's criterion; the
+    continuum and gate are then given under both readings. V0904 if a run's model, configuration
+    or mesh, as prepared, as run and as on disk, differ, if SU2 failed, if the SA residual is
+    missing or a reference run did not converge; V0905 if a model does not have the five grids or
+    mixes SU2 builds.
     """
     refs = references(cache)
     report: dict[str, Any] = {"schema": REPORT_SCHEMA, "orders": ORDERS, "models": {}}
@@ -414,9 +464,12 @@ def results(root: Path, cache: Path) -> dict[str, Any]:
                                 [v[n] for n in sorted(v)[-3:]]) for key, v in data.items()}
         for code, data in refs.items()
     }  # fmt: skip
-    for model in MODELS:
-        levels = sorted((_run(run, model) for run in (root / model).iterdir() if run.is_dir()),
-                        key=lambda lv: lv["cells"])  # fmt: skip
+    for model in models:
+        levels = sorted(
+            (_run(run, model, None if reference is None else reference / MODEL_REFERENCE / run.name)
+             for run in (root / model).iterdir() if run.is_dir()),
+            key=lambda lv: lv["cells"],
+        )  # fmt: skip
         grids = sorted(refs["CFL3D"]["cf"])
         if [lv["cells"] for lv in levels] != grids or len({(lv["su2"], lv["image_id"])
                                                            for lv in levels}) != 1:  # fmt: skip
@@ -425,20 +478,10 @@ def results(root: Path, cache: Path) -> dict[str, Any]:
         for lv in levels:
             lv["gap"] = {code: {k: lv[k] / data[k][lv["cells"]] - 1.0 for k in ("cf", "cd")}
                          for code, data in refs.items()}  # fmt: skip
-        fine = levels[-3:]
-        continuum: dict[str, dict[str, Any]] = {
-            k: _richardson([lv["cells"] ** -0.5 for lv in fine], [lv[k] for lv in fine])
-            if all(lv["converged"] for lv in fine) else {"error": "not converged"}
-            for k in ("cf", "cd")
-        }  # fmt: skip
-        verdicts = {
-            k: {"pass": "estimate" in est
-                and abs(est["estimate"] / GATE[k] - 1.0) <= GATE_TOLERANCE,
-                "relative": est["estimate"] / GATE[k] - 1.0 if "estimate" in est else None}
-            for k, est in continuum.items()
-        }  # fmt: skip
-        report["models"][model] = {
-            "levels": levels, "continuum": continuum, "gate": verdicts,
-            "pass": all(v["pass"] for v in verdicts.values()),
-        }  # fmt: skip
+        report["models"][model] = {"levels": levels,
+                                   **_assess(levels, lambda lv: lv["converged"])}  # fmt: skip
+        if reference is not None:
+            report["models"][model]["amended"] = _assess(
+                levels, lambda lv: lv["amended"]["converged"]
+            )
     return report

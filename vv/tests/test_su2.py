@@ -816,7 +816,7 @@ CFL3D_CD = {816: 0.295438152e-2, 3264: 0.288437885e-2, 13056: 0.286620917e-2,
             52224: 0.286130951e-2, 208896: 0.285985288e-2}  # fmt: skip
 
 
-def _flat_plate_run(run: Path, model: str, cells: int, converged: bool) -> None:
+def _flat_plate_run(run: Path, model: str, cells: int, drop: float, first: float = -2.0) -> None:
     from autan_vv.su2 import flatplate  # noqa: PLC0415
 
     run.mkdir(parents=True)
@@ -835,10 +835,10 @@ def _flat_plate_run(run: Path, model: str, cells: int, converged: bool) -> None:
     names = [h.strip().strip('"') for h in header.split(",")]
     lines = [header]
     for i in range(30):
-        drop = (11.0 if converged else 5.0) * i / 29
+        rms = first - drop * i / 29
         row = {"Inner_Iter": i, "Time(sec)": 0.01, "CD": CFL3D_CD[cells]}
         lines.append(",".join(
-            str(row.get(n, -2.0 - drop if n.startswith("rms[") else 0.0)) for n in names
+            str(row.get(n, rms if n.startswith("rms[") else 0.0)) for n in names
         ))  # fmt: skip
     (run / "history.csv").write_text("\n".join(lines) + "\n")
     rows = ['"PointID","x","y","Skin_Friction_Coefficient_x"']
@@ -856,7 +856,7 @@ def test_flat_plate_report_against_tmr(tmp_path: Path) -> None:
     root = tmp_path / "plate"
     for model in flatplate.MODELS:
         for cells in CFL3D_CF:
-            _flat_plate_run(root / model / f"n{cells}", model, cells, converged=True)
+            _flat_plate_run(root / model / f"n{cells}", model, cells, drop=11.0)
     out = tmp_path / "report.json"
     # SU2 giving CFL3D's values on every grid has CFL3D's continuum (acceptance.md: cf 2.70524e-3,
     # CD 2.85924e-3), no gap to CFL3D, and passes the gate.
@@ -867,9 +867,23 @@ def test_flat_plate_report_against_tmr(tmp_path: Path) -> None:
     assert model["continuum"]["cd"]["estimate"] == pytest.approx(2.85924e-3, abs=5e-9)
     assert all(lv["gap"]["CFL3D"] == {"cf": 0.0, "cd": 0.0} for lv in model["levels"])
     assert model["pass"]
+    # A variant whose first residuals are three orders lower stops 8.5 orders down, at or below the
+    # levels the published runs had at the criterion: not converged by the protocol's rule, so no
+    # estimate, but converged by the amended one (#195), with CFL3D's continuum again.
+    variant = tmp_path / "variant"
+    for cells in CFL3D_CF:
+        _flat_plate_run(variant / "sa-noft2" / f"n{cells}", "sa-noft2", cells, drop=8.5, first=-5.0)
+    with pytest.raises(SystemExit):
+        main(["su2-flatplate", "results", str(variant), "--cache", str(cache), "--models",
+              "sa-noft2", "--reference", str(root), "--out", str(out)])  # fmt: skip
+    model = json.loads(out.read_text())["models"]["sa-noft2"]
+    assert model["continuum"]["cf"] == {"error": "not converged"}
+    assert all(lv["amended"]["converged"] for lv in model["levels"])
+    assert model["amended"]["continuum"]["cf"]["estimate"] == pytest.approx(2.70524e-3, abs=5e-9)
+    assert model["amended"]["pass"]
     # A finest run that did not converge gives no estimate, not one from coarser grids.
     shutil.rmtree(root / "sa" / "n208896")
-    _flat_plate_run(root / "sa" / "n208896", "sa", 208896, converged=False)
+    _flat_plate_run(root / "sa" / "n208896", "sa", 208896, drop=5.0)
     with pytest.raises(SystemExit):
         main(argv)
     report = flatplate.results(root, cache)["models"]["sa"]
