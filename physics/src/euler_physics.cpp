@@ -208,7 +208,14 @@ class EulerPhysics final : public runtime::Physics {
 
   StepReport step(std::int64_t /*iteration*/) override {
     pressure_valid_ = false;
-    if (device_) return device_step();
+    // A steady step that solves the first-order start is provisional (case-schema.md#time).
+    const bool provisional = ctx_.input.time.kind == "steady" && !second_order_;
+    StepReport report = device_ ? device_step() : host_step();
+    report.provisional = provisional;
+    return report;
+  }
+
+  StepReport host_step() {
     StepReport report;
     // A state the kernels cannot evaluate (as stored, see first_invalid_cell) diverges here,
     // before a solve turns it into an exception; on every rank, also those that own no such cell.

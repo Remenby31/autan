@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <limits>
 #include <span>
 #include <string>
 #include <utility>
@@ -52,6 +53,35 @@ class RoundOffExemption {
   std::vector<std::string> names_, woken_;
   std::vector<bool> exempt_;
   double floor_ = 0.0;
+};
+
+/// case-schema.md#time: a sequence has reached a plateau once its last plateau_steps values set
+/// no minimum below plateau_ratio times the least value before them. Converging fp64 NACA 0012
+/// runs (#473) go at most 49 steps without such a minimum, so 100 does not take a converging run
+/// for a stationary one.
+inline constexpr std::size_t plateau_steps = 100;
+inline constexpr double plateau_ratio = 0.9;
+
+/// The plateau rule over one sequence (a residual, or a physics' relative drop), fed one value
+/// per step.
+class Plateau {
+ public:
+  /// Adds this step's value; true once the sequence is on a plateau.
+  bool add(double value) {
+    ++count_;
+    if (value < plateau_ratio * least_) {
+      least_ = value;
+      since_ = count_;
+    }
+    return count_ - since_ >= plateau_steps;
+  }
+
+  /// Forgets every value: the next add() starts a new sequence.
+  void reset() { *this = Plateau{}; }
+
+ private:
+  double least_ = std::numeric_limits<double>::infinity();
+  std::size_t count_ = 0, since_ = 0;
 };
 
 }  // namespace autan::runtime

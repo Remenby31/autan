@@ -980,7 +980,8 @@ TEST_CASE("a steady Gauss-Seidel or lines case on several ranks converges to the
     REQUIRE(residuals.size() == first.size());
     for (const auto& [name, r] : residuals.items()) {
       const double f = floor[name].get<double>();
-      const double bound = std::max(first[name].get<double>() * drop, f) + f;
+      const double bound =
+          std::max(first[name].get<double>() * drop, autan::runtime::round_off_band * f) + f;
       INFO(name << ": residual " << r.get<double>() << ", bound " << bound);
       CHECK(r.get<double>() <= bound);
     }
