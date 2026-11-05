@@ -79,6 +79,18 @@ class Plateau {
   /// Forgets every value: the next add() starts a new sequence.
   void reset() { *this = Plateau{}; }
 
+  /// What add() has accumulated, so that a continued run goes on as the uninterrupted one.
+  struct State {
+    double reference = std::numeric_limits<double>::infinity();
+    std::size_t count = 0, since = 0;
+  };
+  [[nodiscard]] State state() const { return {reference_, count_, since_}; }
+  void restore(const State& s) {
+    reference_ = s.reference;
+    count_ = s.count;
+    since_ = s.since;
+  }
+
  private:
   double reference_ = std::numeric_limits<double>::infinity();
   std::size_t count_ = 0, since_ = 0;

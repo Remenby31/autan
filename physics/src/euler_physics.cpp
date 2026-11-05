@@ -463,6 +463,12 @@ class EulerPhysics final : public runtime::Physics {
                      first_norms_.empty() ? -1.0 : first_norms_[k]);
     }
     v.emplace_back("SolverCflCap", cfl_cap_);
+    // The first-order start's plateau (-1: no reference yet), which decides when it ends.
+    const auto plateau = first_order_plateau_.state();
+    v.emplace_back("SolverFirstOrderPlateauReference",
+                   std::isinf(plateau.reference) ? -1.0 : plateau.reference);
+    v.emplace_back("SolverFirstOrderPlateauCount", static_cast<double>(plateau.count));
+    v.emplace_back("SolverFirstOrderPlateauSince", static_cast<double>(plateau.since));
     return v;
   }
 
@@ -477,6 +483,10 @@ class EulerPhysics final : public runtime::Physics {
       for (std::size_t k = 0; k < 5; ++k) first_norms_.push_back(v[4 + k].second);
     }
     cfl_cap_ = v[9].second;
+    first_order_plateau_.restore(
+        {.reference = v[10].second < 0.0 ? std::numeric_limits<double>::infinity() : v[10].second,
+         .count = static_cast<std::size_t>(v[11].second),
+         .since = static_cast<std::size_t>(v[12].second)});
   }
 
   // initial-state.md: the owned cells' state from the case's initial-state file; a NaN row (a

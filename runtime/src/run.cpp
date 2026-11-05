@@ -1591,6 +1591,7 @@ class Run final : public Log {
       }
       info_["iterations"] = done;
       info_["status"] = "failed";
+      if (info_["convergence"].is_object()) info_["convergence"]["plateau"] = Json::array();
       info_["finished"] = utc(std::chrono::system_clock::now(), "%Y-%m-%dT%H:%M:%SZ");
       dir_->write_run_json(info_.dump(2));
     } catch (const std::exception& e) {
@@ -1775,7 +1776,7 @@ class Run final : public Log {
           converged = converged && (met || plateau);
         }
         if (converged) {
-          if (!floor_.empty()) info_["convergence"]["plateau"] = std::move(at_plateau);
+          plateau_ = std::move(at_plateau);
           return "converged";
         }
       }
@@ -2147,6 +2148,9 @@ class Run final : public Log {
     // A failed run is not timed (results.md).
     info_["timing"] = status == "failed" ? Json(nullptr) : timing(done);
     if (status == "failed") info_["monitors"] = nullptr;
+    // The plateau belongs to a run that ends converged (results.md).
+    if (info_["convergence"].is_object())
+      info_["convergence"]["plateau"] = status == "converged" ? plateau_ : Json::array();
     info_["status"] = status;
     info_["finished"] = utc(std::chrono::system_clock::now(), "%Y-%m-%dT%H:%M:%SZ");
     note(status == "failed" ? "error" : "info", "solver", "run finished: " + status, "",
@@ -2201,8 +2205,9 @@ class Run final : public Log {
   std::int64_t device_after_setup_ = 0;  // the device's sample() then
   bool stopped_by_signal_ = false;
   std::int64_t iteration_ = 0;
-  std::vector<double> floor_;  // fp32+acc64 convergence floor per equation; empty: none  // the
-                               // iteration being computed, 0 before the first
+  Json plateau_ = Json::array();  // the equations the run converged on a plateau
+  std::vector<double> floor_;     // fp32+acc64 convergence floor per equation; empty: none  // the
+                                  // iteration being computed, 0 before the first
 };
 
 }  // namespace

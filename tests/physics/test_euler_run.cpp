@@ -280,6 +280,38 @@ void check_checkpoints_change_nothing(Json doc) {
   CHECK(!fs::exists(every.run / "checkpoint.cgns"));
 }
 
+TEST_CASE("a continued steady run ends its first-order start where the uninterrupted one does",
+          "[euler]") {
+  // results.md: a `continue` run gives the uninterrupted run's history, bit for bit. A uniform
+  // flow's first-order drop is round-off, so its first-order start ends on the plateau rule of
+  // case-schema.md#time, about 100 steps in: a continuation from iteration 60 must carry that
+  // count over.
+  auto doc = input("hybrid.solver-input.json", [](Json& d) {
+    inviscid_along_x(d, "fp64");
+    d["time"]["max_iterations"] = 200;
+  });
+  const auto whole = run(doc);
+  INFO(whole.err);
+  REQUIRE(whole.status == ExitStatus::finished);
+  auto part = doc;
+  part["time"]["max_iterations"] = 60;
+  const auto first = run(part);
+  REQUIRE(first.status == ExitStatus::finished);
+  auto rest = doc;
+  rest["start"] = continue_from(first.run);
+  const auto second = run(rest);
+  INFO(second.err);
+  REQUIRE(second.status == ExitStatus::finished);
+  const auto expected = history(whole.run);
+  auto chain = history(first.run);
+  for (const auto& line : history(second.run)) chain.push_back(line);
+  REQUIRE(chain.size() == expected.size());
+  for (std::size_t i = 0; i < chain.size(); ++i) {
+    INFO("iteration " << i + 1);
+    CHECK(chain[i]["residuals"] == expected[i]["residuals"]);
+  }
+}
+
 TEST_CASE("checkpoints change no Euler result", "[euler]") {
   const char* precision = GENERATE("fp64", "fp32+acc64");
   const bool steady = GENERATE(true, false);

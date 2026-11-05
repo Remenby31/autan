@@ -680,7 +680,7 @@ test("residuals at zero and far below 1 draw on the log chart", async ({ page })
   expect(errors).toEqual([]);
 });
 
-test("floors written while a run page is open recompute its residual drop", async ({ page }) => {
+test("a plateau written while a run page is open recomputes its residual drop", async ({ page }) => {
   // One monitor, recorded every 10 iterations: line 30 carries its final record.
   const source = (await runs(page)).find(
     (r) => r.status === "converged" && Object.keys(r.monitors ?? {}).join() === "forces",
@@ -713,9 +713,11 @@ test("floors written while a run page is open recompute its residual drop", asyn
   await page.goto(`/runs/${runId}`);
   const orders = page.getByTestId("orders");
   await expect(orders).not.toHaveText(target.toFixed(2));
+  // Converged on its round-off plateaus (case-schema.md#time): every equation counts as converged.
+  const plateau = { floor: last, plateau: Object.keys(last) };
   writeFileSync(
     join(RUNS, runId, "run.json"),
-    JSON.stringify({ ...run, convergence: { floor: last } }),
+    JSON.stringify({ ...run, status: "converged", convergence: plateau }),
   );
 
   await expect(orders).toHaveText(target.toFixed(2));

@@ -2003,6 +2003,15 @@ TEST_CASE("In fp32+acc64 an equation converges on a round-off plateau near its f
     // counted steps, k = 50 to 149, and holds at k = 150.
     flat.provisional_until = 50;
     CHECK(run_json(flat, "fp32+acc64")["iterations"] == 150);
+
+    // A run that converges on its plateau and then fails to write its solution lists none.
+    flat.provisional_until = 0;
+    flat.throw_in_fields = true;
+    const Outcome failing = run(input(), flat);
+    CHECK(failing.status == ExitStatus::failed);
+    const Json failed = Json::parse(read(failing.run / "run.json"));
+    CHECK(failed["status"] == "failed");
+    CHECK(failed["convergence"]["plateau"] == Json::array());
   }
 
   SECTION("a plateau above the band is not convergence") {
