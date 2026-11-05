@@ -1910,11 +1910,22 @@ class Run final : public Log {
       failure = comm_.broadcast(failure);
     }
     if (failure.empty()) return;
-    const Diagnostic warning{.code = "W0714",
-                             .message = "the checkpoint of iteration " + std::to_string(it) +
-                                        " was not written: " + failure,
-                             .path = "",
-                             .data_json = Json{{"iteration", it}}.dump()};
+    // One W0714 in run.json counts the failed writes (results.md#checkpointcgns): it does not
+    // grow with the run's length. The log has one line per failure, each with the data of
+    // that moment.
+    ++write_failures_;
+    if (write_failures_ == 1) first_failure_ = Json{{"iteration", it}, {"time", info_["time"]}};
+    const Diagnostic warning{
+        .code = "W0714",
+        .message = "checkpoint writes failed: " + std::to_string(write_failures_) +
+                   ", the last at iteration " + std::to_string(it) + ": " + failure,
+        .path = "",
+        .data_json = Json{{"failures", write_failures_},
+                          {"first_iteration", first_failure_["iteration"]},
+                          {"first_time", first_failure_["time"]},
+                          {"last_iteration", it},
+                          {"last_time", info_["time"]}}
+                         .dump()};
     std::string unlogged;
     try {
       note("warning", "solver", warning.message, warning.code, warning.data_json);
@@ -1922,9 +1933,14 @@ class Run final : public Log {
       unlogged = e.what();
     }
     // run.json names only diagnostics the log holds (results.md, Log): a warning the log
-    // cannot take is recorded nowhere.
-    if (comm_.broadcast(unlogged).empty())
-      info_["diagnostics"].push_back(Json::parse(warning.json()));
+    // cannot take leaves run.json's as it was.
+    if (!comm_.broadcast(unlogged).empty()) return;
+    auto& diagnostics = info_["diagnostics"];
+    if (!write_warning_) {
+      write_warning_ = diagnostics.size();
+      diagnostics.push_back(nullptr);
+    }
+    diagnostics[*write_warning_] = Json::parse(warning.json());
   }
 
   // The mesh index of the least diverged cell over all ranks, from the cell
@@ -1991,10 +2007,14 @@ class Run final : public Log {
   io::Solution gathered_solution(const Json& checkpoint) {
     const auto& in = p_.input;
     io::Solution s;
-    Json metadata = info_;
-    for (const char* key :
-         {"status", "finished", "iterations", "monitors", "timing", "diagnostics", "checkpoint"})
-      metadata.erase(key);
+    // run.json without what only the end of the run knows, and without its diagnostics, which
+    // are not copied.
+    static const std::set<std::string> left_out{"status", "finished",    "iterations", "monitors",
+                                                "timing", "diagnostics", "checkpoint"};
+    Json metadata = Json::object();
+    for (const auto& [key, value] : info_.items()) {
+      if (!left_out.contains(key)) metadata[key] = value;
+    }
     if (!checkpoint.is_null()) metadata["checkpoint"] = checkpoint;
     // ASCII JSON, as readers decode CGNS descriptors.
     s.run_metadata = metadata.dump(-1, ' ', true);
@@ -2192,6 +2212,11 @@ class Run final : public Log {
   std::chrono::steady_clock::time_point launched_;  // run_case's entry
   // The end of the last checkpoint, or the start of the iterations.
   std::chrono::steady_clock::time_point last_checkpoint_ = std::chrono::steady_clock::now();
+  // The failed checkpoint writes: their count, the first one's iteration and time, and their
+  // W0714's index in run.json `diagnostics` once logged.
+  std::int64_t write_failures_ = 0;
+  Json first_failure_ = nullptr;
+  std::optional<std::size_t> write_warning_;
   double log_seconds_ = 0.0;    // spent in write()
   fs::path stop_file_;          // --stop-file; empty: none
   double solve_seconds_ = 0.0;  // this rank's step() and accumulate_average()

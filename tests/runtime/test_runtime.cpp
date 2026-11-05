@@ -92,9 +92,8 @@ struct Outcome {
   std::string err;
 };
 
-Outcome run(const Json& doc, const autan::runtime::PhysicsRegistry& registry,
-            const fs::path& stop_file = {}) {
-  const fs::path dir = fresh_dir();
+Outcome run_in(const fs::path& dir, const Json& doc,
+               const autan::runtime::PhysicsRegistry& registry, const fs::path& stop_file = {}) {
   const fs::path input_file = dir / "solver-input.json";
   std::ofstream(input_file) << doc.dump();
   std::FILE* out = std::tmpfile();
@@ -111,6 +110,11 @@ Outcome run(const Json& doc, const autan::runtime::PhysicsRegistry& registry,
   std::string printed = text(out);
   if (!printed.empty() && printed.back() == '\n') printed.pop_back();
   return Outcome{.status = status, .runs = dir / "runs", .run = printed, .err = text(err)};
+}
+
+Outcome run(const Json& doc, const autan::runtime::PhysicsRegistry& registry,
+            const fs::path& stop_file = {}) {
+  return run_in(fresh_dir(), doc, registry, stop_file);
 }
 
 Outcome run(const Json& doc, autan_test::RelaxationOptions options = {},
@@ -504,6 +508,59 @@ TEST_CASE("A run killed while it writes a checkpoint keeps the previous one whol
   INFO(cont.err);
   REQUIRE(cont.status == ExitStatus::finished);
   CHECK(Json::parse(read(cont.run / "run.json"))["iterations"] == k + 3);
+}
+
+TEST_CASE("Failed checkpoint writes take one W0714 in run.json however many", "[runtime]") {
+  // results.md#checkpointcgns: run.json and the RunMetadata do not grow with the failures; the
+  // log has one line each. Every write fails: a directory stands at the staging path.
+  const auto failing = [](std::int64_t steps) {
+    const fs::path dir = fresh_dir();
+    const Json doc = input(
+        [&](Json& d) {
+          d["time"]["steps"] = steps;
+          d["time"]["checkpoint"] = Json{{"iterations", 1}};
+        },
+        "hybrid-unsteady.solver-input.json");
+    autan_test::RelaxationOptions options;
+    options.block_checkpoints_in = (dir / "runs").string();
+    const Outcome o = run_in(dir, doc, autan_test::relaxation_registry(options));
+    INFO(o.err);
+    REQUIRE(o.status == ExitStatus::finished);
+    return o;
+  };
+  std::vector<std::size_t> run_json, metadata, entry;
+  for (const std::int64_t steps : {5, 60}) {
+    CAPTURE(steps);
+    const Outcome o = failing(steps);
+    const Json info = Json::parse(read(o.run / "run.json"));
+    const auto lines = history(o.run);
+    std::vector<Json> warnings;
+    for (const auto& d : info["diagnostics"]) {
+      if (d["code"] == "W0714") warnings.push_back(d);
+    }
+    REQUIRE(warnings.size() == 1);
+    entry.push_back(warnings[0].dump().size());
+    // A checkpoint follows every iteration but the last.
+    CHECK(warnings[0]["data"] ==
+          Json{{"failures", steps - 1},
+               {"first_iteration", 1},
+               {"first_time", lines[0]["time"]},
+               {"last_iteration", steps - 1},
+               {"last_time", lines[static_cast<std::size_t>(steps - 2)]["time"]}});
+    std::int64_t logged = 0;
+    for (const auto& line : lines_of(o.run / "log.jsonl")) {
+      if (Json::parse(line)["code"] == "W0714") ++logged;
+    }
+    CHECK(logged == steps - 1);
+    CHECK(!fs::exists(o.run / "checkpoint.cgns"));
+    run_json.push_back(read(o.run / "run.json").size());
+    const std::string stored = autan::io::read_solution(o.run / "solution.cgns").run_metadata;
+    CHECK(!Json::parse(stored).contains("diagnostics"));
+    metadata.push_back(stored.size());
+  }
+  // Twelve times the failures: less than one more W0714 (timings and paths vary by a few digits).
+  CHECK(run_json[1] < run_json[0] + entry[0]);
+  CHECK(metadata[1] < metadata[0] + entry[0]);
 }
 
 TEST_CASE("A checkpoint names its iteration, and a start checks it", "[runtime]") {
