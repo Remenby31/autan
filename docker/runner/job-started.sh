@@ -46,4 +46,33 @@ case $event in
     ;;
   *) deny "event '$event' is not allowed on GPU runners" ;;
 esac
+
+# Host memory, on a Spark shared with other teams: the job starts only once the host's available
+# memory reaches the floor in the root-owned file min-available-gib (0 or absent: none). It waits
+# at most 15 minutes (admit-wait-s overrides it), then is refused before its first step: the host
+# is busy, not the change at fault. GB10's GPU allocates from host memory, so this also protects
+# the GPU's other tenants. A meminfo file beside the hook replaces /proc/meminfo, for its tests.
+here=$(dirname "${BASH_SOURCE[0]}")
+min_gib=$(cat "$here/min-available-gib" 2>/dev/null || echo 0)
+wait_s=$(cat "$here/admit-wait-s" 2>/dev/null || echo 900)
+[[ $min_gib =~ ^[0-9]{1,3}$ && $wait_s =~ ^[0-9]{1,5}$ ]] || deny "bad memory admission settings"
+meminfo=/proc/meminfo
+[[ -e $here/meminfo ]] && meminfo=$here/meminfo
+if ((10#$min_gib > 0)); then
+  target_kib=$((10#$min_gib * 1048576))
+  deadline=$((SECONDS + 10#$wait_s))
+  announced=-60
+  while :; do
+    free=$(awk '/^MemAvailable:/ {print $2}' "$meminfo" 2>/dev/null || true)
+    [[ $free =~ ^[0-9]+$ ]] && ((free >= target_kib)) && break
+    shown=$([[ $free =~ ^[0-9]+$ ]] && awk -v k="$free" 'BEGIN {printf "%.1f", k / 1048576}' || echo unknown)
+    ((SECONDS < deadline)) ||
+      deny "host memory available $shown GiB, below this runner's floor of $min_gib GiB for ${wait_s} s: the host is busy, rerun later"
+    if ((SECONDS - announced >= 60)); then
+      echo "autan-runner: WAITING FOR MEMORY: $shown GiB available, the job needs $min_gib GiB (at most ${wait_s} s)"
+      announced=$SECONDS
+    fi
+    sleep 1
+  done
+fi
 echo "autan-runner: accepted $event job from $allowed"
