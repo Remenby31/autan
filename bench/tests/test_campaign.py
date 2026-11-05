@@ -726,7 +726,9 @@ def test_a_start_delayed_by_a_breach_waits_for_a_measurement_begun_meanwhile(tmp
 
     with (tmp_path / "campaigns" / "breach.lock").open("a") as breach, lock.open() as measurement:
         fcntl.flock(breach, fcntl.LOCK_EX)
-        assert campaign.main(["start", "c1", "--dir", str(tmp_path), "--", "x"]) == 0
+        assert (
+            campaign.main(["start", "c1", "--free", "0G", "--dir", str(tmp_path), "--", "x"]) == 0
+        )
         assert not until(started, timeout=2)
         fcntl.flock(measurement, fcntl.LOCK_EX)
         fcntl.flock(breach, fcntl.LOCK_UN)
