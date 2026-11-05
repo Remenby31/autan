@@ -182,6 +182,39 @@ def _cmd_su2(args: argparse.Namespace) -> None:
         ):
             _say(str(run.relative_to(args.out)))
         return
+    if args.action == "compare":
+        from autan_vv.su2 import compare  # noqa: PLC0415
+
+        if args.su2 is None or args.su2_root is None or not args.runs:
+            msg = "su2 compare takes --su2 REPORT, --su2-root DIR and Autan run directories"
+            raise VVError(msg, code="V0905")
+        report = compare.compare(args.runs, args.su2, args.su2_root)
+        if args.out is not None:
+            args.out.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+        for row in report["levels"]:
+            a, d = row["autan"], row.get("difference")
+            gap = (
+                f"dCL {d['cl']:+.6f}, dCD {d['cd'] * 1e4:+.2f} counts, dCM {d['cmy']:+.6f}"
+                if d
+                else "no converged SU2 level"
+            )
+            _say(f"{row['n']}²: Autan CL {a['cl']:.6f}, CD {a['cd']:.7f}; {gap}")
+            if "cp" in row:
+                cp = row["cp"]
+                _say(
+                    f"    Cp: max |dCp| {cp['all']['max_abs']:.4f}, {cp['body']['max_abs']:.4f} on the"
+                    f" body (rms {cp['body']['rms']:.5f}); upper shock x Autan"
+                    f" {cp['shock_upper']['autan']}, SU2 {cp['shock_upper']['su2']}"
+                )
+        if report["continuum"]:
+            _say(f"continuum from levels {report['continuum']['levels']}")
+        for code, estimates in report["continuum"].items():
+            if code == "levels":
+                continue
+            for name, est in estimates.items():
+                value = f"{est['estimate']:.7f}" if "estimate" in est else est["error"]
+                _say(f"{code} continuum {name}: {value}")
+        return
     if args.action == "history":
         from autan_vv.su2 import history  # noqa: PLC0415
 
@@ -433,10 +466,10 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser(
         "su2",
-        help="SU2 on the NACA 0012 family: prepare its cases, study its runs, or read any run's"
-        " history against the convergence criterion",
+        help="SU2 on the NACA 0012 family: prepare its cases, study its runs, read any run's"
+        " history against the convergence criterion, or compare Autan's runs with an SU2 study",
     )
-    p.add_argument("action", choices=("prepare", "study", "history"))
+    p.add_argument("action", choices=("prepare", "study", "history", "compare"))
     p.add_argument("runs", type=Path, nargs="*", help="study: run directories of one condition")
     p.add_argument("--family", type=Path, help="prepare: directory of the mesh manifest")
     p.add_argument("--dimension", type=int, choices=(2, 3), default=2)
@@ -447,6 +480,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-iterations", type=int, default=20000)
     p.add_argument("--stop-margin", type=float, default=2.0, help="prepare: orders SU2 runs on")
     p.add_argument("--orders", type=float, default=10.0, help="history: residual drop criterion")
+    p.add_argument("--su2", type=Path, help="compare: the SU2 study report of the condition")
+    p.add_argument(
+        "--su2-root", type=Path, help="compare: the directory the study's SU2 runs were prepared in"
+    )
     p.add_argument("--out", type=Path, help="prepare: output root; study: report JSON")
     p.set_defaults(func=_cmd_su2)
 
