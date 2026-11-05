@@ -1,0 +1,463 @@
+#!/usr/bin/env python3
+"""autan-mem-guard: keeps a shared Spark's available memory above a floor by stopping our containers.
+
+    autan-mem-guard [--dry-run] [--state-dir DIR]
+
+Every 30 s it reads the host's MemAvailable. Below 30 GiB it stops (docker stop -t 60: a pause
+frees no memory) every running container of the next level, one level at a time, at least 60 s
+apart. The stops run beside the guard, which keeps reading memory while they take effect:
+  1. autan-noyau-mut*
+  2. autan-noyau-*, and any other autan-* container not named below
+  3. autan-su2-*
+  4. autan-mg-*
+  5. autan-m2-rae*
+  6. autan-ns-* (its runs are replayed from scratch: the costliest to stop)
+  7. autan-runner (its job-started hook already refuses jobs below the floor)
+Once MemAvailable has stayed above 40 GiB for 120 s, it starts again the containers of the last
+level it stopped, then waits another 120 s above 40 GiB before the next one. It never touches
+autan-m2-h1*, autan-runner-proxy, autan-campaign-* (their watchers handle the floor themselves),
+or any container not named autan-*. Every stop and start is logged in DIR/guard.log with the time,
+MemAvailable and, read before a stop, the container's memory peak (its cgroup's memory.peak).
+What it stopped, by container ID with the time docker recorded the stop, is kept in
+DIR/stopped.json: a restarted guard still starts it again, and a container removed, started or
+stopped again by someone else meanwhile is left alone; one docker could not report on is retried.
+A container whose stop fails is passed over for 10 minutes, so the next levels still go; memory
+is read again before each restart, and the rest of a level waits if it has fallen. --dry-run logs
+every decision and acts on none.
+
+With --disk-path, a disk limit acts the same way: the directory's size (du, every 10 minutes, at
+nice 19) above --disk-max-gb, or its filesystem fuller than --disk-max-pct, stops the levels as
+low memory does. From 90 % of either limit an ALERT line goes to the log, at most once an hour,
+and DIR/ALERT says why until the disk is back under 90 %; nothing restarts before then.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import datetime as dt
+import fnmatch
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+GIB = 1 << 30
+NEVER = ("autan-m2-h1*", "autan-runner-proxy", "autan-campaign-*")
+# Level 2 also takes every autan-* container no other level names.
+LEVELS = (("autan-noyau-mut*",), ("autan-noyau-*",), ("autan-su2-*",), ("autan-mg-*",),
+          ("autan-m2-rae*",), ("autan-ns-*",), ("autan-runner",))  # fmt: skip
+OTHER_LEVEL = 1
+CGROUPS = (
+    Path("/sys/fs/cgroup/system.slice/docker-{id}.scope"),
+    Path("/sys/fs/cgroup/docker/{id}"),
+)
+START_ATTEMPTS = 3
+UNSTOPPABLE_S = 600.0  # a container whose stop failed is passed over this long, so others go
+
+
+def level_of(name: str) -> int | None:
+    """The 0-based level of a container, None for one the guard never touches."""
+    if not name.startswith("autan-") or any(fnmatch.fnmatchcase(name, p) for p in NEVER):
+        return None
+    for i, patterns in enumerate(LEVELS):
+        if any(fnmatch.fnmatchcase(name, p) for p in patterns):
+            return i
+    return OTHER_LEVEL
+
+
+def available(meminfo: Path) -> int | None:
+    try:
+        for line in meminfo.read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def gib(value: int | None) -> str:
+    return "unknown" if value is None else f"{value / GIB:.1f} GiB"
+
+
+def docker(*args: str, timeout: float = 120) -> tuple[int, str]:
+    """docker's exit status and output; a hung or missing CLI is a failure, never a crash."""
+    try:
+        out = subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout,
+                             check=False)  # fmt: skip
+    except subprocess.TimeoutExpired:
+        return 124, f"docker {args[0]} timed out after {timeout:.0f} s"
+    except OSError as error:
+        return 127, str(error)
+    return out.returncode, out.stdout if out.returncode == 0 else out.stderr
+
+
+def running() -> list[tuple[str, str]] | str:
+    """(ID, name) of every running container, or why docker could not list them."""
+    status, out = docker("ps", "--no-trunc", "--format", "{{.ID}} {{.Names}}", timeout=30)
+    if status != 0:
+        return out.strip()[:200] or f"docker ps exited {status}"
+    return [tuple(line.split(maxsplit=1)) for line in out.splitlines() if " " in line]
+
+
+def inspect(cid: str) -> tuple[str, str] | None:
+    """(state, finished-at) of a container; ("gone", "") once docker no longer knows it; None
+    when docker could not answer, which says nothing about the container."""
+    status, out = docker("inspect", "-f", "{{.State.Status}} {{.State.FinishedAt}}", cid,
+                         timeout=30)  # fmt: skip
+    parts = out.split()
+    if status == 0 and len(parts) == 2:
+        return parts[0], parts[1]
+    if status not in (124, 127) and (
+        "no such object" in out.lower() or "no such container" in out.lower()
+    ):
+        return "gone", ""
+    return None
+
+
+def stamp_of(finished: str) -> float | None:
+    """docker's FinishedAt (RFC 3339, nanoseconds, UTC) in seconds since the epoch."""
+    try:
+        moment = dt.datetime.strptime(finished[:19], "%Y-%m-%dT%H:%M:%S")
+        fraction = finished[19:].rstrip("Z")
+        seconds = float("0" + fraction) if fraction.startswith(".") else 0.0
+    except ValueError:
+        return None
+    return moment.replace(tzinfo=dt.UTC).timestamp() + seconds
+
+
+def peak(cid: str, cgroups: tuple[Path, ...]) -> int | None:
+    for template in cgroups:
+        try:
+            return int((Path(str(template).format(id=cid)) / "memory.peak").read_text())
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+class Disk:
+    """A directory's size (du, in a thread of its own: a large tree takes time) and its
+    filesystem's fill (statvfs, at every reading), against their limits."""
+
+    def __init__(self, path: Path, max_bytes: int, max_pct: float, every_s: float) -> None:
+        self.path, self.max_bytes, self.max_pct, self.every_s = path, max_bytes, max_pct, every_s
+        self.size: int | None = None
+        self.measured = float("-inf")
+        self.thread: threading.Thread | None = None
+
+    def measure(self) -> None:
+        try:
+            out = subprocess.run(["nice", "-n", "19", "du", "-sb", str(self.path)],
+                                 capture_output=True, text=True, timeout=1800, check=False)  # fmt: skip
+            # A du that failed (an unreadable entry) prints a partial total: never taken.
+            if out.returncode == 0:
+                self.size = int(out.stdout.split()[0])
+        except (subprocess.SubprocessError, OSError, ValueError, IndexError):
+            pass  # the last size stands until the next measurement
+
+    def fill(self) -> float | None:
+        try:
+            st = os.statvfs(self.path)
+        except OSError:
+            return None
+        used = (st.f_blocks - st.f_bfree) * st.f_frsize
+        return 100.0 * used / (used + st.f_bavail * st.f_frsize) if used or st.f_bavail else None
+
+    def check(self, now: float) -> tuple[str | None, str | None]:
+        """(over, warning): why a limit is passed, or 90 % of it reached; None when not."""
+        if now - self.measured >= self.every_s and not (self.thread and self.thread.is_alive()):
+            self.measured = now
+            self.thread = threading.Thread(target=self.measure, daemon=True)
+            self.thread.start()
+        over, warning = [], []
+        pct = self.fill()
+        if pct is not None:
+            if pct > self.max_pct:
+                over.append(f"filesystem {pct:.0f} % full, above {self.max_pct:.0f} %")
+            elif pct > 0.9 * self.max_pct:
+                warning.append(f"filesystem {pct:.0f} % full, limit {self.max_pct:.0f} %")
+        if self.size is not None:
+            if self.size > self.max_bytes:
+                over.append(
+                    f"{self.path} {self.size / 1e9:.1f} GB, above {self.max_bytes / 1e9:.0f} GB"
+                )
+            elif self.size > 0.9 * self.max_bytes:
+                warning.append(
+                    f"{self.path} {self.size / 1e9:.1f} GB, limit {self.max_bytes / 1e9:.0f} GB"
+                )
+        return "; ".join(over) or None, "; ".join(over + warning) or None
+
+
+class Guard:
+    def __init__(self, state_dir: Path, *, dry_run: bool, meminfo: Path, cgroups: tuple[Path, ...],
+                 low: int, high: int, level_wait_s: float, hysteresis_s: float,
+                 stop_timeout_s: int, disk: Disk | None = None,
+                 clock=time.monotonic) -> None:  # fmt: skip
+        self.dir, self.dry_run, self.meminfo, self.cgroups = state_dir, dry_run, meminfo, cgroups
+        self.low, self.high = low, high
+        self.level_wait_s, self.hysteresis_s, self.stop_timeout_s = (
+            level_wait_s,
+            hysteresis_s,
+            stop_timeout_s,
+        )
+        self.clock = clock
+        self.disk = disk
+        self.alerted = float("-inf")
+        self.restarting: threading.Thread | None = None
+        self.restarted = float("-inf")
+        self.state = state_dir / "stopped.json"
+        # [{"level", "id", "name", "finished", "attempts"}], the last stopped last.
+        self.stopped: list[dict] = json.loads(self.state.read_text()) if self.state.exists() else []
+        self.lock = threading.Lock()
+        self.stopping: list[threading.Thread] = []
+        self.last_stop = float("-inf")
+        self.above_since: float | None = None
+        self.said_nothing_left = float("-inf")
+        self.unstoppable: dict[str, float] = {}  # container ID -> when its stop failed
+
+    def log(self, message: str) -> None:
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        prefix = "DRY-RUN " if self.dry_run else ""
+        line = f"{stamp} {prefix}{message}\n"
+        # A full disk must not stop the guard: what cannot be written goes to stderr (the journal).
+        try:
+            with self.lock, (self.dir / "guard.log").open("a") as handle:
+                handle.write(line)
+        except OSError:
+            sys.stderr.write(line)
+
+    def save(self) -> None:
+        tmp = self.state.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.stopped) + "\n")
+        tmp.replace(self.state)
+
+    def tick(self) -> None:
+        self.stopping = [t for t in self.stopping if t.is_alive()]
+        restarting = self.restarting is not None and self.restarting.is_alive()
+        free = available(self.meminfo)
+        now = self.clock()
+        disk_over, disk_warning = self.disk.check(now) if self.disk else (None, None)
+        self.alert(disk_warning, now)
+        if free is None or free < self.low or disk_over:
+            self.above_since = None
+            if now - self.last_stop >= self.level_wait_s:
+                reason = f"disk: {disk_over}" if disk_over and not (free is None or free < self.low) else (
+                    f"MemAvailable {gib(free)}, below {gib(self.low)}")  # fmt: skip
+                self.stop_next(reason, now)
+        elif free > self.high and not disk_warning:
+            if self.above_since is None:
+                self.above_since = now
+            with self.lock:
+                pending = bool(self.stopped)
+            # A restart runs beside the guard, which keeps reading memory; the next level waits a
+            # full hysteresis after it has ended.
+            settled = now - max(self.above_since, self.restarted) >= self.hysteresis_s
+            if pending and not self.stopping and not restarting and settled:
+                self.restarting = threading.Thread(target=self.start_last, daemon=True)
+                self.restarting.start()
+        else:
+            self.above_since = None
+        if self.dry_run:
+            self.log(f"MemAvailable {gib(free)}")
+
+    def alert(self, warning: str | None, now: float) -> None:
+        flag = self.dir / "ALERT"
+        if warning is None:
+            if flag.is_file():
+                with contextlib.suppress(OSError):
+                    flag.unlink()
+                self.log("disk back under 90 % of its limits")
+            return
+        try:
+            flag.write_text(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {warning}\n")
+        except OSError as error:
+            sys.stderr.write(f"cannot write {flag}: {error}\n")
+        if now - self.alerted >= 3600:
+            self.log(f"ALERT disk: {warning}")
+            self.alerted = now
+
+    def stop_next(self, reason: str, now: float) -> None:
+        with self.lock:
+            passed = {c for c, t in self.unstoppable.items() if now - t < UNSTOPPABLE_S}
+        listed = running()
+        if isinstance(listed, str):
+            # Never "nothing left": a guard that cannot list containers cannot protect the host.
+            if now - self.said_nothing_left >= 60:
+                self.log(f"ERROR {reason}, and docker cannot list the containers: {listed}")
+                self.said_nothing_left = now
+            return
+        live = [(level_of(name), cid, name) for cid, name in listed if cid not in passed]
+        live = [entry for entry in live if entry[0] is not None]
+        if not live:
+            if now - self.said_nothing_left >= 600:
+                self.log(f"{reason}: nothing left to stop")
+                self.said_nothing_left = now
+            return
+        level = min(entry[0] for entry in live)
+        self.last_stop = now
+        for _, cid, name in sorted(e for e in live if e[0] == level):
+            self.log(f"STOP level {level + 1} {name}: {reason}; its memory peak "
+                     f"{gib(peak(cid, self.cgroups))}")  # fmt: skip
+            if not self.dry_run:
+                thread = threading.Thread(
+                    target=self.stop_one, args=(level, cid, name), daemon=True
+                )
+                thread.start()
+                self.stopping.append(thread)
+
+    def stop_one(self, level: int, cid: str, name: str) -> None:
+        status, out = docker(
+            "stop", "-t", str(self.stop_timeout_s), cid, timeout=self.stop_timeout_s + 60
+        )
+        after = time.time()
+        if status != 0:
+            with self.lock:
+                self.unstoppable[cid] = self.clock()
+            self.log(f"FAILED to stop {name} ({out.strip()[:200]}); passed over for "
+                     f"{UNSTOPPABLE_S:.0f} s, not recorded as stopped by the guard")  # fmt: skip
+            return
+        state = None
+        for _ in range(3):
+            state = inspect(cid)
+            if state is not None:
+                break
+            time.sleep(2)
+        if state is None:
+            finished = None  # the restart then checks docker's stop time against `after`
+            self.log(f"stopped {name}, but docker did not report its stop time")
+        elif state[0] != "exited":
+            self.log(
+                f"{name} is {state[0]} right after its stop: not recorded as stopped by the guard"
+            )
+            return
+        else:
+            finished = state[1]
+            moment = stamp_of(finished)
+            # Docker records the stop, on this host's clock, before `docker stop` returns.
+            if moment is not None and moment > after:
+                self.log(f"{name} was started and stopped again by someone else: not recorded")
+                return
+        with self.lock:
+            self.stopped.append({"level": level, "id": cid, "name": name, "finished": finished,
+                                 "stopped_by": after, "attempts": 0})  # fmt: skip
+            self.save()
+
+    def start_last(self) -> None:
+        try:
+            self.restart_level()
+        finally:
+            self.restarted = self.clock()
+
+    def restart_level(self) -> None:
+        with self.lock:
+            level = self.stopped[-1]["level"]
+            batch = [entry for entry in self.stopped if entry["level"] == level]
+        kept = []
+        for k, entry in enumerate(batch):
+            name, state = entry["name"], inspect(entry["id"])
+            if state is None:
+                kept.append(entry)
+                self.log(f"docker did not answer for {name}: retried at the next turn")
+                continue
+            # Ours only if docker's stop is the guard's own: the time it recorded at the stop, or,
+            # when that was unread, a stop no later than the guard's own call.
+            moment = stamp_of(state[1])
+            if entry["finished"] is not None:
+                cycled = state[1] != entry["finished"]
+            elif moment is not None:
+                cycled = moment > entry.get("stopped_by", 0.0)
+            else:
+                cycled = True  # nothing tells the guard's stop from someone else's
+            if state[0] != "exited" or cycled:
+                self.log(
+                    f"LEFT {name}: removed, started or stopped again since the guard stopped it"
+                )
+                continue
+            # Memory read again before each start: one container may take back what the floor needs.
+            now_free = available(self.meminfo)
+            disk_warning = self.disk.check(self.clock())[1] if self.disk else None
+            if disk_warning:
+                kept.extend(batch[k:])
+                self.log(
+                    f"disk: {disk_warning} during the restarts: {name} and the rest of its level wait"
+                )
+                break
+            if now_free is None or now_free <= self.high:
+                kept.extend(batch[k:])
+                self.log(f"MemAvailable {gib(now_free)} during the restarts: {name} and the rest "
+                         "of its level wait")  # fmt: skip
+                break
+            self.log(f"START level {level + 1} {name}: MemAvailable {gib(now_free)}, above "
+                     f"{gib(self.high)} for {self.hysteresis_s:.0f} s")  # fmt: skip
+            if self.dry_run:
+                kept.append(entry)
+                continue
+            status, out = docker("start", entry["id"], timeout=90)
+            if status != 0:
+                entry["attempts"] += 1
+                if entry["attempts"] < START_ATTEMPTS:
+                    kept.append(entry)
+                    self.log(
+                        f"FAILED to start {name} ({out.strip()[:200]}); retried at the next turn"
+                    )
+                else:
+                    self.log(
+                        f"FAILED to start {name} {START_ATTEMPTS} times ({out.strip()[:200]}); given up"
+                    )
+        if self.dry_run:
+            return
+        with self.lock:
+            # In place: a level stopped meanwhile stays the last.
+            self.stopped = [e for e in self.stopped if e not in batch or e in kept]
+            self.save()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="autan-mem-guard", description=__doc__.split("\n")[0])
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--state-dir", type=Path, default=Path.home() / "cfd" / "guard")
+    parser.add_argument("--interval", type=float, default=30.0)
+    parser.add_argument("--low-gib", type=float, default=30.0)
+    parser.add_argument("--high-gib", type=float, default=40.0)
+    parser.add_argument("--level-wait", type=float, default=60.0)
+    parser.add_argument("--hysteresis", type=float, default=120.0)
+    parser.add_argument("--stop-timeout", type=int, default=60)
+    parser.add_argument("--meminfo", type=Path, default=Path("/proc/meminfo"))
+    parser.add_argument("--cgroup-root", type=Path, default=Path("/sys/fs/cgroup"))
+    parser.add_argument(
+        "--disk-path", type=Path, default=None, help="the directory whose disk use is limited"
+    )
+    parser.add_argument("--disk-max-gb", type=float, default=500.0)
+    parser.add_argument("--disk-max-pct", type=float, default=80.0)
+    parser.add_argument("--disk-every", type=float, default=600.0, help="seconds between two du")
+    parser.add_argument("--ticks", type=int, default=0, help="stop after this many (0: never)")
+    args = parser.parse_args(argv)
+    args.state_dir.mkdir(parents=True, exist_ok=True)
+    cgroups = tuple(args.cgroup_root / t.relative_to("/sys/fs/cgroup") for t in CGROUPS)
+    guard = Guard(args.state_dir, dry_run=args.dry_run, meminfo=args.meminfo, cgroups=cgroups,
+                  low=int(args.low_gib * GIB), high=int(args.high_gib * GIB),
+                  level_wait_s=args.level_wait, hysteresis_s=args.hysteresis,
+                  stop_timeout_s=args.stop_timeout,
+                  disk=args.disk_path and Disk(args.disk_path, int(args.disk_max_gb * 1e9),
+                                               args.disk_max_pct, args.disk_every))  # fmt: skip
+    guard.log(f"started: floor {gib(guard.low)}, restart above {gib(guard.high)}; "
+              f"{len(guard.stopped)} container(s) stopped by an earlier guard")  # fmt: skip
+    listed = running()
+    if isinstance(listed, str):
+        guard.log(f"ERROR docker cannot list the containers, so nothing can be stopped: {listed}")
+    tick = 0
+    while args.ticks == 0 or tick < args.ticks:
+        guard.tick()
+        tick += 1
+        time.sleep(args.interval)
+    for thread in [*guard.stopping, guard.restarting]:
+        if thread is not None:
+            thread.join()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
