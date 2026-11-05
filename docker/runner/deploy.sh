@@ -39,10 +39,14 @@ here=$(cd "$(dirname "$0")" && pwd)
 bad() { echo "error: $1" >&2; exit 2; }
 [[ -z $home || $home == /* ]] || bad "AUTAN_RUNNER_HOME must be an absolute path"
 [[ -z $cpuset || $cpuset =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]] || bad "AUTAN_RUNNER_CPUSET is a cpu list such as 10-18"
-[[ $memory =~ ^[1-9][0-9]*[mg]$ ]] || bad "AUTAN_RUNNER_MEMORY is a size such as 16g"
+[[ $memory =~ ^[1-9][0-9]*g$ ]] || bad "AUTAN_RUNNER_MEMORY is a whole number of GiB such as 16g"
 [[ $nice =~ ^([0-9]|1[0-9])$ ]] || bad "AUTAN_RUNNER_NICE is 0 to 19"
 [[ -z $build_jobs || $build_jobs =~ ^[1-9][0-9]?$ ]] || bad "AUTAN_RUNNER_BUILD_JOBS is 1 to 99"
 [[ $min_available =~ ^[0-9]{1,3}$ ]] || bad "AUTAN_RUNNER_MIN_AVAILABLE_GIB is 0 to 999"
+# One GPU lock per host: a relocated lock beside the usual one would let two jobs hold the GPU.
+if [[ -n $home && -e $job_lock_dir/gpu.lock ]]; then
+  bad "$job_lock_dir/gpu.lock exists: with AUTAN_RUNNER_HOME the runner would take another lock"
+fi
 
 prepare() {
   # Not in sticky /tmp: there fs.protected_regular stops other uids from opening a file they
@@ -88,7 +92,7 @@ runner_args=(
   --network "$internal_net"
   --cap-drop ALL
   --security-opt no-new-privileges
-  "${placement[@]}"
+  ${placement[@]+"${placement[@]}"}
   --memory "$memory" --memory-swap "$memory" --pids-limit 8192
   # Every job step runs under the runner at this niceness; without CAP_SYS_NICE none lowers it.
   -e AUTAN_RUNNER_NICE="$nice"
@@ -104,15 +108,16 @@ runner_args=(
 )
 
 start_proxy() {
-  # A proxy built from an older image keeps its old policy: replace it.
+  # A proxy built from an older image keeps its old policy, and one started with other cores
+  # keeps them: replace it.
   local running
-  running=$(docker container inspect -f '{{.Image}}' autan-runner-proxy 2>/dev/null || true)
-  if [[ -n $running && $running != "$(docker image inspect -f '{{.Id}}' "$proxy_image")" ]]; then
+  running=$(docker container inspect -f '{{.Image}} {{.HostConfig.CpusetCpus}}' autan-runner-proxy 2>/dev/null || true)
+  if [[ -n $running && $running != "$(docker image inspect -f '{{.Id}}' "$proxy_image") $cpuset" ]]; then
     docker rm -f autan-runner-proxy >/dev/null
   fi
   if ! docker container inspect autan-runner-proxy >/dev/null 2>&1; then
     docker run -d --name autan-runner-proxy --restart unless-stopped \
-      --network "$egress_net" --cap-drop ALL --security-opt no-new-privileges "${placement[@]}" \
+      --network "$egress_net" --cap-drop ALL --security-opt no-new-privileges ${placement[@]+"${placement[@]}"} \
       --memory 1g --pids-limit 256 --log-opt max-size=20m --log-opt max-file=3 \
       "$proxy_image" >/dev/null
   fi

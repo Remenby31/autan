@@ -1,7 +1,6 @@
 import json
 import os
 import subprocess
-import threading
 import time
 from pathlib import Path
 
@@ -90,14 +89,24 @@ def test_a_job_waits_for_the_host_memory_floor_then_is_refused(tmp_path, availab
 
 
 def test_a_job_starts_once_memory_comes_back(tmp_path):
+    # Memory comes back only once the hook is seen waiting for it.
+    hook = tmp_path / "job-started.sh"
+    hook.write_text(HOOK.read_text())
+    (tmp_path / "repository").write_text(REPO + "\n")
+    (tmp_path / "min-available-gib").write_text("30\n")
+    (tmp_path / "admit-wait-s").write_text("60\n")
     (tmp_path / "meminfo").write_text(meminfo(10))
-    flip = threading.Timer(1.5, lambda: (tmp_path / "meminfo").write_text(meminfo(40)))
-    flip.start()
+    event = tmp_path / "event.json"
+    event.write_text(json.dumps(PUSH))
+    env = {"PATH": os.environ["PATH"], "GITHUB_REPOSITORY": REPO, "GITHUB_EVENT_NAME": "push",
+           "GITHUB_EVENT_PATH": str(event)}  # fmt: skip
+    proc = subprocess.Popen(["bash", str(hook)], env=env, stdout=subprocess.PIPE, text=True)
     try:
-        out = run_hook(tmp_path, "push", PUSH, min_available_gib="30\n", admit_wait_s="30\n")
+        assert "WAITING FOR MEMORY" in proc.stdout.readline()
+        (tmp_path / "meminfo").write_text(meminfo(40))
+        assert proc.wait(timeout=30) == 0
     finally:
-        flip.cancel()
-    assert out.returncode == 0
+        proc.kill()
 
 
 def test_a_fork_is_refused_without_waiting_for_memory(tmp_path):
