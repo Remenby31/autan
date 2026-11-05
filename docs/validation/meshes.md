@@ -38,7 +38,16 @@ Agreed with the core mesh readers (#1):
 - **Airfoil.** NACA 0012 equation extended to its root x_TE = 1.00893041137, so the trailing edge is sharp (included angle 16.1501°); the paper prints x_TE rounded to 1.0089304115. Reference chord 1.
 - **Grid.** Karman–Trefftz map with singular points at the trailing edge and half the leading-edge radius inside the leading edge; surface nodes on the analytic airfoil at equal angles about the midpoint of the mapped chord, field nodes on circles of radius R₁ e^(2πj/NC) blended from the near circle (the paper's eqs. 9–14; eq. 14 is printed with r_i,1 (R_NC+1 − R_1), which ends on no circle and does not give back eq. 13 for a circle, so we use r_i,1 (R_NC+1 − R_j), which does both). Cells have aspect ratio 1 (median 1 + O(1/NC), at most 2.06 next to the trailing edge) and the far field lies 148–149 chords away. The trailing-edge cells have a 172° corner, the mapping's singularity, as in the paper.
 - **Family.** R₁ comes from the paper's finest grid (NC = 4096), so level NC is the 4096² grid with lines removed: levels are nested bit for bit, refinement ratio exactly 2. The lower half mirrors the upper one exactly.
-- **Slab.** The airfoil lies in the x–z plane (lift along +z, as case-schema.md orients α), extruded over y ∈ [0, 1]. Zones `airfoil`, `farfield`, `back` (y = 0), `front` (y = 1). The manifest's `h` is the in-plane size √(area / cells).
+- **Slab.** The airfoil lies in the x–z plane (lift along +z, as case-schema.md orients α), extruded over y ∈ [0, 1]. Zones `airfoil`, `farfield`, `back` (y = 0), `front` (y = 1). The manifest's `h` is the in-plane size √(area / cells). The levels are written by `naca0012.write_msh`, in Python, byte for byte as Gmsh's writer gives them (tested), so they need no Gmsh and can be generated on the linux-aarch64 Sparks; the manifest's `gmsh_version` is `none`. A level is bit for bit the same on one platform; between macOS arm64 and linux aarch64 the field nodes differ by up to 7e-14 relative (the math library's complex powers and exponentials; 4e-16 on the airfoil), so the mesh hash names the platform's mesh: compare a family's levels from one platform.
+
+## ONERA M6 meshes
+
+`autan-vv meshes onera-m6 --levels 12,24,48 --out DIR` (source `vv/src/autan_vv/meshes/onera_m6.py`) writes tetrahedral meshes `onera-m6-nNNN.msh` for the M2 ONERA M6 case.
+
+- **Wing.** Public definition of Schmitt and Charpin (AGARD AR-138, chapter B1) as Destarac and Dumont restate it for the TMR: root leading edge (0, 0), root trailing edge (0.8059 m, 0), apex of the prolonged trapezoid (1.5787 m, 2.7345 m), semispan 1.1963 m (sweeps 30° and 15.8°, taper 0.5625); every section is the root section (table B1-1, 72 points) scaled about the apex, so the wing is the ruled surface between root and tip; the tip is the tip section revolved about its chord line (half body of revolution, reaching 1.2185 m). The trailing edge is made sharp by extending the last segment of each surface to the chord line, 0.57 % of the chord (the TMR model extends its CAD surfaces by 0.55 %). x/c keeps the original chord. Reference area 0.7532 m² and mean aerodynamic chord 0.64607 m are the trapezoid's.
+- **Domain.** Half sphere y ≥ 0 of radius 20 m (25 root chords) centred at (0.6, 0, 0); zones `wing`, `symmetry` (y = 0 exactly), `farfield`. Axes: x downstream, y spanwise, z up, so the angle of attack turns the flow in the x–z plane.
+- **Construction.** Gmsh OpenCASCADE: splines through the table (vertical tangent at the leading edge, the extended segment at the trailing edge), the upper surface ruled between root and tip, the lower surface its mirror image, the tip revolved; the shell is cut from the half ball. Boolean union of the wing and tip solids damages the surface of revolution, so the wing is assembled from its faces. The tip surface is meshed with MeshAdapt (Frontal-Delaunay cannot mesh its two poles).
+- **Family.** Level n has a size c(y)/n on the wing, a third of it along the edges, growing as 6/n per metre away from the wing; every size scales as 1/n, so n → 2n multiplies the cells by about 7.3 (1.94–1.95 in N^(1/3)): 52 k, 366 k and 2.75 M tetrahedra for n = 12, 24, 48 (n = 48 takes 4 min and 12 GB on a laptop). Netgen's optimiser removes the flat tetrahedra Delaunay leaves: largest face non-orthogonality 53° at n = 24 instead of 70°. A faster growth (20) makes Gmsh 4.15 produce faces shared by three tetrahedra. Single-threaded Gmsh with a fixed seed regenerates a level bit for bit.
 
 ## RAE 2822 C-grids
 
@@ -71,12 +80,14 @@ Every generated mesh is closed to 10⁻¹² relative and has positive cell volum
 
 ## Platform
 
-Gmsh is GPL-2.0-or-later. It is a development-only dependency group of `vv/`, never imported by shipped code, approved by the lead for that use. Gmsh publishes no linux-aarch64 wheel: generate meshes on macOS or x86-64 CI and copy the files (with their manifest) to the DGX Spark machines, which only consume them. The generated meshes are data, not GPL code.
+Gmsh is GPL-2.0-or-later. It is a development-only dependency group of `vv/`, never imported by shipped code, approved by the lead for that use. Gmsh publishes no linux-aarch64 wheel: generate the families that use it on macOS or x86-64 CI and copy the files (with their manifest) to the DGX Spark machines. The NACA 0012 levels need no Gmsh and can be generated on the Sparks. The generated meshes are data, not GPL code.
 
 ## References
 
 - T. J. Barth, Aspects of unstructured grids and finite-volume solvers for the Euler and Navier-Stokes equations, VKI Lecture Series 1994-05, 1994 (median dual).
-- D. Prosser, Construct2D 2.1.4, a structured grid generator for 2D airfoils, 2018. https://sourceforge.net/projects/construct2d/
+- D. Destarac and A. Dumont, ONERA M6 wing test-case, original and TMR, 2016 (TMR, `Onerawingnumerics_val/ONERA_M6_Test_Case_TMR.pdf`).
 - C. Geuzaine and J.-F. Remacle, Gmsh: a 3-D finite element mesh generator with built-in pre- and post-processing facilities, *Int. J. Numer. Meth. Eng.* 79(11):1309–1331, 2009. doi:10.1002/nme.2579
 - H. W. Kuhn, Some combinatorial lemmas in topology, *IBM J. Res. Dev.* 4(5):518–524, 1960 (cube triangulation).
+- D. Prosser, Construct2D 2.1.4, a structured grid generator for 2D airfoils, 2018. https://sourceforge.net/projects/construct2d/
+- V. Schmitt and F. Charpin, Pressure distributions on the ONERA-M6-wing at transonic Mach numbers, AGARD AR-138, chapter B1, 1979.
 - J. C. Vassberg and A. Jameson, In pursuit of grid convergence for two-dimensional Euler solutions, *J. Aircraft* 47(4):1152–1166, 2010. doi:10.2514/1.46737

@@ -423,9 +423,21 @@
     },
     "E0427": {
       "severity": "error",
-      "title": "Coupled turbulence needs the host multigrid",
+      "title": "Opt-in step needs the host multigrid",
       "fix": "Use `linear_solver='multigrid'` and run on one CPU rank, or drop the option.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0427"
+    },
+    "E0429": {
+      "severity": "error",
+      "title": "Matrix-free step not applicable",
+      "fix": "Remove `matrix_free=True`, or use compressible laminar physics.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0429"
+    },
+    "W0429": {
+      "severity": "warning",
+      "title": "Matrix-free step outside its validated domain",
+      "fix": "Compare with a run without the option before relying on the result.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0429"
     },
     "E0501": {
       "severity": "error",
@@ -576,6 +588,12 @@
       "title": "Exempt equation left its floor",
       "fix": "Check the boundary conditions and the mesh: a symmetric or 2D problem whose symmetry breaks during the run usually means a boundary condition breaks it.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#w0710"
+    },
+    "W0714": {
+      "severity": "warning",
+      "title": "Checkpoint not written",
+      "fix": "Check the space and permissions of the run directory's file system.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0714"
     },
     "W0801": {
       "severity": "warning",

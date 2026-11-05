@@ -16,6 +16,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "autan/core/lines.hpp"
 #include "autan/core/wall_distance.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
@@ -1402,24 +1403,29 @@ bool same_gas(const runtime::Medium& a, const runtime::Medium& b) {
 // What the Euler physics runs beyond its key: every cell zone of one ideal gas, boundary
 // conditions that apply to inviscid flow, and the multigrid on one rank without periodic pairs.
 std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in, int ranks) {
-  // case-schema.md#time: the coupled turbulence step is SA's, in the host's steady
-  // multigrid on one rank.
-  if (in.time.kind == "steady" && in.time.coupled_turbulence) {
-    if (in.turbulence.model != "sa") {
-      return runtime::PhysicsRefusal{
-          .message =
-              "time.coupled_turbulence needs the SA model, not '" + in.turbulence.model + "'",
-          .path = "time.coupled_turbulence",
-          .data_json = nlohmann::json{{"model", in.turbulence.model}}.dump(),
-          .code = "E0426"};
-    }
-    if (in.time.linear_solver != "multigrid" || ranks > 1) {
-      return runtime::PhysicsRefusal{
-          .message = "time.coupled_turbulence runs in the host multigrid on one rank",
-          .path = "time.coupled_turbulence",
-          .data_json =
-              nlohmann::json{{"linear_solver", in.time.linear_solver}, {"ranks", ranks}}.dump(),
-          .code = "E0427"};
+  // case-schema.md#time: the opt-in steps, the coupled turbulence step SA's and the matrix-free
+  // step laminar flow's, in the host's steady multigrid on one rank.
+  if (in.time.kind == "steady") {
+    for (const auto& [key, on, model, code] :
+         {std::tuple{"coupled_turbulence", in.time.coupled_turbulence, "sa", "E0426"},
+          std::tuple{"matrix_free", in.time.matrix_free, "laminar", "E0429"}}) {
+      if (!on) continue;
+      const std::string path = std::string("time.") + key;
+      if (in.turbulence.model != model) {
+        return runtime::PhysicsRefusal{
+            .message = path + " needs the " + model + " model, not '" + in.turbulence.model + "'",
+            .path = path,
+            .data_json = nlohmann::json{{"model", in.turbulence.model}}.dump(),
+            .code = code};
+      }
+      if (in.time.linear_solver != "multigrid" || ranks > 1) {
+        return runtime::PhysicsRefusal{
+            .message = path + " runs in the host multigrid on one rank",
+            .path = path,
+            .data_json =
+                nlohmann::json{{"linear_solver", in.time.linear_solver}, {"ranks", ranks}}.dump(),
+            .code = "E0427"};
+      }
     }
   }
   // Under reproducibility "ranks" Gauss-Seidel and "lines" sum each row in global face order;
@@ -1569,12 +1575,13 @@ std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::Solver
 // measure the circulation; the host's steady step does).
 std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverInput& in,
                                                           int ranks) {
-  if (in.time.kind == "steady" && in.time.coupled_turbulence) {
-    return runtime::PhysicsRefusal{
-        .message = "time.coupled_turbulence runs in the host multigrid, not on a device",
-        .path = "time.coupled_turbulence",
-        .data_json = "{}",
-        .code = "E0427"};
+  if (in.time.kind == "steady" && (in.time.coupled_turbulence || in.time.matrix_free)) {
+    const std::string path =
+        in.time.coupled_turbulence ? "time.coupled_turbulence" : "time.matrix_free";
+    return runtime::PhysicsRefusal{.message = path + " runs in the host multigrid, not on a device",
+                                   .path = path,
+                                   .data_json = "{}",
+                                   .code = "E0427"};
   }
   // The device loops sum in local order: the host's global-order gathers have no device
   // counterpart in the Euler physics yet.
@@ -1613,7 +1620,7 @@ std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverI
 runtime::CellGroups euler_groups(const runtime::SolverInput& in, const Mesh& mesh,
                                  const Geometry& geometry) {
   if (in.time.kind != "steady" || in.time.linear_solver != "lines") return {};
-  auto lines = solvers::smoother_lines(mesh, geometry);
+  auto lines = smoother_lines(mesh, geometry);
   if (lines.cells.empty()) return {};
   return {std::move(lines.offsets), std::move(lines.cells)};
 }

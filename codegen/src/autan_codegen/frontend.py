@@ -57,6 +57,7 @@ INTRINSIC_ARITY = {
     "rel": 2,
     "min": 2,
     "max": 2,
+    "Vec2": 2,
     "Vec3": 3,
     "Vec5": 5,
 }
@@ -65,6 +66,7 @@ INTRINSICS = UNARY_MATH | {
     "cross",
     "norm",
     "rel",
+    "Vec2",
     "Vec3",
     "Vec5",
     "transpose",
@@ -394,7 +396,7 @@ class _Builder:
                 for i, j in ((1, 2), (2, 0), (0, 1))
             )
             return Arr(ids, (3,))
-        if fname in ("Vec3", "Vec5"):
+        if fname in ("Vec2", "Vec3", "Vec5"):
             n = int(fname[3])
             if len(args) != n:
                 raise self.err(Code.TYPE_MISMATCH, f"{fname} takes {n} scalars")

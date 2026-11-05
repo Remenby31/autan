@@ -105,6 +105,36 @@ def campaigns_running() -> int:
     return sum(1 for tid in tids if _state_of(Path(f"/proc/{tid}/stat")) == b"R")
 
 
+def oom_kills_in(cgroup: Path) -> int:
+    """The cgroup's count of kernel out-of-memory kills (cgroup v2 memory.events), 0 if unread."""
+    try:
+        for line in (cgroup / "memory.events").read_text().splitlines():
+            key, _, value = line.partition(" ")
+            if key == "oom_kill":
+                return int(value)
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+def ended_status(name: str, container: str) -> int:
+    """Log how the campaign ended, from docker's record of its container: 0 for a clean exit,
+    1 for a failure or an out-of-memory kill, so that neither reads as a completion."""
+    state = docker("inspect", "-f", "{{.State.ExitCode}} {{.State.OOMKilled}}", container,
+                   check=False).stdout.split()  # fmt: skip
+    code = int(state[0]) if state and state[0].lstrip("-").isdigit() else None
+    oom = len(state) > 1 and state[1] == "true"
+    if oom:
+        log(name, f"campaign ended: killed for exceeding its --memory cap (exit {code}); "
+                  "`docker logs` keeps its output")  # fmt: skip
+        return 1
+    if code != 0:
+        log(name, f"campaign ended with exit {code}; `docker logs` keeps its output")
+        return 1
+    log(name, "campaign ended; `docker logs` keeps its output")
+    return 0
+
+
 def docker(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["docker", *args], check=check, capture_output=True, text=True, timeout=DOCKER_TIMEOUT_S
@@ -221,6 +251,7 @@ def watch(name: str, floor: int) -> int:
             return 1
         docker("start", container)
         cgroup = cgroup_of(container)
+        oom_kills = oom_kills_in(cgroup)
         (STATES / f"{name}.cgroup").write_text(f"{cgroup}\n")
         log(name, "started")
         frozen = False
@@ -237,8 +268,14 @@ def watch(name: str, floor: int) -> int:
                 return 1
             if not cgroup.exists():
                 ended = True
-                log(name, "campaign ended; `docker logs` keeps its output")
-                return 0
+                return ended_status(name, container)
+            # A process over --memory is killed by the kernel, but only that one (memory.oom.group
+            # is 0): a driver that outlives it would keep the campaign silently half-dead.
+            kills = oom_kills_in(cgroup)
+            if kills > oom_kills:
+                log(name, f"a process of the campaign exceeded its --memory cap ({kills} kernel "
+                          "out-of-memory kill(s)): campaign stopped")  # fmt: skip
+                return 1
             wanted = lock_in_use(LOCK, Path("/proc/locks").read_text())
             if wanted and not frozen:
                 docker("pause", container)
@@ -288,22 +325,34 @@ def start(args: argparse.Namespace) -> int:
     if not LOCK.exists():
         sys.exit(f"autan-campaign: {LOCK} is missing; run docker/runner/deploy.sh start")
     container = PREFIX + args.name
-    STATE.mkdir(exist_ok=True)
-    if docker("ps", "-aq", "--filter", f"name=^{container}$").stdout.strip():
-        sys.exit(f"autan-campaign: {container} already exists")
     floor = memfloor.parse(args.free)
     if floor is None:
         sys.exit(f"autan-campaign: --free {args.free!r} is not a size such as 24G or 512M")
+    memory = memfloor.parse(args.memory)
+    if not memory:
+        sys.exit(f"autan-campaign: --memory {args.memory!r} is not a size such as 40G or 512M")
+    # A cap that cannot fit beside the floor would end in the floor's breach, which removes every
+    # campaign, not in this container's own out-of-memory.
+    total = memfloor.total()
+    if total is not None and memory > total - floor:
+        sys.exit(f"autan-campaign: --memory {memfloor.show(memory)} exceeds the host's "
+                 f"{memfloor.show(total)} less --free {memfloor.show(floor)}")  # fmt: skip
     command = args.command
     if not command:
         sys.exit("autan-campaign: no command after --")
+    # The arguments checked first: a bad one is refused before docker is asked anything.
+    STATE.mkdir(exist_ok=True)
+    if docker("ps", "-aq", "--filter", f"name=^{container}$").stdout.strip():
+        sys.exit(f"autan-campaign: {container} already exists")
     workdir = Path(args.dir).resolve()
     STATES.mkdir(mode=0o755, exist_ok=True)
     heartbeat = STATES / f"{args.name}.heartbeat"
     heartbeat.touch()
     docker(
         "create", "--name", container, "--cpus", str(args.cpus), "--cpu-shares", "2",
-        "--memory", "48g",
+        # The campaign's own cap (cgroup memory.max, no swap beyond it): a campaign that outgrows
+        # its declared peak is killed alone, before the host's floor removes every campaign.
+        "--memory", f"{memory}b", "--memory-swap", f"{memory}b",
         "--user", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp",
         "-v", f"{workdir}:/work", "-w", "/work",
         "-v", f"{heartbeat}:/autan-campaign/heartbeat:ro",
@@ -363,6 +412,9 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--cpus", type=float, default=12.0)
     s.add_argument("--free", default=memfloor.DEFAULT,
                    help="host memory to keep available, as 24G or 512M (0G for none)")  # fmt: skip
+    s.add_argument("--memory", default="48G",
+                   help="the container's memory cap, as 40G or 512M: its declared peak plus a "
+                        "margin; exceeding it kills this campaign alone (default 48G)")  # fmt: skip
     s.add_argument("--image", default="autan-dev:local")
     s.add_argument("--dir", default=".", help="directory mounted at /work")
     s.set_defaults(func=start)

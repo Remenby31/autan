@@ -41,6 +41,10 @@ def _cmd_meshes(args: argparse.Namespace) -> None:
         from autan_vv.meshes import naca0012  # noqa: PLC0415
 
         family, _ = naca0012.generate_family(args.levels, args.out)
+    elif args.kind == "onera-m6":
+        from autan_vv.meshes import onera_m6  # noqa: PLC0415
+
+        family, _ = onera_m6.generate_family(args.levels, args.out, seed=args.seed)
     else:
         from autan_vv.meshes.families import generate_family  # noqa: PLC0415
 
@@ -52,13 +56,26 @@ def _cmd_meshes(args: argparse.Namespace) -> None:
 
 
 def _cmd_m2_cases(args: argparse.Namespace) -> None:
-    from autan_vv.cases import naca0012  # noqa: PLC0415
+    from autan_vv.cases import naca0012, onera_m6  # noqa: PLC0415
     from autan_vv.meshes.families import MANIFEST_SCHEMA  # noqa: PLC0415
 
     manifest = json.loads((args.family / "manifest.json").read_text())
-    if manifest.get("schema") != MANIFEST_SCHEMA or manifest.get("kind") != "naca0012":
-        msg = f"{args.family} is not a naca0012 mesh family ({MANIFEST_SCHEMA})"
+    if manifest.get("schema") != MANIFEST_SCHEMA or manifest.get("kind") != args.case:
+        msg = f"{args.family} is not a {args.case} mesh family ({MANIFEST_SCHEMA})"
         raise VVError(msg, code="V0805")
+    if args.case == "onera-m6":
+        args.out.mkdir(parents=True, exist_ok=True)
+        for level in manifest["levels"]:
+            mesh = (args.family / level["file"]).resolve()
+            case = onera_m6.case(
+                os.path.relpath(mesh, args.out),
+                precision=args.precision,
+                max_iterations=args.max_iterations,
+            )
+            path = args.out / f"{Path(level['file']).stem}.toml"
+            path.write_text(case.to_toml())
+            _say(str(path))
+        return
     for condition in naca0012.CONDITIONS:
         out = args.out / condition
         out.mkdir(parents=True, exist_ok=True)
@@ -165,6 +182,39 @@ def _cmd_su2(args: argparse.Namespace) -> None:
         ):
             _say(str(run.relative_to(args.out)))
         return
+    if args.action == "compare":
+        from autan_vv.su2 import compare  # noqa: PLC0415
+
+        if args.su2 is None or args.su2_root is None or not args.runs:
+            msg = "su2 compare takes --su2 REPORT, --su2-root DIR and Autan run directories"
+            raise VVError(msg, code="V0905")
+        report = compare.compare(args.runs, args.su2, args.su2_root)
+        if args.out is not None:
+            args.out.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+        for row in report["levels"]:
+            a, d = row["autan"], row.get("difference")
+            gap = (
+                f"dCL {d['cl']:+.6f}, dCD {d['cd'] * 1e4:+.2f} counts, dCM {d['cmy']:+.6f}"
+                if d
+                else "no converged SU2 level"
+            )
+            _say(f"{row['n']}²: Autan CL {a['cl']:.6f}, CD {a['cd']:.7f}; {gap}")
+            if "cp" in row:
+                cp = row["cp"]
+                _say(
+                    f"    Cp: max |dCp| {cp['all']['max_abs']:.4f}, {cp['body']['max_abs']:.4f} on the"
+                    f" body (rms {cp['body']['rms']:.5f}); upper shock x Autan"
+                    f" {cp['shock_upper']['autan']}, SU2 {cp['shock_upper']['su2']}"
+                )
+        if report["continuum"]:
+            _say(f"continuum from levels {report['continuum']['levels']}")
+        for code, estimates in report["continuum"].items():
+            if code == "levels":
+                continue
+            for name, est in estimates.items():
+                value = f"{est['estimate']:.7f}" if "estimate" in est else est["error"]
+                _say(f"{code} continuum {name}: {value}")
+        return
     if args.action == "history":
         from autan_vv.su2 import history  # noqa: PLC0415
 
@@ -201,6 +251,37 @@ def _cmd_su2(args: argparse.Namespace) -> None:
             )
     for verdict in report["verdicts"]:
         _say(f"gate {verdict['gate']}: {'PASS' if verdict['pass'] else 'FAIL'}")
+
+
+def _cmd_sections(args: argparse.Namespace) -> None:
+    from autan_vv.cases import onera_m6  # noqa: PLC0415
+
+    report = onera_m6.study(args.run, args.experiment)
+    if args.out is not None:
+        args.out.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+    drop = report["residual_drop"]
+    _say(
+        "residual drop: "
+        + ", ".join(f"{k} {'-' if v is None else f'{v:.1f}'}" for k, v in drop.items())
+    )
+    for row in report["sections"]:
+        gap = row["rear_shock_gap"]
+        rms = row["cp_rms_off_shocks"]
+        _say(
+            f"eta {row['eta']:.2f}: shocks experiment "
+            f"{[round(v, 3) for v in row['shocks_experiment']]}, "
+            f"computed {[round(v, 3) for v in row['shocks_computed']]}, "
+            f"rear gap {'-' if gap is None else f'{gap:.3f}'}, "
+            f"Cp RMS {'-' if rms is None else f'{rms:.3f}'}"
+        )
+    gate = report["gate"]
+    if gate is None:
+        _say(f"no residual gate in {report['precision']}: compare forces and Cp with fp64")
+        return
+    note = "" if report["evidence"] else " (not evidence: fake backend)"
+    _say(f"gate {gate['id']}: {'PASS' if gate['pass'] else 'FAIL'}{note}")
+    if not gate["pass"]:
+        raise SystemExit(1)
 
 
 def _cmd_order(args: argparse.Namespace) -> None:
@@ -336,6 +417,7 @@ def main(argv: list[str] | None = None) -> int:
             "vortex-hex",
             "vortex-prism",
             "naca0012",
+            "onera-m6",
         ),
     )
     p.add_argument("--levels", type=_levels, default=(8, 16, 32, 64))
@@ -344,8 +426,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", type=Path, required=True)
     p.set_defaults(func=_cmd_meshes)
 
-    p = sub.add_parser("m2-cases", help="write the NACA 0012 cases of every condition and level")
-    p.add_argument("case", choices=("naca0012",))
+    p = sub.add_parser("m2-cases", help="write the NACA 0012 or ONERA M6 cases of every level")
+    p.add_argument("case", choices=("naca0012", "onera-m6"))
     p.add_argument("--family", type=Path, required=True, help="directory of the mesh manifest")
     p.add_argument("--precision", choices=("fp64", "fp32+acc64"), default="fp64")
     p.add_argument("--max-iterations", type=int, default=200000)
@@ -370,11 +452,24 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_forces)
 
     p = sub.add_parser(
-        "su2",
-        help="SU2 on the NACA 0012 family: prepare its cases, study its runs, or read any run's"
-        " history against the convergence criterion",
+        "sections", help="ONERA M6 run: residual-drop gate, Cp sections and shocks against run 2308"
     )
-    p.add_argument("action", choices=("prepare", "study", "history"))
+    p.add_argument("run", type=Path, help="run directory")
+    p.add_argument(
+        "--experiment",
+        type=Path,
+        required=True,
+        help="case_2308.dat (autan-vv cases fetch onera-m6)",
+    )
+    p.add_argument("--out", type=Path, help="write the report (autan.vv-onera-m6/1) as JSON")
+    p.set_defaults(func=_cmd_sections)
+
+    p = sub.add_parser(
+        "su2",
+        help="SU2 on the NACA 0012 family: prepare its cases, study its runs, read any run's"
+        " history against the convergence criterion, or compare Autan's runs with an SU2 study",
+    )
+    p.add_argument("action", choices=("prepare", "study", "history", "compare"))
     p.add_argument("runs", type=Path, nargs="*", help="study: run directories of one condition")
     p.add_argument("--family", type=Path, help="prepare: directory of the mesh manifest")
     p.add_argument("--dimension", type=int, choices=(2, 3), default=2)
@@ -385,6 +480,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-iterations", type=int, default=20000)
     p.add_argument("--stop-margin", type=float, default=2.0, help="prepare: orders SU2 runs on")
     p.add_argument("--orders", type=float, default=10.0, help="history: residual drop criterion")
+    p.add_argument("--su2", type=Path, help="compare: the SU2 study report of the condition")
+    p.add_argument(
+        "--su2-root", type=Path, help="compare: the directory the study's SU2 runs were prepared in"
+    )
     p.add_argument("--out", type=Path, help="prepare: output root; study: report JSON")
     p.set_defaults(func=_cmd_su2)
 

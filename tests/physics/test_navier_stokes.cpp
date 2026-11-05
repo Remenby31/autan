@@ -51,8 +51,8 @@ std::array<double, 5> primitive(double x, double y, double z) {
 
 // One layer of hexahedra over [0,1]^2 x [0,1], the spacing in y growing geometrically from 1e-5 at
 // y = 0 (aspect ratio 10^4 at the wall, as in the wall-resolved 2D grids of the NASA TMR), zones
-// xmin ... ymax and `sides` for z = 0 and z = 1.
-autan::Mesh stretched_slab() {
+// xmin ... ymax and `sides` for z = 0 and z = 1; turned by `angle` (radians) about z.
+autan::Mesh stretched_slab(double angle = 0.0) {
   constexpr int nx = 8;
   constexpr int ny = 12;
   constexpr double first = 1.0e-5;
@@ -66,8 +66,9 @@ autan::Mesh stretched_slab() {
   for (int j = 0; j <= ny; ++j) {
     for (int k = 0; k <= 1; ++k) {
       for (int i = 0; i <= nx; ++i) {
-        in.x.push_back(static_cast<double>(i) / nx);
-        in.y.push_back(j == ny ? 1.0 : y);
+        const double xi = static_cast<double>(i) / nx, yj = j == ny ? 1.0 : y;
+        in.x.push_back(std::cos(angle) * xi - std::sin(angle) * yj);
+        in.y.push_back(std::sin(angle) * xi + std::cos(angle) * yj);
         in.z.push_back(k);
       }
     }
@@ -242,24 +243,32 @@ TEMPLATE_TEST_CASE("viscous residual of linear velocity and temperature is the d
 // wall is mu (du/dy, 0, dw/dy) at each face centroid, and the cubic fit of the boundary cells gives
 // it exactly, where a linear fit would be first order and a quadratic one second. Also on a
 // one-layer slab stretched 10^4:1 at the wall, with slip sides (the fields are those of the plane
-// z = 1/2) and an outlet at x = 1, which gives neither T nor the velocity at the wall's end.
+// z = 1/2) and an outlet at x = 1, which gives neither T nor the velocity at the wall's end; and on
+// that slab turned 30 degrees about z, whose wall lies along no axis (#448): the fields and the
+// stress are those of the slab's own frame, turned with it.
 TEMPLATE_TEST_CASE("wall shear stress of a cubic velocity is exact", "[navier-stokes]",
                    autan::kernels::fp64, autan::kernels::fp32_acc64) {
   using P = TestType;
   const std::string file = GENERATE(Catch::Generators::values<std::string>(
-      {meshes[0], meshes[1], meshes[2], meshes[3], "stretched slab"}));
+      {meshes[0], meshes[1], meshes[2], meshes[3], "stretched slab", "turned slab"}));
   CAPTURE(file);
-  const auto mesh =
-      file == "stretched slab" ? stretched_slab() : autan::io::read_mesh(mesh_dir / file);
+  const bool slab = file == "stretched slab" || file == "turned slab";
+  const double angle = file == "turned slab" ? std::acos(-1.0) / 6.0 : 0.0;
+  const double ca = std::cos(angle), sa = std::sin(angle);
+  const auto mesh = slab ? stretched_slab(angle) : autan::io::read_mesh(mesh_dir / file);
   const auto g = autan::compute_geometry(mesh);
   const auto n = static_cast<std::size_t>(mesh.n_cells());
   const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
   const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
   constexpr double p = 1.0e5;
-  auto velocity = [](double x, double y, double z) {
-    return std::array<double, 3>{
-        y * (30.0 + 8.0 * x - 5.0 * z + 12.0 * y + 4.0 * x * x + 3.0 * y * y - 2.0 * x * z),
-        4.0 * y * y + y * y * y, y * (-10.0 + 6.0 * x + 2.0 * z * z)};
+  // In the slab's frame (x, y) = R^T (x, y), the components turned back by R.
+  auto velocity = [&](double gx, double gy, double z) {
+    const double x = ca * gx + sa * gy, y = -sa * gx + ca * gy;
+    const double u =
+        y * (30.0 + 8.0 * x - 5.0 * z + 12.0 * y + 4.0 * x * x + 3.0 * y * y - 2.0 * x * z);
+    const double v = 4.0 * y * y + y * y * y;
+    return std::array<double, 3>{ca * u - sa * v, sa * u + ca * v,
+                                 y * (-10.0 + 6.0 * x + 2.0 * z * z)};
   };
   Scheme scheme;
   scheme.limiter = false;
@@ -282,7 +291,7 @@ TEMPLATE_TEST_CASE("wall shear stress of a cubic velocity is exact", "[navier-st
       wall.push_back(b);
     } else if (zone == "sides") {
       kind[b] = BoundaryKind::slip;
-    } else if (zone == "xmax" && file == "stretched slab") {
+    } else if (zone == "xmax" && slab) {
       kind[b] = BoundaryKind::outlet;
       data[4 * nb + b] = p;
     } else {
@@ -309,13 +318,18 @@ TEMPLATE_TEST_CASE("wall shear stress of a cubic velocity is exact", "[navier-st
   double worst = 0.0;
   for (const auto b : wall) {
     const auto f = ni + b;
-    const double x = g.face_centroid_x[f], z = g.face_centroid_z[f];
-    const std::array<double, 3> exact{mu * (30.0 + 8.0 * x - 5.0 * z + 4.0 * x * x - 2.0 * x * z),
-                                      0.0, mu * (-10.0 + 6.0 * x + 2.0 * z * z)};
+    const double x = ca * g.face_centroid_x[f] + sa * g.face_centroid_y[f];
+    const double z = g.face_centroid_z[f];
+    const double tx = mu * (30.0 + 8.0 * x - 5.0 * z + 4.0 * x * x - 2.0 * x * z);
+    const std::array<double, 3> exact{ca * tx, sa * tx, mu * (-10.0 + 6.0 * x + 2.0 * z * z)};
     for (std::size_t k = 0; k < 3; ++k) {
       worst = std::max(worst, std::abs(traction[k * nb + b] - exact[k]) / (mu * 45.0));
     }
   }
-  // Round-off of the fit, amplified by its conditioning like the linear gradients above.
-  CHECK(worst <= 4096 * eps<P>());
+  // Round-off of the fit, amplified by its conditioning like the linear gradients above. The turned
+  // slab's nodes are rounded at eps_64 |x| (|x| < 1.5) against the wall spacing 1e-5, which
+  // perturbs the offsets across the wall by eps_64 |x| / 1e-5 relative, whatever the fit.
+  const double geometry =
+      angle != 0.0 ? std::numeric_limits<double>::epsilon() * 1.5 / 1.0e-5 : 0.0;
+  CHECK(worst <= 4096 * (eps<P>() + geometry));
 }

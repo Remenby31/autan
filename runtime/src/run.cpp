@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <csignal>
@@ -15,6 +16,7 @@
 #include <numeric>
 #include <optional>
 #include <random>
+#include <set>
 #include <span>
 #include <sstream>
 #include <string>
@@ -30,6 +32,7 @@
 
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
+#include "autan/core/renumber.hpp"
 #include "autan/io/cgns.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
@@ -53,19 +56,185 @@ using Json = nlohmann::ordered_json;
 
 std::size_t at(index_t i) { return static_cast<std::size_t>(i); }
 
+// case-schema.md, `verification`: the bounds that make a manufactured solution's input space
+// finite, checked before the physics builds its expression trees.
+constexpr std::uintmax_t manufactured_max_bytes = 1U << 20U;
+constexpr int manufactured_max_depth = 1024;
+
+// The depth of the tree the manufactured solution's grammar (physics/src/manufactured.cpp)
+// builds for `e`: a number or a name is 1, a unary minus, a parenthesis or a one-argument
+// function adds 1, a binary operator (left-associative, * and / before + and -) or pow is 1 more
+// than its deeper operand. Evaluated with explicit stacks, never recursively, and stopped as soon
+// as it exceeds `limit`. Every operator still pending encloses what follows it, so the depth is at
+// least one more than their count: an expression is refused on that count too, finished or not,
+// before the parser's recursion could reach it. Otherwise a malformed expression is left to the
+// parser, which reports it.
+int expression_depth(std::string_view e, int limit) {
+  enum Kind : std::uint8_t { open, call, negate, add, multiply };
+  std::vector<Kind> ops;
+  std::vector<int> depth;          // operands' depths
+  std::vector<std::size_t> marks;  // depth.size() at each open parenthesis or call
+  int deepest = 0;
+  auto keep = [&](int d) {
+    depth.push_back(d);
+    deepest = std::max(deepest, d);
+    return d <= limit;
+  };
+  // Applies the operator on top of `ops` to the operands it takes.
+  auto reduce = [&] {
+    const Kind k = ops.back();
+    ops.pop_back();
+    if (depth.empty()) return true;
+    if (k == negate) {
+      const int a = depth.back();
+      depth.pop_back();
+      return keep(a + 1);
+    }
+    if (depth.size() < 2) return true;
+    const int b = depth.back();
+    depth.pop_back();
+    const int a = depth.back();
+    depth.pop_back();
+    return keep(1 + std::max(a, b));
+  };
+  auto binds = [](Kind k) { return k == add ? 1 : k == multiply ? 2 : 3; };
+  auto pending = [&] { return static_cast<int>(ops.size()) + 1 > limit; };
+  bool operand_expected = true;
+  std::size_t i = 0;
+  while (i < e.size()) {
+    const char c = e[i];
+    if (std::isspace(static_cast<unsigned char>(c)) != 0) {
+      ++i;
+      continue;
+    }
+    if (operand_expected && c == '-') {
+      ops.push_back(negate);
+      if (pending()) return limit + 1;
+      ++i;
+      continue;
+    }
+    if (operand_expected && c == '(') {
+      ops.push_back(open);
+      marks.push_back(depth.size());
+      if (pending()) return limit + 1;
+      ++i;
+      continue;
+    }
+    if (operand_expected) {
+      // A number or a name, as the parser reads them.
+      std::size_t j = i;
+      if (std::isdigit(static_cast<unsigned char>(c)) != 0 || c == '.') {
+        while (j < e.size() &&
+               (std::isdigit(static_cast<unsigned char>(e[j])) != 0 || e[j] == '.' || e[j] == 'e' ||
+                e[j] == 'E' ||
+                ((e[j] == '+' || e[j] == '-') && j > i && (e[j - 1] == 'e' || e[j - 1] == 'E'))))
+          ++j;
+      } else {
+        while (j < e.size() && (std::isalnum(static_cast<unsigned char>(e[j])) != 0 || e[j] == '_'))
+          ++j;
+      }
+      if (j == i) return deepest;
+      std::size_t k = j;
+      while (k < e.size() && std::isspace(static_cast<unsigned char>(e[k])) != 0) ++k;
+      if (k < e.size() && e[k] == '(' && std::isalpha(static_cast<unsigned char>(e[i])) != 0) {
+        ops.push_back(call);
+        marks.push_back(depth.size());
+        if (pending()) return limit + 1;
+        i = k + 1;
+        continue;
+      }
+      if (!keep(1)) return deepest;
+      i = j;
+      operand_expected = false;
+      continue;
+    }
+    // After an operand: a binary operator, a comma or a closing parenthesis.
+    if (c == ')' || c == ',') {
+      while (!ops.empty() && ops.back() != open && ops.back() != call) {
+        if (!reduce()) return deepest;
+      }
+      if (ops.empty()) return deepest;
+      if (c == ',') {
+        operand_expected = true;
+        ++i;
+        continue;
+      }
+      ops.pop_back();
+      // A parenthesis or a call is 1 more than its deepest argument (pow has two).
+      const std::size_t from = marks.back();
+      marks.pop_back();
+      if (depth.size() <= from) return deepest;
+      const int d =
+          *std::max_element(depth.begin() + static_cast<std::ptrdiff_t>(from), depth.end());
+      depth.resize(from);
+      if (!keep(d + 1)) return deepest;
+      ++i;
+      continue;
+    }
+    const Kind k = c == '+' || c == '-' ? add : c == '*' || c == '/' ? multiply : open;
+    if (k == open) return deepest;
+    while (!ops.empty() && ops.back() != open && ops.back() != call &&
+           binds(ops.back()) >= binds(k)) {
+      if (!reduce()) return deepest;
+    }
+    ops.push_back(k);
+    if (pending()) return limit + 1;
+    operand_expected = true;
+    ++i;
+  }
+  while (!ops.empty()) {
+    if (ops.back() == open || ops.back() == call) return deepest;
+    if (!reduce()) return deepest;
+  }
+  return deepest;
+}
+
+// E0208 for an expression of the manufactured solution deeper than the contract allows, before
+// the physics builds any of them. A document that is not JSON is not an autan.mms/1 document.
+void check_manufactured_depth(const std::string& text) {
+  auto refuse = [](const std::string& message, const nlohmann::json& data) {
+    throw InputError(Diagnostic{.code = "E0208",
+                                .message = message,
+                                .path = "verification.path",
+                                .data_json = data.dump()});
+  };
+  nlohmann::json doc;
+  try {
+    doc = nlohmann::json::parse(text);
+  } catch (const nlohmann::json::exception&) {
+    refuse("the manufactured solution is not JSON", nlohmann::json::object());
+  }
+  if (!doc.is_object()) return;
+  auto check = [&](const nlohmann::json& e, const std::string& where) {
+    if (!e.is_string()) return;
+    const int d = expression_depth(e.get_ref<const std::string&>(), manufactured_max_depth);
+    if (d > manufactured_max_depth) {
+      refuse("the manufactured solution's expression " + where + " is deeper than " +
+                 std::to_string(manufactured_max_depth),
+             {{"expression", where}, {"limit", manufactured_max_depth}});
+    }
+  };
+  for (const char* group : {"fields", "gradients", "conserved", "sources", "auxiliary"}) {
+    const auto g = doc.find(group);
+    if (g == doc.end() || !g->is_object()) continue;
+    if (const auto sub = g->find("subexpressions"); sub != g->end() && sub->is_array()) {
+      for (std::size_t k = 0; k < sub->size(); ++k) {
+        const auto& pair = (*sub)[k];
+        if (pair.is_array() && pair.size() == 2) {
+          check(pair[1], std::string(group) + ".subexpressions[" + std::to_string(k) + "]");
+        }
+      }
+    }
+    if (const auto out = g->find("outputs"); out != g->end() && out->is_object()) {
+      for (const auto& [name, e] : out->items()) {
+        check(e, std::string(group) + ".outputs." + name);
+      }
+    }
+  }
+}
+
 // Set by SIGINT and SIGTERM; the loop finalises the run as stopped.
 volatile std::sig_atomic_t stop_requested = 0;
-
-// The process's resident memory now, in bytes: VmRSS on Linux; 0 elsewhere.
-std::int64_t host_resident_bytes() {
-#if defined(__linux__)
-  std::ifstream status("/proc/self/status");
-  for (std::string line; std::getline(status, line);) {
-    if (line.starts_with("VmRSS:")) return std::stoll(line.substr(6)) * 1024;  // kB
-  }
-#endif
-  return 0;
-}
 
 // The process's resident memory at its peak so far, in bytes: VmHWM on Linux,
 // ru_maxrss elsewhere (bytes on macOS).
@@ -161,6 +330,7 @@ struct Prepared {
   std::map<std::string, index_t> face_zone;  // boundary zone name -> Mesh::face_zones() index
   std::vector<std::vector<index_t>> monitor_zones;
   const PhysicsFactory* factory = nullptr;
+  std::string cell_order;                   // "rcm" (default) or "input", from AUTAN_CELL_ORDER
   const PartitionGroups* groups = nullptr;  // the physics' groups; null or empty: none
   std::optional<StartState> start;          // input.start, read and checked
   Json start_averaging;                     // `continue`: the previous run's averaging
@@ -263,7 +433,9 @@ const Geometry& geometry_of(Prepared& p) {
 // mesh, precision and fields, and reads its state, before any directory exists.
 void load_start(Prepared& p) {
   const Start& start = *p.input.start;
-  const fs::path file = fs::path(start.run) / "solution.cgns";
+  const bool from_checkpoint = start.file == "checkpoint";
+  const fs::path file =
+      fs::path(start.run) / (from_checkpoint ? "checkpoint.cgns" : "solution.cgns");
   const auto unusable = [&](const std::string& why) {
     start_mismatch("E0707", file.string() + ": " + why, "start.run");
   };
@@ -308,6 +480,18 @@ void load_start(Prepared& p) {
   if (stored.cells != p.mesh.n_cells()) {
     unusable(std::to_string(stored.cells) + " cells, the mesh " + std::to_string(p.mesh.n_cells()));
   }
+  // A checkpoint names its iteration (results.md#checkpointcgns); a final solution does not.
+  if (from_checkpoint) {
+    const Json* c = metadata.contains("checkpoint") ? &metadata["checkpoint"] : nullptr;
+    if (c == nullptr || !c->is_object() || !c->contains("iteration") ||
+        !(*c)["iteration"].is_number_integer())
+      unusable("RunMetadata has no checkpoint iteration");
+    if ((*c)["iteration"].get<std::int64_t>() != start.iterations)
+      unusable("the checkpoint is of iteration " + (*c)["iteration"].dump() +
+               ", start.iterations " + std::to_string(start.iterations));
+  } else if (metadata.contains("checkpoint")) {
+    unusable("RunMetadata of a final solution has a checkpoint");
+  }
   const std::string precision = text(metadata, "precision");
   if (precision != p.input.precision) {
     start_mismatch("E0708", "the previous run used precision '" + precision + "'", "start.run");
@@ -319,6 +503,13 @@ void load_start(Prepared& p) {
   }
   StartState state{.fields = std::move(stored.fields), .mean_fields = {}, .restart_fields = {}};
   if (start.mode == "continue") {
+    // A continuation goes on in the order the run computed in (results.md,
+    // cell_order): another order would change its bits from the restart on.
+    const std::string order = text(metadata, "cell_order");
+    if (order != p.cell_order) {
+      start_mismatch("E0708", "the previous run computed in cell order '" + order + "'",
+                     "start.run", {{"expected", p.cell_order}, {"found", order}});
+    }
     if (!metadata.contains("averaging") || !is_averaging(metadata["averaging"]))
       unusable("RunMetadata has no valid averaging");
     p.start_averaging = metadata["averaging"];
@@ -686,6 +877,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
              .face_zone = {},
              .monitor_zones = {},
              .factory = nullptr,
+             .cell_order = {},
              .start = std::nullopt,
              .start_averaging = {},
              .boundary_states = {},
@@ -713,6 +905,11 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
             nlohmann::json{{"expected", p.input.mesh_sha256}, {"found", p.mesh_hash}}.dump()});
   }
   check_periodic(p);
+  const char* order = std::getenv("AUTAN_CELL_ORDER");
+  p.cell_order = order == nullptr ? "rcm" : order;
+  if (p.cell_order != "rcm" && p.cell_order != "input") {
+    throw std::runtime_error("AUTAN_CELL_ORDER is '" + p.cell_order + "', not rcm or input");
+  }
   // solver-input.md, `devices`: one rank per device, as many as the launcher started.
   if (p.input.device_count != ranks) {
     invalid("devices.count", "is " + std::to_string(p.input.device_count) + ", but " +
@@ -726,16 +923,31 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
   if (p.input.verification) {
     // The manufactured solution is checked like the mesh: by its hash.
     auto& v = *p.input.verification;
-    const std::ifstream in(v.path, std::ios::binary);
+    std::ifstream in(v.path, std::ios::binary);
     if (!in) {
       throw InputError(Diagnostic{.code = "E0207",
                                   .message = "cannot read '" + v.path + "'",
                                   .path = "verification.path",
                                   .data_json = "{}"});
     }
-    std::ostringstream text;
-    text << in.rdbuf();
-    v.text = text.str();
+    auto too_large = [&](const std::string& bytes) {
+      throw InputError(
+          Diagnostic{.code = "E0208",
+                     .message = "the manufactured solution has " + bytes + " bytes, more than " +
+                                std::to_string(manufactured_max_bytes),
+                     .path = "verification.path",
+                     .data_json = nlohmann::json{{"limit", manufactured_max_bytes}}.dump()});
+    };
+    // A regular file's size is known before reading; anything else (a pipe) is read up to one
+    // byte past the limit.
+    std::error_code size_error;
+    const auto size = fs::file_size(v.path, size_error);
+    if (!size_error && size > manufactured_max_bytes) too_large(std::to_string(size));
+    v.text.assign(manufactured_max_bytes + 1, '\0');
+    in.read(v.text.data(), static_cast<std::streamsize>(v.text.size()));
+    v.text.resize(static_cast<std::size_t>(in.gcount()));
+    if (v.text.size() > manufactured_max_bytes)
+      too_large("at least " + std::to_string(v.text.size()));
     if (sha256_hex(v.text) != v.sha256) {
       throw InputError(Diagnostic{
           .code = "E0206",
@@ -744,6 +956,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
           .data_json =
               nlohmann::json{{"expected", v.sha256}, {"found", sha256_hex(v.text)}}.dump()});
     }
+    check_manufactured_depth(v.text);
   }
   const io::MeshInfoZones zones = io::meshinfo_zones(p.mesh);
   for (const index_t z : zones.boundary) p.face_zone[p.mesh.face_zones()[at(z)].name] = z;
@@ -916,29 +1129,24 @@ class Run final : public Log {
       : p_(p),
         comm_(comm),
         launched_(launched),
-        geometry_(std::move(*p.geometry)),
+        ordered_(make_ordered()),
         groups_(std::move(p.cell_groups)),
+        geometry_(compute_physics_geometry()),
         local_(make_part()) {
     if (p_.input.device_kind == "cuda") {
       gpu_.emplace(comm_.local_rank());
-      host_at_device_start_ = host_resident_bytes();
     }
-    if (local_) {
-      ghosts_ = comm_.ghost_exchange(*local_);
+    ghosts_ = local_ ? comm_.ghost_exchange(*local_) : std::make_unique<NoGhosts>();
+    // The physics' cells and faces differ from the mesh's on a partition or
+    // a renumbered mesh: their shares of the start, the initial state and
+    // the face states, in its order.
+    if (local_ || ordered_) {
       if (p_.start) local_start_ = owned_start(*p_.start);
       if (p_.initial) local_initial_ = owned_fields(*p_.initial);
-    } else {
-      ghosts_ = std::make_unique<NoGhosts>();
     }
-    if (local_) {
-      face_global_id_ = local_->face_global_id;
-      face_reversed_ = local_->face_reversed;
-    } else {
-      face_global_id_.resize(at(p_.mesh.n_faces()));
-      std::iota(face_global_id_.begin(), face_global_id_.end(), std::int64_t{0});
-      face_reversed_.assign(face_global_id_.size(), 0);
-    }
+    local_states_ = physics_boundary_states();
     colour_cells_of_physics();
+    face_keys();
     // Rank 0 names the run: its clock and its random suffix.
     const auto started = std::chrono::system_clock::now();
     std::random_device random;
@@ -951,7 +1159,7 @@ class Run final : public Log {
     const std::string backend = in.device_kind;
     std::string parts = in.case_sha256 + "\n" + p_.mesh_hash + "\n" + build.commit + "\n" +
                         in.precision + "\n" + backend + "\n" + in.device_kind + "\n" +
-                        std::to_string(in.device_count);
+                        std::to_string(in.device_count) + "\n" + cell_order();
     Json start = nullptr;
     if (in.start) {
       const Start& s = *in.start;
@@ -970,6 +1178,7 @@ class Run final : public Log {
                    {"iterations", s.iterations},
                    {"time", s.time ? Json(*s.time) : Json(nullptr)},
                    {"solution_sha256", s.solution_sha256},
+                   {"file", s.file},
                    {"residual_reference", reference},
                    {"woken", s.woken ? Json(*s.woken) : Json(nullptr)}};
     }
@@ -986,12 +1195,14 @@ class Run final : public Log {
         {"solver", {{"version", build.version}, {"commit", build.commit}, {"backend", backend}}},
         {"precision", in.precision},
         {"devices", {{"kind", in.device_kind}, {"count", in.device_count}}},
+        {"cell_order", cell_order()},
         {"started", started_at},
         {"finished", nullptr},
         {"iterations", 0},
         {"time", in.time.kind == "unsteady" ? Json(0.0) : Json(nullptr)},
         {"averaging", nullptr},
         {"convergence", nullptr},
+        {"checkpoint", nullptr},
         {"start", start},
         {"monitors", nullptr},
         {"timing", nullptr},
@@ -1028,6 +1239,13 @@ class Run final : public Log {
     path = comm_.broadcast(path);
     if (path.empty()) throw std::runtime_error("rank 0 could not create the run directory");
     if (comm_.rank() != 0) dir_ = std::make_unique<RunDirectory>(fs::path(path));
+    if (ordered_) {
+      note("info", "solver", "cells renumbered in reverse Cuthill-McKee order", "",
+           Json{{"order", "rcm"}, {"seconds", renumber_seconds_}}.dump());
+    } else {
+      note("warning", "solver", "the mesh's own cell order is kept (AUTAN_CELL_ORDER=input)", "",
+           Json{{"order", "input"}}.dump());
+    }
     if (comm_.size() > 1) log_partition();
     if (const PeriodicSnap& snap = p_.mesh.periodic_snap(); snap.nodes > 0) {
       // mesh.md, Periodic pairs: the run computes on the snapped coordinates (#426).
@@ -1072,7 +1290,7 @@ class Run final : public Log {
                                  .start = start,
                                  .ghosts = *ghosts_,
                                  .ranks = comm_,
-                                 .boundary_states = p_.boundary_states,
+                                 .boundary_states = local_states_,
                                  .initial = initial,
                                  .device = gpu_ ? gpu_->index() : -1,
                                  .stream = gpu_ ? gpu_->stream() : nullptr,
@@ -1134,14 +1352,21 @@ class Run final : public Log {
   // whose image ghosts make each periodic face an interior face; its owned
   // cells are the mesh's cells, in order. Otherwise, the mesh itself.
   std::optional<LocalPartition> make_part() {
-    const Mesh& mesh = p_.mesh;
+    const Mesh& mesh = compute_mesh();
     const std::int32_t n = comm_.size();
     // Reproducibility "ranks" computes on a partition, one part on one rank,
     // so that a physics finds the same global keys on any number of ranks.
     if (n == 1 && mesh.periodic_pairs().empty() && p_.input.reproducibility != "ranks")
       return std::nullopt;
-    const std::vector<std::int32_t> parts =
+    // Each cell keeps its part through the renumbering.
+    std::vector<std::int32_t> parts =
         n > 1 ? std::move(p_.parts) : std::vector<std::int32_t>(at(mesh.n_cells()), 0);
+    if (n > 1 && ordered_) {
+      std::vector<std::int32_t> ordered(parts.size());
+      for (std::size_t c = 0; c < ordered.size(); ++c)
+        ordered[c] = parts[at(ordered_->new_to_old[c])];
+      parts = std::move(ordered);
+    }
     LocalPartition part = extract_partition(mesh, geometry_, parts, n, comm_.rank());
     comm_.fill_ghosts(part);
     return part;
@@ -1171,9 +1396,86 @@ class Run final : public Log {
   [[nodiscard]] std::vector<std::int64_t> owned_ids() const {
     const Mesh& mesh = physics_mesh();
     const auto global = mesh.cell_global_id();
-    std::vector<std::int64_t> ids(at(mesh.n_owned_cells()));
-    for (std::size_t c = 0; c < ids.size(); ++c) ids[c] = local_ ? global[c] : std::int64_t(c);
-    return ids;
+    return {global.begin(), global.begin() + mesh.n_owned_cells()};
+  }
+
+  // By default (AUTAN_CELL_ORDER unset or "rcm"), the mesh's cells in reverse
+  // Cuthill-McKee order (mesh.md, Renumbering), for memory locality; the
+  // outputs keep the mesh's numbering through cell_global_id and face_source.
+  // "input": the mesh's order.
+  struct Ordered {
+    Mesh mesh;
+    std::vector<index_t> new_to_old;  // the mesh cell of each cell of `mesh`
+    AssemblyMap map;                  // the mesh face of each face of `mesh`, flips
+  };
+  std::optional<Ordered> make_ordered() {
+    // Rank 0's order decides for every rank: ranks partitioning differently
+    // numbered meshes would exchange unrelated cells.
+    if (comm_.broadcast(p_.cell_order) == "input") return std::nullopt;
+    const auto start = std::chrono::steady_clock::now();
+    AssemblyMap map;
+    std::vector<index_t> new_to_old = rcm_order(p_.mesh);
+    Mesh mesh = renumber_cells(p_.mesh, new_to_old, &map);
+    renumber_seconds_ =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    return Ordered{
+        .mesh = std::move(mesh), .new_to_old = std::move(new_to_old), .map = std::move(map)};
+  }
+  // The geometry of the compute mesh, computed on the mesh the run read and
+  // carried through the renumbering: the same bits in either cell order.
+  [[nodiscard]] Geometry compute_physics_geometry() {
+    if (!ordered_) return std::move(*p_.geometry);
+    Geometry g = renumber_geometry(*p_.geometry, ordered_->new_to_old, ordered_->map);
+    p_.geometry.reset();
+    return g;
+  }
+  // The cell order the run computes in, as run.json records it.
+  [[nodiscard]] const char* cell_order() const { return ordered_ ? "rcm" : "input"; }
+  // The mesh the runtime partitions and the physics computes on: the mesh,
+  // or its renumbered copy.
+  [[nodiscard]] const Mesh& compute_mesh() const { return ordered_ ? ordered_->mesh : p_.mesh; }
+  // Each face of the physics' mesh, keyed in the mesh the run read: its face
+  // in the compute mesh (the partition's, or itself), then in the mesh (the
+  // renumbering's), reversed if one of the two flipped it.
+  void face_keys() {
+    const auto n = at(physics_mesh().n_faces());
+    face_global_id_.resize(n);
+    face_reversed_.resize(n);
+    for (std::size_t f = 0; f < n; ++f) {
+      const auto g =
+          local_ ? static_cast<index_t>(local_->face_global_id[f]) : static_cast<index_t>(f);
+      std::uint8_t reversed = local_ ? local_->face_reversed[f] : 0;
+      if (ordered_) reversed ^= ordered_->map.face_reversed[at(g)];
+      face_global_id_[f] = mesh_face(static_cast<index_t>(f));
+      face_reversed_[f] = reversed;
+    }
+  }
+  // The mesh face of face f of the physics' mesh.
+  [[nodiscard]] index_t mesh_face(index_t f) const {
+    const auto g = local_ ? static_cast<index_t>(local_->face_global_id[at(f)]) : f;
+    return ordered_ ? ordered_->map.face_source[at(g)] : g;
+  }
+
+  // The oracle-state face states in the order of the physics' owned
+  // boundary faces of each zone (PhysicsContext::boundary_states), from
+  // those in the mesh's zone order.
+  [[nodiscard]] std::map<index_t, std::vector<double>> physics_boundary_states() const {
+    std::map<index_t, std::vector<double>> out;
+    const Mesh& mesh = physics_mesh();
+    const auto offsets = mesh.boundary_zone_offsets();
+    const auto mesh_offsets = p_.mesh.boundary_zone_offsets();
+    for (const auto& [zone, states] : p_.boundary_states) {
+      const index_t first = mesh_offsets[at(zone)];
+      const auto total = at(mesh_offsets[at(zone) + 1] - first);
+      const auto n = at(offsets[at(zone) + 1] - offsets[at(zone)]);
+      std::vector<double> paired(5 * n);
+      for (std::size_t j = 0; j < n; ++j) {
+        const auto row = at(mesh_face(offsets[at(zone)] + static_cast<index_t>(j)) - first);
+        for (std::size_t k = 0; k < 5; ++k) paired[k * n + j] = states[k * total + row];
+      }
+      out.emplace(zone, std::move(paired));
+    }
+    return out;
   }
 
   // Owned and ghost cells of each rank, in log.jsonl.
@@ -1232,7 +1534,7 @@ class Run final : public Log {
     }
   }
 
-  [[nodiscard]] const Mesh& physics_mesh() const { return local_ ? local_->mesh : p_.mesh; }
+  [[nodiscard]] const Mesh& physics_mesh() const { return local_ ? local_->mesh : compute_mesh(); }
   [[nodiscard]] const Geometry& physics_geometry() const {
     return local_ ? local_->geometry : geometry_;
   }
@@ -1351,6 +1653,10 @@ class Run final : public Log {
     // Steady convergence is measured against iteration 1 of the original run
     // (solver-input.md, `start`); a `continue` goes on counting and timing.
     std::vector<double> first;
+    // The equations that left their floor, in the chain so far: a checkpoint carries them.
+    std::set<std::string> woken;
+    if (continued() && in.start->woken)
+      woken.insert(in.start->woken->begin(), in.start->woken->end());
     RoundOffExemption exempt(
         equations, continued() && in.start->woken ? *in.start->woken : std::vector<std::string>{});
     double time = 0.0, average_start = 0.0;
@@ -1362,6 +1668,7 @@ class Run final : public Log {
       from = s.iterations + 1;
       if (!info_["averaging"].is_null()) average_start = info_["averaging"]["from_time"];
     }
+    last_checkpoint_ = std::chrono::steady_clock::now();
     for (std::int64_t it = from; it <= budget; ++it) {
       // A launcher forwards a signal to every rank, not at the same instant,
       // and may abort the job on one: the stop file asks for the same stop
@@ -1382,7 +1689,6 @@ class Run final : public Log {
       const double logged = log_seconds_;
       StepReport report = physics_->step(it);
       solve_seconds_ += seconds_since(stepping) - (log_seconds_ - logged);
-      if (gpu_) (void)gpu_->sample();  // outside the timed step
       report.diverged_cell = first_diverged(report.diverged_cell);
       if (report.residuals.size() != equations.size()) {
         throw std::runtime_error("the physics reported " + std::to_string(report.residuals.size()) +
@@ -1440,6 +1746,7 @@ class Run final : public Log {
         // case-schema.md#time: equations at the round-off floor are exempt while they stay there
         // (runtime/round_off.hpp); one leaving it reports W0710, once.
         for (const std::size_t e : exempt.update(report.residuals)) {
+          woken.insert(equations[e]);
           add_diagnostic(
               Diagnostic{.code = "W0710",
                          .message = "equation " + equations[e] + " left its floor at iteration " +
@@ -1460,8 +1767,104 @@ class Run final : public Log {
         }
         if (converged) return "converged";
       }
+      if (it < budget && checkpoint_due(it)) {
+        Json state = Json{{"iteration", it}, {"residual_reference", nullptr}, {"woken", nullptr}};
+        if (steady) {
+          Json reference = Json::object();
+          for (std::size_t e = 0; e < equations.size(); ++e) reference[equations[e]] = first[e];
+          state["residual_reference"] = std::move(reference);
+          state["woken"] = Json(std::vector<std::string>(woken.begin(), woken.end()));
+        }
+        write_checkpoint(it, state);
+      }
     }
     return "completed";
+  }
+
+  // Rank 0, after the final run.json: a failure is recorded in run.json again.
+  void remove_checkpoint() {
+    try {
+      dir_->remove_checkpoint();
+    } catch (const std::exception& e) {
+      try {
+        add_diagnostic(
+            Diagnostic{.code = "W0714",
+                       .message = std::string("checkpoint.cgns was not removed: ") + e.what(),
+                       .path = "",
+                       .data_json = "{}"});
+        dir_->write_run_json(info_.dump(2));
+      } catch (const std::exception&) {
+        // Nothing more can be recorded; the stale checkpoint stays beside the final solution.
+      }
+    }
+  }
+
+  // Whether a checkpoint follows iteration `it` (case-schema.md#time): every `iterations`, or once
+  // `seconds` of wall-clock time have passed since the last one, as rank 0 measures it; every
+  // rank decides alike.
+  bool checkpoint_due(std::int64_t it) {
+    const auto& t = p_.input.time;
+    if (t.checkpoint_iterations) return it % *t.checkpoint_iterations == 0;
+    const std::int64_t due =
+        comm_.rank() == 0 && seconds_since(last_checkpoint_) >= *t.checkpoint_seconds ? 1 : 0;
+    return comm_.max(due) != 0;
+  }
+
+  // The state after iteration `it` to checkpoint.cgns, with `state` (its iteration and steady
+  // convergence state) as RunMetadata `checkpoint`; then run.json `checkpoint` and a log line
+  // (results.md#checkpointcgns). Collective. A failure of the physics fails the run; any other
+  // failure, of the write or of its records, leaves the previous checkpoint and goes on with
+  // W0714, which every rank records alike.
+  void write_checkpoint(std::int64_t it, const Json& state) {
+    const auto start = std::chrono::steady_clock::now();
+    std::string failure;
+    try {
+      write_solution(false, state);
+    } catch (const PhysicsFailure&) {
+      throw;
+    } catch (const std::exception& e) {
+      failure = e.what();
+    }
+    // Only rank 0 writes: its outcome is every rank's.
+    failure = comm_.broadcast(failure);
+    const double seconds =
+        Json::parse(comm_.broadcast(Json(seconds_since(start)).dump())).get<double>();
+    last_checkpoint_ = std::chrono::steady_clock::now();
+    if (failure.empty()) {
+      info_["checkpoint"] =
+          Json{{"iteration", it}, {"time", info_["time"]}, {"write_seconds", seconds}};
+      try {
+        if (comm_.rank() == 0) {
+          std::error_code ec;
+          const auto bytes = fs::file_size(dir_->path() / "checkpoint.cgns", ec);
+          dir_->write_run_json(info_.dump(2));
+          note("info", "writer", "checkpoint", "",
+               Json{{"iteration", it},
+                    {"seconds", seconds},
+                    {"bytes", ec ? Json(nullptr) : Json(static_cast<std::int64_t>(bytes))}}
+                   .dump());
+        }
+      } catch (const std::exception& e) {
+        failure = std::string("recording it: ") + e.what();
+      }
+      failure = comm_.broadcast(failure);
+    }
+    if (failure.empty()) return;
+    const Diagnostic warning{.code = "W0714",
+                             .message = "the checkpoint of iteration " + std::to_string(it) +
+                                        " was not written: " + failure,
+                             .path = "",
+                             .data_json = Json{{"iteration", it}}.dump()};
+    std::string unlogged;
+    try {
+      note("warning", "solver", warning.message, warning.code, warning.data_json);
+    } catch (const std::exception& e) {
+      unlogged = e.what();
+    }
+    // run.json names only diagnostics the log holds (results.md, Log): a warning the log
+    // cannot take is recorded nowhere.
+    if (comm_.broadcast(unlogged).empty())
+      info_["diagnostics"].push_back(Json::parse(warning.json()));
   }
 
   // The mesh index of the least diverged cell over all ranks, from the cell
@@ -1493,13 +1896,46 @@ class Run final : public Log {
 
   // Collects the solution from the physics (PhysicsFailure on any error of
   // its members) and writes it; skips a diverged state that is not finite.
-  void write_solution(bool diverged) {
+  // With `checkpoint`, the state after that iteration goes to checkpoint.cgns
+  // (results.md#checkpointcgns), which names the iteration.
+  void write_solution(bool diverged, const Json& checkpoint = nullptr) {
+    io::Solution s;
+    // A failure before the gathers end leaves other ranks inside them: it
+    // fails the run like a physics failure, which ends every rank.
+    try {
+      s = gathered_solution(checkpoint);
+    } catch (const PhysicsFailure&) {
+      throw;
+    } catch (const std::exception& e) {
+      throw PhysicsFailure(std::string("gathering the solution: ") + e.what());
+    }
+    if (comm_.rank() != 0) return;
+    // A diverged state may hold non-finite values; results.md asks for its
+    // solution only if one can be written, and readers require finite fields.
+    if (diverged) {
+      for (const auto& f : s.fields) {
+        if (!std::ranges::all_of(f.values, [](double v) { return std::isfinite(v); })) return;
+      }
+    }
+    if (!checkpoint.is_null()) {
+      io::write_solution(dir_->checkpoint_staging(), p_.mesh, s);
+      dir_->publish_checkpoint();
+      return;
+    }
+    io::write_solution(dir_->solution_staging(), p_.mesh, s);
+    dir_->publish_solution();
+  }
+
+  // The current state with `checkpoint` as RunMetadata `checkpoint`, every field gathered on
+  // rank 0. Collective.
+  io::Solution gathered_solution(const Json& checkpoint) {
     const auto& in = p_.input;
     io::Solution s;
     Json metadata = info_;
     for (const char* key :
-         {"status", "finished", "iterations", "monitors", "timing", "diagnostics"})
+         {"status", "finished", "iterations", "monitors", "timing", "diagnostics", "checkpoint"})
       metadata.erase(key);
+    if (!checkpoint.is_null()) metadata["checkpoint"] = checkpoint;
     // ASCII JSON, as readers decode CGNS descriptors.
     s.run_metadata = metadata.dump(-1, ' ', true);
     std::map<std::string, const BoundaryInput*> conditions;
@@ -1518,17 +1954,13 @@ class Run final : public Log {
     // face, ascending, and `slots` their positions in s.wall_faces.
     std::vector<index_t> physics_faces;
     std::vector<std::int64_t> slots;
-    if (local_) {
-      for (index_t f = local_->mesh.n_interior_faces(); f < local_->mesh.n_owned_faces(); ++f) {
-        const auto global = static_cast<index_t>(local_->face_global_id[at(f)]);
-        const auto it = std::ranges::lower_bound(s.wall_faces, global);
-        if (it == s.wall_faces.end() || *it != global) continue;
-        physics_faces.push_back(f);
-        slots.push_back(it - s.wall_faces.begin());
-      }
-    } else {
-      physics_faces = s.wall_faces;
-      for (std::size_t k = 0; k < physics_faces.size(); ++k) slots.push_back(std::int64_t(k));
+    const Mesh& own = physics_mesh();
+    for (index_t f = own.n_interior_faces(); f < own.n_owned_faces(); ++f) {
+      const index_t global = mesh_face(f);
+      const auto it = std::ranges::lower_bound(s.wall_faces, global);
+      if (it == s.wall_faces.end() || *it != global) continue;
+      physics_faces.push_back(f);
+      slots.push_back(it - s.wall_faces.begin());
     }
     try {
       s.fields = physics_->fields(false);
@@ -1555,28 +1987,11 @@ class Run final : public Log {
         f.values = comm_.gather(where, f.values, n);
       }
     };
-    // A failure before the gathers end leaves other ranks inside them: it
-    // fails the run like a physics failure, which ends every rank.
-    try {
-      gather(s.fields, ids, p_.mesh.n_cells());
-      gather(s.mean_fields, ids, p_.mesh.n_cells());
-      gather(s.restart_fields, ids, p_.mesh.n_cells());
-      gather(s.wall_fields, slots, static_cast<std::int64_t>(s.wall_faces.size()));
-    } catch (const PhysicsFailure&) {
-      throw;
-    } catch (const std::exception& e) {
-      throw PhysicsFailure(std::string("gathering the solution: ") + e.what());
-    }
-    if (comm_.rank() != 0) return;
-    // A diverged state may hold non-finite values; results.md asks for its
-    // solution only if one can be written, and readers require finite fields.
-    if (diverged) {
-      for (const auto& f : s.fields) {
-        if (!std::ranges::all_of(f.values, [](double v) { return std::isfinite(v); })) return;
-      }
-    }
-    io::write_solution(dir_->solution_staging(), p_.mesh, s);
-    dir_->publish_solution();
+    gather(s.fields, ids, p_.mesh.n_cells());
+    gather(s.mean_fields, ids, p_.mesh.n_cells());
+    gather(s.restart_fields, ids, p_.mesh.n_cells());
+    gather(s.wall_fields, slots, static_cast<std::int64_t>(s.wall_faces.size()));
+    return s;
   }
 
   // The forces of every monitor on the final state, whether or not its last
@@ -1619,28 +2034,25 @@ class Run final : public Log {
   // results.md, run.json `timing`: the process's wall-clock seconds and those
   // of the physics' steps and averaging (the slowest rank's), for this run's
   // iterations; null without any. Collective.
-  // The memory every rank used (#325): its host high-water mark and its
-  // device memory beyond what was free at its start, at their peak and once
-  // the physics was built, in bytes. Collective.
+  // The memory every rank used (#325): its host high-water mark and the
+  // device memory its allocators hold, at their peak and once the physics was
+  // built, in bytes. Collective.
   void log_memory() {
-    if (gpu_) (void)gpu_->sample();
     const auto n = at(comm_.size());
     const auto r = at(comm_.rank());
-    std::vector<ExactSum> slots(5 * n);
-    slots[5 * r].add(static_cast<double>(host_peak_bytes()));
-    slots[5 * r + 1].add(static_cast<double>(gpu_ ? gpu_->peak() : 0));
-    slots[5 * r + 2].add(static_cast<double>(host_after_setup_));
-    slots[5 * r + 3].add(static_cast<double>(device_after_setup_));
-    slots[5 * r + 4].add(static_cast<double>(host_at_device_start_));
+    std::vector<ExactSum> slots(4 * n);
+    slots[4 * r].add(static_cast<double>(host_peak_bytes()));
+    slots[4 * r + 1].add(static_cast<double>(gpu_ ? gpu_->peak() : 0));
+    slots[4 * r + 2].add(static_cast<double>(host_after_setup_));
+    slots[4 * r + 3].add(static_cast<double>(device_after_setup_));
     comm_.sum(slots);
-    Json host = Json::array(), device = Json::array(), at_device_start = Json::array();
+    Json host = Json::array(), device = Json::array();
     std::int64_t host_setup = 0, device_setup = 0;
     for (std::size_t k = 0; k < n; ++k) {
-      host.push_back(static_cast<std::int64_t>(slots[5 * k].value()));
-      device.push_back(static_cast<std::int64_t>(slots[5 * k + 1].value()));
-      host_setup = std::max(host_setup, static_cast<std::int64_t>(slots[5 * k + 2].value()));
-      device_setup = std::max(device_setup, static_cast<std::int64_t>(slots[5 * k + 3].value()));
-      at_device_start.push_back(static_cast<std::int64_t>(slots[5 * k + 4].value()));
+      host.push_back(static_cast<std::int64_t>(slots[4 * k].value()));
+      device.push_back(static_cast<std::int64_t>(slots[4 * k + 1].value()));
+      host_setup = std::max(host_setup, static_cast<std::int64_t>(slots[4 * k + 2].value()));
+      device_setup = std::max(device_setup, static_cast<std::int64_t>(slots[4 * k + 3].value()));
     }
     const auto most = [](const Json& values) {
       std::int64_t m = 0;
@@ -1652,7 +2064,6 @@ class Run final : public Log {
               {"device_peak_bytes", most(device)},
               {"host_peak_bytes_by_rank", host},
               {"device_peak_bytes_by_rank", device},
-              {"host_at_device_start_bytes_by_rank", at_device_start},
               {"after_setup", {{"host", host_setup}, {"device", device_setup}}}}
              .dump());
   }
@@ -1709,6 +2120,9 @@ class Run final : public Log {
     note(status == "failed" ? "error" : "info", "solver", "run finished: " + status, "",
          Json{{"status", status}, {"iterations", done}}.dump());
     if (comm_.rank() == 0) dir_->write_run_json(info_.dump(2));
+    // The final solution supersedes the checkpoint once run.json says so; a diverged or failed
+    // run keeps it, its last resumable state (results.md#checkpointcgns).
+    if (comm_.rank() == 0 && status != "failed" && status != "diverged") remove_checkpoint();
     if (status == "failed") return ExitStatus::failed;
     return stopped_by_signal_ ? ExitStatus::signalled : ExitStatus::finished;
   }
@@ -1716,16 +2130,21 @@ class Run final : public Log {
   Prepared& p_;
   Comm& comm_;
   std::chrono::steady_clock::time_point launched_;  // run_case's entry
-  double log_seconds_ = 0.0;                        // spent in write()
-  fs::path stop_file_;                              // --stop-file; empty: none
-  double solve_seconds_ = 0.0;                      // this rank's step() and accumulate_average()
+  // The end of the last checkpoint, or the start of the iterations.
+  std::chrono::steady_clock::time_point last_checkpoint_ = std::chrono::steady_clock::now();
+  double log_seconds_ = 0.0;    // spent in write()
+  fs::path stop_file_;          // --stop-file; empty: none
+  double solve_seconds_ = 0.0;  // this rank's step() and accumulate_average()
   // Declared before the physics, so destroyed after it: its stream outlives the physics' use.
   std::optional<Gpu> gpu_;
-  Geometry geometry_;
+  double renumber_seconds_ = 0.0;
+  std::optional<Ordered> ordered_;
   CellGroups groups_;  // the physics' groups, over p_.mesh's cells
+  Geometry geometry_;
   std::optional<LocalPartition> local_;
-  // PhysicsContext's global keys of the physics' faces: the partition's, or
-  // the mesh's own (identity, none reversed).
+  std::map<index_t, std::vector<double>> local_states_;  // boundary_states, physics order
+  // PhysicsContext's global keys of the physics' faces: through the partition
+  // and the renumbering, in the mesh the run read.
   std::vector<std::int64_t> face_global_id_;
   std::vector<std::uint8_t> face_reversed_;
   std::vector<std::int32_t> colours_;  // global colouring, the physics mesh's cells
@@ -1741,9 +2160,8 @@ class Run final : public Log {
   Json info_;
   std::unique_ptr<RunDirectory> dir_;
   std::unique_ptr<Physics> physics_;
-  std::int64_t host_after_setup_ = 0;      // host_peak_bytes() once the physics exists
-  std::int64_t device_after_setup_ = 0;    // the device's sample() then
-  std::int64_t host_at_device_start_ = 0;  // host_resident_bytes() once the CUDA stream exists
+  std::int64_t host_after_setup_ = 0;    // host_peak_bytes() once the physics exists
+  std::int64_t device_after_setup_ = 0;  // the device's sample() then
   bool stopped_by_signal_ = false;
   std::int64_t iteration_ = 0;
   std::vector<double> floor_;  // fp32+acc64 convergence floor per equation; empty: none  // the

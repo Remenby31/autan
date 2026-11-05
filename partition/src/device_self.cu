@@ -5,6 +5,7 @@
 
 #include <cuda_runtime.h>
 
+#include "autan/core/device_memory.hpp"
 #include "autan/core/error.hpp"
 #include "autan/partition/device_self.hpp"
 
@@ -68,6 +69,7 @@ DeviceSelfForward::DeviceSelfForward(const HaloPattern& halo, index_t n_owned_ce
   index_t* device = nullptr;
   check(cudaMalloc(reinterpret_cast<void**>(&device), pairs.size() * sizeof(index_t)),
         "cudaMalloc");
+  device_memory::allocated(pairs.size() * sizeof(index_t));
   // From pageable memory a copy may return before its transfer ends, and the
   // caller's stream, possibly non-blocking, would not wait for it.
   const cudaError_t copied =
@@ -75,6 +77,7 @@ DeviceSelfForward::DeviceSelfForward(const HaloPattern& halo, index_t n_owned_ce
   const cudaError_t done = copied == cudaSuccess ? cudaDeviceSynchronize() : copied;
   if (done != cudaSuccess) {
     (void)cudaFree(device);
+    device_memory::released(pairs.size() * sizeof(index_t));
     check(done, "uploading the image pairs");
   }
   pairs_ = device;
@@ -82,7 +85,10 @@ DeviceSelfForward::DeviceSelfForward(const HaloPattern& halo, index_t n_owned_ce
 }
 
 DeviceSelfForward::~DeviceSelfForward() {
-  if (pairs_ != nullptr) (void)cudaFree(pairs_);
+  if (pairs_ != nullptr) {
+    (void)cudaFree(pairs_);
+    device_memory::released(static_cast<std::size_t>(2 * n_pairs_) * sizeof(index_t));
+  }
 }
 
 void DeviceSelfForward::forward(std::span<float* const> components, void* stream) {
