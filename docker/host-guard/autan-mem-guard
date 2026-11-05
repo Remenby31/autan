@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""autan-mem-guard: keeps a shared Spark's available memory above a floor by stopping our containers.
+
+    autan-mem-guard [--dry-run] [--state-dir DIR]
+
+Every 30 s it reads the host's MemAvailable. Below 30 GiB it stops (docker stop -t 60: a pause
+frees no memory) every running container of the next level, one level at a time, at least 60 s
+apart, re-reading memory in between:
+  1. autan-noyau-mut*
+  2. autan-noyau-*, and any other autan-* container not named below
+  3. autan-ns-*
+  4. autan-m2-rae*
+  5. autan-runner (its job-started hook already refuses jobs below the floor)
+Once MemAvailable has stayed above 40 GiB for 120 s, it starts the last level it stopped again,
+the same containers, then waits another 120 s above 40 GiB before the next one. It never touches
+autan-m2-h1*, autan-runner-proxy, or any container not named autan-*. Every stop and start is
+logged in DIR/guard.log with the time, MemAvailable and, read before a stop, the container's
+memory peak (its cgroup's memory.peak). What it stopped is kept in DIR/stopped.json, so a
+restarted guard still starts them again. --dry-run logs every decision and acts on none.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+GIB = 1 << 30
+NEVER = ("autan-m2-h1*", "autan-runner-proxy")
+# Level 2 also takes every autan-* container no other level names.
+LEVELS = (("autan-noyau-mut*",), ("autan-noyau-*",), ("autan-ns-*",), ("autan-m2-rae*",),
+          ("autan-runner",))  # fmt: skip
+OTHER_LEVEL = 1
+CGROUPS = (
+    Path("/sys/fs/cgroup/system.slice/docker-{id}.scope"),
+    Path("/sys/fs/cgroup/docker/{id}"),
+)
+
+
+def level_of(name: str) -> int | None:
+    """The 0-based level of a container, None for one the guard never touches."""
+    if not name.startswith("autan-") or any(fnmatch.fnmatchcase(name, p) for p in NEVER):
+        return None
+    for i, patterns in enumerate(LEVELS):
+        if any(fnmatch.fnmatchcase(name, p) for p in patterns):
+            return i
+    return OTHER_LEVEL
+
+
+def available(meminfo: Path) -> int | None:
+    try:
+        for line in meminfo.read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def gib(value: int | None) -> str:
+    return "unknown" if value is None else f"{value / GIB:.1f} GiB"
+
+
+def docker(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["docker", *args], capture_output=True, text=True, timeout=120, check=False
+    )
+
+
+def running() -> list[str]:
+    out = docker("ps", "--format", "{{.Names}}")
+    return out.stdout.split() if out.returncode == 0 else []
+
+
+def peak(name: str, cgroups: tuple[Path, ...]) -> int | None:
+    cid = docker("inspect", "-f", "{{.Id}}", name).stdout.strip()
+    if not cid:
+        return None
+    for template in cgroups:
+        try:
+            return int((Path(str(template).format(id=cid)) / "memory.peak").read_text())
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+class Guard:
+    def __init__(self, state_dir: Path, *, dry_run: bool, meminfo: Path, cgroups: tuple[Path, ...],
+                 low: int = 30 * GIB, high: int = 40 * GIB, level_wait_s: float = 60.0,
+                 hysteresis_s: float = 120.0) -> None:  # fmt: skip
+        self.dir, self.dry_run, self.meminfo, self.cgroups = state_dir, dry_run, meminfo, cgroups
+        self.low, self.high = low, high
+        self.level_wait_s, self.hysteresis_s = level_wait_s, hysteresis_s
+        self.state = state_dir / "stopped.json"
+        # [[level, [names]], ...], the last stopped last.
+        self.stopped: list[list] = json.loads(self.state.read_text()) if self.state.exists() else []
+        self.last_action = float("-inf")
+        self.above_since: float | None = None
+        self.said_nothing_left = float("-inf")
+
+    def log(self, message: str) -> None:
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        prefix = "DRY-RUN " if self.dry_run else ""
+        with (self.dir / "guard.log").open("a") as handle:
+            handle.write(f"{stamp} {prefix}{message}\n")
+
+    def save(self) -> None:
+        tmp = self.state.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.stopped) + "\n")
+        tmp.replace(self.state)
+
+    def tick(self, now: float) -> None:
+        free = available(self.meminfo)
+        if free is None or free < self.low:
+            self.above_since = None
+            if now - self.last_action >= self.level_wait_s:
+                self.stop_next(free, now)
+        elif free > self.high:
+            if self.above_since is None:
+                self.above_since = now
+            if self.stopped and now - self.above_since >= self.hysteresis_s:
+                self.start_last(free)
+                self.above_since = now
+        else:
+            self.above_since = None
+        if self.dry_run:
+            self.log(f"MemAvailable {gib(free)}")
+
+    def stop_next(self, free: int | None, now: float) -> None:
+        live = [(level_of(n), n) for n in running()]
+        live = [(lv, n) for lv, n in live if lv is not None]
+        if not live:
+            if now - self.said_nothing_left >= 600:
+                self.log(f"MemAvailable {gib(free)}, below {gib(self.low)}: nothing left to stop")
+                self.said_nothing_left = now
+            return
+        level = min(lv for lv, _ in live)
+        names = sorted(n for lv, n in live if lv == level)
+        for name in names:
+            self.log(f"STOP level {level + 1} {name}: MemAvailable {gib(free)}, below "
+                     f"{gib(self.low)}; its memory peak {gib(peak(name, self.cgroups))}")  # fmt: skip
+            if not self.dry_run:
+                out = docker("stop", "-t", "60", name)
+                if out.returncode != 0:
+                    self.log(f"FAILED to stop {name}: {out.stderr.strip()[:200]}")
+        self.last_action = now
+        if not self.dry_run:
+            self.stopped.append([level, names])
+            self.save()
+
+    def start_last(self, free: int) -> None:
+        level, names = self.stopped[-1]
+        for name in names:
+            self.log(f"START level {level + 1} {name}: MemAvailable {gib(free)}, above "
+                     f"{gib(self.high)} for {self.hysteresis_s:.0f} s")  # fmt: skip
+            if not self.dry_run:
+                out = docker("start", name)
+                if out.returncode != 0:
+                    self.log(f"FAILED to start {name}: {out.stderr.strip()[:200]}")
+        if not self.dry_run:
+            self.stopped.pop()
+            self.save()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="autan-mem-guard", description=__doc__.split("\n")[0])
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--state-dir", type=Path, default=Path.home() / "cfd" / "guard")
+    parser.add_argument("--interval", type=float, default=30.0)
+    parser.add_argument("--meminfo", type=Path, default=Path("/proc/meminfo"))
+    parser.add_argument("--cgroup-root", type=Path, default=None,
+                        help="replaces /sys/fs/cgroup, for the tests")  # fmt: skip
+    args = parser.parse_args(argv)
+    args.state_dir.mkdir(parents=True, exist_ok=True)
+    cgroups = CGROUPS
+    if args.cgroup_root is not None:
+        cgroups = tuple(args.cgroup_root / t.relative_to("/sys/fs/cgroup") for t in CGROUPS)
+    guard = Guard(args.state_dir, dry_run=args.dry_run, meminfo=args.meminfo, cgroups=cgroups)
+    guard.log(f"started: floor {gib(guard.low)}, restart above {gib(guard.high)}; "
+              f"{len(guard.stopped)} level(s) stopped by an earlier guard")  # fmt: skip
+    while True:
+        guard.tick(time.monotonic())
+        time.sleep(args.interval)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
