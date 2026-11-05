@@ -741,6 +741,7 @@ test("a run's iteration cost shows when run.json measured it", async ({ page }) 
         solver.backend,
         devices.kind,
         devices.count,
+        source.cell_order,
       ].join("\n"),
     )
     .digest("hex");
@@ -795,6 +796,7 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
         solver.backend,
         devices.kind,
         devices.count,
+        source.cell_order,
       ].join("\n"),
     )
     .digest("hex");

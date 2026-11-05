@@ -36,6 +36,8 @@ export interface Run {
   };
   precision: "fp32+acc64" | "fp64";
   devices: { kind: "cuda" | "hip" | "cpu"; count: number };
+  /** The order the solver numbered the cells in (results.md#runjson). */
+  cell_order: "rcm" | "input";
   started: string;
   finished: string | null;
   iterations: number;

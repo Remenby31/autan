@@ -2,6 +2,8 @@
 
 #include <stdexcept>
 
+#include "autan/core/device_memory.hpp"
+
 #ifdef AUTAN_HAVE_CUDA
 #include <cuda_runtime.h>
 #endif
@@ -35,17 +37,7 @@ Gpu::Gpu(int local_rank) : index_(local_rank % visible_gpus()) {
   cudaStream_t stream = nullptr;
   check(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), "cudaStreamCreateWithFlags");
   stream_ = stream;
-  std::size_t free = 0, total = 0;
-  check(cudaMemGetInfo(&free, &total), "cudaMemGetInfo");
-  free_at_start_ = static_cast<std::int64_t>(free);
-}
-
-std::int64_t Gpu::sample() noexcept {
-  std::size_t free = 0, total = 0;
-  if (cudaMemGetInfo(&free, &total) != cudaSuccess) return last_;
-  last_ = free_at_start_ - static_cast<std::int64_t>(free);
-  if (last_ > peak_) peak_ = last_;
-  return last_;
+  device_memory::reset_peak();
 }
 
 Gpu::~Gpu() {
@@ -60,8 +52,10 @@ Gpu::Gpu(int /*local_rank*/) { throw std::runtime_error("this build of autan-run
 
 Gpu::~Gpu() = default;
 
-std::int64_t Gpu::sample() noexcept { return 0; }
-
 #endif
+
+std::int64_t Gpu::sample() const noexcept { return device_memory::current(); }
+
+std::int64_t Gpu::peak() const noexcept { return device_memory::peak(); }
 
 }  // namespace autan::runtime

@@ -34,6 +34,7 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
   "solver": {"version": "0.1.0", "commit": "d769576…", "backend": "fake", "binary_sha256": null},
   "precision": "fp32+acc64",
   "devices": {"kind": "cpu", "count": 1},
+  "cell_order": "rcm",
   "started": "2026-10-31T21:40:12Z",
   "finished": "2026-10-31T21:54:40Z",
   "iterations": 3000,
@@ -60,6 +61,7 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
 | `solver.binary_sha256` | SHA-256 of the `autan-run` executable that ran, into which the build links every library of the solver statically (it refuses `BUILD_SHARED_LIBS`), hashed at its start; `null` exactly for the `fake` backend. Outside the [identity](#identity). A `continue` whose executable is not the one of the state it starts from warns `W0715`. |
 | `precision` | Precision as run, from the case. |
 | `devices` | `kind` (`cuda` · `hip` · `cpu`) and `count`, the number of ranks ([solver-input.md](solver-input.md)). |
+| `cell_order` | The order the solver numbered the cells in: `rcm` (reverse Cuthill-McKee, the default) or `input` (the mesh's, on request; the runtime logs a warning). The order changes the bits of a run. The `fake` backend writes `input`. |
 | `started`, `finished` | UTC, ISO 8601, second precision, `Z` suffix. `finished` is `null` while running. |
 | `iterations` | Last completed iteration (pseudo-time iterations for steady runs, time steps for unsteady ones). |
 | `time` | Physical time reached in seconds (unsteady), `null` (steady). |
@@ -71,7 +73,7 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
 | `timing` | `{wall_seconds, solve_seconds, iterations, ns_per_cell_iteration}`: the time from the start of the runtime to the end of the run, the time of the physics' steps and averaging alone (no reading or partitioning, no history, log or solution writes; the slowest rank's), the iterations of this run (for a `continue`, those after `start.iterations`) and `solve_seconds` × 10⁹ / (cells of the mesh × `iterations`). `null` while `running`, for a run with no iteration, for a run that failed on several ranks, and for the `fake` backend. Information about one run, outside `identity` and the bitwise guarantee; performance is measured with `bench/` ([infra/bench.md](../infra/bench.md)). The key is always present. |
 | `diagnostics` | Diagnostics raised during the run, in the shape defined in [case-schema.md](case-schema.md#diagnostics); a `diverged` run carries its `D` code here. |
 
-Two runs of the solver (not the `fake` backend) with the same `identity` and the same `solver.binary_sha256` whose case has `physics.reproducibility` `"run"` or `"ranks"`, and that stop at the same iteration, produce bitwise-identical `history.jsonl` lines and `solution.cgns` data arrays (`log.jsonl` excepted: it carries wall-clock times). The identity covers the case, mesh, solver commit, precision, backend, devices and, for a restarted run, the state it starts from. With `"ranks"`, two such runs whose identities differ only by `devices.count` also produce the same lines and arrays. With `"none"`, nothing is guaranteed ([case-schema.md](case-schema.md#physics)).
+Two runs of the solver (not the `fake` backend) with the same `identity` and the same `solver.binary_sha256` whose case has `physics.reproducibility` `"run"` or `"ranks"`, and that stop at the same iteration, produce bitwise-identical `history.jsonl` lines and `solution.cgns` data arrays (`log.jsonl` excepted: it carries wall-clock times). The identity covers the case, mesh, solver commit, precision, backend, devices, cell order and, for a restarted run, the state it starts from. With `"ranks"`, two such runs whose identities differ only by `devices.count` or `cell_order` also produce the same lines and arrays. With `"none"`, nothing is guaranteed ([case-schema.md](case-schema.md#physics)).
 
 
 ### Identity
@@ -85,10 +87,11 @@ Two runs of the solver (not the `fake` backend) with the same `identity` and the
 5. `solver.backend`
 6. `devices.kind`
 7. `devices.count`
-8. `start.identity`
-9. `start.mode`
-10. `start.iterations`
-11. `start.solution_sha256`
+8. `cell_order`
+9. `start.identity`
+10. `start.mode`
+11. `start.iterations`
+12. `start.solution_sha256`
 
 ### Studies
 
