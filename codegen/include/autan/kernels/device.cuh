@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "autan/core/device_memory.hpp"
 #include "autan/core/mesh.hpp"
 #include "autan/kernels/colouring.hpp"
 #include "autan/kernels/geometry.hpp"
@@ -24,9 +25,17 @@
 namespace autan::kernels::gpu {
 
 namespace detail {
+// Every allocation is recorded in autan::device_memory, with its size again at its release.
 #if defined(AUTAN_GPU_HIP)
-inline error_t allocate(void** p, std::size_t bytes) { return hipMalloc(p, bytes); }
-inline void release(void* p) { static_cast<void>(hipFree(p)); }
+inline error_t allocate(void** p, std::size_t bytes) {
+  const error_t e = hipMalloc(p, bytes);
+  if (e == hipSuccess) device_memory::allocated(bytes);
+  return e;
+}
+inline void release(void* p, std::size_t bytes) {
+  static_cast<void>(hipFree(p));
+  device_memory::released(bytes);
+}
 inline error_t zero(void* p, std::size_t bytes, stream_t s) {
   return hipMemsetAsync(p, 0, bytes, s);
 }
@@ -38,8 +47,15 @@ inline error_t to_host(void* h, const void* d, std::size_t bytes, stream_t s) {
 }
 inline error_t synchronize(stream_t s) { return hipStreamSynchronize(s); }
 #else
-inline error_t allocate(void** p, std::size_t bytes) { return cudaMalloc(p, bytes); }
-inline void release(void* p) { static_cast<void>(cudaFree(p)); }
+inline error_t allocate(void** p, std::size_t bytes) {
+  const error_t e = cudaMalloc(p, bytes);
+  if (e == cudaSuccess) device_memory::allocated(bytes);
+  return e;
+}
+inline void release(void* p, std::size_t bytes) {
+  static_cast<void>(cudaFree(p));
+  device_memory::released(bytes);
+}
 inline error_t zero(void* p, std::size_t bytes, stream_t s) {
   return cudaMemsetAsync(p, 0, bytes, s);
 }
@@ -81,7 +97,7 @@ class DeviceArray {
   }
   ~DeviceArray() {
     if (p_ != nullptr) {
-      detail::release(p_);
+      detail::release(p_, std::max<std::size_t>(n_, 1) * sizeof(T));
     }
   }
   void upload(std::span<const T> host, stream_t stream = nullptr) {
