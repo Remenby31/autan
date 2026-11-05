@@ -12,6 +12,7 @@
 #include "advection_metal.hpp"
 #include "autan/kernels/metal.hpp"
 #include "autan/kernels/strategy.hpp"
+#include "face_flags_metal.hpp"
 #include "gradients_metal.hpp"
 #include "metal_device.hpp"
 #include "roe_metal.hpp"
@@ -174,6 +175,43 @@ void gradients(const SpikeMesh& m, std::string_view method, Strategy strategy, i
   copy_out(gs.download(), grad);
   copy_out(mins.download(), qmin);
   copy_out(maxs.download(), qmax);
+}
+
+/// Test kernel codegen/tests/kernels/face_flags.py on Metal: as autan_spike_face_flags, the
+/// face loop reading keep in `strategy`.
+template <class P>
+void face_flags(const SpikeMesh& m, Strategy strategy, int block, const double* q,
+                std::uint8_t* keep, double* jump, double* res) {
+  namespace ff = autan::kernels::face_flags;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  auto& ctx = context();
+  DeviceMesh<P> dm(ctx, m, block);
+  GeomCopy<P> hg(m.packed);
+  DeviceGeom<P> g(ctx, hg);
+  DeviceArray<typename P::state> qs(ctx, converted_in<typename P::state>(q, nc));
+  DeviceArray<std::uint8_t> ks(ctx, std::vector<std::uint8_t>(2 * nf, 255));
+  DeviceArray<typename P::state> js(ctx, std::vector<typename P::state>(nf));
+  DeviceArray<typename P::residual> rs(ctx, std::vector<typename P::residual>(nc));
+  ff::Data<P> d{};
+  d.topo = dm.topo;
+  d.q = qs.get();
+  d.keep = ks.get();
+  d.jump = js.get();
+  d.res = rs.get();
+  autan::spike::bind(d.face_normal, g.face_normal);
+  ff::metal_loops::interior_flags(ctx, d, dm.schedule);
+  ff::metal_loops::boundary_flags_loop(ctx, d, dm.schedule);
+  if (res != nullptr) {
+    ff::metal_loops::picked(ctx, d, strategy, dm.schedule);
+  }
+  synchronise();
+  const auto k = ks.download();
+  std::copy(k.begin(), k.end(), keep);
+  copy_out(js.download(), jump);
+  if (res != nullptr) {
+    copy_out(rs.download(), res);
+  }
 }
 
 template <class P>
@@ -442,6 +480,17 @@ int autan_spike_gpu_advdiff_residual(const void* mesh, const char* policy, const
     autan::spike::metal::with_policy(policy, [&](auto p) {
       advdiff_residual<decltype(p)>(*m, s, block, q, q_b, source, velocity, nu, res, grad, norm);
     });
+  });
+}
+
+int autan_spike_gpu_face_flags(const void* mesh, const char* policy, const char* strategy,
+                               int block, const double* q, std::uint8_t* keep, double* jump,
+                               double* res, char* err, std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return metal_guarded(err, err_len, [&] {
+    const auto s = strategy_of(strategy);
+    autan::spike::metal::with_policy(
+        policy, [&](auto p) { face_flags<decltype(p)>(*m, s, block, q, keep, jump, res); });
   });
 }
 

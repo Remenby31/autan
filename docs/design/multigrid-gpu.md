@@ -70,6 +70,11 @@ The host's line-implicit block Gauss-Seidel, colour by colour, forwards then bac
 
 Within a colour, lines share no edge, so the two launches of a colour are independent and their order does not change the result. A zero or non-finite pivot leaves NaN in the factor; the solve reports it as the host's `std::domain_error` (singular block), so the step is rejected as on the host.
 
+The smoother lands in two parts:
+
+1. **Lines** (`gpu::LineSmoother`): the lines of several nodes, and their factorisation per Jacobian. Blocks are read in their storage type (FP32 or FP64 `Jac`) and converted exactly, as the host receives them. They are placed through the same `EdgeSlots` map as the Galerkin product. Each line runs in FP64, in the host's operation order (`relax_line`, `factor`, `invert5`), so its result is the host's bit for bit. Lone cells are not relaxed by this part.
+2. **Lone cells** via J5's `relax`, once #324 lands, then the whole smoother end to end. The precision policy applies there (products in the compute type, sums in the accumulation type), so that part is gated by the 64 ε bound, not by the host's bits.
+
 ## Coarsest level
 
 The host factors the coarsest level densely (LU with partial pivoting) when it has at most 1000 unknowns, and sweeps it `coarsest_sweeps` times otherwise; the device sweeps it the same way in the second case.
@@ -105,9 +110,9 @@ Declared before any measurement. u is the unit round-off of the type that comput
 |---|---|---|
 | Restriction, prolongation | bitwise equal | host `cycle_level` |
 | Galerkin operator | bitwise equal on every level; within 2 k u Σ\|terms\| per entry of a dense Pᵀ A P, k its number of terms (both sums' rounding) | host `set_operator`; dense product, independent of the lists |
-| Point rows, one colour from the same x | componentwise ≤ max(64, 4 (k + 5)) u ‖D_i⁻¹‖∞ (\|b\| + Σ \|A\| \|x\|)_i, k the row's incidences: J5's agreed 64 u on mesh rows, growing with the degree of coarse rows | host `relax_line` on lines of one node |
-| Line factors | each block within 10⁻¹² of the largest entry of the host's | host `Smoother::factor` |
-| Line solves, one colour from the same x and the same factors | each node within 10⁻¹² ℓ max_k ‖D'_k⁻¹‖∞ max_k (\|b\| + Σ \|A\| \|x\|)_k over its line, ℓ the line's length (scaled by the data, not by a solution that may cancel to zero) | host `relax_line` |
+| Line factors and line solves (part 1), every level, FP64 and FP32 blocks | bitwise equal | host `Multigrid::smooth` on a mesh whose cells all lie in lines; the host order of `factor` and `relax_line` on every level |
+| Lone cells (part 2), one colour from the same x | componentwise ≤ max(64, 4 (k + 5)) u ‖D_i⁻¹‖∞ (\|b\| + Σ \|A\| \|x\|)_i, k the row's incidences: J5's agreed 64 u on mesh rows, growing with the degree of coarse rows; a mutant accumulating in FP32 must exceed it | host `relax_line` on lines of one node |
+| Whole smoother (part 2) | lines bitwise, lone cells within the bound above | host `Multigrid::smooth` |
 | Coarsest solve | bitwise equal; a manufactured solution recovered within 10⁻¹⁰ | host `solve_dense`; b = A x from the blocks |
 | One cycle, V and K | each component within 10⁻¹⁰ (fp64) or 10⁻³ (fp32+acc64) of \|x_host\|∞ | host `cycle` |
 | GCR to a drop of 10⁻⁶, MMS hex and tet 48³, NACA 256² | each iteration's drop within 10⁻⁸ (fp64) or 10⁻² (fp32+acc64) relative of the host's; the same iteration count | host `solve` |
