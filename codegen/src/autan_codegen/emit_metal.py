@@ -29,8 +29,9 @@ from autan_codegen.emit_cpp import (
     unique_bodies,
 )
 from autan_codegen.emit_cpu import (
-    boundary_write_body,
     cell_stores,
+    face_write_body,
+    face_write_range,
     global_left,
     n_out,
     offsets,
@@ -260,12 +261,13 @@ def _face_kernels(k: _Kernels, lm: LoopModel) -> None:
 def _cell_kernel(k: _Kernels, lm: LoopModel) -> None:
     e = k.e
     k.head(f"{lm.name}_kernel", None, atomic=lm.kind == "reduce_adjoint")
-    if lm.kind == "boundary_write":
-        e.w("  const index_t f = d.topo.n_interior_faces + index_t(gid);")
-        e.w("  if (f >= d.topo.n_faces) {")
+    if lm.kind in ("face_write", "boundary_write"):
+        lo, hi = face_write_range(lm.kind)
+        e.w(f"  const index_t f = {lo} + index_t(gid);")
+        e.w(f"  if (f >= {hi}) {{")
         e.w("    return;")
         e.w("  }")
-        for s in boundary_write_body(lm, "  "):
+        for s in face_write_body(lm, "  "):
             e.w(s)
         e.w("}")
         e.w()
@@ -419,11 +421,11 @@ def _face_launcher(e: Emitter, lm: LoopModel) -> None:
 
 def _cell_launcher(e: Emitter, lm: LoopModel) -> None:
     if lm.kind != "reduce_adjoint":
-        n = (
-            "d.topo.n_faces - d.topo.n_interior_faces"
-            if lm.kind == "boundary_write"
-            else "d.topo.n_owned_cells"
-        )
+        if lm.kind in ("face_write", "boundary_write"):
+            lo, hi = face_write_range(lm.kind)
+            n = f"{hi} - {lo}"
+        else:
+            n = "d.topo.n_owned_cells"
         e.w("template <class P>")
         e.w(f"void {lm.name}(mtl::Context& ctx, const Data<P>& d, const mtl::Schedule& s) {{")
         e.w(f'  ctx.dispatch(library, "{lm.name}_kernel", P::tag, d, {n}, s.block);')

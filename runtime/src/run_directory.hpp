@@ -38,6 +38,12 @@ class RunDirectory {
   [[nodiscard]] std::filesystem::path solution_staging() const;
   /// Renames the staged solution to solution.cgns.
   void publish_solution();
+  [[nodiscard]] std::filesystem::path checkpoint_staging() const;
+  /// Renames the staged checkpoint over checkpoint.cgns: a kill before the rename leaves the
+  /// previous checkpoint whole.
+  void publish_checkpoint();
+  /// Removes checkpoint.cgns, once the final solution is published.
+  void remove_checkpoint();
 
  private:
   void append(int& fd, const char* name, const std::string& line);

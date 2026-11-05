@@ -566,11 +566,27 @@ Fix: Compare with a run without the option before relying on the result.
 
 ## E0427
 
-**Coupled turbulence needs the host multigrid** (error)
+**Opt-in step needs the host multigrid** (error)
 
-The coupled turbulence step runs in the host multigrid on one rank: `linear_solver` must be `multigrid`, on the CPU, on one rank. `autan plan` and the physics both refuse other runs.
+The opt-in steady steps (`time.coupled_turbulence`, `time.matrix_free`) run in the host multigrid on one rank: `linear_solver` must be `multigrid`, on the CPU, on one rank. `autan plan` and the physics both refuse other runs; the message names the key.
 
 Fix: Use `linear_solver='multigrid'` and run on one CPU rank, or drop the option.
+
+## E0429
+
+**Matrix-free step not applicable** (error)
+
+`time.matrix_free` is set on a case whose physics has no matrix-free step: only compressible laminar physics has one.
+
+Fix: Remove `matrix_free=True`, or use compressible laminar physics.
+
+## W0429
+
+**Matrix-free step outside its validated domain** (warning)
+
+`time.matrix_free` is on: the matrix-free laminar step is validated on the TMR laminar flat plate only (#429). `autan plan` reports it, and the run logs it at its first matrix-free step.
+
+Fix: Compare with a run without the option before relying on the result.
 
 ## E0501
 
@@ -772,6 +788,14 @@ An equation that was identically zero at iteration 1 (below 1e-12 times the larg
 
 Fix: Check the boundary conditions and the mesh: a symmetric or 2D problem whose symmetry breaks during the run usually means a boundary condition breaks it.
 
+## W0714
+
+**Checkpoint not written** (warning)
+
+Writing the restart checkpoint failed (results.md#checkpointcgns), or removing it once the final solution was written: the run goes on, and the previous checkpoint, if any, stays whole. `data` gives the iteration when a write failed.
+
+Fix: Check the space and permissions of the run directory's file system.
+
 ## W0801
 
 **No NVIDIA GPU found** (warning)
@@ -928,7 +952,7 @@ Fix: Use a policy listed by the generator's --help.
 
 **Differentiation not supported** (error)
 
-A loop with several output datasets is differentiated, or a boundary loop writes face data computed from active data without frozen=True.
+A loop with several output datasets is differentiated, or a face or boundary loop writes face data computed from active data without frozen=True.
 
 Fix: Differentiate loops with a single output dataset; declare boundary-state loops frozen=True to drop their derivatives knowingly.
 
