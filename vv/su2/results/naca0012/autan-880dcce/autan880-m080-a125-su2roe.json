@@ -1,0 +1,451 @@
+{
+  "schema": "autan.su2-comparison/1",
+  "case": "naca0012",
+  "condition": "m080-a125",
+  "autan": {
+    "case": "naca0012-m080-a125",
+    "commit": "880dcce40ec468d8f2e1347050fec94e3b11c99f",
+    "precision": "fp64",
+    "backend": "cpu",
+    "point_vortex": true
+  },
+  "su2": {
+    "scheme": "roe",
+    "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+    "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3",
+    "report_sha256": "ffec78ec4c790fe4dfd7064a4fb3949dae5692bc86dbae81a0d5c4542769b825"
+  },
+  "levels": [
+    {
+      "n": 64,
+      "autan": {
+        "run": "run-20261101T201924Z-88a160b5",
+        "n": 64,
+        "case": "naca0012-m080-a125",
+        "mach": 0.8,
+        "alpha_deg": 1.25,
+        "point_vortex": true,
+        "converged": true,
+        "iterations": 54,
+        "cl": 0.3557215706221591,
+        "cd": 0.027347160650378916,
+        "cmy": -0.03907788927729,
+        "status": "converged",
+        "commit": "880dcce40ec468d8f2e1347050fec94e3b11c99f",
+        "precision": "fp64",
+        "backend": "cpu",
+        "case_sha256": "942896ae8d00fdebdb8c4c39783597269bc0e2fe9512ecc75036e29e3d8fef52",
+        "mesh_sha256": "9845b8bda82f2367d6c982e84bc3fe24f31446dc77f8999072ebc85edf8bb4cb",
+        "problem": "{\"boundaries\": [{\"condition\": {\"kind\": \"slip\"}, \"zones\": \"airfoil\"}, {\"condition\": {\"kind\": \"farfield\", \"point_vortex\": {\"center\": [\"0.25 m\", \"0.0 m\", \"0.0 m\"], \"surfaces\": \"airfoil\"}}, \"zones\": \"farfield\"}, {\"condition\": {\"kind\": \"symmetry\"}, \"zones\": \"back\"}, {\"condition\": {\"kind\": \"symmetry\"}, \"zones\": \"front\"}], \"cell_zones\": [], \"freestream\": {\"aoa\": \"1.25 deg\", \"mach\": 0.8, \"pressure\": \"101325.0 Pa\", \"ref_length\": \"1.0 m\", \"sideslip\": \"0.0 deg\", \"temperature\": \"288.15 K\"}, \"monitors\": [{\"every\": 1, \"kind\": \"forces\", \"moment_center\": [\"0.25 m\", \"0.0 m\", \"0.0 m\"], \"name\": \"forces\", \"ref_area\": \"1.0 m ** 2\", \"surfaces\": \"airfoil\"}], \"name\": \"naca0012-m080-a125\", \"physics\": {\"gas\": {\"gamma\": 1.4, \"kind\": \"ideal-gas\", \"molar_mass\": \"0.0289647 kg / mol\", \"name\": \"air\", \"prandtl\": 0.72, \"viscosity\": {\"law\": \"sutherland\", \"mu_ref\": \"1.716e-05 Pa * s\", \"s\": \"110.4 K\", \"t_ref\": \"273.15 K\"}}, \"kind\": \"compressible\", \"precision\": \"fp64\", \"turbulence\": {\"model\": \"inviscid\"}}, \"schema\": \"autan.case/1\", \"time\": {\"kind\": \"steady\", \"residual_orders\": 10.0}}",
+        "run_json_sha256": "f28c07ab4e91f7cc16cc25432e1244733cfb6894fd0238671c830d80fd96bc1d",
+        "history_sha256": "fbfb01ca7bf2cb817657e23cdf719bd31db9af8410ff76005d4918a5cdfb0e4b"
+      },
+      "su2": {
+        "run": "n0064",
+        "n": 64,
+        "scheme": "roe",
+        "points": 4160,
+        "venkat_coefficient": 1.4374493966900252,
+        "converged": true,
+        "iterations": 474,
+        "wall_seconds": 1.0584168249119998,
+        "threads": 4,
+        "cl": 0.3168436333,
+        "cd": 0.02139558135,
+        "cmy": -0.0295156015,
+        "drop": {
+          "density": 10.510438306000001,
+          "momentum-x": 10.01988928,
+          "momentum-z": 10.185360397,
+          "energy": 10.44394591
+        },
+        "case_sha256": "62b583e200617aea3cba32e6713155f02625dd1d30b4cceda7f89d753016d659",
+        "plane_sha256": "8e46fcee69cdb13852daa83f39f4aec7cb07841dccd0a51e8cef3c0be7ccb08b",
+        "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+        "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
+      },
+      "difference": {
+        "cl": 0.038877937322159106,
+        "cd": 0.005951579300378915,
+        "cmy": -0.009562287777290002
+      },
+      "cp": {
+        "faces": 64,
+        "all": {
+          "max_abs": 0.44862656249112365,
+          "rms": 0.12261842843690024
+        },
+        "shock_upper": {
+          "autan": 0.6576094281675,
+          "su2": 0.6108066043
+        },
+        "shock_lower": {
+          "autan": 0.957291362325,
+          "su2": 0.3319967810225
+        },
+        "outside_shocks": {
+          "max_abs": 0.4442042427569736,
+          "rms": 0.09912340698913216
+        },
+        "body": {
+          "max_abs": 0.20196509754659397,
+          "rms": 0.05985585113811784,
+          "faces": 44
+        }
+      }
+    },
+    {
+      "n": 128,
+      "autan": {
+        "run": "run-20261101T201929Z-d842e9ec",
+        "n": 128,
+        "case": "naca0012-m080-a125",
+        "mach": 0.8,
+        "alpha_deg": 1.25,
+        "point_vortex": true,
+        "converged": true,
+        "iterations": 61,
+        "cl": 0.3577585558510911,
+        "cd": 0.02374434880818113,
+        "cmy": -0.039313074880994135,
+        "status": "converged",
+        "commit": "880dcce40ec468d8f2e1347050fec94e3b11c99f",
+        "precision": "fp64",
+        "backend": "cpu",
+        "case_sha256": "96bfbef98b6883c5a3c1aa464b77a861f53e2d7585c9e136de135b3e7f2e633c",
+        "mesh_sha256": "476de60d5060511adef8518982c91d738cd71731e6fbb8aa073455d580ecfb22",
+        "problem": "{\"boundaries\": [{\"condition\": {\"kind\": \"slip\"}, \"zones\": \"airfoil\"}, {\"condition\": {\"kind\": \"farfield\", \"point_vortex\": {\"center\": [\"0.25 m\", \"0.0 m\", \"0.0 m\"], \"surfaces\": \"airfoil\"}}, \"zones\": \"farfield\"}, {\"condition\": {\"kind\": \"symmetry\"}, \"zones\": \"back\"}, {\"condition\": {\"kind\": \"symmetry\"}, \"zones\": \"front\"}], \"cell_zones\": [], \"freestream\": {\"aoa\": \"1.25 deg\", \"mach\": 0.8, \"pressure\": \"101325.0 Pa\", \"ref_length\": \"1.0 m\", \"sideslip\": \"0.0 deg\", \"temperature\": \"288.15 K\"}, \"monitors\": [{\"every\": 1, \"kind\": \"forces\", \"moment_center\": [\"0.25 m\", \"0.0 m\", \"0.0 m\"], \"name\": \"forces\", \"ref_area\": \"1.0 m ** 2\", \"surfaces\": \"airfoil\"}], \"name\": \"naca0012-m080-a125\", \"physics\": {\"gas\": {\"gamma\": 1.4, \"kind\": \"ideal-gas\", \"molar_mass\": \"0.0289647 kg / mol\", \"name\": \"air\", \"prandtl\": 0.72, \"viscosity\": {\"law\": \"sutherland\", \"mu_ref\": \"1.716e-05 Pa * s\", \"s\": \"110.4 K\", \"t_ref\": \"273.15 K\"}}, \"kind\": \"compressible\", \"precision\": \"fp64\", \"turbulence\": {\"model\": \"inviscid\"}}, \"schema\": \"autan.case/1\", \"time\": {\"kind\": \"steady\", \"residual_orders\": 10.0}}",
+        "run_json_sha256": "6a047c1e9d4909fa85fb3896a3ee4dbf6296e698a78f91a16df0960edb1ffcce",
+        "history_sha256": "0a72fb10002414f2c8e53a188ca8393743e35033150ff01173401f364a213efb"
+      },
+      "su2": {
+        "run": "n0128",
+        "n": 128,
+        "scheme": "roe",
+        "points": 16512,
+        "venkat_coefficient": 0.9025366858328476,
+        "converged": true,
+        "iterations": 683,
+        "wall_seconds": 6.919894424660001,
+        "threads": 4,
+        "cl": 0.3447900484,
+        "cd": 0.02504014805,
+        "cmy": -0.03679828716,
+        "drop": {
+          "density": 10.392139399,
+          "momentum-x": 10.075400909,
+          "momentum-z": 10.337825334000001,
+          "energy": 10.429727353
+        },
+        "case_sha256": "394e28bd7807f62b39a8c3a42808d593fada5dabfa7a61de30b882e7a20f2217",
+        "plane_sha256": "82ff204c3b36cc04cf927bd47b70eae7223529fb70962d41922b392dc32ea87a",
+        "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+        "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
+      },
+      "difference": {
+        "cl": 0.012968507451091127,
+        "cd": -0.0012957992418188673,
+        "cmy": -0.002514787720994137
+      },
+      "cp": {
+        "faces": 128,
+        "all": {
+          "max_abs": 0.4653190235041693,
+          "rms": 0.08411569932110298
+        },
+        "shock_upper": {
+          "autan": 0.634445626035,
+          "su2": 0.634445626035
+        },
+        "shock_lower": {
+          "autan": 0.33169491385500005,
+          "su2": 0.33169491385500005
+        },
+        "outside_shocks": {
+          "max_abs": 0.4653190235041693,
+          "rms": 0.07825420663016265
+        },
+        "body": {
+          "max_abs": 0.09083637198760135,
+          "rms": 0.028781014071459967,
+          "faces": 104
+        }
+      }
+    },
+    {
+      "n": 256,
+      "autan": {
+        "run": "run-20261101T195656Z-1ea65a22",
+        "n": 256,
+        "case": "naca0012-m080-a125",
+        "mach": 0.8,
+        "alpha_deg": 1.25,
+        "point_vortex": true,
+        "converged": true,
+        "iterations": 130,
+        "cl": 0.36026897880150227,
+        "cd": 0.023092888310641463,
+        "cmy": -0.03999932369083377,
+        "status": "converged",
+        "commit": "880dcce40ec468d8f2e1347050fec94e3b11c99f",
+        "precision": "fp64",
+        "backend": "cpu",
+        "case_sha256": "05b6323f1b0e696a7aa0f560c6b7887caaad094a869e550d6c6fef76b858dfa4",
+        "mesh_sha256": "8f0987975993317e4ed1a31dfccafe539837cde52a13f69a99f3523d0302f8de",
+        "problem": "{\"boundaries\": [{\"condition\": {\"kind\": \"slip\"}, \"zones\": \"airfoil\"}, {\"condition\": {\"kind\": \"farfield\", \"point_vortex\": {\"center\": [\"0.25 m\", \"0.0 m\", \"0.0 m\"], \"surfaces\": \"airfoil\"}}, \"zones\": \"farfield\"}, {\"condition\": {\"kind\": \"symmetry\"}, \"zones\": \"back\"}, {\"condition\": {\"kind\": \"symmetry\"}, \"zones\": \"front\"}], \"cell_zones\": [], \"freestream\": {\"aoa\": \"1.25 deg\", \"mach\": 0.8, \"pressure\": \"101325.0 Pa\", \"ref_length\": \"1.0 m\", \"sideslip\": \"0.0 deg\", \"temperature\": \"288.15 K\"}, \"monitors\": [{\"every\": 1, \"kind\": \"forces\", \"moment_center\": [\"0.25 m\", \"0.0 m\", \"0.0 m\"], \"name\": \"forces\", \"ref_area\": \"1.0 m ** 2\", \"surfaces\": \"airfoil\"}], \"name\": \"naca0012-m080-a125\", \"physics\": {\"gas\": {\"gamma\": 1.4, \"kind\": \"ideal-gas\", \"molar_mass\": \"0.0289647 kg / mol\", \"name\": \"air\", \"prandtl\": 0.72, \"viscosity\": {\"law\": \"sutherland\", \"mu_ref\": \"1.716e-05 Pa * s\", \"s\": \"110.4 K\", \"t_ref\": \"273.15 K\"}}, \"kind\": \"compressible\", \"precision\": \"fp64\", \"turbulence\": {\"model\": \"inviscid\"}}, \"schema\": \"autan.case/1\", \"time\": {\"kind\": \"steady\", \"residual_orders\": 10.0}}",
+        "run_json_sha256": "6f47bac93f59ed00e1389b7bd2a22d448acac4622e5f33e9d8a26635b7eba077",
+        "history_sha256": "8d730af8fea5df1827deade920b21d796a360567cc682b515a436e313bada105"
+      },
+      "su2": {
+        "run": "n0256",
+        "n": 256,
+        "scheme": "roe",
+        "points": 65792,
+        "venkat_coefficient": 0.5686856043283535,
+        "converged": true,
+        "iterations": 1381,
+        "wall_seconds": 73.30424236724,
+        "threads": 4,
+        "cl": 0.3523723572,
+        "cd": 0.02465435482,
+        "cmy": -0.0385650395,
+        "drop": {
+          "density": 10.351783943,
+          "momentum-x": 10.022776655000001,
+          "momentum-z": 10.250050518,
+          "energy": 10.408225307
+        },
+        "case_sha256": "6e31c68874567a1a135652abd8697d397a809caff6a712f675264601dab79efd",
+        "plane_sha256": "4bde602f7af53417fe9f871d6163cc34b98d717715b20331aba7b517696624a0",
+        "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+        "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
+      },
+      "difference": {
+        "cl": 0.007896621601502285,
+        "cd": -0.0015614665093585355,
+        "cmy": -0.0014342841908337664
+      },
+      "cp": {
+        "faces": 256,
+        "all": {
+          "max_abs": 0.4380428303583228,
+          "rms": 0.05525604323914057
+        },
+        "shock_upper": {
+          "autan": 0.6461867408074999,
+          "su2": 0.6344811244774999
+        },
+        "shock_lower": {
+          "autan": 0.3316193980275,
+          "su2": 0.3316193980275
+        },
+        "outside_shocks": {
+          "max_abs": 0.4380428303583228,
+          "rms": 0.05012753473753596
+        },
+        "body": {
+          "max_abs": 0.05838709521079771,
+          "rms": 0.01567770847905519,
+          "faces": 215
+        }
+      }
+    },
+    {
+      "n": 512,
+      "autan": {
+        "run": "run-20261101T200103Z-61ae27c8",
+        "n": 512,
+        "case": "naca0012-m080-a125",
+        "mach": 0.8,
+        "alpha_deg": 1.25,
+        "point_vortex": true,
+        "converged": true,
+        "iterations": 283,
+        "cl": 0.35823979182497656,
+        "cd": 0.022833310020972483,
+        "cmy": -0.039393326348029986,
+        "status": "converged",
+        "commit": "880dcce40ec468d8f2e1347050fec94e3b11c99f",
+        "precision": "fp64",
+        "backend": "cpu",
+        "case_sha256": "8382e48fe5071bda3a8e909f2b08ce1dfa18babbb26553022db2beeaf4859772",
+        "mesh_sha256": "47f3a1e3b111a410029e4a10b442984018c68da483287e8298ab645a68075b1f",
+        "problem": "{\"boundaries\": [{\"condition\": {\"kind\": \"slip\"}, \"zones\": \"airfoil\"}, {\"condition\": {\"kind\": \"farfield\", \"point_vortex\": {\"center\": [\"0.25 m\", \"0.0 m\", \"0.0 m\"], \"surfaces\": \"airfoil\"}}, \"zones\": \"farfield\"}, {\"condition\": {\"kind\": \"symmetry\"}, \"zones\": \"back\"}, {\"condition\": {\"kind\": \"symmetry\"}, \"zones\": \"front\"}], \"cell_zones\": [], \"freestream\": {\"aoa\": \"1.25 deg\", \"mach\": 0.8, \"pressure\": \"101325.0 Pa\", \"ref_length\": \"1.0 m\", \"sideslip\": \"0.0 deg\", \"temperature\": \"288.15 K\"}, \"monitors\": [{\"every\": 1, \"kind\": \"forces\", \"moment_center\": [\"0.25 m\", \"0.0 m\", \"0.0 m\"], \"name\": \"forces\", \"ref_area\": \"1.0 m ** 2\", \"surfaces\": \"airfoil\"}], \"name\": \"naca0012-m080-a125\", \"physics\": {\"gas\": {\"gamma\": 1.4, \"kind\": \"ideal-gas\", \"molar_mass\": \"0.0289647 kg / mol\", \"name\": \"air\", \"prandtl\": 0.72, \"viscosity\": {\"law\": \"sutherland\", \"mu_ref\": \"1.716e-05 Pa * s\", \"s\": \"110.4 K\", \"t_ref\": \"273.15 K\"}}, \"kind\": \"compressible\", \"precision\": \"fp64\", \"turbulence\": {\"model\": \"inviscid\"}}, \"schema\": \"autan.case/1\", \"time\": {\"kind\": \"steady\", \"residual_orders\": 10.0}}",
+        "run_json_sha256": "675c0528a4cf4386d18467f2923d5d90efab4a77f21b90d975845aa4aa97b776",
+        "history_sha256": "81685d510f79f0afce1f3e1aa842689e84fa68d8467d42a005ef1ee7961e5539"
+      },
+      "su2": {
+        "run": "n0512",
+        "n": 512,
+        "scheme": "roe",
+        "points": 262656,
+        "venkat_coefficient": 0.35828112444575466,
+        "converged": true,
+        "iterations": 2072,
+        "wall_seconds": 1352.8801636168,
+        "threads": 4,
+        "cl": 0.3526514492,
+        "cd": 0.02376009019,
+        "cmy": -0.038453376,
+        "drop": {
+          "density": 10.35728548,
+          "momentum-x": 10.002123710000001,
+          "momentum-z": 10.192691666999998,
+          "energy": 10.381204004
+        },
+        "case_sha256": "44bdd237c01c665acd86ead3d74d0496818dc5ae713d0e7818099133653b2b96",
+        "plane_sha256": "ef16cb4d3e1ea04896d226bb5e9e4fbe5c7f69b3547fcc0860ea822c65839d82",
+        "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+        "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
+      },
+      "difference": {
+        "cl": 0.005588342624976539,
+        "cd": -0.0009267801690275163,
+        "cmy": -0.0009399503480299887
+      },
+      "cp": {
+        "faces": 512,
+        "all": {
+          "max_abs": 0.4652954021795912,
+          "rms": 0.03874377517628719
+        },
+        "shock_upper": {
+          "autan": 0.6403497713124999,
+          "su2": 0.6403497713124999
+        },
+        "shock_lower": {
+          "autan": 0.33707700681249997,
+          "su2": 0.33707700681249997
+        },
+        "outside_shocks": {
+          "max_abs": 0.41902859538243986,
+          "rms": 0.032614460432007206
+        },
+        "body": {
+          "max_abs": 0.032386928649407704,
+          "rms": 0.008399358909175123,
+          "faces": 440
+        }
+      }
+    },
+    {
+      "n": 1024,
+      "autan": {
+        "run": "run-20261102T050722Z-4419cd02",
+        "n": 1024,
+        "case": "naca0012-m080-a125",
+        "mach": 0.8,
+        "alpha_deg": 1.25,
+        "point_vortex": true,
+        "converged": true,
+        "iterations": 783,
+        "cl": 0.3577426737252556,
+        "cd": 0.022775959171591635,
+        "cmy": -0.039236137060753656,
+        "status": "converged",
+        "commit": "880dcce40ec468d8f2e1347050fec94e3b11c99f",
+        "precision": "fp64",
+        "backend": "cpu",
+        "case_sha256": "f66df13fe6c4087a7cbd98d6b57a0051d0b4c2594844bd086a696c057fbadf95",
+        "mesh_sha256": "f49df038d5aa033a4aef353f834081688a212bc4691317d24800027f760a97e1",
+        "problem": "{\"boundaries\": [{\"condition\": {\"kind\": \"slip\"}, \"zones\": \"airfoil\"}, {\"condition\": {\"kind\": \"farfield\", \"point_vortex\": {\"center\": [\"0.25 m\", \"0.0 m\", \"0.0 m\"], \"surfaces\": \"airfoil\"}}, \"zones\": \"farfield\"}, {\"condition\": {\"kind\": \"symmetry\"}, \"zones\": \"back\"}, {\"condition\": {\"kind\": \"symmetry\"}, \"zones\": \"front\"}], \"cell_zones\": [], \"freestream\": {\"aoa\": \"1.25 deg\", \"mach\": 0.8, \"pressure\": \"101325.0 Pa\", \"ref_length\": \"1.0 m\", \"sideslip\": \"0.0 deg\", \"temperature\": \"288.15 K\"}, \"monitors\": [{\"every\": 1, \"kind\": \"forces\", \"moment_center\": [\"0.25 m\", \"0.0 m\", \"0.0 m\"], \"name\": \"forces\", \"ref_area\": \"1.0 m ** 2\", \"surfaces\": \"airfoil\"}], \"name\": \"naca0012-m080-a125\", \"physics\": {\"gas\": {\"gamma\": 1.4, \"kind\": \"ideal-gas\", \"molar_mass\": \"0.0289647 kg / mol\", \"name\": \"air\", \"prandtl\": 0.72, \"viscosity\": {\"law\": \"sutherland\", \"mu_ref\": \"1.716e-05 Pa * s\", \"s\": \"110.4 K\", \"t_ref\": \"273.15 K\"}}, \"kind\": \"compressible\", \"precision\": \"fp64\", \"turbulence\": {\"model\": \"inviscid\"}}, \"schema\": \"autan.case/1\", \"time\": {\"kind\": \"steady\", \"residual_orders\": 10.0}}",
+        "run_json_sha256": "dea3aafec6d784aed5829ac8fb42e71e88d501b3aefe809febeb150ffdccfbc5",
+        "history_sha256": "daa2b73552246b10b8d384435674d140cf12799bf50408b53659426e2819b902"
+      },
+      "su2": {
+        "run": "n1024",
+        "n": 1024,
+        "scheme": "roe",
+        "points": 1049600,
+        "venkat_coefficient": 0.2257217952884304,
+        "converged": true,
+        "iterations": 8235,
+        "wall_seconds": 15932.20835106,
+        "threads": 4,
+        "cl": 0.3531474394,
+        "cd": 0.02319784952,
+        "cmy": -0.0384665641,
+        "drop": {
+          "density": 10.370554841999999,
+          "momentum-x": 10.006707945999999,
+          "momentum-z": 10.207666138,
+          "energy": 10.340047466
+        },
+        "case_sha256": "5cb6d8930e1e9c85758ca147bb06583d96f852f70fdf53907b7192d1b0138f32",
+        "plane_sha256": "586b06e01dd77320b4c29f45ae2bf232d144d851538302a0143fb7a77f49dc2c",
+        "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+        "image_id": "sha256:5eecb8fdd6768d9cd45c2ca2be35065d226a5e83af2b12e5c9ab5fae4f42cda3"
+      },
+      "difference": {
+        "cl": 0.004595234325255604,
+        "cd": -0.0004218903484083658,
+        "cmy": -0.0007695729607536533
+      },
+      "cp": {
+        "faces": 1024,
+        "all": {
+          "max_abs": 0.42279763911341606,
+          "rms": 0.027280295640146432
+        },
+        "shock_upper": {
+          "autan": 0.6403521465575,
+          "su2": 0.6403521465575
+        },
+        "shock_lower": {
+          "autan": 0.3370723992575,
+          "su2": 0.3398199541275
+        },
+        "outside_shocks": {
+          "max_abs": 0.38324555183249764,
+          "rms": 0.02073897919081524
+        },
+        "body": {
+          "max_abs": 0.017754041579929325,
+          "rms": 0.004735696716647925,
+          "faces": 887
+        }
+      }
+    }
+  ],
+  "continuum": {
+    "levels": [
+      256,
+      512,
+      1024
+    ],
+    "autan": {
+      "cl": {
+        "estimate": 0.35758137131332646,
+        "order": 2.029241269423453,
+        "gci": 0.00020162801491143965,
+        "order_if_zero": 0.0020033728951695372
+      },
+      "cd": {
+        "estimate": 0.02275969471252506,
+        "order": 2.1782829676027484,
+        "gci": 2.0330573833219765e-05,
+        "order_if_zero": 0.003628202383654882
+      },
+      "cmy": {
+        "estimate": -0.03918108352120566,
+        "order": 1.946808568970166,
+        "gci": 6.881692443499703e-05,
+        "order_if_zero": 0.005768232352208935
+      }
+    },
+    "su2": {
+      "cl": {
+        "error": "V0108"
+      },
+      "cd": {
+        "estimate": 0.022245765908317137,
+        "order": 0.6695139999685846,
+        "gci": 0.0011901045146035802,
+        "order_if_zero": 0.0345492411449616
+      },
+      "cmy": {
+        "error": "V0107"
+      }
+    }
+  }
+}

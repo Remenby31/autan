@@ -17,7 +17,7 @@ from autan_vv.cases import naca0012 as cases
 from autan_vv.cli import main
 from autan_vv.errors import VVError
 from autan_vv.meshes import naca0012
-from autan_vv.su2 import config, history, mesh
+from autan_vv.su2 import compare, config, history, mesh
 from autan_vv.su2 import naca0012 as su2
 
 DATA = Path(__file__).parent / "data"
@@ -320,6 +320,16 @@ def test_criterion_is_the_drop_below_the_first_residual() -> None:
     # ...and must drop ten orders below its first value once it has risen above it.
     zero.residuals["momentum-y"][5:] = 1e-11 * 0.5 ** np.arange(55)
     assert history.converged_at(zero, 10.0) == 5 + math.ceil(12 / math.log10(2))
+    # A continued run: an equation that woke before the stop (start.woken) is no longer exempt,
+    # even if it is back under its floor when the run resumes (case-schema.md, Time).
+    later = _geometric({"density": 1.0, "momentum-y": 1.0}, 0.5, 60)
+    later.residuals["density"][:] = 1e-12 * 0.5 ** np.arange(60)
+    later.residuals["momentum-y"][:] = 1e-14 * 0.5 ** np.arange(60)
+    reference = {"density": 1.0, "momentum-y": 1e-13}
+    assert history.converged_at(history.continued(later, reference), 10.0) == 1
+    woken = history.continued(later, reference, ["momentum-y"])
+    # momentum-y must reach 1e-23: 1e-14 * 0.5^k <= 1e-23 at k = 30, line 31 of the history.
+    assert history.converged_at(woken, 10.0) == 1 + math.ceil(9 / math.log10(2))
 
 
 def _watcher(script: str) -> str:
@@ -490,3 +500,183 @@ def test_study_reproduces_the_papers_extrapolation(tmp_path: Path) -> None:
     with pytest.raises(VVError) as err:
         su2.study(runs)
     assert err.value.code == "V0904"
+
+
+def test_compare_autan_with_an_su2_study(tmp_path: Path) -> None:
+    pytest.importorskip("gmsh", reason="gmsh (dev-only 'mesh' group) is not installed")
+    import autan  # noqa: PLC0415
+    from autan.units import m  # noqa: PLC0415
+    from autan_vv.runs import mesh_info  # noqa: PLC0415
+
+    family, meshes = naca0012.generate_family((8, 16, 32, 64), tmp_path / "family")
+    su2_runs = su2.prepare(tmp_path / "family", tmp_path / "su2", conditions=("m080-a125",))
+    for run, cl, cd in zip(su2_runs, FLO82_CL, FLO82_CD, strict=True):
+        _write_run(run, cl, cd, converged=True)
+    (tmp_path / "su2.json").write_text(json.dumps(su2.study(su2_runs)))
+
+    def autan_run(case: autan.Case, level: int) -> Path:
+        path = tmp_path / "family" / family.levels[level].file
+        info = mesh_info(meshes[level], path, "gmsh")
+        return case.run(info, backend=autan.FakeBackend(), runs=tmp_path / "autan").path
+
+    def mesh(level: int) -> str:
+        return str(tmp_path / "family" / family.levels[level].file)
+
+    runs = [autan_run(cases.case("m080-a125", mesh(i)), i) for i in range(4)]
+    # A run stopped early and continued: judged against its original run's first residuals, with
+    # the iteration count of the uninterrupted run, as the runtime judges it.
+    path0 = tmp_path / "family" / family.levels[0].file
+    info0 = mesh_info(meshes[0], path0, "gmsh")
+    short = cases.case("m080-a125", mesh(0), max_iterations=10)
+    first = short.run(info0, backend=autan.FakeBackend(), runs=tmp_path / "autan")
+    whole = cases.case("m080-a125", mesh(0)).run(
+        info0, backend=autan.FakeBackend(), runs=tmp_path / "autan", start=first, mode="continue"
+    )
+    level = compare.read_autan(whole.path)
+    assert whole.run.status == "converged"
+    assert level.converged
+    assert level.iterations == whole.run.iterations
+    report = compare.compare(runs, tmp_path / "su2.json", tmp_path / "su2")
+    assert report["autan"]["point_vortex"]
+    for row, run, cl, cd in zip(report["levels"], runs, FLO82_CL, FLO82_CD, strict=True):
+        forces = autan.Results.open(run).forces
+        assert row["difference"]["cl"] == pytest.approx(float(forces.cl[-1]) - cl, abs=8 * EPS)
+        assert row["difference"]["cd"] == pytest.approx(float(forces.cd[-1]) - cd, abs=8 * EPS)
+    # SU2's side is extrapolated as the gates do: FLO82's continuum of Table 3.
+    assert report["continuum"]["su2"]["cl"]["estimate"] == pytest.approx(0.356208937, abs=2e-9)
+    assert report["continuum"]["levels"] == [16, 32, 64]
+    assert (
+        report["su2"]["report_sha256"]
+        == hashlib.sha256((tmp_path / "su2.json").read_bytes()).hexdigest()
+    )
+    assert all(
+        row["autan"]["history_sha256"]
+        == hashlib.sha256((run / "history.jsonl").read_bytes()).hexdigest()
+        for row, run in zip(report["levels"], runs, strict=True)
+    )
+    # A family mixing the point-vortex far field with the plain one, or another condition, is refused.
+    plain = autan.Case("naca0012-m080-a125", mesh=mesh(0))
+    plain.physics = autan.Compressible(turbulence=autan.Inviscid(), precision="fp64")
+    plain.freestream(
+        mach=0.8, aoa=1.25 * autan.units.deg, pressure=101325.0 * autan.units.ureg.Pa,
+        ref_length=1.0 * m,
+    )  # fmt: skip
+    plain.time = autan.Steady(max_iterations=200000, residual_orders=10.0)
+    plain.boundary("airfoil").slip()
+    plain.boundary("farfield").farfield()
+    plain.boundary("back").symmetry()
+    plain.boundary("front").symmetry()
+    plain.monitor(
+        autan.forces("airfoil", ref_area=1.0 * m * m, moment_center=(0.25 * m, 0 * m, 0 * m))
+    )
+    # The same name with another case document (a looser criterion, coordinates read in
+    # millimetres) is not the same problem.
+    loose = autan_run(cases.case("m080-a125", mesh(0), residual_orders=9.0), 0)
+    millimetres = autan.Case("naca0012-m080-a125", mesh=mesh(0), mesh_unit="mm")
+    millimetres.physics = autan.Compressible(turbulence=autan.Inviscid(), precision="fp64")
+    millimetres.freestream(
+        mach=0.8, aoa=1.25 * autan.units.deg, pressure=101325.0 * autan.units.ureg.Pa,
+        ref_length=1.0 * m,
+    )  # fmt: skip
+    millimetres.time = autan.Steady(max_iterations=200000, residual_orders=10.0)
+    millimetres.boundary("airfoil").slip()
+    vortex = autan.PointVortex(surfaces="airfoil", center=(0.25 * m, 0.0 * m, 0.0 * m))
+    millimetres.boundary("farfield").farfield(point_vortex=vortex)
+    millimetres.boundary("back").symmetry()
+    millimetres.boundary("front").symmetry()
+    millimetres.monitor(
+        autan.forces("airfoil", ref_area=1.0 * m * m, moment_center=(0.25 * m, 0 * m, 0 * m))
+    )
+    scaled = autan_run(millimetres, 0)
+    odd_runs = (autan_run(plain, 0), autan_run(cases.case("m050-a125", mesh(0)), 0), loose, scaled)
+    for odd in odd_runs:
+        with pytest.raises(VVError) as err:
+            compare.compare([*runs[1:], odd], tmp_path / "su2.json", tmp_path / "su2")
+        assert err.value.code == "V0905"
+    # SU2 runs that are not the study's (another scheme) or that read another mesh are refused.
+    level_json = tmp_path / "su2" / "m080-a125" / "n0008" / "level.json"
+    level = json.loads(level_json.read_text())
+    for bad in (
+        {**level, "scheme": "jst"},
+        {**level, "mesh": {**level["mesh"], "source_sha256": "0" * 64}},
+    ):
+        level_json.write_text(json.dumps(bad))
+        with pytest.raises(VVError) as err:
+            compare.compare(runs, tmp_path / "su2.json", tmp_path / "su2")
+        assert err.value.code == "V0905"
+    level_json.write_text(json.dumps(level))
+
+
+def test_wall_cp_is_compared_face_by_face(tmp_path: Path) -> None:
+    pytest.importorskip("gmsh", reason="gmsh (dev-only 'mesh' group) is not installed")
+    import autan  # noqa: PLC0415
+    import h5py  # type: ignore[import-untyped]  # noqa: PLC0415
+    from autan.units import deg, m  # noqa: PLC0415
+    from autan_vv.runs import mesh_info, write_run  # noqa: PLC0415
+
+    nc, mach, gamma, p_inf = 32, 0.8, 1.4, 101325.0
+    family, meshes = naca0012.generate_family((nc,), tmp_path / "family")
+    path = tmp_path / "family" / family.levels[0].file
+    # The run writer refuses monitors; Cp needs the freestream and the solution only.
+    case = autan.Case("naca0012-m080-a125", mesh=str(path))
+    case.physics = autan.Compressible(turbulence=autan.Inviscid(), precision="fp64")
+    pressure = p_inf * autan.units.ureg.Pa
+    case.freestream(mach=mach, aoa=1.25 * deg, pressure=pressure, ref_length=1.0 * m)
+    case.time = autan.Steady(max_iterations=100, residual_orders=10.0)
+    case.boundary("airfoil").slip()
+    case.boundary("farfield").farfield()
+    case.boundary("back").symmetry()
+    case.boundary("front").symmetry()
+    n = meshes[0].n_cells
+    fields = {"Density": np.ones(n), "VelocityX": np.zeros(n), "VelocityY": np.zeros(n),
+              "VelocityZ": np.zeros(n), "Pressure": np.full(n, p_inf),
+              "Temperature": np.full(n, 288.15)}  # fmt: skip
+    info = mesh_info(meshes[0], path, "gmsh")
+    run = write_run(tmp_path / "runs", case, meshes[0], info, fields).path
+
+    def cp_of(x: np.ndarray, shock: float | None) -> np.ndarray:
+        # Linear in x, so a face's value is the mean of its end nodes'; a jump of 0.5 at `shock`.
+        return -0.4 + 0.3 * x + (0.0 if shock is None else 0.5 * (x > shock))
+
+    # Autan side: the face pressure of p = p_inf + q_inf Cp at each face centre (x along the chord).
+    with h5py.File(run / "solution.cgns", "r+") as f:
+        zone = f["Base/Zone"]
+        xyz = np.stack([zone[f"GridCoordinates/Coordinate{c}/ data"][()] for c in "XYZ"], 1)
+        offset = zone["NGonElements/ElementStartOffset/ data"][()]
+        conn = zone["NGonElements/ElementConnectivity/ data"][()] - 1
+        faces = zone["WallSolution/PointList/ data"][()].ravel() - 1
+        centre = np.array([xyz[conn[offset[k] : offset[k + 1]]].mean(axis=0) for k in faces])
+        q_inf = 0.5 * gamma * p_inf * mach**2
+        zone["WallSolution/Pressure/ data"][...] = p_inf + q_inf * cp_of(centre[:, 0], 0.6)
+
+    # SU2 side: conservative variables at rest, in units where p_inf = rho_inf = 1, at the wall
+    # nodes of the converted 2D mesh.
+    def surface(name: str, shift: float, shock: float | None) -> Path:
+        record = mesh.convert(path, tmp_path / f"{name}.su2", 2)
+        _, _, points, markers = _read_su2_mesh(tmp_path / record.file)
+        nodes = np.unique(markers["airfoil"][:, 1:])
+        p = 1.0 + 0.5 * gamma * mach**2 * (cp_of(points[nodes, 0], shock) + shift)
+        lines = ['"PointID","x","y","Density","Momentum_x","Momentum_y","Energy"']
+        lines += [f"{k}, {points[k, 0]:.15e}, {points[k, 1]:.15e}, 1.0, 0.0, 0.0, {pk / (gamma - 1.0):.17g}"
+                  for k, pk in zip(nodes, p, strict=True)]  # fmt: skip
+        out = tmp_path / f"{name}.csv"
+        out.write_text("\n".join(lines) + "\n")
+        return out
+
+    same = compare.compare_cp(run, surface("same", 0.0, 0.6))
+    assert same["faces"] == nc
+    # Only the face across the jump differs: its centre is past it, one of its nodes is not.
+    assert same["all"]["max_abs"] == pytest.approx(0.25, abs=1e-9)
+    assert same["outside_shocks"]["max_abs"] < 1e-9
+    assert 0 < same["body"]["faces"] < nc
+    # SU2's nodal step reaches the face centres over two faces: the same shock, within one face.
+    assert same["shock_upper"]["autan"] == pytest.approx(0.6, abs=0.1)
+    assert same["shock_upper"]["su2"] == pytest.approx(0.6, abs=0.1)
+    shifted = compare.compare_cp(run, surface("shifted", 0.01, 0.6))
+    assert shifted["outside_shocks"]["max_abs"] == pytest.approx(0.01, abs=1e-9)
+    # A shock SU2 puts further aft: the faces between and around the two shocks are left out.
+    moved = compare.compare_cp(run, surface("moved", 0.0, 0.75))
+    assert moved["shock_upper"]["su2"] == pytest.approx(0.75, abs=0.1)
+    assert moved["shock_upper"]["su2"] > moved["shock_upper"]["autan"]
+    assert moved["all"]["max_abs"] == pytest.approx(0.5, abs=1e-9)
+    assert moved["outside_shocks"]["max_abs"] < 1e-9

@@ -2,7 +2,7 @@
 
 A direct comparison of Autan with [SU2](https://su2code.github.io/) on the same meshes: iterations and wall time to one convergence criterion, and accuracy against published references (issue #195). Source: `vv/src/autan_vv/su2/`, `vv/su2/`.
 
-**Status.** Phase 1: SU2 built, protocol fixed, NACA 0012 run by SU2 alone and checked against Vassberg and Jameson (2010) ([results](#phase-1-su2-on-the-naca-0012-cases)). No Autan-against-SU2 number is published until Autan's implicit solver converges on these O-meshes (it stalls from 64², [cases.md](cases.md#naca-0012-inviscid)): a comparison against a solver that stalls says nothing.
+**Status.** Phase 1: SU2 built, protocol fixed, NACA 0012 run by SU2 alone and checked against Vassberg and Jameson (2010) ([results](#phase-1-su2-on-the-naca-0012-cases)). Phase 2: forces and wall Cp of Autan against SU2 on the same meshes ([results](#phase-2-autan-against-su2-forces-and-wall-cp)). Times are not compared until the measured protocol of #387 runs.
 
 ## SU2, an external tool
 
@@ -123,6 +123,24 @@ Roe with the matched limiter threshold, the controls of `inv_NACA0012_Roe.cfg` (
 | Continuum (order) | | — | | — | 0.022246 (0.67) | — | | 0.179728 (1.24) | −0.000732 (0.53) |
 
 No gate passes: at M 0.8, α 0° the 1024² run stalls and the three finest converged levels give no estimate (`V0108`); at M 0.5 the drag falls at order 0.53 and is still 8.3 counts at 1024². With SU2's published `inv_NACA0012_Roe.cfg` run as it is (`su2-published-roe/`, scheme `published:2592a85c…`), M 0.8, α 0° stalls below one order at 128²–512² and M 0.5 gives −14.0, +13.7 and +10.5 counts; the other upwind variants of the audit are in `upwind-variants.json` and the limiter study in `limiter-sensitivity.json`. A rerun of the SU2-Roe campaign from scratch gave the same forces and iteration counts at every level.
+
+## Phase 2: Autan against SU2, forces and wall Cp
+
+No timing yet (issue #387). Autan at main `880dcce`, `fp64`, CPU: the verdict runs of the NACA 0012 gates (point vortex on the lifting conditions) and the same lifting cases without the vortex, which SU2 v8.6.0 does not have, so that both codes solve one problem; levels 128²–1024² of the same mesh files (identical SHA-256). The 1024² runs without the vortex were stopped once for host memory and continued (`autan run --start`), judged against their original run's first residuals. Both sides at the iteration that meets the protocol's criterion; continua from the three finest levels both codes converged, listed in each report (`continuum.levels`); each report also names the SHA-256 of the SU2 study and of every Autan `run.json` and `history.jsonl` it read. `autan-vv su2 compare`; reports: `vv/su2/results/naca0012/autan-880dcce/`.
+
+| Condition (far field) | Code | 1024²: CL | CD | CM | Continuum CL | CD | CM |
+|---|---|---|---|---|---|---|---|
+| M 0.8, α 0° (uniform in both) | Autan | 0 | 0.0083503 | 0 | 0 | 0.0083434 | — |
+| | SU2-JST | 0 | 0.0083293 | 0 | 0 | 0.0083402 | — |
+| M 0.5, α 1.25° (uniform in both) | Autan | 0.179681 | 0.0000189 | −0.0022418 | 0.179770 | +0.13 count | −0.0022623 |
+| | SU2-JST | 0.179750 | −0.0000110 | −0.0022617 | 0.179775 | +0.12 count | −0.0022618 |
+| M 0.8, α 1.25° (uniform in both) | Autan | 0.354966 | 0.0226227 | −0.0388761 | — | 0.0225868 | — |
+| | SU2-JST | 0.352232 | 0.0224593 | −0.0380703 | — | 0.0224642 | — |
+
+- **Forces.** On one problem the two codes meet in the continuum: at M 0.5 to 5 × 10⁻⁶ in CL, 0.01 count in CD and 5 × 10⁻⁷ in CM; at M 0.8, α 0° to 0.03 count in CD. At M 0.8, α 1.25° their CDs are 1.2 counts apart in the continuum and their CLs 0.0027 apart at 1024²; neither CL converges monotonically on these levels (`V0107`, `V0108`), so the CL gap has no continuum value. Level by level the drag differences shrink by about four per refinement where both converge (ΔCD at M 0.5: +27.2, +6.1, +1.3, +0.3 counts from 128² to 1024²); those of CL and CM at M 0.5 shrink by two to three (orders 1.1–1.5).
+- **Far field.** Without the vortex, Autan's continuum CD at M 0.8, α 1.25° falls by 1.7 counts (0.0227597 with it, the gate's value, against 0.0225868) and its CL at 1024² by 0.0028; at M 0.5 its continuum CL falls by 0.00057, to SU2-JST's. Autan's response to the vortex at M 0.8, α 1.25°, 1.7 counts, is of the size of SU2's 2.2-count gap to the paper there, which is consistent with the far-field explanation of phase 1; SU2's own response is not measured (it has no vortex), and without the vortex the two codes still differ by 1.2 counts.
+- **Wall Cp.** Face by face (Autan's face value against the mean of SU2's at the face's nodes), over the body (95 % of the chord, away from the shocks), the largest difference at 1024² is 0.0039 at M 0.5, 0.025 at M 0.8, α 0° and 0.042 at M 0.8, α 1.25° (RMS 0.0006, 0.0013, 0.0025); at M 0.5 it falls by three to four per refinement (0.135, 0.048, 0.014, 0.004 from 128²). The shocks, located at the steepest rise of Cp, lie on the same face or one face apart in both codes: on the upper surface at x = 0.504 (α 0°, from 256²) and 0.646 then 0.640 (α 1.25°, 256² then 512²–1024²), on the lower surface at 0.337–0.340 (α 1.25°, 512²–1024²). Over all faces, wall Cp differs by 0.21–0.51 at every level; at M 0.5, 1024², the eight largest differences are the last faces before the sharp trailing edge, a stagnation point where SU2 has a node and Autan a face beside it.
+- **Against SU2-Roe** the differences are larger and shrink at low order, as SU2-Roe's own convergence does (phase 1): ΔCD at M 0.5 is −18.9, −23.0, −14.7, −8.1 counts from 128² to 1024².
 
 ## Tests
 
