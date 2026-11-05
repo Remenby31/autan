@@ -495,20 +495,13 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
         assert part["partition"].bytes_device == halo_device
         assert part["partition setup"].bytes_host == extraction
     # Building the hierarchy (setup-memory.md): the largest of the line grouping with its votes,
-    # 288 F_i + 284 C + 72 F_b, the coarse-edge build, 69 F_i + 48 F_1 + 296 C + 156 C_1 + 144 F_b,
-    # and the line colouring, 32 C + 32 F_i, on 10 cells, 20 interior and 20 boundary faces.
-    grouping = 288 * 20 + 284 * 10 + 72 * 20
-    assert by_name["multigrid setup"].bytes_host == grouping
+    # 160 F_i + 284 C + 72 F_b, the coarse-edge build, 69 F_i + 48 F_1 + 296 C + 156 C_1 + 144 F_b,
+    # and the line colouring, 32 C + 32 F_i, on 10 cells, 20 interior and 20 boundary faces: the
+    # line grouping on one level, the coarse-edge build once a coarse level of 2 cells and 1 edge
+    # follows.
+    assert by_name["multigrid setup"].bytes_host == 160 * 20 + 284 * 10 + 72 * 20
     setup = {c.name: c for c in deeper.memory.components}["multigrid setup"].bytes_host
-    assert setup == grouping
-    # A first coarse level of 8 cells and 50 edges makes the coarse-edge build the largest.
-    wide: dict[str, Any] = tiny_mesh(20).document()
-    wide["quality"]["multigrid"] = {"cells_by_level": [10, 8], "edges_by_level": [20, 50]}
-    widened = autan.load(write_case(TINY)).plan(
-        autan.MeshInfo.from_document(wide, autan.Location()), device_kind="cpu"
-    )
-    setup = {c.name: c for c in widened.memory.components}["multigrid setup"].bytes_host
-    assert setup == 69 * 20 + 48 * 50 + 296 * 10 + 156 * 8 + 144 * 20
+    assert setup == 69 * 20 + 48 * 1 + 296 * 10 + 156 * 2 + 144 * 20
     # A start reads the previous solution on every rank and takes the rank's share: 8 (C + C_r)
     # bytes per field, the 34 written fields for a continuation, the 6 primitives for a warm one;
     # and its descriptors at their bounds, held from cg_open: run metadata of 64 KiB, also

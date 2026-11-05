@@ -462,7 +462,7 @@ def _agglomeration(mesh: MeshInfo) -> int:
     n1 = hierarchy.cells_by_level[1] if len(hierarchy.cells_by_level) > 1 else 0
     f1 = hierarchy.edges_by_level[1] if len(hierarchy.edges_by_level) > 1 else 0
     b = mesh.counts.faces - f
-    grouping = 288 * f + 284 * n + 72 * b
+    grouping = 160 * f + 284 * n + 72 * b
     coarse_edges = 69 * f + 48 * f1 + 296 * n + 156 * n1 + 144 * b
     colouring = 32 * n + 32 * f
     return max(grouping, coarse_edges, colouring)
