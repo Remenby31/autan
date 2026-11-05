@@ -6,6 +6,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -23,9 +24,35 @@
 
 #ifdef AUTAN_HAVE_CUDA
 #include <cuda_runtime.h>
+
+#include "autan/core/device_memory.hpp"
 #endif
 
 namespace autan_test {
+
+#ifdef AUTAN_HAVE_CUDA
+// Device memory held through the counted allocation path (autan::device_memory), as the code
+// base's allocators record it.
+class DeviceHold {
+ public:
+  DeviceHold() = default;
+  explicit DeviceHold(std::size_t bytes) : bytes_(bytes) {
+    if (cudaMalloc(&p_, bytes) != cudaSuccess) throw std::runtime_error("relaxation: cudaMalloc");
+    autan::device_memory::allocated(bytes);
+  }
+  DeviceHold(const DeviceHold&) = delete;
+  DeviceHold& operator=(const DeviceHold&) = delete;
+  ~DeviceHold() {
+    if (p_ == nullptr) return;
+    static_cast<void>(cudaFree(p_));
+    autan::device_memory::released(bytes_);
+  }
+
+ private:
+  void* p_ = nullptr;
+  std::size_t bytes_ = 0;
+};
+#endif
 
 // Behaviour of the relaxation physics, so that tests can drive every path of
 // the runtime: residual decay factor per iteration, an iteration at which a
@@ -41,6 +68,9 @@ struct RelaxationOptions {
   std::int64_t touch_at = 0;  ///< iteration after which `touch_rank` creates `touch_file`; 0: never
   int touch_rank = 0;
   std::string touch_file{};
+  /// At iteration 1, a non-empty directory at the checkpoint's staging path of every run in this
+  /// runs directory: every checkpoint write then fails (W0714). Empty: none.
+  std::string block_checkpoints_in{};
   std::int64_t log_bytes = 0;  ///< a log event of this many bytes at every step; 0: none
   int pause_ms = 0;
   double pressure_offset = 0.0;  ///< added to every fluid cell's pressure, Pa
@@ -66,6 +96,8 @@ struct RelaxationOptions {
   /// construction on.
   std::int64_t hold_bytes = 0;
   int hold_rank = -1;  ///< the rank that holds them; -1: every rank
+  /// Bytes of device memory the physics holds from its construction on, on a CUDA run.
+  std::int64_t hold_device_bytes = 0;
   /// An equation the flow does not excite: its residual stays at round-off
   /// (1e-15), except from iteration `wake_at` (0: never) to `sleep_at`
   /// (excluded; 0: never), where it is 1e-3.
@@ -101,6 +133,7 @@ struct RelaxationOptions {
     read("AUTAN_TEST_COLOUR_SWEEPS", o.colour_sweeps);
     read("AUTAN_TEST_HOLD_BYTES", o.hold_bytes);
     read("AUTAN_TEST_HOLD_RANK", o.hold_rank);
+    read("AUTAN_TEST_HOLD_DEVICE_BYTES", o.hold_device_bytes);
     read("AUTAN_TEST_EXPECT_RANKS", o.expect_ranks);
     read("AUTAN_TEST_THROW_RANK", o.throw_rank);
     read("AUTAN_TEST_THROW_IN_LOADS", o.throw_in_loads);
@@ -124,6 +157,11 @@ class Relaxation final : public autan::runtime::Physics {
       : context_(context), options_(options) {
     if (options.hold_rank < 0 || options.hold_rank == context.ranks.rank())
       held_.assign(static_cast<std::size_t>(options.hold_bytes), 1);
+#ifdef AUTAN_HAVE_CUDA
+    if (context.stream != nullptr && options.hold_device_bytes > 0)
+      device_held_ =
+          std::make_unique<DeviceHold>(static_cast<std::size_t>(options.hold_device_bytes));
+#endif
     const auto& mesh = context.mesh;
     std::map<std::string, const autan::runtime::CellZoneInput*> zones;
     for (const auto& z : context.input.cell_zones) zones[z.zone] = &z;
@@ -203,6 +241,10 @@ class Relaxation final : public autan::runtime::Physics {
       std::raise(SIGTERM);
     if (iteration == options_.touch_at && options_.touch_rank == context_.ranks.rank())
       std::ofstream(options_.touch_file).put('\n');
+    if (iteration == 1 && !options_.block_checkpoints_in.empty()) {
+      for (const auto& run : std::filesystem::directory_iterator(options_.block_checkpoints_in))
+        std::filesystem::create_directories(run.path() / ".checkpoint.cgns.tmp" / "blocked");
+    }
     if (options_.log_bytes > 0) {
       context_.log.write(
           "info", "solver", "bulk", "",
@@ -226,14 +268,17 @@ class Relaxation final : public autan::runtime::Physics {
     check_ghosts();
     const auto& time = context_.input.time;
     if (time.kind == "unsteady") report.time_step = time.dt.value_or(1e-3);
-    // Cells diverge on every rank that owns one; each rank reports its
-    // least, owned cells being in mesh order.
+    // Cells diverge on every rank that owns one; each rank reports the one of
+    // least mesh index, whatever the order of its cells.
     if (iteration == options_.diverge_at) {
       const auto& mesh = context_.mesh;
+      const auto id = [&](autan::index_t c) {
+        return mesh.cell_global_id()[static_cast<std::size_t>(c)];
+      };
       for (autan::index_t c = 0; c < mesh.n_owned_cells(); ++c) {
-        if (mesh.cell_global_id()[static_cast<std::size_t>(c)] < options_.diverge_cell) continue;
+        if (id(c) < options_.diverge_cell) continue;
         state_[0].values[static_cast<std::size_t>(c)] = std::numeric_limits<double>::quiet_NaN();
-        if (!report.diverged_cell) report.diverged_cell = c;
+        if (!report.diverged_cell || id(c) < id(*report.diverged_cell)) report.diverged_cell = c;
       }
     }
     return report;
@@ -377,52 +422,6 @@ class Relaxation final : public autan::runtime::Physics {
     return 0.0;
   }
 
-  void check_keys() const {
-    const autan::Mesh global = autan::io::read_mesh(context_.input.mesh_path);
-    const auto& mesh = context_.mesh;
-    const auto ids = mesh.cell_global_id();
-    if (context_.face_global_id.size() != static_cast<std::size_t>(mesh.n_faces()) ||
-        context_.face_reversed.size() != context_.face_global_id.size())
-      throw std::runtime_error("relaxation: face keys of another size than the mesh's faces");
-    for (autan::index_t f = 0; f < mesh.n_faces(); ++f) {
-      const auto i = static_cast<std::size_t>(f);
-      const auto g = static_cast<std::size_t>(context_.face_global_id[i]);
-      const bool reversed = context_.face_reversed[i] != 0;
-      const auto owner = ids[static_cast<std::size_t>(mesh.owner()[i])];
-      if (f >= mesh.n_interior_faces()) {
-        if (reversed ||
-            owner != global.cell_global_id()[static_cast<std::size_t>(global.owner()[g])])
-          throw std::runtime_error("relaxation: a boundary face's key does not match");
-        continue;
-      }
-      // A face to a periodic image has a pair's face of zone a for key: its
-      // neighbour is the owner of the matched face of zone b.
-      const auto neighbour = ids[static_cast<std::size_t>(mesh.neighbour()[i])];
-      const auto global_owner =
-          global.cell_global_id()[static_cast<std::size_t>(global.owner()[g])];
-      std::int64_t global_neighbour = -1;
-      if (g < static_cast<std::size_t>(global.n_interior_faces())) {
-        global_neighbour = global.cell_global_id()[static_cast<std::size_t>(global.neighbour()[g])];
-      } else {
-        const auto offsets = global.boundary_zone_offsets();
-        for (std::size_t p = 0; p < global.periodic_pairs().size(); ++p) {
-          const auto first = static_cast<std::size_t>(
-              offsets[static_cast<std::size_t>(global.periodic_pairs()[p].zone_a)]);
-          const auto partners = global.periodic_partners(p);
-          if (g >= first && g < first + partners.size()) {
-            global_neighbour = global.cell_global_id()[static_cast<std::size_t>(
-                global.owner()[static_cast<std::size_t>(partners[g - first])])];
-          }
-        }
-        if (global_neighbour < 0)
-          throw std::runtime_error("relaxation: a periodic face's key is no zone-a face");
-      }
-      if ((reversed ? neighbour : owner) != global_owner ||
-          (reversed ? owner : neighbour) != global_neighbour)
-        throw std::runtime_error("relaxation: an interior face's key does not match");
-    }
-  }
-
   // colour_sweeps symmetric sweeps over the colours, the ghosts exchanged
   // after each colour; the RMS of the field over every rank's cells, exactly.
   double sweep() {
@@ -503,6 +502,74 @@ class Relaxation final : public autan::runtime::Physics {
                             nullptr);
   }
 
+  void check_keys() const {
+    const autan::Mesh global = autan::io::read_mesh(context_.input.mesh_path);
+    const auto& mesh = context_.mesh;
+    const auto ids = mesh.cell_global_id();
+    if (context_.face_global_id.size() != static_cast<std::size_t>(mesh.n_faces()) ||
+        context_.face_reversed.size() != context_.face_global_id.size())
+      throw std::runtime_error("relaxation: face keys of another size than the mesh's faces");
+    // The geometry is the mesh file's, bit for bit: each owned cell's by its
+    // global id, each face between owned cells (or of one, on the boundary)
+    // by its key, the area vector negated if reversed. Faces of a ghost may
+    // sit on a periodic image, translated.
+    const autan::Geometry file = autan::compute_geometry(global);
+    const auto& geometry = context_.geometry;
+    for (autan::index_t c = 0; c < mesh.n_owned_cells(); ++c) {
+      const auto i = static_cast<std::size_t>(c);
+      const auto k = static_cast<std::size_t>(ids[i]);
+      if (geometry.cell_volume[i] != file.cell_volume[k] ||
+          geometry.cell_centroid_x[i] != file.cell_centroid_x[k])
+        throw std::runtime_error("relaxation: a cell's geometry is not the mesh file's");
+    }
+    for (autan::index_t f = 0; f < mesh.n_faces(); ++f) {
+      const auto i = static_cast<std::size_t>(f);
+      const auto g = static_cast<std::size_t>(context_.face_global_id[i]);
+      const bool reversed = context_.face_reversed[i] != 0;
+      const bool owned =
+          mesh.owner()[i] < mesh.n_owned_cells() &&
+          (f >= mesh.n_interior_faces() || mesh.neighbour()[i] < mesh.n_owned_cells());
+      const double sign = reversed ? -1.0 : 1.0;
+      if (owned && (geometry.face_area[i] != file.face_area[g] ||
+                    geometry.face_area_x[i] != sign * file.face_area_x[g] ||
+                    geometry.face_area_z[i] != sign * file.face_area_z[g] ||
+                    geometry.face_centroid_y[i] != file.face_centroid_y[g]))
+        throw std::runtime_error("relaxation: a face's geometry is not the mesh file's");
+      const auto owner = ids[static_cast<std::size_t>(mesh.owner()[i])];
+      if (f >= mesh.n_interior_faces()) {
+        if (reversed ||
+            owner != global.cell_global_id()[static_cast<std::size_t>(global.owner()[g])])
+          throw std::runtime_error("relaxation: a boundary face's key does not match");
+        continue;
+      }
+      // A face to a periodic image has a pair's face of zone a for key: its
+      // neighbour is the owner of the matched face of zone b.
+      const auto neighbour = ids[static_cast<std::size_t>(mesh.neighbour()[i])];
+      const auto global_owner =
+          global.cell_global_id()[static_cast<std::size_t>(global.owner()[g])];
+      std::int64_t global_neighbour = -1;
+      if (g < static_cast<std::size_t>(global.n_interior_faces())) {
+        global_neighbour = global.cell_global_id()[static_cast<std::size_t>(global.neighbour()[g])];
+      } else {
+        const auto offsets = global.boundary_zone_offsets();
+        for (std::size_t p = 0; p < global.periodic_pairs().size(); ++p) {
+          const auto first = static_cast<std::size_t>(
+              offsets[static_cast<std::size_t>(global.periodic_pairs()[p].zone_a)]);
+          const auto partners = global.periodic_partners(p);
+          if (g >= first && g < first + partners.size()) {
+            global_neighbour = global.cell_global_id()[static_cast<std::size_t>(
+                global.owner()[static_cast<std::size_t>(partners[g - first])])];
+          }
+        }
+        if (global_neighbour < 0)
+          throw std::runtime_error("relaxation: a periodic face's key is no zone-a face");
+      }
+      if ((reversed ? neighbour : owner) != global_owner ||
+          (reversed ? owner : neighbour) != global_neighbour)
+        throw std::runtime_error("relaxation: an interior face's key does not match");
+    }
+  }
+
   [[nodiscard]] double scale(std::size_t cell) const {
     return 1.0 + 1e-6 * static_cast<double>(context_.mesh.cell_global_id()[cell]);
   }
@@ -516,6 +583,9 @@ class Relaxation final : public autan::runtime::Physics {
   std::vector<autan::io::Field> mean_;
   double weight_ = 0.0;
   std::vector<char> held_;  // hold_bytes
+#ifdef AUTAN_HAVE_CUDA
+  std::unique_ptr<DeviceHold> device_held_;  // hold_device_bytes
+#endif
 };
 
 // The groups the runtime gives the physics (RelaxationOptions::groups): each

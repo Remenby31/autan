@@ -22,7 +22,8 @@ mesh_sha=$(sha256sum "$dir/$mesh" | cut -d' ' -f1)
 rm -f "$dir/history.csv" "$dir/provenance.json"
 name="autan-su2-$$"
 docker run --rm --name "$name" --user "$(id -u):$(id -g)" -e HOME=/tmp \
-  -e OMP_NUM_THREADS="$threads" --cpus "$threads" --memory "${MEMORY:-6g}" --memory-swap "${MEMORY:-6g}" \
+  -e OMP_NUM_THREADS="$threads" -e OPENBLAS_NUM_THREADS=1 -e MKL_NUM_THREADS=1 \
+  --cpus "$threads" --memory "${MEMORY:-6g}" --memory-swap "${MEMORY:-6g}" \
   -v "$root:/work" -w "/work/$case" "$image" \
   nice -n 10 SU2_CFD -t "$threads" case.cfg >"$dir/log.txt" 2>&1 &
 run=$!

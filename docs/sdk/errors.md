@@ -788,6 +788,14 @@ An equation that was identically zero at iteration 1 (below 1e-12 times the larg
 
 Fix: Check the boundary conditions and the mesh: a symmetric or 2D problem whose symmetry breaks during the run usually means a boundary condition breaks it.
 
+## W0714
+
+**Checkpoint not written** (warning)
+
+Writing the restart checkpoint failed (results.md#checkpointcgns), or removing it once the final solution was written: the run goes on, and the previous checkpoint, if any, stays whole. For failed writes, `data` counts them and gives the first and the last (`failures`, `first_iteration`, `first_time`, `last_iteration`, `last_time`).
+
+Fix: Check the space and permissions of the run directory's file system.
+
 ## W0801
 
 **No NVIDIA GPU found** (warning)
@@ -944,7 +952,7 @@ Fix: Use a policy listed by the generator's --help.
 
 **Differentiation not supported** (error)
 
-A loop with several output datasets is differentiated, or a boundary loop writes face data computed from active data without frozen=True.
+A loop with several output datasets is differentiated, or a face or boundary loop writes face data computed from active data without frozen=True.
 
 Fix: Differentiate loops with a single output dataset; declare boundary-state loops frozen=True to drop their derivatives knowingly.
 

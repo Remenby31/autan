@@ -21,6 +21,7 @@ const run = (
     iterations: 0,
     time: null,
     solution_sha256: "",
+    file: "solution",
     ...start,
   },
   convergence: floor ? { floor } : null,

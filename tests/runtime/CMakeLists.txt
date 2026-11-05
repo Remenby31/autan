@@ -97,7 +97,33 @@ if(AUTAN_ENABLE_CUDA)
     PRIVATE autan::runtime CUDA::cudart Catch2::Catch2WithMain autan_compile_options
   )
   catch_discover_tests(autan_exact_sum_device_tests PROPERTIES LABELS gpu)
+  # The device memory counter through the code base's DeviceArray (#411).
+  add_library(autan_device_memory_device OBJECT device_memory_device.cu)
+  set_target_properties(
+    autan_device_memory_device
+    PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON
+  )
+  target_link_libraries(autan_device_memory_device PRIVATE autan::kernels CUDA::cudart)
+  add_executable(
+    autan_device_memory_tests
+    test_device_memory.cpp
+    $<TARGET_OBJECTS:autan_device_memory_device>
+  )
+  target_include_directories(autan_device_memory_tests PRIVATE ${PROJECT_SOURCE_DIR}/runtime/src)
+  target_link_libraries(
+    autan_device_memory_tests
+    PRIVATE autan::runtime CUDA::cudart Catch2::Catch2WithMain autan_compile_options
+  )
+  catch_discover_tests(autan_device_memory_tests PROPERTIES LABELS gpu)
 endif()
+
+# Every device allocation of the shipped code is counted (#411), in any build.
+add_test(
+  NAME device-allocations-counted
+  COMMAND
+    ${CMAKE_COMMAND} -DROOT=${PROJECT_SOURCE_DIR} -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/device_allocations.cmake
+)
 
 # autan-run as shipped, through its output and exit status: no physics yet.
 set_property(

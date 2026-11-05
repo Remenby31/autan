@@ -37,6 +37,7 @@ struct fp32 {
   using geom = float;
   using geom_value = float;  // Geom data that reach bodies only as values
   using jac = float;
+  using flag = std::uint8_t;
   using param = float;
   using compute = float;
   using accum = float;
@@ -53,6 +54,7 @@ struct fp32_acc64 {
   using geom = df64;
   using geom_value = float;  // Geom data that reach bodies only as values
   using jac = float;
+  using flag = std::uint8_t;
   using param = df64;
   using compute = float;
   using accum = df64;

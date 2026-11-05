@@ -708,6 +708,15 @@ _CODES = [
         "breaks during the run usually means a boundary condition breaks it.",
     ),
     Code(
+        "W0714",
+        "Checkpoint not written",
+        "Writing the restart checkpoint failed (results.md#checkpointcgns), or removing it once "
+        "the final solution was written: the run goes on, and the previous checkpoint, if any, "
+        "stays whole. For failed writes, `data` counts them and gives the first and the last "
+        "(`failures`, `first_iteration`, `first_time`, `last_iteration`, `last_time`).",
+        "Check the space and permissions of the run directory's file system.",
+    ),
+    Code(
         "D0107",
         "Divergence",
         "The solution diverged: a residual or a state became non-finite or non-physical. "
@@ -784,7 +793,7 @@ _CODES = [
     Code(
         "E1012",
         "Differentiation not supported",
-        "A loop with several output datasets is differentiated, or a boundary loop writes face data computed from active data without frozen=True.",
+        "A loop with several output datasets is differentiated, or a face or boundary loop writes face data computed from active data without frozen=True.",
         "Differentiate loops with a single output dataset; declare boundary-state loops frozen=True to drop their derivatives knowingly.",
     ),
     Code(

@@ -250,6 +250,7 @@ class FakeBackend:
             solver=solver,
             precision=spec.physics.precision,
             devices=devices,
+            cell_order="input",
             started=iso(started),
             finished=None,
             iterations=0,
@@ -284,11 +285,20 @@ class FakeBackend:
         end = min(budget, CONVERGED_AT) if steady else budget
         # A started run begins from the state of the previous one, which the synthetic
         # trajectory leaves unchanged.
-        inherited = (
-            {name: Results.open(start.run).field(name) for name in field_names(spec)}
-            if start is not None
-            else None
-        )
+        inherited = None
+        if start is not None:
+            source = Results.open(start.run)
+            if start.info.file == "checkpoint":
+                sha256, read = source.checkpoint().sha256, source.checkpoint_field
+            else:
+                data = (start.run / "solution.cgns").read_bytes()
+                sha256, read = hashlib.sha256(data).hexdigest(), source.field
+            if sha256 != start.info.solution_sha256:
+                message = (
+                    f"the {start.info.file} of {start.run} changed after the input was written"
+                )
+                raise CaseError([diagnostic("E0709", message)])
+            inherited = {name: read(name) for name in field_names(spec)}
         # A continued run goes on counting; its trajectory is that of an uninterrupted run.
         offset = start.info.iterations if start and start.info.mode == "continue" else 0
         cap = offset + self.iterations
