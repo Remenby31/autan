@@ -25,7 +25,9 @@ case ${1:-run} in
       [[ -f /state/$f ]] || { echo "error[RUNNER_NOT_REGISTERED]: /state/$f missing; run deploy.sh register" >&2; exit 1; }
       cp "/state/$f" .
     done
-    exec ./run.sh
+    nice=${AUTAN_RUNNER_NICE:-0}
+    [[ $nice =~ ^([0-9]|1[0-9])$ ]] || { echo "error: AUTAN_RUNNER_NICE is 0 to 19" >&2; exit 2; }
+    exec nice -n "$nice" ./run.sh
     ;;
   *) echo "usage: entrypoint.sh register NAME LABELS URL | run" >&2; exit 2 ;;
 esac

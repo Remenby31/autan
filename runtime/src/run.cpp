@@ -237,17 +237,6 @@ void check_manufactured_depth(const std::string& text) {
 // Set by SIGINT and SIGTERM; the loop finalises the run as stopped.
 volatile std::sig_atomic_t stop_requested = 0;
 
-// The process's resident memory now, in bytes: VmRSS on Linux; 0 elsewhere.
-std::int64_t host_resident_bytes() {
-#if defined(__linux__)
-  std::ifstream status("/proc/self/status");
-  for (std::string line; std::getline(status, line);) {
-    if (line.starts_with("VmRSS:")) return std::stoll(line.substr(6)) * 1024;  // kB
-  }
-#endif
-  return 0;
-}
-
 // The process's resident memory at its peak so far, in bytes: VmHWM on Linux,
 // ru_maxrss elsewhere (bytes on macOS).
 std::int64_t host_peak_bytes() {
@@ -1525,7 +1514,6 @@ class Run final : public Log {
         local_(make_part()) {
     if (p_.input.device_kind == "cuda") {
       gpu_.emplace(comm_.local_rank());
-      host_at_device_start_ = host_resident_bytes();
     }
     ghosts_ = local_ ? comm_.ghost_exchange(*local_) : std::make_unique<NoGhosts>();
     // The physics' cells and faces differ from the mesh's on a partition or
@@ -2099,7 +2087,6 @@ class Run final : public Log {
       const double logged = log_seconds_;
       StepReport report = physics_->step(it);
       solve_seconds_ += seconds_since(stepping) - (log_seconds_ - logged);
-      if (gpu_) (void)gpu_->sample();  // outside the timed step
       report.diverged_cell = first_diverged(report.diverged_cell);
       if (report.residuals.size() != equations.size()) {
         throw std::runtime_error("the physics reported " + std::to_string(report.residuals.size()) +
@@ -2465,28 +2452,25 @@ class Run final : public Log {
   // results.md, run.json `timing`: the process's wall-clock seconds and those
   // of the physics' steps and averaging (the slowest rank's), for this run's
   // iterations; null without any. Collective.
-  // The memory every rank used (#325): its host high-water mark and its
-  // device memory beyond what was free at its start, at their peak and once
-  // the physics was built, in bytes. Collective.
+  // The memory every rank used (#325): its host high-water mark and the
+  // device memory its allocators hold, at their peak and once the physics was
+  // built, in bytes. Collective.
   void log_memory() {
-    if (gpu_) (void)gpu_->sample();
     const auto n = at(comm_.size());
     const auto r = at(comm_.rank());
-    std::vector<ExactSum> slots(5 * n);
-    slots[5 * r].add(static_cast<double>(host_peak_bytes()));
-    slots[5 * r + 1].add(static_cast<double>(gpu_ ? gpu_->peak() : 0));
-    slots[5 * r + 2].add(static_cast<double>(host_after_setup_));
-    slots[5 * r + 3].add(static_cast<double>(device_after_setup_));
-    slots[5 * r + 4].add(static_cast<double>(host_at_device_start_));
+    std::vector<ExactSum> slots(4 * n);
+    slots[4 * r].add(static_cast<double>(host_peak_bytes()));
+    slots[4 * r + 1].add(static_cast<double>(gpu_ ? gpu_->peak() : 0));
+    slots[4 * r + 2].add(static_cast<double>(host_after_setup_));
+    slots[4 * r + 3].add(static_cast<double>(device_after_setup_));
     comm_.sum(slots);
-    Json host = Json::array(), device = Json::array(), at_device_start = Json::array();
+    Json host = Json::array(), device = Json::array();
     std::int64_t host_setup = 0, device_setup = 0;
     for (std::size_t k = 0; k < n; ++k) {
-      host.push_back(static_cast<std::int64_t>(slots[5 * k].value()));
-      device.push_back(static_cast<std::int64_t>(slots[5 * k + 1].value()));
-      host_setup = std::max(host_setup, static_cast<std::int64_t>(slots[5 * k + 2].value()));
-      device_setup = std::max(device_setup, static_cast<std::int64_t>(slots[5 * k + 3].value()));
-      at_device_start.push_back(static_cast<std::int64_t>(slots[5 * k + 4].value()));
+      host.push_back(static_cast<std::int64_t>(slots[4 * k].value()));
+      device.push_back(static_cast<std::int64_t>(slots[4 * k + 1].value()));
+      host_setup = std::max(host_setup, static_cast<std::int64_t>(slots[4 * k + 2].value()));
+      device_setup = std::max(device_setup, static_cast<std::int64_t>(slots[4 * k + 3].value()));
     }
     const auto most = [](const Json& values) {
       std::int64_t m = 0;
@@ -2498,7 +2482,6 @@ class Run final : public Log {
               {"device_peak_bytes", most(device)},
               {"host_peak_bytes_by_rank", host},
               {"device_peak_bytes_by_rank", device},
-              {"host_at_device_start_bytes_by_rank", at_device_start},
               {"after_setup", {{"host", host_setup}, {"device", device_setup}}}}
              .dump());
   }
@@ -2600,9 +2583,8 @@ class Run final : public Log {
   Json info_;
   std::unique_ptr<RunDirectory> dir_;
   std::unique_ptr<Physics> physics_;
-  std::int64_t host_after_setup_ = 0;      // host_peak_bytes() once the physics exists
-  std::int64_t device_after_setup_ = 0;    // the device's sample() then
-  std::int64_t host_at_device_start_ = 0;  // host_resident_bytes() once the CUDA stream exists
+  std::int64_t host_after_setup_ = 0;    // host_peak_bytes() once the physics exists
+  std::int64_t device_after_setup_ = 0;  // the device's sample() then
   bool stopped_by_signal_ = false;
   std::int64_t iteration_ = 0;
   std::vector<double> floor_;  // fp32+acc64 convergence floor per equation; empty: none  // the

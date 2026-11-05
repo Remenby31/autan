@@ -992,7 +992,7 @@ Fix: Use a policy listed by the generator's --help.
 
 **Differentiation not supported** (error)
 
-A loop with several output datasets is differentiated, or a boundary loop writes face data computed from active data without frozen=True.
+A loop with several output datasets is differentiated, or a face or boundary loop writes face data computed from active data without frozen=True.
 
 Fix: Differentiate loops with a single output dataset; declare boundary-state loops frozen=True to drop their derivatives knowingly.
 

@@ -1102,8 +1102,8 @@ TEST_CASE("an equation at the round-off floor does not set the steady CFL number
   // residual sums its n_f = 6 face fluxes, whose order (the cell order) changes it by at most
   // n_f ε Σ|F| (Higham 2002, §4.2), Σ|F| the cell's flux magnitude, which the physics' flux scale
   // Φ_k bounds (case-schema.md#time, computed here from its definition); the history's norm is
-  // an RMS over cells, as Φ_k, so it moves by as much: 2 n_f ε Φ_k with a margin of 2. Measured:
-  // they agree bit for bit; with the exemption disabled they differ by 4e10 times the bound.
+  // an RMS over cells, as Φ_k, so it moves by as much: 2 n_f ε Φ_k with a margin of 2. Measured
+  // at 0.006 of that bound; with the exemption disabled, 3e4 times it.
   const fs::path mesh = data_dir / "mesh" / "ringleb" / "ringleb-n004.msh";
   auto doc = [&](double w) {
     return input("hybrid.solver-input.json", [&](Json& d) {

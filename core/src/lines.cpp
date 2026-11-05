@@ -45,13 +45,13 @@ Lines smoother_lines(const Mesh& mesh, const Geometry& geometry, double ratio) {
   }
   // Each neighbour of a cell with the sum of the couplings of the faces they share, in the order
   // the neighbours first appear.
-  auto couplings = [&](std::size_t c) {
+  const auto couplings = [&](std::size_t c) {
     std::vector<std::pair<std::size_t, double>> out;
     for (auto k = first[c]; k < first[c + 1]; ++k) {
       const std::size_t f = faces[static_cast<std::size_t>(k)];
-      const auto m = static_cast<std::size_t>(static_cast<std::size_t>(owner[f]) == c ? neighbour[f]
-                                                                                      : owner[f]);
-      auto it = std::find_if(out.begin(), out.end(), [&](const auto& p) { return p.first == m; });
+      const auto o = static_cast<std::size_t>(owner[f]);
+      const std::size_t m = o == c ? static_cast<std::size_t>(neighbour[f]) : o;
+      const auto it = std::ranges::find_if(out, [&](const auto& p) { return p.first == m; });
       if (it == out.end()) {
         out.emplace_back(m, weight[f]);
       } else {
@@ -92,12 +92,12 @@ Lines smoother_lines(const Mesh& mesh, const Geometry& geometry, double ratio) {
   for (std::size_t c = 0; c < n; ++c) {
     if (strongest[c] >= ratio * weakest[c]) seeds.push_back(c);
   }
-  std::stable_sort(seeds.begin(), seeds.end(), [&](std::size_t a, std::size_t b) {
+  std::ranges::stable_sort(seeds, [&](std::size_t a, std::size_t b) {
     if (at_boundary[a] != at_boundary[b]) return at_boundary[a] != 0;
     return strongest[a] / weakest[a] > strongest[b] / weakest[b];
   });
   std::vector<char> in_line(n, 0);
-  auto grow = [&](std::size_t start, std::vector<index_t>& out) {
+  const auto grow = [&](std::size_t start, std::vector<index_t>& out) {
     std::size_t cur = start;
     for (;;) {
       std::size_t best = n;
@@ -133,7 +133,7 @@ Lines smoother_lines(const Mesh& mesh, const Geometry& geometry, double ratio) {
     // the same way.
     if (at_boundary[static_cast<std::size_t>(line.front())] == 0 &&
         at_boundary[static_cast<std::size_t>(line.back())] != 0) {
-      std::reverse(line.begin(), line.end());
+      std::ranges::reverse(line);
     }
     lines.cells.insert(lines.cells.end(), line.begin(), line.end());
     lines.offsets.push_back(static_cast<offset_t>(lines.cells.size()));

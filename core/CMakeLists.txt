@@ -10,6 +10,7 @@ add_library(
   src/wall_distance.cpp
   src/periodic.cpp
   src/prisms.cpp
+  src/device_memory.cpp
 )
 add_library(autan::core ALIAS autan_core)
 

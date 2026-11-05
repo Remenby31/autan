@@ -24,9 +24,35 @@
 
 #ifdef AUTAN_HAVE_CUDA
 #include <cuda_runtime.h>
+
+#include "autan/core/device_memory.hpp"
 #endif
 
 namespace autan_test {
+
+#ifdef AUTAN_HAVE_CUDA
+// Device memory held through the counted allocation path (autan::device_memory), as the code
+// base's allocators record it.
+class DeviceHold {
+ public:
+  DeviceHold() = default;
+  explicit DeviceHold(std::size_t bytes) : bytes_(bytes) {
+    if (cudaMalloc(&p_, bytes) != cudaSuccess) throw std::runtime_error("relaxation: cudaMalloc");
+    autan::device_memory::allocated(bytes);
+  }
+  DeviceHold(const DeviceHold&) = delete;
+  DeviceHold& operator=(const DeviceHold&) = delete;
+  ~DeviceHold() {
+    if (p_ == nullptr) return;
+    static_cast<void>(cudaFree(p_));
+    autan::device_memory::released(bytes_);
+  }
+
+ private:
+  void* p_ = nullptr;
+  std::size_t bytes_ = 0;
+};
+#endif
 
 // Behaviour of the relaxation physics, so that tests can drive every path of
 // the runtime: residual decay factor per iteration, an iteration at which a
@@ -70,6 +96,8 @@ struct RelaxationOptions {
   /// construction on.
   std::int64_t hold_bytes = 0;
   int hold_rank = -1;  ///< the rank that holds them; -1: every rank
+  /// Bytes of device memory the physics holds from its construction on, on a CUDA run.
+  std::int64_t hold_device_bytes = 0;
   /// An equation the flow does not excite: its residual stays at round-off
   /// (1e-15), except from iteration `wake_at` (0: never) to `sleep_at`
   /// (excluded; 0: never), where it is 1e-3.
@@ -105,6 +133,7 @@ struct RelaxationOptions {
     read("AUTAN_TEST_COLOUR_SWEEPS", o.colour_sweeps);
     read("AUTAN_TEST_HOLD_BYTES", o.hold_bytes);
     read("AUTAN_TEST_HOLD_RANK", o.hold_rank);
+    read("AUTAN_TEST_HOLD_DEVICE_BYTES", o.hold_device_bytes);
     read("AUTAN_TEST_EXPECT_RANKS", o.expect_ranks);
     read("AUTAN_TEST_THROW_RANK", o.throw_rank);
     read("AUTAN_TEST_THROW_IN_LOADS", o.throw_in_loads);
@@ -137,6 +166,11 @@ class Relaxation final : public autan::runtime::Physics {
       : context_(context), options_(options) {
     if (options.hold_rank < 0 || options.hold_rank == context.ranks.rank())
       held_.assign(static_cast<std::size_t>(options.hold_bytes), 1);
+#ifdef AUTAN_HAVE_CUDA
+    if (context.stream != nullptr && options.hold_device_bytes > 0)
+      device_held_ =
+          std::make_unique<DeviceHold>(static_cast<std::size_t>(options.hold_device_bytes));
+#endif
     const auto& mesh = context.mesh;
     std::map<std::string, const autan::runtime::CellZoneInput*> zones;
     for (const auto& z : context.input.cell_zones) zones[z.zone] = &z;
@@ -558,6 +592,9 @@ class Relaxation final : public autan::runtime::Physics {
   std::vector<autan::io::Field> mean_;
   double weight_ = 0.0;
   std::vector<char> held_;  // hold_bytes
+#ifdef AUTAN_HAVE_CUDA
+  std::unique_ptr<DeviceHold> device_held_;  // hold_device_bytes
+#endif
 };
 
 // The groups the runtime gives the physics (RelaxationOptions::groups): each

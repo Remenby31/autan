@@ -23,6 +23,17 @@ def parse(text: str) -> int | None:
     return int(match[1]) * _UNITS[match[2]] if match else None
 
 
+def total() -> int | None:
+    """MemTotal in bytes, or None if the kernel does not report it."""
+    try:
+        for line in MEMINFO.read_text().splitlines():
+            if line.startswith("MemTotal:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
 def available() -> int | None:
     """MemAvailable in bytes, or None if the kernel does not report it."""
     try:

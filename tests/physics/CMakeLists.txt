@@ -13,6 +13,14 @@ target_compile_definitions(
 target_include_directories(autan_physics_tests PRIVATE ${PROJECT_BINARY_DIR}/physics/generated)
 catch_discover_tests(autan_physics_tests)
 
+# The manufactured-solution study's C ABI, through the shared library euler_mms.py loads.
+add_executable(autan_physics_mms_tests test_block_ilu.cpp)
+target_link_libraries(
+  autan_physics_mms_tests
+  PRIVATE autan_physics_mms Catch2::Catch2WithMain autan_compile_options
+)
+catch_discover_tests(autan_physics_mms_tests)
+
 # The Euler residual on the generated Metal loops against the CPU physics (macOS).
 if(AUTAN_ENABLE_METAL)
   enable_language(OBJCXX)
