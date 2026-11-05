@@ -2648,11 +2648,9 @@ TEST_CASE("Cells renumbered in RCM order give the run of the mesh's order", "[ru
         zones.push_back(zone);
       }
       d["cell_zones"] = zones;
-      d["time"] = {{"kind", "unsteady"},
-                   {"steps", 5},
-                   {"dt", nullptr},
-                   {"cfl", 0.8},
-                   {"average_from", nullptr}};
+      d["time"] = {{"kind", "unsteady"},      {"steps", 5},
+                   {"dt", nullptr},           {"cfl", 0.8},
+                   {"average_from", nullptr}, {"checkpoint", {{"seconds", 1800.0}}}};
     });
     autan::runtime::PhysicsRegistry euler;
     autan::physics::register_euler(euler);

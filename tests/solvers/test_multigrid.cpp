@@ -451,6 +451,32 @@ TEST_CASE("agglomerates are connected, stay in one cell zone and lines join adja
   }
 }
 
+TEST_CASE("each level keeps at most min_coarsening of the finer level's nodes and edges",
+          "[multigrid]") {
+  // The option's contract (agglomeration.hpp). On the reference tetrahedra the first coarsening
+  // keeps 14 % of the nodes but 25.2 % of the edges, so at 0.25 the edge rule is the one that ends
+  // the hierarchy; the attempt it rejects leaves no storage in the coarsest level's maps.
+  const char* file = GENERATE(from_range(meshes));
+  const double ratio = GENERATE(0.8, 0.25);
+  INFO(file << " min_coarsening " << ratio);
+  const auto mesh = autan::io::read_mesh(mesh_dir / file);
+  const auto g = autan::compute_geometry(mesh);
+  autan::solvers::AgglomerationOptions opt;
+  opt.coarsest_nodes = 4;
+  opt.min_coarsening = ratio;
+  const auto levels = autan::solvers::agglomerate(mesh, g, opt);
+  for (std::size_t k = 1; k < levels.size(); ++k) {
+    INFO("level " << k);
+    CHECK(static_cast<double>(levels[k].n_nodes) <=
+          ratio * static_cast<double>(levels[k - 1].n_nodes));
+    CHECK(static_cast<double>(levels[k].owner.size()) <=
+          ratio * static_cast<double>(levels[k - 1].owner.size()));
+  }
+  CHECK(levels.back().coarse_node.capacity() == 0);
+  CHECK(levels.back().coarse_edge.capacity() == 0);
+  CHECK(levels.back().coarse_flipped.capacity() == 0);
+}
+
 TEST_CASE("wall layers form one line per wall cell, kept through the coarse levels",
           "[multigrid]") {
   const Fill fill = GENERATE(Fill::hexa, Fill::prism);
