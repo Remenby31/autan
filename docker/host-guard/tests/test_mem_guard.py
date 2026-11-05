@@ -59,8 +59,8 @@ NAMES = ["autan-noyau-mut1", "autan-noyau-mut2", "autan-noyau-release", "autan-s
          "autan-su2-901598", "autan-mg-vvC", "autan-ns-nssa", "autan-m2-rae2822", "autan-runner", "autan-m2-h1-2048", "autan-m2-h1",
          "autan-runner-proxy", "autan-campaign-c440f", "robostral-api", "excalibur-mcp"]  # fmt: skip
 LEVEL = {"autan-noyau-mut1": 1, "autan-noyau-mut2": 1, "autan-noyau-release": 2,
-         "autan-sdk-build": 2, "autan-su2-901598": 3, "autan-mg-vvC": 4, "autan-ns-nssa": 5,
-         "autan-m2-rae2822": 6, "autan-runner": 7}  # fmt: skip
+         "autan-sdk-build": 2, "autan-su2-901598": 3, "autan-mg-vvC": 4, "autan-m2-rae2822": 5,
+         "autan-ns-nssa": 6, "autan-runner": 7}  # fmt: skip
 WAIT = 0.6  # the tests' --level-wait and --hysteresis, in seconds
 
 
