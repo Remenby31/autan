@@ -4,7 +4,6 @@
 #include <array>
 #include <cmath>
 #include <limits>
-#include <map>
 #include <numeric>
 #include <set>
 #include <stdexcept>
@@ -260,9 +259,11 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
     grouped[s] = 1;
     std::vector<Member> group{{s, false, 0}};
     while (group.size() < opt.max_lines) {
+      using Key = std::pair<int, std::ptrdiff_t>;  // (reversed, shift)
       struct Candidate {
         std::size_t line, touched = 0;
-        std::map<std::pair<int, std::ptrdiff_t>, std::size_t> votes;  // (reversed, shift)
+        std::vector<Key> votes;  // one entry per vote, counted once all are cast
+        std::pair<Key, std::size_t> best{};
       };
       std::vector<Candidate> candidates;
       for (const Member& member : group) {
@@ -284,10 +285,8 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
             const auto p = static_cast<std::ptrdiff_t>(position[m]);
             const auto last = static_cast<std::ptrdiff_t>(line_size(l)) - 1;
             const auto kk = static_cast<std::ptrdiff_t>(k);
-            for (const auto& key : {std::pair<int, std::ptrdiff_t>{0, p - kk},
-                                    std::pair<int, std::ptrdiff_t>{1, last - p - kk}}) {
-              ++it->votes[key];
-            }
+            it->votes.push_back({0, p - kk});
+            it->votes.push_back({1, last - p - kk});
             if (std::find(seen.begin(), seen.end(), l) == seen.end()) {
               seen.push_back(l);
               ++it->touched;
@@ -298,15 +297,25 @@ Graph coarsen(const Graph& g, const AgglomerationOptions& opt, Level& level) {
       if (candidates.empty()) break;
       // The orientation and shift of a candidate: the most layers, then forward, then the
       // smallest shift.
-      auto hypothesis = [](const Candidate& c) {
-        return *std::min_element(c.votes.begin(), c.votes.end(), [](const auto& x, const auto& y) {
-          if (x.second != y.second) return x.second > y.second;
-          if (x.first.first != y.first.first) return x.first.first < y.first.first;
-          const auto ax = x.first.second < 0 ? -x.first.second : x.first.second;
-          const auto ay = y.first.second < 0 ? -y.first.second : y.first.second;
-          return ax != ay ? ax < ay : x.first.second < y.first.second;
-        });
+      auto better = [](const std::pair<Key, std::size_t>& x, const std::pair<Key, std::size_t>& y) {
+        if (x.second != y.second) return x.second > y.second;
+        if (x.first.first != y.first.first) return x.first.first < y.first.first;
+        const auto ax = x.first.second < 0 ? -x.first.second : x.first.second;
+        const auto ay = y.first.second < 0 ? -y.first.second : y.first.second;
+        return ax != ay ? ax < ay : x.first.second < y.first.second;
       };
+      for (Candidate& c : candidates) {
+        std::sort(c.votes.begin(), c.votes.end());
+        for (std::size_t i = 0; i < c.votes.size();) {
+          std::size_t j = i;
+          while (j < c.votes.size() && c.votes[j] == c.votes[i]) ++j;
+          const std::pair<Key, std::size_t> run{c.votes[i], j - i};
+          if (i == 0 || better(run, c.best)) c.best = run;
+          i = j;
+        }
+        c.votes = std::vector<Key>();
+      }
+      auto hypothesis = [](const Candidate& c) { return c.best; };
       const std::size_t origin = line_node(s, 0);
       const auto best = std::min_element(
           candidates.begin(), candidates.end(), [&](const Candidate& x, const Candidate& y) {
@@ -650,10 +659,12 @@ std::vector<Level> agglomerate(const Mesh& mesh, const Geometry& geometry,
   while (g.n > options.coarsest_nodes && static_cast<int>(levels.size()) < options.max_levels) {
     Level& fine = levels.back();
     Graph coarse = coarsen(g, options, fine);
-    if (static_cast<double>(coarse.n) > options.min_coarsening * static_cast<double>(g.n)) {
-      fine.coarse_node.clear();
-      fine.coarse_edge.clear();
-      fine.coarse_flipped.clear();
+    if (static_cast<double>(coarse.n) > options.min_coarsening * static_cast<double>(g.n) ||
+        static_cast<double>(coarse.owner.size()) >
+            options.min_coarsening * static_cast<double>(g.owner.size())) {
+      fine.coarse_node = std::vector<index_t>();
+      fine.coarse_edge = std::vector<index_t>();
+      fine.coarse_flipped = std::vector<std::uint8_t>();
       break;
     }
     g = std::move(coarse);
