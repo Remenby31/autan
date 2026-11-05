@@ -153,6 +153,7 @@ def test_a_run_records_the_groups_file_in_its_identity(
     assert run.mesh.groups_sha256 == SIDECAR_SHA256
     parts = [run.case.sha256, run.mesh.sha256, SIDECAR_SHA256, run.solver.commit]
     parts += [run.precision, run.solver.backend, run.devices.kind, str(run.devices.count)]
+    parts += [run.cell_order]
     assert run.identity == hashlib.sha256("\n".join(parts).encode()).hexdigest()
     assert autan.Results.open(result.path).run == run  # mesh-info.json and run.json agree
 
