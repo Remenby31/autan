@@ -9,8 +9,10 @@ on:
 
 permissions: {}
 
+# A push runs in a group of its own commit: a group holds one pending run, which the next one
+# replaces, so in a group shared by pushes a push to main could get no run at all.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

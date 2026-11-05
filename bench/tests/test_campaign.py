@@ -25,6 +25,16 @@ def load_campaign():
 campaign = load_campaign()
 
 
+@pytest.fixture(autouse=True)
+def host_memory(tmp_path, monkeypatch):
+    """The host's memory account for `start`'s cap check, never this machine's: 128 GiB in all,
+    100 GiB available (autan_memfloor read MEMINFO when the module was loaded)."""
+    path = tmp_path / "host-meminfo"
+    path.write_text(f"MemTotal: {128 << 20} kB\nMemAvailable: {100 << 20} kB\n")
+    monkeypatch.setattr(campaign.memfloor, "MEMINFO", path)
+    return path
+
+
 def test_lock_use_is_read_from_holders_and_waiters(tmp_path):
     lock = tmp_path / "gpu.lock"
     lock.touch()
@@ -388,3 +398,72 @@ def test_an_untimed_hold_s_load_never_ends_a_campaign(paused):
         # Foreign: the campaign gives way after its grace.
         assert ended == campaign.MAX_OTHER_LOAD + 10
         assert campaign.LOAD_GRACE_S <= now <= campaign.LOAD_GRACE_S + 30
+
+
+@pytest.mark.parametrize(("given", "expected"), [([], 48 << 30), (["--memory", "20G"], 20 << 30)])
+def test_a_campaign_is_capped_at_its_declared_memory(tmp_path, monkeypatch, given, expected):
+    # docker is the external boundary: the cap reaches `docker create`, swap included.
+    calls = tmp_path / "calls"
+    fake = tmp_path / "docker"
+    fake.write_text(
+        f"#!/bin/sh\nprintf '%s\\037' \"$@\" >> {calls}; printf '\\036' >> {calls}\n"
+        'case "$1" in inspect) echo "exited 0" ;; esac\n'
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    lock = tmp_path / "gpu.lock"
+    lock.touch()
+    monkeypatch.setenv("AUTAN_GPU_LOCK", str(lock))
+    monkeypatch.setattr(campaign, "LOCK", lock)
+    monkeypatch.setattr(campaign, "STATE", tmp_path / "autan-campaigns")
+    monkeypatch.setattr(campaign, "STATES", tmp_path / "campaigns")
+    argv = ["start", "c4", *given, "--dir", str(tmp_path), "--", "true"]
+    assert campaign.main(argv) == 0
+    records = [r.split("\x1f")[:-1] for r in calls.read_text().split("\x1e")[:-1]]
+    create = next(r for r in records if r[0] == "create")
+    assert create[create.index("--memory") + 1] == f"{expected}b"
+    assert create[create.index("--memory-swap") + 1] == f"{expected}b"
+
+
+def test_a_cap_that_cannot_fit_beside_the_floor_is_refused(tmp_path, monkeypatch):
+    # 128 GiB in all, a 24 GiB floor: a 110 GiB cap could only end in the floor's breach, which
+    # removes every campaign. Refused before docker is asked anything.
+    calls = tmp_path / "calls"
+    fake = tmp_path / "docker"
+    fake.write_text(f'#!/bin/sh\necho "$*" >> {calls}\n')
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    lock = tmp_path / "gpu.lock"
+    lock.touch()
+    monkeypatch.setattr(campaign, "LOCK", lock)
+    monkeypatch.setattr(campaign, "STATE", tmp_path / "autan-campaigns")
+    monkeypatch.setattr(campaign, "STATES", tmp_path / "campaigns")
+    for memory in ("110G", "lots"):
+        with pytest.raises(SystemExit) as stop:
+            campaign.main(["start", "c5", "--memory", memory, "--dir", str(tmp_path), "--", "x"])
+        assert stop.value.code not in (0, None)
+    assert not calls.exists()
+
+
+def test_a_campaign_s_out_of_memory_kills_are_counted_from_its_cgroup(tmp_path):
+    cgroup = tmp_path / "cg"
+    cgroup.mkdir()
+    assert campaign.oom_kills_in(cgroup) == 0  # unreadable: none counted
+    (cgroup / "memory.events").write_text("low 0\nhigh 0\nmax 12\noom 2\noom_kill 2\n")
+    assert campaign.oom_kills_in(cgroup) == 2
+
+
+@pytest.mark.parametrize(("state", "code", "said"), [
+    ("0 false", 0, "campaign ended;"),
+    ("137 true", 1, "killed for exceeding its --memory cap (exit 137)"),
+    ("2 false", 1, "campaign ended with exit 2"),
+])  # fmt: skip
+def test_how_a_campaign_ended_is_logged_and_returned(tmp_path, monkeypatch, state, code, said):
+    fake = tmp_path / "docker"
+    fake.write_text(f"#!/bin/sh\necho '{state}'\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setattr(campaign, "STATE", tmp_path / "autan-campaigns")
+    assert campaign.ended_status("c7", "autan-campaign-c7") == code
+    assert said in (tmp_path / "autan-campaigns" / "c7.log").read_text()

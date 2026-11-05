@@ -102,4 +102,44 @@ class CoarsestSolve {
   std::unique_ptr<Impl> impl_;
 };
 
+/// The line part of the multigrid's smoother on the GPU (docs/design/multigrid-gpu.md#smoother):
+/// the lines of several nodes of one level, factored per Jacobian (block LU along each line) and
+/// relaxed by block-tridiagonal elimination, colour by colour in the host's `line_colours`,
+/// forwards then backwards. Every operation is FP64 in the host multigrid's order, so lines give
+/// the host's bits; the off-diagonal blocks are read as stored (FP32 or FP64) and converted
+/// exactly. Lines of one node are not relaxed here: they belong to the point smoother. Blocks are
+/// placed as in `Galerkin` (diagonal in the level's device numbering, off-diagonal at `slots`);
+/// vectors are in the device numbering, 5 components in structure of arrays.
+class LineSmoother {
+ public:
+  /// Throws std::invalid_argument when `order` is not a permutation of the level's nodes or a
+  /// slot lies outside [0, n_slots).
+  LineSmoother(const Level& level, std::span<const index_t> order, const EdgeSlots& slots,
+               std::size_t n_slots);
+  ~LineSmoother();
+  LineSmoother(LineSmoother&&) noexcept;
+  LineSmoother& operator=(LineSmoother&&) noexcept;
+  LineSmoother(const LineSmoother&) = delete;
+  LineSmoother& operator=(const LineSmoother&) = delete;
+
+  /// Lines of several nodes, and the host's colours (some may hold none of them).
+  [[nodiscard]] std::size_t n_lines() const;
+  [[nodiscard]] std::size_t n_colours() const;
+  /// Factors every line from the operator's blocks; waits for the device. Throws
+  /// std::domain_error on a singular block, as the host does.
+  void factor(const double* diag, const double* off, void* stream = nullptr);
+  void factor(const double* diag, const float* off, void* stream = nullptr);
+  /// `sweeps` symmetric sweeps of the lines on A x = b from x, with the off-diagonal blocks the
+  /// lines were factored from. Throws std::logic_error before `factor`, or with blocks of the
+  /// other type.
+  void sweep(const double* off, const double* b, double* x, int sweeps,
+             void* stream = nullptr) const;
+  void sweep(const float* off, const double* b, double* x, int sweeps,
+             void* stream = nullptr) const;
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
 }  // namespace autan::solvers::gpu

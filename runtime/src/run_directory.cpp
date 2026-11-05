@@ -129,4 +129,21 @@ void RunDirectory::publish_solution() {
   }
 }
 
+fs::path RunDirectory::checkpoint_staging() const { return path_ / ".checkpoint.cgns.tmp"; }
+
+void RunDirectory::publish_checkpoint() {
+  if (std::rename(checkpoint_staging().c_str(), (path_ / "checkpoint.cgns").c_str()) != 0) {
+    fail("publish", path_ / "checkpoint.cgns");
+  }
+}
+
+void RunDirectory::remove_checkpoint() {
+  std::error_code ec;
+  fs::remove(path_ / "checkpoint.cgns", ec);
+  if (ec) {
+    errno = ec.value();
+    fail("remove", path_ / "checkpoint.cgns");
+  }
+}
+
 }  // namespace autan::runtime

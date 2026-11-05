@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # One bisection probe, run in the gpu-bench job on the Spark that detected the regression:
-# builds the loop benchmark of SHA in a separate worktree, checks the machine with STREAM against
-# its baseline, then measures the tracked loops of SHA and gates them, both with bench/ci/gate.sh
-# (one confirmation rerun), exactly as the detection did. Results go to OUT.
+# builds the loop benchmark of SHA in a separate worktree, checks the machine's health with STREAM
+# (every benchmark at least 97 % of its baseline, three tries), then measures the tracked loops of
+# SHA and gates them with bench/ci/gate.sh (one confirmation rerun), as the detection did. Results
+# go to OUT.
 # Usage: bench/ci/measure-point.sh SHA OUT   (from the repository root; meshes/hex-n128.msh and
 #        build/bench/stream present)
 # Exit: 0 the loops pass, 1 confirmed regression, 4 STREAM failed three times (the machine is not
@@ -21,14 +22,16 @@ bench/lock/autan-gpu-lock --untimed -m "gpu-bench: build a bisection probe" -t 6
     -DCMAKE_CUDA_ARCHITECTURES=121 && cmake --build '$tree/build' --target autan_loop_bench
 " >"$out/build.log" 2>&1 || exit 2
 
+# The machine's health, not a regression gate: a 5 % gate passes a machine a few % slow, on which
+# the bandwidth-bound loops read as regressed at every commit (autan-bench health).
 stream=(stream --binary build/bench/stream --out "$out/stream.json")
 healthy=0
 for _ in 1 2 3; do
   "${bench[@]}" "${stream[@]}" || exit 2
-  bench/ci/gate.sh "$out/stream.json" bench/baselines/gb10.json -- "${bench[@]}" "${stream[@]}"
+  "${bench[@]}" health "$out/stream.json" bench/baselines/gb10.json
   case $? in
     0) healthy=1; break ;;
-    1) ;;
+    4) ;;
     *) exit 2 ;;
   esac
 done
