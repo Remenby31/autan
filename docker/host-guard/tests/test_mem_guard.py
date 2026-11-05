@@ -48,7 +48,7 @@ elif a[0] in ("stop", "start"):
         pathlib.Path(after[name][0]).write_text(after[name][1])
     c[name]["status"] = "running" if a[0] == "start" else "exited"
     if a[0] == "stop":
-        c[name]["finished"] = f"t{time.monotonic()}"
+        c[name]["finished"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + f".{time.time_ns() % 10**9:09d}Z"
     state.write_text(json.dumps(c))
 """
 
@@ -278,6 +278,70 @@ def test_memory_falling_during_the_restarts_holds_the_rest_of_the_level(host):
     try:
         assert until(lambda: "the rest of its level wait" in host.log())
         assert len(host.calls("start")) == 1
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def disk_args(path, max_bytes, max_pct=100.0):
+    return ("--disk-path", str(path), "--disk-max-gb", str(max_bytes / 1e9),
+            "--disk-max-pct", str(max_pct), "--disk-every", "0.2")  # fmt: skip
+
+
+def test_a_directory_over_its_size_limit_stops_the_levels_and_holds_the_restarts(host, tmp_path):
+    data = tmp_path / "cfd"
+    data.mkdir()
+    (data / "results").write_bytes(b"x" * 200_000)
+    proc = host.guard(*disk_args(data, 100_000))  # memory plentiful: the disk alone
+    try:
+        assert until(
+            lambda: (
+                {"autan-noyau-mut1", "autan-noyau-mut2"} <= {n for _, _, n in host.calls("stop")}
+            )
+        )
+        assert (host.state / "ALERT").exists()
+        assert "ALERT disk" in host.log()
+        # Nothing restarts while the directory is over 90 % of its limit.
+        time.sleep(3 * WAIT)
+        assert host.calls("start") == []
+        (data / "results").unlink()
+        assert until(lambda: not (host.state / "ALERT").exists())
+        assert until(lambda: len(host.calls("start")) >= 1)
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_90_percent_of_a_limit_alerts_without_stopping(host, tmp_path):
+    data = tmp_path / "cfd"
+    data.mkdir()
+    (data / "results").write_bytes(b"x" * 95_000)
+    assert host.guard(*disk_args(data, 100_000), ticks=20).wait(timeout=30) == 0
+    assert (host.state / "ALERT").exists()
+    assert host.calls("stop") == []
+
+
+def test_a_full_filesystem_stops_the_levels(host, tmp_path):
+    assert host.guard(*disk_args(tmp_path, 10**15, max_pct=1e-9), ticks=3).wait(timeout=30) == 0
+    assert {n for _, _, n in host.calls("stop")} == {"autan-noyau-mut1", "autan-noyau-mut2"}
+
+
+def test_a_stop_whose_time_was_unread_is_restarted_only_if_nobody_stopped_it_since(host):
+    # Docker does not answer the three inspections after each stop of level 1: the stop times
+    # stay unread. Then mut2 is started and stopped again by someone else, later.
+    (host.bin / "fail-inspect").write_text("6")
+    host.free(25)
+    assert host.guard(ticks=3).wait(timeout=60) == 0
+    assert {n for _, _, n in host.calls("stop")} == {"autan-noyau-mut1", "autan-noyau-mut2"}
+    c = json.loads(host.containers.read_text())
+    later = time.gmtime(time.time() + 100)
+    c["autan-noyau-mut2"]["finished"] = time.strftime("%Y-%m-%dT%H:%M:%S", later) + ".5Z"
+    host.containers.write_text(json.dumps(c))
+    host.free(45)
+    proc = host.guard()
+    try:
+        assert until(lambda: "LEFT autan-noyau-mut2" in host.log())
+        assert until(lambda: [n for _, _, n in host.calls("start")] == ["autan-noyau-mut1"])
     finally:
         proc.kill()
         proc.wait()

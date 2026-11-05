@@ -22,6 +22,11 @@ stopped again by someone else meanwhile is left alone; one docker could not repo
 A container whose stop fails is passed over for 10 minutes, so the next levels still go; memory
 is read again before each restart, and the rest of a level waits if it has fallen. --dry-run logs
 every decision and acts on none.
+
+With --disk-path, a disk limit acts the same way: the directory's size (du, every 10 minutes, at
+nice 19) above --disk-max-gb, or its filesystem fuller than --disk-max-pct, stops the levels as
+low memory does. From 90 % of either limit an ALERT line goes to the log, at most once an hour,
+and DIR/ALERT says why until the disk is back under 90 %; nothing restarts before then.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ import argparse
 import datetime as dt
 import fnmatch
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -102,7 +108,9 @@ def inspect(cid: str) -> tuple[str, str] | None:
     parts = out.split()
     if status == 0 and len(parts) == 2:
         return parts[0], parts[1]
-    if status not in (124, 127) and "no such" in out.lower():
+    if status not in (124, 127) and (
+        "no such object" in out.lower() or "no such container" in out.lower()
+    ):
         return "gone", ""
     return None
 
@@ -111,9 +119,11 @@ def stamp_of(finished: str) -> float | None:
     """docker's FinishedAt (RFC 3339, nanoseconds, UTC) in seconds since the epoch."""
     try:
         moment = dt.datetime.strptime(finished[:19], "%Y-%m-%dT%H:%M:%S")
+        fraction = finished[19:].rstrip("Z")
+        seconds = float("0" + fraction) if fraction.startswith(".") else 0.0
     except ValueError:
         return None
-    return moment.replace(tzinfo=dt.UTC).timestamp()
+    return moment.replace(tzinfo=dt.UTC).timestamp() + seconds
 
 
 def peak(cid: str, cgroups: tuple[Path, ...]) -> int | None:
@@ -125,10 +135,62 @@ def peak(cid: str, cgroups: tuple[Path, ...]) -> int | None:
     return None
 
 
+class Disk:
+    """A directory's size (du, in a thread of its own: a large tree takes time) and its
+    filesystem's fill (statvfs, at every reading), against their limits."""
+
+    def __init__(self, path: Path, max_bytes: int, max_pct: float, every_s: float) -> None:
+        self.path, self.max_bytes, self.max_pct, self.every_s = path, max_bytes, max_pct, every_s
+        self.size: int | None = None
+        self.measured = float("-inf")
+        self.thread: threading.Thread | None = None
+
+    def measure(self) -> None:
+        try:
+            out = subprocess.run(["nice", "-n", "19", "du", "-sb", str(self.path)],
+                                 capture_output=True, text=True, timeout=1800, check=False)  # fmt: skip
+            self.size = int(out.stdout.split()[0])
+        except (subprocess.SubprocessError, OSError, ValueError, IndexError):
+            pass  # the last size stands until the next measurement
+
+    def fill(self) -> float | None:
+        try:
+            st = os.statvfs(self.path)
+        except OSError:
+            return None
+        used = (st.f_blocks - st.f_bfree) * st.f_frsize
+        return 100.0 * used / (used + st.f_bavail * st.f_frsize) if used or st.f_bavail else None
+
+    def check(self, now: float) -> tuple[str | None, str | None]:
+        """(over, warning): why a limit is passed, or 90 % of it reached; None when not."""
+        if now - self.measured >= self.every_s and not (self.thread and self.thread.is_alive()):
+            self.measured = now
+            self.thread = threading.Thread(target=self.measure, daemon=True)
+            self.thread.start()
+        over, warning = [], []
+        pct = self.fill()
+        if pct is not None:
+            if pct > self.max_pct:
+                over.append(f"filesystem {pct:.0f} % full, above {self.max_pct:.0f} %")
+            elif pct > 0.9 * self.max_pct:
+                warning.append(f"filesystem {pct:.0f} % full, limit {self.max_pct:.0f} %")
+        if self.size is not None:
+            if self.size > self.max_bytes:
+                over.append(
+                    f"{self.path} {self.size / 1e9:.1f} GB, above {self.max_bytes / 1e9:.0f} GB"
+                )
+            elif self.size > 0.9 * self.max_bytes:
+                warning.append(
+                    f"{self.path} {self.size / 1e9:.1f} GB, limit {self.max_bytes / 1e9:.0f} GB"
+                )
+        return "; ".join(over) or None, "; ".join(over + warning) or None
+
+
 class Guard:
     def __init__(self, state_dir: Path, *, dry_run: bool, meminfo: Path, cgroups: tuple[Path, ...],
                  low: int, high: int, level_wait_s: float, hysteresis_s: float,
-                 stop_timeout_s: int, clock=time.monotonic) -> None:  # fmt: skip
+                 stop_timeout_s: int, disk: Disk | None = None,
+                 clock=time.monotonic) -> None:  # fmt: skip
         self.dir, self.dry_run, self.meminfo, self.cgroups = state_dir, dry_run, meminfo, cgroups
         self.low, self.high = low, high
         self.level_wait_s, self.hysteresis_s, self.stop_timeout_s = (
@@ -137,6 +199,10 @@ class Guard:
             stop_timeout_s,
         )
         self.clock = clock
+        self.disk = disk
+        self.alerted = float("-inf")
+        self.restarting: threading.Thread | None = None
+        self.restarted = float("-inf")
         self.state = state_dir / "stopped.json"
         # [{"level", "id", "name", "finished", "attempts"}], the last stopped last.
         self.stopped: list[dict] = json.loads(self.state.read_text()) if self.state.exists() else []
@@ -160,40 +226,60 @@ class Guard:
 
     def tick(self) -> None:
         self.stopping = [t for t in self.stopping if t.is_alive()]
+        restarting = self.restarting is not None and self.restarting.is_alive()
         free = available(self.meminfo)
         now = self.clock()
-        if free is None or free < self.low:
+        disk_over, disk_warning = self.disk.check(now) if self.disk else (None, None)
+        self.alert(disk_warning, now)
+        if free is None or free < self.low or disk_over:
             self.above_since = None
             if now - self.last_stop >= self.level_wait_s:
-                self.stop_next(free, now)
-        elif free > self.high:
+                reason = f"disk: {disk_over}" if disk_over and not (free is None or free < self.low) else (
+                    f"MemAvailable {gib(free)}, below {gib(self.low)}")  # fmt: skip
+                self.stop_next(reason, now)
+        elif free > self.high and not disk_warning:
             if self.above_since is None:
                 self.above_since = now
             with self.lock:
                 pending = bool(self.stopped)
-            if pending and not self.stopping and now - self.above_since >= self.hysteresis_s:
-                self.start_last()
-                self.above_since = self.clock()  # the next level waits its own full 120 s
+            # A restart runs beside the guard, which keeps reading memory; the next level waits a
+            # full hysteresis after it has ended.
+            settled = now - max(self.above_since, self.restarted) >= self.hysteresis_s
+            if pending and not self.stopping and not restarting and settled:
+                self.restarting = threading.Thread(target=self.start_last, daemon=True)
+                self.restarting.start()
         else:
             self.above_since = None
         if self.dry_run:
             self.log(f"MemAvailable {gib(free)}")
 
-    def stop_next(self, free: int | None, now: float) -> None:
+    def alert(self, warning: str | None, now: float) -> None:
+        flag = self.dir / "ALERT"
+        if warning is None:
+            if flag.exists():
+                flag.unlink()
+                self.log("disk back under 90 % of its limits")
+            return
+        flag.write_text(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {warning}\n")
+        if now - self.alerted >= 3600:
+            self.log(f"ALERT disk: {warning}")
+            self.alerted = now
+
+    def stop_next(self, reason: str, now: float) -> None:
         with self.lock:
             passed = {c for c, t in self.unstoppable.items() if now - t < UNSTOPPABLE_S}
         live = [(level_of(name), cid, name) for cid, name in running() if cid not in passed]
         live = [entry for entry in live if entry[0] is not None]
         if not live:
             if now - self.said_nothing_left >= 600:
-                self.log(f"MemAvailable {gib(free)}, below {gib(self.low)}: nothing left to stop")
+                self.log(f"{reason}: nothing left to stop")
                 self.said_nothing_left = now
             return
         level = min(entry[0] for entry in live)
         self.last_stop = now
         for _, cid, name in sorted(e for e in live if e[0] == level):
-            self.log(f"STOP level {level + 1} {name}: MemAvailable {gib(free)}, below "
-                     f"{gib(self.low)}; its memory peak {gib(peak(cid, self.cgroups))}")  # fmt: skip
+            self.log(f"STOP level {level + 1} {name}: {reason}; its memory peak "
+                     f"{gib(peak(cid, self.cgroups))}")  # fmt: skip
             if not self.dry_run:
                 thread = threading.Thread(
                     target=self.stop_one, args=(level, cid, name), daemon=True
@@ -219,7 +305,7 @@ class Guard:
                 break
             time.sleep(2)
         if state is None:
-            finished = None  # stopped by this call; its ID alone identifies it at the restart
+            finished = None  # the restart then checks docker's stop time against `after`
             self.log(f"stopped {name}, but docker did not report its stop time")
         elif state[0] != "exited":
             self.log(
@@ -234,10 +320,16 @@ class Guard:
                 return
         with self.lock:
             self.stopped.append({"level": level, "id": cid, "name": name, "finished": finished,
-                                 "attempts": 0})  # fmt: skip
+                                 "stopped_by": after, "attempts": 0})  # fmt: skip
             self.save()
 
     def start_last(self) -> None:
+        try:
+            self.restart_level()
+        finally:
+            self.restarted = self.clock()
+
+    def restart_level(self) -> None:
         with self.lock:
             level = self.stopped[-1]["level"]
             batch = [entry for entry in self.stopped if entry["level"] == level]
@@ -248,7 +340,15 @@ class Guard:
                 kept.append(entry)
                 self.log(f"docker did not answer for {name}: retried at the next turn")
                 continue
-            cycled = entry["finished"] is not None and state[1] != entry["finished"]
+            # Ours only if docker's stop is the guard's own: the time it recorded at the stop, or,
+            # when that was unread, a stop no later than the guard's own call.
+            moment = stamp_of(state[1])
+            if entry["finished"] is not None:
+                cycled = state[1] != entry["finished"]
+            elif moment is not None:
+                cycled = moment > entry.get("stopped_by", 0.0) + 1
+            else:
+                cycled = True  # nothing tells the guard's stop from someone else's
             if state[0] != "exited" or cycled:
                 self.log(
                     f"LEFT {name}: removed, started or stopped again since the guard stopped it"
@@ -281,7 +381,8 @@ class Guard:
         if self.dry_run:
             return
         with self.lock:
-            self.stopped = [e for e in self.stopped if e not in batch] + kept
+            # In place: a level stopped meanwhile stays the last.
+            self.stopped = [e for e in self.stopped if e not in batch or e in kept]
             self.save()
 
 
@@ -297,6 +398,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stop-timeout", type=int, default=60)
     parser.add_argument("--meminfo", type=Path, default=Path("/proc/meminfo"))
     parser.add_argument("--cgroup-root", type=Path, default=Path("/sys/fs/cgroup"))
+    parser.add_argument(
+        "--disk-path", type=Path, default=None, help="the directory whose disk use is limited"
+    )
+    parser.add_argument("--disk-max-gb", type=float, default=500.0)
+    parser.add_argument("--disk-max-pct", type=float, default=80.0)
+    parser.add_argument("--disk-every", type=float, default=600.0, help="seconds between two du")
     parser.add_argument("--ticks", type=int, default=0, help="stop after this many (0: never)")
     args = parser.parse_args(argv)
     args.state_dir.mkdir(parents=True, exist_ok=True)
@@ -304,7 +411,9 @@ def main(argv: list[str] | None = None) -> int:
     guard = Guard(args.state_dir, dry_run=args.dry_run, meminfo=args.meminfo, cgroups=cgroups,
                   low=int(args.low_gib * GIB), high=int(args.high_gib * GIB),
                   level_wait_s=args.level_wait, hysteresis_s=args.hysteresis,
-                  stop_timeout_s=args.stop_timeout)  # fmt: skip
+                  stop_timeout_s=args.stop_timeout,
+                  disk=args.disk_path and Disk(args.disk_path, int(args.disk_max_gb * 1e9),
+                                               args.disk_max_pct, args.disk_every))  # fmt: skip
     guard.log(f"started: floor {gib(guard.low)}, restart above {gib(guard.high)}; "
               f"{len(guard.stopped)} container(s) stopped by an earlier guard")  # fmt: skip
     tick = 0
@@ -312,8 +421,9 @@ def main(argv: list[str] | None = None) -> int:
         guard.tick()
         tick += 1
         time.sleep(args.interval)
-    for thread in guard.stopping:
-        thread.join()
+    for thread in [*guard.stopping, guard.restarting]:
+        if thread is not None:
+            thread.join()
     return 0
 
 
