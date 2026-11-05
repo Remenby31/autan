@@ -19,17 +19,26 @@ def run_hook(
     hook = tmp_path / "job-started.sh"
     hook.write_text(HOOK.read_text())
     (tmp_path / "repository").write_text(REPO + "\n")
+    smi = beside.pop("nvidia_smi", HEALTHY_SMI)
     for name, text in beside.items():
         (tmp_path / name.replace("_", "-")).write_text(text)
+    # nvidia-smi at the boundary, healthy unless a test says otherwise: never this machine's.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    (bin_dir / "nvidia-smi").write_text(smi)
+    (bin_dir / "nvidia-smi").chmod(0o755)
     path = tmp_path / "event.json"
     path.write_text(json.dumps(payload))
     env = {
-        "PATH": os.environ["PATH"],
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "GITHUB_REPOSITORY": repository,
         "GITHUB_EVENT_NAME": event,
         "GITHUB_EVENT_PATH": str(path),
     }
     return subprocess.run(["bash", str(hook)], check=False, env=env, capture_output=True, text=True)
+
+
+HEALTHY_SMI = "#!/bin/sh\necho 'GPU 0: NVIDIA GB10'\n"
 
 
 def pull_request(head: str) -> dict:
@@ -121,15 +130,14 @@ def test_no_floor_no_wait(tmp_path):
     assert run_hook(tmp_path, "push", PUSH, meminfo=meminfo(1)).returncode == 0
 
 
-@pytest.mark.parametrize(("works", "accepted"), [(True, True), (False, False)])
-def test_a_runner_that_lost_its_gpu_refuses_the_job(tmp_path, monkeypatch, works, accepted):
-    # nvidia-smi at the boundary: as it answers in a container whose device rules a host
-    # daemon-reload revoked ("Failed to initialize NVML: Unknown Error"), or as it answers normally.
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    smi = bin_dir / "nvidia-smi"
-    smi.write_text("#!/bin/sh\necho 'GPU 0: NVIDIA GB10'\n" if works else
-                   "#!/bin/sh\necho 'Failed to initialize NVML: Unknown Error'\nexit 255\n")  # fmt: skip
-    smi.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
-    assert (run_hook(tmp_path, "push", PUSH).returncode == 0) == accepted
+@pytest.mark.parametrize("smi", [
+    # As nvidia-smi answers in a container whose device rules a host daemon-reload revoked.
+    "#!/bin/sh\necho 'Failed to initialize NVML: Unknown Error'\nexit 255\n",
+    # As it hangs on a wedged driver.
+    "#!/bin/sh\nsleep 60\n",
+])  # fmt: skip
+def test_a_runner_that_lost_its_gpu_refuses_the_job(tmp_path, smi):
+    start = time.monotonic()
+    out = run_hook(tmp_path, "push", PUSH, nvidia_smi=smi, gpu_probe_s="1\n")
+    assert out.returncode != 0
+    assert time.monotonic() - start < 15

@@ -49,9 +49,13 @@ esac
 
 # The GPU, before anything else of the job: a runner whose container lost it (a host
 # daemon-reload revokes its devices) refuses every job with one clear reason instead of failing
-# them deep inside. Restarting autan-runner gives it back.
-if command -v nvidia-smi > /dev/null && ! nvidia-smi -L > /dev/null 2>&1; then
-  deny "RUNNER LOST THE GPU (nvidia-smi fails in autan-runner): restart it with deploy.sh start"
+# them deep inside. A probe that hangs is a lost GPU too: bounded at 20 s (gpu-probe-s beside
+# the hook overrides it, for its tests).
+here=$(dirname "${BASH_SOURCE[0]}")
+probe_s=$(cat "$here/gpu-probe-s" 2>/dev/null || echo 20)
+[[ $probe_s =~ ^[0-9]{1,3}$ ]] || deny "bad GPU probe setting"
+if command -v nvidia-smi > /dev/null && ! timeout -k 5 "$probe_s" nvidia-smi -L > /dev/null 2>&1; then
+  deny "RUNNER LOST THE GPU (nvidia-smi fails or hangs in this runner's container): restart this runner as docs/infra/runners.md says for its host"
 fi
 
 # Host memory, on a Spark shared with other teams: the job starts only once the host's available
@@ -59,7 +63,6 @@ fi
 # at most 15 minutes (admit-wait-s overrides it), then is refused before its first step: the host
 # is busy, not the change at fault. GB10's GPU allocates from host memory, so this also protects
 # the GPU's other tenants. A meminfo file beside the hook replaces /proc/meminfo, for its tests.
-here=$(dirname "${BASH_SOURCE[0]}")
 min_gib=$(cat "$here/min-available-gib" 2>/dev/null || echo 0)
 wait_s=$(cat "$here/admit-wait-s" 2>/dev/null || echo 900)
 [[ $min_gib =~ ^[0-9]{1,3}$ && $wait_s =~ ^[0-9]{1,5}$ ]] || deny "bad memory admission settings"
