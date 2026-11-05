@@ -87,8 +87,16 @@ prepare() {
 }
 
 placement=(${cpuset:+--cpuset-cpus "$cpuset"})
+# The GPU's device nodes, explicitly: rules given with --device survive a daemon-reload of the
+# host's systemd, which otherwise revokes a running container's GPU ("Failed to initialize NVML:
+# Unknown Error"; NVIDIA container toolkit, systemd cgroup driver).
+devices=()
+for node in /dev/nvidia0 /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia-modeset; do
+  [[ -e $node ]] && devices+=(--device "$node")
+done
 runner_args=(
   --gpus all
+  ${devices[@]+"${devices[@]}"}
   --network "$internal_net"
   --cap-drop ALL
   --security-opt no-new-privileges

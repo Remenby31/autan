@@ -119,3 +119,17 @@ def test_a_fork_is_refused_without_waiting_for_memory(tmp_path):
 
 def test_no_floor_no_wait(tmp_path):
     assert run_hook(tmp_path, "push", PUSH, meminfo=meminfo(1)).returncode == 0
+
+
+@pytest.mark.parametrize(("works", "accepted"), [(True, True), (False, False)])
+def test_a_runner_that_lost_its_gpu_refuses_the_job(tmp_path, monkeypatch, works, accepted):
+    # nvidia-smi at the boundary: as it answers in a container whose device rules a host
+    # daemon-reload revoked ("Failed to initialize NVML: Unknown Error"), or as it answers normally.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    smi = bin_dir / "nvidia-smi"
+    smi.write_text("#!/bin/sh\necho 'GPU 0: NVIDIA GB10'\n" if works else
+                   "#!/bin/sh\necho 'Failed to initialize NVML: Unknown Error'\nexit 255\n")  # fmt: skip
+    smi.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    assert (run_hook(tmp_path, "push", PUSH).returncode == 0) == accepted

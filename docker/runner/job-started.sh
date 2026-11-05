@@ -47,6 +47,13 @@ case $event in
   *) deny "event '$event' is not allowed on GPU runners" ;;
 esac
 
+# The GPU, before anything else of the job: a runner whose container lost it (a host
+# daemon-reload revokes its devices) refuses every job with one clear reason instead of failing
+# them deep inside. Restarting autan-runner gives it back.
+if command -v nvidia-smi > /dev/null && ! nvidia-smi -L > /dev/null 2>&1; then
+  deny "RUNNER LOST THE GPU (nvidia-smi fails in autan-runner): restart it with deploy.sh start"
+fi
+
 # Host memory, on a Spark shared with other teams: the job starts only once the host's available
 # memory reaches the floor in the root-owned file min-available-gib (0 or absent: none). It waits
 # at most 15 minutes (admit-wait-s overrides it), then is refused before its first step: the host
