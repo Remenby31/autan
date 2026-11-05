@@ -16,11 +16,10 @@ on:
 
 permissions: {}
 
-# A new push to a pull request cancels its older run. A push to main runs in a group of its own
-# commit, so each merged commit is measured: a group holds one pending run, which the next one
-# replaces, even a push whose jobs are skipped.
+# A new push to a pull request cancels its older run. Runs on main queue instead: each one measures
+# a merged commit, and a later push, even one whose jobs are skipped, must not cancel it.
 concurrency:
-  group: gpu-bench-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  group: gpu-bench-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
