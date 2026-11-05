@@ -680,3 +680,86 @@ def test_wall_cp_is_compared_face_by_face(tmp_path: Path) -> None:
     assert moved["shock_upper"]["su2"] > moved["shock_upper"]["autan"]
     assert moved["all"]["max_abs"] == pytest.approx(0.5, abs=1e-9)
     assert moved["outside_shocks"]["max_abs"] < 1e-9
+
+
+def _plot3d_2d(path: Path, x: np.ndarray, y: np.ndarray) -> None:
+    """A formatted single-block 2D PLOT3D file in TMR's layout: block count, dimensions, then all
+    x and all y with i fastest."""
+    jd, id_ = x.shape
+    values = " ".join(f"{v:.17g}" for v in np.concatenate([x.ravel(), y.ravel()]))
+    path.write_text(f"1\n{id_} {jd}\n{values}\n")
+
+
+def test_flat_plate_grid_converts_with_the_tmr_boundaries(tmp_path: Path) -> None:
+    from autan_vv.su2 import flatplate  # noqa: PLC0415
+
+    # A 2DZP-like grid: x from -1/3 to 2 with the plate from x = 0, y from 0 up to 1, stretched.
+    xs = np.array([-1.0 / 3.0, -0.1, 0.0, 0.5, 1.0, 1.5, 2.0])
+    ys = np.array([0.0, 0.01, 0.1, 0.4, 1.0])
+    x, y = np.meshgrid(xs, ys)
+    grid = tmp_path / "plate.p2dfmt"
+    _plot3d_2d(grid, x, y)
+    record = flatplate.convert(grid, tmp_path / "plate.su2")
+    dim, elements, points, markers = _read_su2_mesh(tmp_path / "plate.su2")
+    assert dim == 2
+    assert (record.idim, record.jdim) == (7, 5)
+    assert record.file_sha256 == hashlib.sha256((tmp_path / "plate.su2").read_bytes()).hexdigest()
+    assert len(elements) == 6 * 4
+    areas = np.array([_shoelace(points[q, :2]) for q in elements[:, 1:5]])
+    assert np.all(areas > 0.0)
+    assert areas.sum() == pytest.approx((2.0 + 1.0 / 3.0) * 1.0, rel=1e-14)
+
+    def nodes(name: str) -> np.ndarray:
+        return points[np.unique(markers[name][:, 1:]), :2]
+
+    assert {k: len(v) for k, v in markers.items()} == {
+        "inlet": 4, "outlet": 4, "farfield": 6, "symmetry": 2, "wall": 4
+    }  # fmt: skip
+    assert np.all(nodes("wall")[:, 1] == 0.0)
+    assert (nodes("wall")[:, 0].min(), nodes("wall")[:, 0].max()) == (0.0, 2.0)
+    assert np.all(nodes("symmetry")[:, 0] <= 0.0)
+    assert np.all(nodes("inlet")[:, 0] == -1.0 / 3.0)
+    assert np.all(nodes("outlet")[:, 0] == 2.0)
+    assert np.all(nodes("farfield")[:, 1] == 1.0)
+    # Every boundary edge keeps the domain on its left, as in its counterclockwise quadrangle.
+    directed = {(int(q[k]), int(q[(k + 1) % 4])) for q in elements[:, 1:5] for k in range(4)}
+    for marker in markers.values():
+        assert all((int(a), int(b)) in directed for _, a, b in marker)
+    # A grid whose plate does not reach x = 2 is not the 2DZP case.
+    _plot3d_2d(grid, x * 0.9, y)
+    with pytest.raises(VVError) as err:
+        flatplate.convert(grid, tmp_path / "short.su2")
+    assert err.value.code == "V0902"
+
+
+def test_flat_plate_configuration_and_skin_friction(tmp_path: Path) -> None:
+    from autan_vv.su2 import flatplate  # noqa: PLC0415
+
+    published = (
+        "% published\nSOLVER= RANS\nKIND_TURB_MODEL= SA\nMACH_NUMBER= 0.2\n"
+        "MARKER_HEATFLUX= ( wall, 0.0 )\nMARKER_INLET= ( inlet, 302.4, 118309.784, 1.0, 0.0, 0.0 )\n"
+        "MARKER_OUTLET= ( outlet, 115056.0, farfield, 115056.0 )\nMARKER_SYM= ( symmetry )\n"
+        "CFL_NUMBER= 1000.0\nMESH_FILENAME= theirs.su2\nITER= 1000\n"
+    )
+    before = config.options(published)
+    after = config.options(flatplate.configure(published, "plate.su2"))
+    may_change = {"MESH_FILENAME", "MESH_FORMAT", "ITER", "CONV_FIELD", "CONV_RESIDUAL_MINVAL",
+                  "HISTORY_OUTPUT", "TABULAR_FORMAT", "CONV_FILENAME", "OUTPUT_FILES",
+                  "OUTPUT_WRT_FREQ"}  # fmt: skip
+    assert {k: v for k, v in before.items() if k not in may_change} == {
+        k: v for k, v in after.items() if k in before and k not in may_change
+    }
+    assert after["MESH_FILENAME"] == "plate.su2"
+    assert "REL_RMS_NU_TILDE" in after["CONV_FIELD"]
+    with pytest.raises(VVError) as err:
+        flatplate.configure(published.replace("( symmetry )", "( bottom )"), "plate.su2")
+    assert err.value.code == "V0903"
+    # cf at the TMR station, linear between the wall nodes around it.
+    surface = tmp_path / "surface.csv"
+    xs = np.linspace(0.0, 2.0, 9)
+    rows = ['"PointID","x","y","Skin_Friction_Coefficient_x"']
+    rows += [f"{k}, {xv!r}, 0.0, {0.004 - 0.001 * xv!r}" for k, xv in enumerate(xs[::-1])]
+    surface.write_text("\n".join(rows) + "\n")
+    assert flatplate.skin_friction(surface) == pytest.approx(
+        0.004 - 0.001 * flatplate.CF_STATION, rel=1e-14
+    )
