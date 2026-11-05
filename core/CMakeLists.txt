@@ -4,11 +4,13 @@ add_library(
   src/mesh.cpp
   src/cellwise.cpp
   src/geometry.cpp
+  src/lines.cpp
   src/quality.cpp
   src/renumber.cpp
   src/wall_distance.cpp
   src/periodic.cpp
   src/prisms.cpp
+  src/device_memory.cpp
 )
 add_library(autan::core ALIAS autan_core)
 

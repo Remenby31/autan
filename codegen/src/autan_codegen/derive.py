@@ -17,7 +17,7 @@ from autan_codegen.ad import adjoint, tangent
 from autan_codegen.errors import Code, CodegenError
 from autan_codegen.frontend import Signature
 from autan_codegen.ir import Function, Instr, dce
-from autan_codegen.model import LoopModel, Module
+from autan_codegen.model import FACE_WRITES, LoopModel, Module
 
 # Keyed by the dataset itself, weakly: an id() key outlives its dataset and can be reused by
 # another one when one process generates several modules.
@@ -252,7 +252,7 @@ def derive(m: Module) -> None:
                 Code.AD_UNSUPPORTED,
                 f"{lm.name}: per-entry outputs and compute='accum' bodies take no active data",
             )
-        if not has_active or lm.kind == "boundary_write":
+        if not has_active or lm.kind in FACE_WRITES:
             # Nothing active flows in: the tangent output is zero and there is no adjoint to send.
             continue
         derived.append(tangent_loop(lm, m))

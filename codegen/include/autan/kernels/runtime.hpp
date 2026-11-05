@@ -78,6 +78,7 @@ struct fp64 {
   using geom_value = double;  // Geom data that reach bodies only as values
   using param = double;
   using jac = double;
+  using flag = std::uint8_t;
   using compute = double;
   using accum = double;
   static constexpr const char* name = "fp64";
@@ -91,6 +92,7 @@ struct fp32_acc64 {
   using geom_value = float;  // Geom data that reach bodies only as values
   using param = double;
   using jac = float;
+  using flag = std::uint8_t;
   using compute = float;
   using accum = double;
   static constexpr const char* name = "fp32+acc64";
@@ -104,6 +106,7 @@ struct fp32 {
   using geom_value = float;  // Geom data that reach bodies only as values
   using param = float;
   using jac = float;
+  using flag = std::uint8_t;
   using compute = float;
   using accum = float;
   static constexpr const char* name = "fp32";
@@ -118,6 +121,7 @@ struct complex_step {
   using geom_value = double;  // Geom data that reach bodies only as values
   using param = double;
   using jac = std::complex<double>;
+  using flag = std::uint8_t;
   using compute = std::complex<double>;
   using accum = std::complex<double>;
   static constexpr const char* name = "complex-step";
