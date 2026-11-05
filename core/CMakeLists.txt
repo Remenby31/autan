@@ -4,6 +4,7 @@ add_library(
   src/mesh.cpp
   src/cellwise.cpp
   src/geometry.cpp
+  src/lines.cpp
   src/quality.cpp
   src/renumber.cpp
   src/wall_distance.cpp

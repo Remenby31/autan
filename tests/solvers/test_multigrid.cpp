@@ -20,6 +20,7 @@
 
 #include "autan/core/cellwise.hpp"
 #include "autan/core/geometry.hpp"
+#include "autan/core/lines.hpp"
 #include "autan/core/mesh.hpp"
 #include "autan/core/renumber.hpp"
 #include "autan/io/read_mesh.hpp"
@@ -473,7 +474,7 @@ TEST_CASE("wall layers form one line per wall cell, kept through the coarse leve
   CHECK(first_layer == wall_cells);
   CHECK(lines >= wall_cells);
   // The lines a partition keeps whole: the same, without the single cells.
-  const auto groups = autan::solvers::smoother_lines(mesh, g);
+  const auto groups = autan::smoother_lines(mesh, g);
   CHECK(groups.offsets.size() == lines + 1);
   std::size_t from_wall = 0;
   for (std::size_t li = 0; li + 1 < groups.offsets.size(); ++li) {
@@ -646,7 +647,7 @@ TEST_CASE("one line sweep solves a block-tridiagonal system exactly", "[multigri
     x_exact[k] = std::sin(0.37 * static_cast<double>(k));
   const auto b = apply(mesh, s, x_exact);
   // The multigrid's smoother and the distributed line smoother on one part.
-  const auto lines = autan::solvers::smoother_lines(mesh, g);
+  const auto lines = autan::smoother_lines(mesh, g);
   REQUIRE(lines.offsets.size() == 2);
   const std::vector<std::int32_t> colours(n, 0);
   autan::solvers::LineSmoother ls(mesh, lines.offsets, lines.cells, colours, 1);
@@ -681,7 +682,7 @@ TEST_CASE("the line smoother repeats its bits on 1, 2 and 4 parts", "[multigrid]
   const auto g = autan::compute_geometry(mesh);
   const auto n = static_cast<std::size_t>(mesh.n_cells());
   const auto s = diffusion(mesh, g, 1e-3, 0.3, true);
-  const auto lines = autan::solvers::smoother_lines(mesh, g);
+  const auto lines = autan::smoother_lines(mesh, g);
   REQUIRE(lines.offsets.size() > 2);
   // Colours of the graph whose nodes are the lines and the cells outside them.
   std::vector<std::size_t> node(n);
