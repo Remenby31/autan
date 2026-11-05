@@ -2,7 +2,7 @@
 
 A direct comparison of Autan with [SU2](https://su2code.github.io/) on the same meshes: iterations and wall time to one convergence criterion, and accuracy against published references (issue #195). Source: `vv/src/autan_vv/su2/`, `vv/su2/`.
 
-**Status.** Phase 1: SU2 built, protocol fixed, NACA 0012 run by SU2 alone and checked against Vassberg and Jameson (2010) ([results](#phase-1-su2-on-the-naca-0012-cases)). Phase 2: forces and wall Cp of Autan against SU2 on the same meshes ([results](#phase-2-autan-against-su2-forces-and-wall-cp)). Times are not compared until the measured protocol of #387 runs.
+**Status.** Phase 1: SU2 built, protocol fixed, NACA 0012 run by SU2 alone and checked against Vassberg and Jameson (2010) ([results](#phase-1-su2-on-the-naca-0012-cases)). Phase 2: forces and wall Cp of Autan against SU2 on the same meshes ([results](#phase-2-autan-against-su2-forces-and-wall-cp)). TMR flat plate: SU2 alone, against CFL3D and FUN3D ([results](#tmr-flat-plate-su2-alone)). Times are not compared until the measured protocol of #387 runs.
 
 ## SU2, an external tool
 
@@ -142,9 +142,34 @@ No timing yet (issue #387). Autan at main `880dcce`, `fp64`, CPU: the verdict ru
 - **Wall Cp.** Face by face (Autan's face value against the mean of SU2's at the face's nodes), over the body (95 % of the chord, away from the shocks), the largest difference at 1024² is 0.0039 at M 0.5, 0.025 at M 0.8, α 0° and 0.042 at M 0.8, α 1.25° (RMS 0.0006, 0.0013, 0.0025); at M 0.5 it falls by three to four per refinement (0.135, 0.048, 0.014, 0.004 from 128²). The shocks, located at the steepest rise of Cp, lie on the same face or one face apart in both codes: on the upper surface at x = 0.504 (α 0°, from 256²) and 0.646 then 0.640 (α 1.25°, 256² then 512²–1024²), on the lower surface at 0.337–0.340 (α 1.25°, 512²–1024²). Over all faces, wall Cp differs by 0.21–0.51 at every level; at M 0.5, 1024², the eight largest differences are the last faces before the sharp trailing edge, a stagnation point where SU2 has a node and Autan a face beside it.
 - **Against SU2-Roe** the differences are larger and shrink at low order, as SU2-Roe's own convergence does (phase 1): ΔCD at M 0.5 is −18.9, −23.0, −14.7, −8.1 counts from 128² to 1024².
 
+## TMR flat plate: SU2 alone
+
+The 2D zero-pressure-gradient flat plate of the NASA Turbulence Modeling Resource (`tmr-2dzp-flatplate`, M 0.2, Re 5 × 10⁶ per unit length, SA), run by SU2 before Autan has SA (#152), as a check of the case and of SU2 on it; pre-registered on #195 before any run. The five TMR grids, 35×25 to 545×385, come from the case library with their SHA-256 and are converted to SU2's 2D format with TMR's boundaries (`autan_vv.su2.flatplate`): `inlet` (i = 1), `outlet` (i = max), `farfield` (j = max), `symmetry` (j = 1, x < 0) and `wall` (j = 1, 0 ≤ x ≤ 2). The converted 137×97 is SU2's own `mesh_flatplate_turb_137x97.su2` (TestCases `v8.6.0`): the same points to 2.2 × 10⁻¹⁶, the same marker edges, two markers written in the other direction. SU2 v8.6.0 (image checked against its regression values, including `turb_flatplate`) runs its published `TestCases/rans/flatplate/turb_SA_flatplate.cfg` (SHA-256 `8d5f6f7c…2e917`) with only the mesh, iteration cap, convergence fields and outputs changed (`flatplate.ADOPTED_KEYS`). That file is SA-noft2 in v8.6.0; the same with `SA_OPTIONS= WITHFT2` is TMR's standard SA. Every run met the protocol's criterion (all residuals, ν̃ included, 10 orders below their first value); cf at x = 0.970084071 from SU2's surface file and CD (reference area 2) from its history, both at the run's last iteration; continua from the three finest grids with h = N^(−1/2), N the number of cells as in TMR's files, and none if one of those three did not converge; reports: `vv/su2/results/flatplate/`.
+
+| Grid | cf × 10³ | CD × 10³ | Δcf to CFL3D, FUN3D | ΔCD to CFL3D, FUN3D |
+|---|---|---|---|---|
+| 35×25 | 2.70057 | 2.80529 | −3.40 %, +1.24 % | −5.05 %, +1.13 % |
+| 69×49 | 2.71496 | 2.83605 | −0.49 %, +0.74 % | −1.68 %, +0.47 % |
+| 137×97 | 2.71909 | 2.85023 | +0.29 %, +0.63 % | −0.56 %, +0.36 % |
+| 273×193 | 2.72074 | 2.85851 | +0.52 %, +0.60 % | −0.10 %, +0.37 % |
+| 545×385 | 2.72155 | 2.86392 | +0.59 %, +0.60 % | +0.14 %, +0.40 % |
+| Continuum | 2.72234 (p = 1.03) | 2.87409 (p = 0.62) | | |
+
+- **Gate.** The M3 gate of [acceptance.md](acceptance.md#m3--navier-stokes-and-spalart-allmaras), applied to SU2: continuum cf within 0.5 % of 2.7056 × 10⁻³ and CD within 0.5 % of 2.8589 × 10⁻³. **Fail** with either model: cf +0.62 %, CD +0.53 %.
+- **References.** Recomputed from TMR's files with `autan_vv.order.richardson`, the continua are those acceptance.md quotes: cf 2.70524 / 2.70600 × 10⁻³ and CD 2.85924 / 2.85861 × 10⁻³ (CFL3D / FUN3D). On the finest grid the two codes agree to 0.01 % in cf; SU2 is 0.6 % above both.
+- **Order.** SU2's cf and CD rise monotonically with refinement, at observed orders 1.0 and 0.6, against 2.0 and 1.75 (CFL3D) and 1.3 and 0.8 (FUN3D), towards a limit of its own 0.6 % above the references: refinement does not close the gap.
+- **Model.** The table is SA-noft2, SU2's published setting. Standard SA (`WITHFT2`, the log names the model) gives the same cf and CD to 10⁻⁵ at every grid and the same continua: the ft2 term is not the difference.
+- **Reference pressure.** SU2 takes its freestream from the Reynolds number: p∞ = 114 455 Pa, which sets the dynamic pressure q∞ = ½ γ p∞ M² that wall shear and drag are divided by (drag also by the reference area). The published file writes its boundary conditions for 115 056 Pa (outlet and far field 115 056, inlet pt = 1.02828 × 115 056), and the wall pressure near x = 0.97 is 115 057: the flow's dynamic pressure is 0.525 % above the reference one and its Reynolds number 0.525 % above 5 × 10⁶. TMR states the boundary conditions relative to the reference pressure. Estimated effect, about −0.44 % on cf and CD at unchanged Mach number and temperature, not yet run; this and the other hypotheses for the offset, with their tests, are declared on #195.
+
+```sh
+autan-vv su2-flatplate prepare plate --published turb_SA_flatplate.cfg --su2-mesh mesh_flatplate_turb_137x97.su2
+CPUSET=10-17 NICE=19 MEMORY=2g vv/su2/run.sh plate sa-noft2/545x385 8   # each case in turn
+autan-vv su2-flatplate results plate --out report.json                    # criterion, cf, CD, continua, gate (exit 1 on a fail)
+```
+
 ## Tests
 
-`vv/tests/test_su2.py`: the converted file parsed independently and compared with the slab the generator writes (points bit for bit, counterclockwise cells, area equal to the annulus between the far-field and airfoil polygons, airfoil nodes on eq. 1 of the paper, hashes from both files); refusals `V0901`, `V0902`, `V0903`; the configuration against the case (R from CODATA and the molar mass of air); K_SU2 on a Cartesian slab against (a² s)^(1/3) K; the criterion on geometric residual sequences; SU2 v8.6.0's history columns and axes from real 2D and 3D runs (excerpts in `vv/tests/data/`); the study reproducing the paper's FLO82 extrapolation (Table 3).
+`vv/tests/test_su2.py`: the converted file parsed independently and compared with the slab the generator writes (points bit for bit, counterclockwise cells, area equal to the annulus between the far-field and airfoil polygons, airfoil nodes on eq. 1 of the paper, hashes from both files); refusals `V0901`, `V0902`, `V0903`; the configuration against the case (R from CODATA and the molar mass of air); K_SU2 on a Cartesian slab against (a² s)^(1/3) K; the criterion on geometric residual sequences; SU2 v8.6.0's history columns and axes from real 2D and 3D runs (excerpts in `vv/tests/data/`); the study reproducing the paper's FLO82 extrapolation (Table 3). Flat plate: a PLOT3D grid converted with TMR's boundaries (markers, edge orientation, area, `V0902` for a grid that is not the plate), the same grid renumbered and partly reversed recognised as the same and a moved point not, the configuration changing only `ADOPTED_KEYS` (`V0903`), cf and the SA residual read from SU2 v8.6.0's own 35×25 outputs (excerpts in `vv/tests/data/`), and the report on runs carrying CFL3D's values, which gives CFL3D's continuum from TMR's files and passes, gives no estimate when the finest run has not converged, and refuses a configuration changed after its run.
 
 ## References
 

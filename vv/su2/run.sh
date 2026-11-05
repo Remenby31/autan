@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Run SU2 on one prepared case in the autan-su2 image, at low priority, its memory capped (MEMORY,
-# default 6g: SU2 2D peaks at 1.0 GiB at 512² and 4.1 GiB at 1024², measured).
+# Run SU2 on one prepared case in the autan-su2 image, at low priority (NICE, default 10), its
+# memory capped (MEMORY, default 6g: SU2 2D peaks at 1.0 GiB at 512² and 4.1 GiB at 1024², measured)
+# and, with CPUSET, on those cores only.
 #   vv/su2/run.sh ROOT CASE THREADS
 # ROOT is the directory `autan-vv su2 prepare` wrote (mounted whole: the meshes are shared), CASE
 # a case directory under it (e.g. m080-a125/n0256). Writes CASE/log.txt and CASE/provenance.json.
@@ -21,11 +22,11 @@ case_sha=$(sha256sum "$dir/case.cfg" | cut -d' ' -f1)
 mesh_sha=$(sha256sum "$dir/$mesh" | cut -d' ' -f1)
 rm -f "$dir/history.csv" "$dir/provenance.json"
 name="autan-su2-$$"
-docker run --rm --name "$name" --user "$(id -u):$(id -g)" -e HOME=/tmp \
+docker run --rm --name "$name" --user "$(id -u):$(id -g)" -e HOME=/tmp ${CPUSET:+--cpuset-cpus "$CPUSET"} \
   -e OMP_NUM_THREADS="$threads" -e OPENBLAS_NUM_THREADS=1 -e MKL_NUM_THREADS=1 \
   --cpus "$threads" --memory "${MEMORY:-6g}" --memory-swap "${MEMORY:-6g}" \
   -v "$root:/work" -w "/work/$case" "$image" \
-  nice -n 10 SU2_CFD -t "$threads" case.cfg >"$dir/log.txt" 2>&1 &
+  nice -n "${NICE:-10}" SU2_CFD -t "$threads" case.cfg >"$dir/log.txt" 2>&1 &
 run=$!
 # SU2 measures a residual's drop from its largest value, the protocol from its first: stop SU2
 # (SIGTERM: it ends the iteration and writes its output) once every rms[...] of history.csv is
