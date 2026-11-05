@@ -680,7 +680,9 @@ test("residuals at zero and far below 1 draw on the log chart", async ({ page })
   expect(errors).toEqual([]);
 });
 
-test("a plateau written while a run page is open recomputes its residual drop", async ({ page }) => {
+test("a plateau written while a run page is open recomputes its residual drop", async ({
+  page,
+}) => {
   // One monitor, recorded every 10 iterations: line 30 carries its final record.
   const source = (await runs(page)).find(
     (r) => r.status === "converged" && Object.keys(r.monitors ?? {}).join() === "forces",

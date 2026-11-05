@@ -811,7 +811,9 @@ def test_convergence_floors_belong_to_a_steady_fp32_run(
     # A converged run lists the equations it counted converged on a plateau, in history order.
     assert crm_run.run.status == "converged"
     _set_convergence(crm_run.path, {"floor": floor, "plateau": [names[1], names[3]]})
-    assert autan.Results.open(crm_run.path).run.convergence.plateau == [names[1], names[3]]
+    convergence = autan.Results.open(crm_run.path).run.convergence
+    assert convergence is not None
+    assert convergence.plateau == [names[1], names[3]]
     for plateau in ([names[3], names[1]], ["bogus"], [names[1], names[1]]):
         _set_convergence(crm_run.path, {"floor": floor, "plateau": plateau})
         with pytest.raises(autan.CaseError) as error:
