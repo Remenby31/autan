@@ -1041,8 +1041,10 @@ class EulerPhysics final : public runtime::Physics {
   // solution; second order from the step after the first-order residual has dropped. The device
   // starts the same way, so that both solve the same sequence of problems.
   void switch_order(double drop) {
-    if (!second_order_ &&
-        (drop < first_order_drop || ++first_order_steps_ > first_order_max_steps)) {
+    if (second_order_) return;
+    // Also once the drop is on a round-off plateau: in fp32+acc64 three orders can lie below it.
+    const bool flat = first_order_plateau_.add(drop);
+    if (drop < first_order_drop || flat || ++first_order_steps_ > first_order_max_steps) {
       second_order_ = true;
       euler_.set_second_order(true);
       if (device_) device_->set_second_order(true);
@@ -1158,6 +1160,7 @@ class EulerPhysics final : public runtime::Physics {
   Euler<P> euler_;
   std::array<double, 5> reference_;  // the state the cells store differences from
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
+  runtime::Plateau first_order_plateau_;
   std::optional<BlockMatrix> matrix_;            // steady runs only
   std::optional<solvers::Multigrid> multigrid_;  // linear_solver = "multigrid"
   std::optional<solvers::LineSmoother> lines_;   // linear_solver = "lines"
