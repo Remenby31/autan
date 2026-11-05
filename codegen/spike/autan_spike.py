@@ -133,6 +133,13 @@ def incidences(m: Mesh) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int32], F
     return a["cell_face_offsets"], a["cell_faces"], a["incidence_side"]
 
 
+def face_moments(m: Mesh) -> F64:
+    """Face moments (n_faces, 3, 3) as `m` holds them now (after set_global_order: signed for each
+    face's local orientation, computed in its global one)."""
+    a = _arrays(m.handle)
+    return a["face_moment"].reshape(9, m.n_faces).T.reshape(m.n_faces, 3, 3).copy()
+
+
 def _arrays(h: ctypes.c_void_p) -> dict[str, np.ndarray]:
     counts = np.zeros(5, dtype=np.int64)
     lib().autan_spike_mesh_counts(h, _p(counts))
