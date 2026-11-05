@@ -18,12 +18,16 @@ or any container not named autan-*. Every stop and start is logged in DIR/guard.
 MemAvailable and, read before a stop, the container's memory peak (its cgroup's memory.peak).
 What it stopped, by container ID with the time docker recorded the stop, is kept in
 DIR/stopped.json: a restarted guard still starts it again, and a container removed, started or
-stopped again by someone else meanwhile is left alone. --dry-run logs every decision, acts on none.
+stopped again by someone else meanwhile is left alone; one docker could not report on is retried.
+A container whose stop fails is passed over for 10 minutes, so the next levels still go; memory
+is read again before each restart, and the rest of a level waits if it has fallen. --dry-run logs
+every decision and acts on none.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import fnmatch
 import json
 import subprocess
@@ -43,6 +47,7 @@ CGROUPS = (
     Path("/sys/fs/cgroup/docker/{id}"),
 )
 START_ATTEMPTS = 3
+UNSTOPPABLE_S = 600.0  # a container whose stop failed is passed over this long, so others go
 
 
 def level_of(name: str) -> int | None:
@@ -90,11 +95,25 @@ def running() -> list[tuple[str, str]]:
 
 
 def inspect(cid: str) -> tuple[str, str] | None:
-    """(state, finished-at) of a container, None if it no longer exists or docker failed."""
+    """(state, finished-at) of a container; ("gone", "") once docker no longer knows it; None
+    when docker could not answer, which says nothing about the container."""
     status, out = docker("inspect", "-f", "{{.State.Status}} {{.State.FinishedAt}}", cid,
                          timeout=30)  # fmt: skip
     parts = out.split()
-    return (parts[0], parts[1]) if status == 0 and len(parts) == 2 else None
+    if status == 0 and len(parts) == 2:
+        return parts[0], parts[1]
+    if status not in (124, 127) and "no such" in out.lower():
+        return "gone", ""
+    return None
+
+
+def stamp_of(finished: str) -> float | None:
+    """docker's FinishedAt (RFC 3339, nanoseconds, UTC) in seconds since the epoch."""
+    try:
+        moment = dt.datetime.strptime(finished[:19], "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return None
+    return moment.replace(tzinfo=dt.UTC).timestamp()
 
 
 def peak(cid: str, cgroups: tuple[Path, ...]) -> int | None:
@@ -126,6 +145,7 @@ class Guard:
         self.last_stop = float("-inf")
         self.above_since: float | None = None
         self.said_nothing_left = float("-inf")
+        self.unstoppable: dict[str, float] = {}  # container ID -> when its stop failed
 
     def log(self, message: str) -> None:
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -152,7 +172,7 @@ class Guard:
             with self.lock:
                 pending = bool(self.stopped)
             if pending and not self.stopping and now - self.above_since >= self.hysteresis_s:
-                self.start_last(free)
+                self.start_last()
                 self.above_since = self.clock()  # the next level waits its own full 120 s
         else:
             self.above_since = None
@@ -160,7 +180,9 @@ class Guard:
             self.log(f"MemAvailable {gib(free)}")
 
     def stop_next(self, free: int | None, now: float) -> None:
-        live = [(level_of(name), cid, name) for cid, name in running()]
+        with self.lock:
+            passed = {c for c, t in self.unstoppable.items() if now - t < UNSTOPPABLE_S}
+        live = [(level_of(name), cid, name) for cid, name in running() if cid not in passed]
         live = [entry for entry in live if entry[0] is not None]
         if not live:
             if now - self.said_nothing_left >= 600:
@@ -183,41 +205,74 @@ class Guard:
         status, out = docker(
             "stop", "-t", str(self.stop_timeout_s), cid, timeout=self.stop_timeout_s + 60
         )
-        state = inspect(cid)
-        if status != 0 or state is None or state[0] != "exited":
+        after = time.time()
+        if status != 0:
+            with self.lock:
+                self.unstoppable[cid] = self.clock()
+            self.log(f"FAILED to stop {name} ({out.strip()[:200]}); passed over for "
+                     f"{UNSTOPPABLE_S:.0f} s, not recorded as stopped by the guard")  # fmt: skip
+            return
+        state = None
+        for _ in range(3):
+            state = inspect(cid)
+            if state is not None:
+                break
+            time.sleep(2)
+        if state is None:
+            finished = None  # stopped by this call; its ID alone identifies it at the restart
+            self.log(f"stopped {name}, but docker did not report its stop time")
+        elif state[0] != "exited":
             self.log(
-                f"FAILED to stop {name} ({out.strip()[:200]}); not recorded as stopped by the guard"
+                f"{name} is {state[0]} right after its stop: not recorded as stopped by the guard"
             )
             return
+        else:
+            finished = state[1]
+            moment = stamp_of(finished)
+            if moment is not None and moment > after + 2:
+                self.log(f"{name} was started and stopped again by someone else: not recorded")
+                return
         with self.lock:
-            self.stopped.append({"level": level, "id": cid, "name": name, "finished": state[1],
+            self.stopped.append({"level": level, "id": cid, "name": name, "finished": finished,
                                  "attempts": 0})  # fmt: skip
             self.save()
 
-    def start_last(self, free: int) -> None:
+    def start_last(self) -> None:
         with self.lock:
             level = self.stopped[-1]["level"]
             batch = [entry for entry in self.stopped if entry["level"] == level]
         kept = []
-        for entry in batch:
+        for k, entry in enumerate(batch):
             name, state = entry["name"], inspect(entry["id"])
-            if state is None or state[0] != "exited" or state[1] != entry["finished"]:
+            if state is None:
+                kept.append(entry)
+                self.log(f"docker did not answer for {name}: retried at the next turn")
+                continue
+            cycled = entry["finished"] is not None and state[1] != entry["finished"]
+            if state[0] != "exited" or cycled:
                 self.log(
                     f"LEFT {name}: removed, started or stopped again since the guard stopped it"
                 )
                 continue
-            self.log(f"START level {level + 1} {name}: MemAvailable {gib(free)}, above "
+            # Memory read again before each start: one container may take back what the floor needs.
+            now_free = available(self.meminfo)
+            if now_free is None or now_free <= self.high:
+                kept.extend(batch[k:])
+                self.log(f"MemAvailable {gib(now_free)} during the restarts: {name} and the rest "
+                         "of its level wait")  # fmt: skip
+                break
+            self.log(f"START level {level + 1} {name}: MemAvailable {gib(now_free)}, above "
                      f"{gib(self.high)} for {self.hysteresis_s:.0f} s")  # fmt: skip
             if self.dry_run:
                 kept.append(entry)
                 continue
-            status, out = docker("start", entry["id"])
+            status, out = docker("start", entry["id"], timeout=90)
             if status != 0:
                 entry["attempts"] += 1
                 if entry["attempts"] < START_ATTEMPTS:
                     kept.append(entry)
                     self.log(
-                        f"FAILED to start {name} ({out.strip()[:200]}); retried at the next level's turn"
+                        f"FAILED to start {name} ({out.strip()[:200]}); retried at the next turn"
                     )
                 else:
                     self.log(

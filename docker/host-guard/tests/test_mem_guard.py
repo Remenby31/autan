@@ -25,8 +25,14 @@ a = sys.argv[1:]
 if a[0] == "ps":
     print("\n".join(f"{v['id']} {k}" for k, v in c.items() if v["status"] == "running"))
 elif a[0] == "inspect":
+    flaky = here / "fail-inspect"
+    if flaky.exists() and int(flaky.read_text()) > 0:
+        flaky.write_text(str(int(flaky.read_text()) - 1))
+        sys.stderr.write("Error response from daemon: context deadline exceeded\n")
+        sys.exit(1)
     name = by_id.get(a[-1])
     if name is None:
+        sys.stderr.write(f"Error: No such object: {a[-1]}\n")
         sys.exit(1)
     print(c[name]["status"], c[name]["finished"])
 elif a[0] in ("stop", "start"):
@@ -35,6 +41,11 @@ elif a[0] in ("stop", "start"):
         h.write(f"{time.monotonic()} {a[0]} {name}\n")
     if a[0] == "start" and name in json.loads((here / "fail-start.json").read_text()):
         sys.exit(1)
+    if a[0] == "stop" and name in json.loads((here / "fail-stop.json").read_text()):
+        sys.exit(1)
+    after = json.loads((here / "after-start.json").read_text())
+    if a[0] == "start" and name in after:
+        pathlib.Path(after[name][0]).write_text(after[name][1])
     c[name]["status"] = "running" if a[0] == "start" else "exited"
     if a[0] == "stop":
         c[name]["finished"] = f"t{time.monotonic()}"
@@ -61,7 +72,9 @@ class Host:
         self.containers.write_text(json.dumps(
             {n: {"id": f"id{k:02d}" + "0" * 60, "status": "running", "finished": "-"}
              for k, n in enumerate(NAMES)}))  # fmt: skip
-        (self.bin / "fail-start.json").write_text("[]")
+        for name in ("fail-start.json", "fail-stop.json"):
+            (self.bin / name).write_text("[]")
+        (self.bin / "after-start.json").write_text("{}")
         self.cgroup = tmp_path / "cgroup"
         for k in range(len(NAMES)):
             scope = self.cgroup / "system.slice" / f"docker-id{k:02d}{'0' * 60}.scope"
@@ -216,3 +229,55 @@ def test_a_missing_docker_is_logged_not_a_crash(host):
     out = host.guard(ticks=3, path="/nonexistent")
     assert out.wait(timeout=30) == 0, out.stderr.read()
     assert "nothing left to stop" in host.log()
+
+
+def test_a_container_that_will_not_stop_does_not_hold_back_the_next_levels(host):
+    (host.bin / "fail-stop.json").write_text(json.dumps(["autan-noyau-mut1"]))
+    proc = host.guard()
+    try:
+        host.free(25)
+        assert until(
+            lambda: (
+                {"autan-noyau-release", "autan-sdk-build"} <= {n for _, _, n in host.calls("stop")}
+            )
+        )
+        assert "FAILED to stop autan-noyau-mut1" in host.log()
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_docker_not_answering_at_the_restart_is_retried_not_forgotten(host):
+    host.free(25)
+    assert host.guard(ticks=3).wait(timeout=30) == 0
+    (host.bin / "fail-inspect").write_text("1")
+    host.free(45)
+    proc = host.guard()
+    try:
+        assert until(
+            lambda: (
+                {n for _, _, n in host.calls("start")} == {"autan-noyau-mut1", "autan-noyau-mut2"}
+            )
+        )
+        assert "did not answer" in host.log()
+        assert "LEFT" not in host.log()
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_memory_falling_during_the_restarts_holds_the_rest_of_the_level(host):
+    host.free(25)
+    assert host.guard(ticks=3).wait(timeout=30) == 0
+    # Whichever of the two starts first takes the host back down to 32 GiB.
+    low = f"MemTotal: {128 << 20} kB\nMemAvailable: {32 << 20} kB\n"
+    (host.bin / "after-start.json").write_text(json.dumps(
+        {n: [str(host.meminfo), low] for n in ("autan-noyau-mut1", "autan-noyau-mut2")}))  # fmt: skip
+    host.free(45)
+    proc = host.guard()
+    try:
+        assert until(lambda: "the rest of its level wait" in host.log())
+        assert len(host.calls("start")) == 1
+    finally:
+        proc.kill()
+        proc.wait()
