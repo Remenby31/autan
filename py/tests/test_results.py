@@ -820,7 +820,7 @@ def test_convergence_floors_belong_to_a_steady_fp32_run(
     short = autan.load(EXAMPLES / "crm_hl.py").run(
         crm_mesh, backend=autan.FakeBackend(iterations=2), runs=crm_run.path.parent
     )
-    assert short.run.status == "completed"
+    assert short.run.status != "converged"
     _set_convergence(short.path, {"floor": floor, "plateau": [names[1]]})
     with pytest.raises(autan.CaseError) as error:
         autan.Results.open(short.path)

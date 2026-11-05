@@ -187,10 +187,11 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   INFO(precision << (steady ? " steady" : " unsteady"));
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     inviscid_along_x(d, precision);
-    // fp32+acc64 starts at its convergence floor (round-off only) and stops at iteration 1.
+    // fp32+acc64 starts at round-off: it converges once its residuals are on a plateau
+    // (case-schema.md#time), after the first-order start's provisional steps and 100 more.
     d["monitors"][0]["every"] = 1;
     if (steady) {
-      d["time"]["max_iterations"] = 20;
+      d["time"]["max_iterations"] = 400;
     } else {
       d["time"] = {{"kind", "unsteady"}, {"steps", 20},
                    {"dt", nullptr},      {"cfl", 0.8},
@@ -208,7 +209,7 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   const double speed = f["speed"].get<double>();
   const double p = f["pressure"].get<double>();
   const double rho = f["density"].get<double>();
-  // Each step changes the state by round-off of the face fluxes: 20 steps stay within 64 eps.
+  // Each step changes the state by round-off of the face fluxes: the run stays within 64 eps.
   for (const double v : field(out.run, "Density")) CHECK(std::abs(v - rho) <= 64 * eps * rho);
   for (const double v : field(out.run, "Pressure")) CHECK(std::abs(v - p) <= 64 * eps * p);
   for (const double v : field(out.run, "VelocityX")) CHECK(std::abs(v - speed) <= 64 * eps * speed);
@@ -218,8 +219,9 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   const auto& forces = lines.back()["monitors"]["forces"];
   for (const char* k : {"fx", "fy", "fz"}) CHECK(std::abs(forces[k].get<double>()) <= 64 * eps * p);
   if (!steady) CHECK(info["time"].get<double>() > 0.0);
-  // case-schema.md#time: a steady fp32+acc64 run converges at 0.5 * 2^-23 * Phi_k at the
-  // latest, Phi_k = f_k sqrt(sum_i A_i^2 / N) from the freestream flux f_k and the cell surfaces.
+  // case-schema.md#time: a steady fp32+acc64 run converges on a round-off plateau near its floor
+  // 0.5 * 2^-23 * Phi_k, Phi_k = f_k sqrt(sum_i A_i^2 / N) from the freestream flux f_k and the
+  // cell surfaces.
   if (!steady || std::string(precision) == "fp64") {
     CHECK(info["convergence"].is_null());
     return;
