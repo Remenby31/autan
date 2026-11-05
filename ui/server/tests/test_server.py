@@ -559,7 +559,8 @@ def test_a_run_converged_on_its_round_off_plateaus_reports_its_target(runs: Path
     last = json.loads(lines[-1])["residuals"]
     run = json.loads((source / "run.json").read_text())
     convergence = {"floor": last, "plateau": list(last)}
-    (source / "run.json").write_text(json.dumps(run | {"convergence": convergence}))
+    converged = {"status": "converged", "convergence": convergence}
+    (source / "run.json").write_text(json.dumps(run | converged))
 
     summary = Registry(runs).scan().summaries[source.name]
 
@@ -575,7 +576,8 @@ def test_a_plateau_written_after_the_history_was_read_recomputes_the_drop(runs: 
     last = json.loads((source / "history.jsonl").read_text().splitlines()[-1])["residuals"]
     run = json.loads((source / "run.json").read_text())
     convergence = {"floor": last, "plateau": list(last)}
-    (source / "run.json").write_text(json.dumps(run | {"convergence": convergence}))
+    converged = {"status": "converged", "convergence": convergence}
+    (source / "run.json").write_text(json.dumps(run | converged))
 
     after = registry.scan().summaries[source.name]["orders"]
 
