@@ -158,7 +158,7 @@ struct NavierStokes<P>::Impl {
     auto solve = [&](std::size_t c, std::span<const index_t> entries,
                      std::vector<std::array<double, nt>>& coef) {
       const auto& g = geo;
-      std::vector<std::array<double, 3>> d(entries.size());
+      std::vector<std::array<double, 3>> off(entries.size());
       std::array<double, 3> extent{};
       for (std::size_t k = 0; k < entries.size(); ++k) {
         const index_t e = entries[k];
