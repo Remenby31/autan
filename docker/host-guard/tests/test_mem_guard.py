@@ -355,3 +355,35 @@ def test_a_stop_whose_time_was_unread_is_restarted_only_if_nobody_stopped_it_sin
     finally:
         proc.kill()
         proc.wait()
+
+
+def test_a_failed_du_keeps_the_last_size(host, tmp_path):
+    # du's first measure says 600 kB; then it fails on an unreadable entry with a partial total.
+    data = tmp_path / "cfd"
+    data.mkdir()
+    fake_du = host.bin / "du"
+    answer = host.bin / "du-answer"
+    answer.write_text("600000 0")
+    fake_du.write_text(f'#!/bin/sh\nread size code < {answer}\necho "$size\t$3"\nexit $code\n')
+    fake_du.chmod(0o755)
+    proc = host.guard(*disk_args(data, 100_000))
+    try:
+        assert until(lambda: len(host.calls("stop")) >= 2)
+        answer.write_text("100 1")
+        time.sleep(4 * WAIT)
+        assert (host.state / "ALERT").exists()
+        assert host.calls("start") == []
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_an_unwritable_alert_does_not_stop_the_memory_protection(host, tmp_path):
+    data = tmp_path / "cfd"
+    data.mkdir()
+    (data / "results").write_bytes(b"x" * 95_000)  # a disk warning, not over
+    host.state.mkdir()
+    (host.state / "ALERT").mkdir()  # cannot be written as a file
+    host.free(25)
+    assert host.guard(*disk_args(data, 100_000), ticks=3).wait(timeout=30) == 0
+    assert {n for _, _, n in host.calls("stop")} == {"autan-noyau-mut1", "autan-noyau-mut2"}

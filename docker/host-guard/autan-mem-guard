@@ -34,6 +34,7 @@ and DIR/ALERT says why until the disk is back under 90 %; nothing restarts befor
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import fnmatch
 import json
@@ -151,7 +152,9 @@ class Disk:
         try:
             out = subprocess.run(["nice", "-n", "19", "du", "-sb", str(self.path)],
                                  capture_output=True, text=True, timeout=1800, check=False)  # fmt: skip
-            self.size = int(out.stdout.split()[0])
+            # A du that failed (an unreadable entry) prints a partial total: never taken.
+            if out.returncode == 0:
+                self.size = int(out.stdout.split()[0])
         except (subprocess.SubprocessError, OSError, ValueError, IndexError):
             pass  # the last size stands until the next measurement
 
@@ -218,8 +221,13 @@ class Guard:
     def log(self, message: str) -> None:
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         prefix = "DRY-RUN " if self.dry_run else ""
-        with self.lock, (self.dir / "guard.log").open("a") as handle:
-            handle.write(f"{stamp} {prefix}{message}\n")
+        line = f"{stamp} {prefix}{message}\n"
+        # A full disk must not stop the guard: what cannot be written goes to stderr (the journal).
+        try:
+            with self.lock, (self.dir / "guard.log").open("a") as handle:
+                handle.write(line)
+        except OSError:
+            sys.stderr.write(line)
 
     def save(self) -> None:
         tmp = self.state.with_suffix(".tmp")
@@ -258,11 +266,15 @@ class Guard:
     def alert(self, warning: str | None, now: float) -> None:
         flag = self.dir / "ALERT"
         if warning is None:
-            if flag.exists():
-                flag.unlink()
+            if flag.is_file():
+                with contextlib.suppress(OSError):
+                    flag.unlink()
                 self.log("disk back under 90 % of its limits")
             return
-        flag.write_text(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {warning}\n")
+        try:
+            flag.write_text(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {warning}\n")
+        except OSError as error:
+            sys.stderr.write(f"cannot write {flag}: {error}\n")
         if now - self.alerted >= 3600:
             self.log(f"ALERT disk: {warning}")
             self.alerted = now
@@ -324,7 +336,8 @@ class Guard:
         else:
             finished = state[1]
             moment = stamp_of(finished)
-            if moment is not None and moment > after + 2:
+            # Docker records the stop, on this host's clock, before `docker stop` returns.
+            if moment is not None and moment > after:
                 self.log(f"{name} was started and stopped again by someone else: not recorded")
                 return
         with self.lock:
@@ -355,7 +368,7 @@ class Guard:
             if entry["finished"] is not None:
                 cycled = state[1] != entry["finished"]
             elif moment is not None:
-                cycled = moment > entry.get("stopped_by", 0.0) + 1
+                cycled = moment > entry.get("stopped_by", 0.0)
             else:
                 cycled = True  # nothing tells the guard's stop from someone else's
             if state[0] != "exited" or cycled:
@@ -365,6 +378,13 @@ class Guard:
                 continue
             # Memory read again before each start: one container may take back what the floor needs.
             now_free = available(self.meminfo)
+            disk_warning = self.disk.check(self.clock())[1] if self.disk else None
+            if disk_warning:
+                kept.extend(batch[k:])
+                self.log(
+                    f"disk: {disk_warning} during the restarts: {name} and the rest of its level wait"
+                )
+                break
             if now_free is None or now_free <= self.high:
                 kept.extend(batch[k:])
                 self.log(f"MemAvailable {gib(now_free)} during the restarts: {name} and the rest "
