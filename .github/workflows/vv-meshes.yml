@@ -56,7 +56,7 @@ jobs:
           IFS=, read -ra given <<< "$LEVELS"
           for n in "${given[@]}"; do ((10#$n >= 1)) || fail "levels: positive integers, not '$LEVELS'"; done
           # The ns-mms-order gate's levels (docs/validation/acceptance.md).
-          declare -A gate=([tet]=16,24,32,48 [hex]=32,48,64,96,128 [poly]=16,24,32,48,64 [hybrid]=16,24,32,48)
+          declare -A gate=([tet]="16,24,32,48" [hex]="32,48,64,96,128" [poly]="16,24,32,48,64" [hybrid]="16,24,32,48")
           if [[ $KIND == all ]]; then
             [[ -z $LEVELS ]] || fail "levels apply to one kind; with kind 'all' each family takes its gate levels"
             kinds=(tet hex poly hybrid)
