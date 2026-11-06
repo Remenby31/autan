@@ -116,6 +116,31 @@ class Euler {
   /// R(s) into res, and the approximate Jacobian's blocks: dF/dW of every face with the
   /// reconstruction's gradients and limiter held fixed, and dW/dU of every cell.
   void residual_and_jacobian(std::span<const State> s, std::span<Res> res);
+  /// For the implicit step's matrix-free product (docs/design/matrix-free-step.md): evaluates the
+  /// limiter at s and, per face side, whether the reconstruction keeps the cell value, and holds
+  /// both for residual_frozen. Leaves what residual() last evaluated untouched.
+  void freeze(std::span<const State> s);
+  /// R(s) into res with the limiter and the reconstruction branches of freeze()'s state, in a
+  /// workspace of its own: equal to residual(s) bit for bit at that state. The numerical flux's
+  /// own switches are not held (Roe's |v.n|, HLLC's wave speeds, AUSM+-up's split functions, the
+  /// characteristic boundary states' branches): a difference quotient is a secant across one
+  /// wherever a face's v.n, or a branch's argument, lies within the step's change of it from zero.
+  /// Throws std::logic_error before freeze() and after set_second_order(), which drops what
+  /// freeze held.
+  void residual_frozen(std::span<const State> s, std::span<Res> res);
+  /// After residual_frozen: how many face sides take another branch of the reconstruction's
+  /// positivity fallback (the cell value where the reconstructed density or pressure would be
+  /// non-positive) than the one held from freeze()'s state. Nonzero: the evaluation is not the
+  /// smooth continuation of the residual at freeze()'s state. Throws std::logic_error before
+  /// freeze().
+  [[nodiscard]] std::size_t frozen_switches() const;
+  /// Frees what freeze() allocated.
+  void release_frozen();
+  /// The loops' data of the frozen workspace: the primitives, boundary states and gradients of
+  /// the state freeze() or residual_frozen() last evaluated, the held limiter and reconstruction
+  /// branches, for a physics that adds terms to the frozen residual. Throws std::logic_error
+  /// without a held state.
+  [[nodiscard]] kernels::euler::Data<P> frozen_data() const;
   /// After residual_and_jacobian: A = diag(shift) + dR/dU into `a`, shift_c per cell (V / dt).
   void assemble(std::span<const double> shift, BlockMatrix& a) const;
   /// First-order residual's tangent dR/dU du (no reconstruction): the preconditioning operator.
