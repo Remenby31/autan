@@ -972,6 +972,9 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(history(o.run).size() == 3);
     CHECK(info["monitors"].is_null());
     CHECK(info["timing"].is_null());  // a failed run is not timed
+    const auto log = lines_of(o.run / "log.jsonl");
+    REQUIRE_FALSE(log.empty());
+    CHECK(Json::parse(log.back())["level"] == "error");
   }
   SECTION("unsteady with averaging: time, averaging and FlowSolutionMean") {
     // Written by `autan prepare` with time = Unsteady(steps=6, dt=0.01 s,
@@ -1599,6 +1602,7 @@ TEST_CASE("log.jsonl records the run's events in the results.md shape", "[runtim
   CHECK((*d0107)["data"] == info["diagnostics"][0]["data"]);
   CHECK((*d0107)["iteration"] == 4);
   CHECK(lines.back()["data"]["status"] == "diverged");
+  CHECK(lines.back()["level"] == "info");
 }
 
 TEST_CASE("A continued run goes on bit for bit from the run it continues", "[runtime]") {
@@ -2406,42 +2410,93 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
   CHECK(chain == lines_of(whole.run / "history.jsonl"));
 }
 
-TEST_CASE("In fp32+acc64 an equation converges at its floor at the latest", "[runtime]") {
-  // Residuals (e + 1) 0.5^(k-1); scales 1e4 (e + 1) give floors
-  // 0.5 2^-23 1e4 (e + 1) = 5.96e-4 (e + 1), reached at k = 12 for every
-  // equation, before the 8-order drop at k = 28 (case-schema.md#time).
-  const std::string precision = GENERATE("fp32+acc64", "fp64");
-  CAPTURE(precision);
-  autan_test::RelaxationOptions scaled;
-  for (int e = 0; e < 6; ++e) scaled.scales.push_back(1e4 * (e + 1));
-  const Outcome o = run(input([&](Json& d) { d["precision"] = precision; }), scaled);
-  REQUIRE(o.status == ExitStatus::finished);
-  const Json info = Json::parse(read(o.run / "run.json"));
-  CHECK(info["status"] == "converged");
-  if (precision == "fp64") {
-    CHECK(info["iterations"] == 28);
-    CHECK(info["convergence"].is_null());
-    return;
-  }
-  CHECK(info["iterations"] == 12);
+TEST_CASE("In fp32+acc64 an equation converges on a round-off plateau near its floor",
+          "[runtime]") {
+  // case-schema.md#time. Residuals (e + 1) max(0.5^(k-1), p) and scales 1e4 (e + 1) give floors
+  // f_e = 0.5 2^-23 1e4 (e + 1) = 5.96e-4 (e + 1). A plateau is 100 steps without a value below
+  // 0.9 times the least before; an equation converges on one at most 10 f_e high.
   const std::vector<std::string> equations{"density",    "momentum-x", "momentum-y",
                                            "momentum-z", "energy",     "nu-tilde"};
-  REQUIRE(info["convergence"]["floor"].size() == equations.size());
-  for (std::size_t e = 0; e < equations.size(); ++e) {
-    CHECK(info["convergence"]["floor"][equations[e]] ==
-          std::ldexp(0.5, -23) * 1e4 * static_cast<double>(e + 1));
+  autan_test::RelaxationOptions scaled;
+  for (int e = 0; e < 6; ++e) scaled.scales.push_back(1e4 * (e + 1));
+  const double floor = std::ldexp(0.5, -23) * 1e4;
+  auto run_json = [&](const autan_test::RelaxationOptions& options, const std::string& precision,
+                      std::int64_t budget = 10000) {
+    const Outcome o = run(input([&](Json& d) {
+                            d["precision"] = precision;
+                            d["time"]["max_iterations"] = budget;
+                          }),
+                          options);
+    REQUIRE(o.status == ExitStatus::finished);
+    return Json::parse(read(o.run / "run.json"));
+  };
+
+  SECTION("a residual that crosses its floor while still falling converges by its drop") {
+    // The floors are crossed at k = 12 (0.5^11 = 4.9e-4 < 5.96e-4); the residuals go on halving
+    // to the 8-order drop at k = 28 (0.5^27 = 7.5e-9 <= 1e-8 < 0.5^26), in either precision.
+    for (const std::string precision : {"fp32+acc64", "fp64"}) {
+      CAPTURE(precision);
+      const Json info = run_json(scaled, precision);
+      CHECK(info["status"] == "converged");
+      CHECK(info["iterations"] == 28);
+      if (precision == "fp64") {
+        CHECK(info["convergence"].is_null());
+        continue;
+      }
+      REQUIRE(info["convergence"]["floor"].size() == equations.size());
+      for (std::size_t e = 0; e < equations.size(); ++e) {
+        CHECK(info["convergence"]["floor"][equations[e]] == floor * static_cast<double>(e + 1));
+      }
+      CHECK(info["convergence"]["plateau"] == Json::array());
+    }
   }
 
-  // A physics without scales has no floor; one with the wrong count fails.
-  const Outcome plain = run(input());
-  CHECK(Json::parse(read(plain.run / "run.json"))["convergence"].is_null());
-  autan_test::RelaxationOptions short_scales;
-  short_scales.scales = {1.0};
-  const Outcome bad = run(input(), short_scales);
-  CHECK(bad.status == ExitStatus::failed);
-  const Json failed = Json::parse(read(bad.run / "run.json"));
-  CHECK(failed["status"] == "failed");
-  CHECK(failed["diagnostics"][0]["code"] == "E0704");
+  SECTION("a plateau above the floor and within the band converges, every equation on it") {
+    // p = 1.5 f_0 (the NS manufactured solution's plateau of #467): 0.5^10 = 9.8e-4 > p >
+    // 0.5^11, so the values fall to k = 11 and are p from k = 12, which is not below 0.9 x 9.8e-4:
+    // the last new least value is at k = 11, the plateau holds at k = 111.
+    autan_test::RelaxationOptions flat = scaled;
+    flat.plateau = 1.5 * floor;
+    const Json info = run_json(flat, "fp32+acc64");
+    CHECK(info["status"] == "converged");
+    CHECK(info["iterations"] == 111);
+    CHECK(info["convergence"]["plateau"] == Json(equations));
+
+    // Provisional steps (a first-order start) do not count: from k = 50 the plateau needs 100
+    // counted steps, k = 50 to 149, and holds at k = 150.
+    flat.provisional_until = 50;
+    CHECK(run_json(flat, "fp32+acc64")["iterations"] == 150);
+
+    // A run that converges on its plateau and then fails to write its solution lists none.
+    flat.provisional_until = 0;
+    flat.throw_in_fields = true;
+    const Outcome failing = run(input(), flat);
+    CHECK(failing.status == ExitStatus::failed);
+    const Json failed = Json::parse(read(failing.run / "run.json"));
+    CHECK(failed["status"] == "failed");
+    CHECK(failed["convergence"]["plateau"] == Json::array());
+  }
+
+  SECTION("a plateau above the band is not convergence") {
+    autan_test::RelaxationOptions high = scaled;
+    high.plateau = 20.0 * floor;
+    const Json info = run_json(high, "fp32+acc64", 300);
+    CHECK(info["status"] == "completed");
+    CHECK(info["iterations"] == 300);
+    CHECK(info["convergence"]["plateau"] == Json::array());
+  }
+
+  SECTION("a physics without scales has no floor; one with the wrong count fails") {
+    const Outcome plain = run(input());
+    CHECK(Json::parse(read(plain.run / "run.json"))["convergence"].is_null());
+    autan_test::RelaxationOptions short_scales;
+    short_scales.scales = {1.0};
+    const Outcome bad = run(input(), short_scales);
+    CHECK(bad.status == ExitStatus::failed);
+    const Json failed = Json::parse(read(bad.run / "run.json"));
+    CHECK(failed["status"] == "failed");
+    CHECK(failed["diagnostics"][0]["code"] == "E0704");
+  }
 }
 
 TEST_CASE("A run that needs more memory than its host can give is refused before the mesh",
