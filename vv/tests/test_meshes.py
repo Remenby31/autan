@@ -1,5 +1,6 @@
 """Mesh families: validity, reproducibility, and files read back by independent consumers."""
 
+import hashlib
 import itertools
 import json
 import re
@@ -358,3 +359,15 @@ def test_vortex_families_are_periodic_and_nested(kind: str, tmp_path: Path) -> N
             np.testing.assert_array_equal(np.asarray(affine).reshape(4, 4)[:3, 3], shift)
     finally:
         gmsh.finalize()
+
+
+# The perturbed tet n = 6 file, perturbation 0.3, seed 2026: measured identical on x86-64 Linux and
+# macOS arm64 (Gmsh has no aarch64 Linux wheel). Gmsh's builds enumerate the same tetrahedra in
+# other orders; the file must not show it (#495).
+TET_N6_FILE_SHA256 = "a81fbda14c03eeea6382e2c32d6d44ffeeb7ef92c5804cc8015cd0c94b55f3db"
+
+
+def test_a_perturbed_tet_file_is_the_same_bytes_on_every_platform(tmp_path: Path) -> None:
+    path = tmp_path / "tet.msh"
+    generate_level("tet", 6, perturbation=0.3, seed=2026, path=path)
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == TET_N6_FILE_SHA256

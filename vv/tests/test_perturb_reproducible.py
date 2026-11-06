@@ -6,7 +6,7 @@ import numpy as np
 from autan_vv.meshes import families
 
 # The perturbed structured hybrid n = 6, perturbation 0.3, seed 2026: the sha256 of its node
-# coordinates (float64, little-endian). Measured identical on aarch64, x86-64 and macOS arm64.
+# coordinates (float64, little-endian). Measured identical on Linux aarch64 and x86-64 and on macOS arm64.
 HYBRID_N6_SHA256 = "a274479d5cdf7f19be7598e9c295a9ece4cd49c35cbd455c0a58a3db59b9ef85"
 
 
@@ -38,7 +38,8 @@ def test_canonical_tets_keep_each_tetrahedron_and_its_orientation_whatever_the_i
 
     def signed_volume(t: np.ndarray) -> np.ndarray:
         a, b, c, d = (points[t[:, i]] for i in range(4))
-        return np.einsum("ij,ij->i", np.cross(b - a, c - a), d - a)
+        volume: np.ndarray = np.einsum("ij,ij->i", np.cross(b - a, c - a), d - a)
+        return volume
 
     canonical = families.canonical_tets(tets)
     by_nodes = {
