@@ -16,7 +16,7 @@ import pytest
 from autan import cgns
 from autan.cli import json_schema, main
 
-from tests.conftest import CRM_HL
+from tests.conftest import CRM_HL, prepared
 
 PAIR = {
     "zones": ["fuselage", "empennage"],
@@ -153,9 +153,10 @@ def test_periodic_pairs_are_written_as_reciprocal_connectivities(
 ) -> None:
     body = CRM_HL.replace('mesh="crm-hl.cgns"', f'mesh="crm-hl.cgns", mesh_unit="{unit}"')
     case = autan.load(write_case(body))
-    result = case.run(
-        autan.MeshInfo.load(mesh), backend=autan.FakeBackend(iterations=2), runs=tmp_path
+    scaled = autan.MeshInfo.from_document(
+        prepared(json.loads(mesh.read_text()), scale=scale), autan.Location()
     )
+    result = case.run(scaled, backend=autan.FakeBackend(iterations=2), runs=tmp_path)
     assert result.field("Density").size > 0  # reads and checks solution.cgns
     zone = cgns.read(result.path / "solution.cgns").child("Base").child("Zone")
     assert "fuselage" not in zone.child("ZoneBC").children

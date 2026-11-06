@@ -205,3 +205,26 @@ inline void require_constructed(const autan::Mesh& mesh, const std::string& name
 }
 
 }  // namespace autan_test
+
+#if defined(__linux__)
+#include <malloc.h>
+
+// A /proc/self/status field, in bytes.
+inline std::int64_t status_bytes(const std::string& key) {
+  std::ifstream in("/proc/self/status");
+  for (std::string line; std::getline(in, line);) {
+    if (line.rfind(key + ":", 0) == 0) return std::stoll(line.substr(key.size() + 1)) * 1024;
+  }
+  return -1;
+}
+
+// The peak resident memory `run` adds while it runs.
+template <class Run>
+std::int64_t peak_of(const Run& run) {
+  malloc_trim(0);  // freed memory the allocator kept would otherwise hide what `run` allocates
+  const std::int64_t before = status_bytes("VmRSS");
+  std::ofstream("/proc/self/clear_refs") << "5";  // VmHWM := VmRSS
+  run();
+  return status_bytes("VmHWM") - before;
+}
+#endif

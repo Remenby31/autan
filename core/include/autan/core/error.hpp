@@ -30,6 +30,7 @@ enum class ErrorCode : std::uint16_t {
   mesh_periodic_unmatched = 119,
   geometry_degenerate_face = 120,
   geometry_non_positive_volume = 121,
+  mesh_text_too_long = 122,
   io_cannot_open = 130,
   io_unknown_format = 131,
   io_malformed = 132,

@@ -115,7 +115,8 @@ class Cursor {
     T value{};
     const auto [end, ec] = std::from_chars(t.data(), t.data() + t.size(), value, base);
     if (ec != std::errc() || end != t.data() + t.size()) {
-      fail("expected an integer, found '" + std::string(t) + "'");
+      fail("expected an integer, found '" + std::string(t.substr(0, 64)) +
+           (t.size() > 64 ? "...'" : "'"));
     }
     return value;
   }
@@ -125,7 +126,8 @@ class Cursor {
     double value{};
     const auto [end, ec] = std::from_chars(t.data(), t.data() + t.size(), value);
     if (ec != std::errc() || end != t.data() + t.size()) {
-      fail("expected a number, found '" + std::string(t) + "'");
+      fail("expected a number, found '" + std::string(t.substr(0, 64)) +
+           (t.size() > 64 ? "...'" : "'"));
     }
     return value;
   }

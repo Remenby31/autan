@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, model_validator
+
+from autan.initial_state import Text, unique_members
+from autan.texts import load_json, number
 
 SCHEMA = "autan.face-states/1"
 VARIABLES = ("density", "velocity-x", "velocity-y", "velocity-z", "pressure")
@@ -31,9 +33,14 @@ class ZoneStates(_Strict):
         return self
 
 
+# The zones a face-state file may give: the runtime holds about 120 B per zone member before it
+# pairs them (face-states.md).
+ZONES_MAX = 16_384
+
+
 class FaceStates(_Strict):
     schema_: Literal["autan.face-states/1"] = Field(alias="schema")
-    oracle: str
+    oracle: Text
     mesh_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
     variables: tuple[
         Literal["density"],
@@ -42,13 +49,18 @@ class FaceStates(_Strict):
         Literal["velocity-z"],
         Literal["pressure"],
     ]
-    zones: dict[str, ZoneStates]
+    zones: Annotated[dict[str, ZoneStates], Field(max_length=ZONES_MAX)]
 
 
 def parse(data: bytes) -> FaceStates | str:
     """The document in ``data``, or why it is not a valid one."""
     try:
-        document = json.loads(data)
+        document = load_json(
+            data,
+            object_pairs_hook=unique_members,
+            parse_float=number(float),
+            parse_int=number(int),
+        )
     except ValueError as error:
         return str(error)
     try:
