@@ -1638,13 +1638,14 @@ std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverI
 #endif
 
 // EulerPhysics::restart_fields' names: the conserved variables, the averaging sums and weight,
-// the steady solver's state, one circulation per point vortex.
+// SA's transported variable, the steady solver's state, one circulation per point vortex.
 std::vector<std::string> euler_restart_names(const runtime::SolverInput& in, bool averaging) {
   std::vector<std::string> out(conserved_names.begin(), conserved_names.end());
   if (averaging) {
     for (const char* name : field_names) out.push_back(std::string("AverageSum") + name);
     out.emplace_back("AverageWeight");
   }
+  if (in.turbulence.model == "sa") out.emplace_back("DensityNuTilde");
   if (in.time.kind == "steady") {
     out.insert(out.end(),
                {"SolverPenalty", "SolverShortened", "SolverSecondOrder", "SolverFirstOrderSteps"});
@@ -1695,10 +1696,11 @@ void register_navier_stokes(runtime::PhysicsRegistry& registry) {
   // One rank only: NavierStokes<P> and SpalartAllmaras<P> fill no ghost cells of their own.
   for (const char* model : {"laminar", "sa"}) {
     registry.add({"compressible", model, "fp64", "cpu"},
-                 factory<kernels::fp64, NavierStokes<kernels::fp64>>(), navier_stokes_scope);
+                 factory<kernels::fp64, NavierStokes<kernels::fp64>>(), navier_stokes_scope,
+                 /*several_ranks=*/false, {}, euler_restart_names);
     registry.add({"compressible", model, "fp32+acc64", "cpu"},
                  factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>(),
-                 navier_stokes_scope);
+                 navier_stokes_scope, /*several_ranks=*/false, {}, euler_restart_names);
   }
 }
 
