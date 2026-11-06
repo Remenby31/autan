@@ -2208,6 +2208,7 @@ class Run final : public Log {
                   {"time", steady ? Json(nullptr) : Json(step_time)},
                   {"residuals", residuals},
                   {"monitors", Json::object()}};
+      if (steady) record["provisional"] = report.provisional;
       for (std::size_t m = 0; m < in.monitors.size(); ++m) {
         const auto& monitor = in.monitors[m];
         if (it % monitor.every != 0) continue;

@@ -470,6 +470,14 @@ class History:
         return np.array([r["residuals"][equation] for r in self._records], dtype=np.float64)
 
     @property
+    def provisional(self) -> NDArray[np.bool_] | None:
+        """Whether each line's iteration was provisional (a steady run's first-order start, which
+        counts towards no round-off plateau); None for an unsteady run."""
+        if not self._records or "provisional" not in self._records[0]:
+            return None
+        return np.array([r["provisional"] for r in self._records], dtype=np.bool_)
+
+    @property
     def equations(self) -> list[str]:
         return list(self._records[0]["residuals"]) if self._records else []
 
@@ -901,8 +909,13 @@ def history_problems(records: list[dict[str, Any]], run: RunInfo, case: CaseSpec
     previous = 0
     for record in records:
         where = f"iteration {record.get('iteration')!r}"
-        if set(record) != {"iteration", "time", "residuals", "monitors"}:
-            return [f"{where}: keys must be iteration, time, residuals, monitors"]
+        keys = {"iteration", "time", "residuals", "monitors"} | (
+            {"provisional"} if steady else set()
+        )
+        if set(record) != keys:
+            return [f"{where}: keys must be {', '.join(sorted(keys))}"]
+        if steady and not isinstance(record["provisional"], bool):
+            found.append(f"{where}: provisional must be true or false")
         iteration = record["iteration"]
         if not isinstance(iteration, int) or isinstance(iteration, bool) or iteration <= previous:
             return [f"{where}: iterations must be increasing integers"]

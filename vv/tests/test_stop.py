@@ -160,21 +160,24 @@ def test_an_fp32_run_may_converge_on_a_round_off_plateau_within_ten_floors(
 ) -> None:
     floors = dict.fromkeys(EQUATIONS, 1e-8)
 
-    def run(stop: int, value: float, plateau: list[str]) -> Path:
+    def run(stop: int, value: float, plateau: list[str], provisional: int = 0) -> Path:
         # A new reference at iteration 2, then the same value: on a plateau from iteration 102.
         return freestream_run(
             precision="fp32+acc64",
             residuals=lines(1.0, *[value] * (stop - 1)),
             convergence=Convergence(floor=floors, plateau=plateau),
+            provisional=provisional,
         )
 
     verify([run(102, 5e-8, EQUATIONS)], "freestream")
-    # Later: a first-order start of 49 iterations puts it there, and one of 201, the longest
-    # (euler.md#time-stepping), at 302 but no later: no prefix fits 303, and the refusal
-    # reports where the run stops without one, 102.
-    verify([run(150, 5e-8, EQUATIONS)], "freestream")
-    verify([run(302, 5e-8, EQUATIONS)], "freestream")
-    assert refused(run(303, 5e-8, EQUATIONS)) == {"iteration": 102, "equation": None}
+    # 49 provisional lines: the first counted one, iteration 50, is the reference, and the
+    # plateau holds 100 counted iterations later, at 150, not before; unmarked, at 102.
+    verify([run(150, 5e-8, EQUATIONS, provisional=49)], "freestream")
+    assert refused(run(149, 5e-8, EQUATIONS, provisional=49)) == {
+        "iteration": 149,
+        "equation": "density",
+    }
+    assert refused(run(150, 5e-8, EQUATIONS)) == {"iteration": 102, "equation": None}
     assert refused(run(102, 5e-8, [])) == {"iteration": 102, "equation": None}
     # Above ten floors, or before 100 iterations without a new reference.
     assert refused(run(102, 2e-7, EQUATIONS)) == {"iteration": 102, "equation": "density"}
