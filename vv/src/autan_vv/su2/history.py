@@ -196,16 +196,17 @@ SU2_FREESTREAM = {"Static Pressure": "pressure", "Density": "density", "Total En
 
 
 def su2_freestream(log: str) -> dict[str, float]:
-    """The freestream SU2 prints in its log ("Initial and free-stream conditions", dimensional
-    values, SI units): pressure, density, total energy per unit mass, speed and dynamic viscosity.
-    V0904 if one is missing."""
+    """The freestream SU2 prints in its log ("Initial and free-stream conditions"), in the units
+    its residuals are in (the "Non-dim. value" column, the dimensional one when
+    REF_DIMENSIONALIZATION is DIMENSIONAL): pressure, density, total energy per unit mass, speed
+    and, for a viscous run, dynamic viscosity. V0904 if one of the first four is missing."""
     found: dict[str, float] = {}
     section = log.split("-- Initial and free-stream conditions:", 1)[-1]
     for line in section.splitlines():
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) >= 2 and cells[0] in SU2_FREESTREAM and SU2_FREESTREAM[cells[0]] not in found:
-            found[SU2_FREESTREAM[cells[0]]] = float(cells[1])
-    missing = set(SU2_FREESTREAM.values()) - set(found)
+        if len(cells) == 5 and cells[0] in SU2_FREESTREAM and SU2_FREESTREAM[cells[0]] not in found:
+            found[SU2_FREESTREAM[cells[0]]] = float(cells[4])
+    missing = set(SU2_FREESTREAM.values()) - {"viscosity"} - set(found)
     if missing:
         msg = f"SU2 log: no freestream {sorted(missing)}"
         raise VVError(msg, code="V0904")
@@ -220,13 +221,14 @@ def flux_scales(
     times the kinematic viscosity, SU2's FREESTREAM_NU_FACTOR)."""
     rho, u = freestream["density"], freestream["speed"]
     enthalpy = freestream["energy"] + freestream["pressure"] / rho
-    nu_tilde = nu_factor * freestream["viscosity"] / rho
     momentum = rho * u * u * length
-    return {
+    scales = {
         "density": rho * u * length, "momentum-x": momentum, "momentum-y": momentum,
         "momentum-z": momentum, "energy": rho * u * enthalpy * length,
-        "nu-tilde": nu_tilde * u * length,
     }  # fmt: skip
+    if "viscosity" in freestream:
+        scales["nu-tilde"] = nu_factor * freestream["viscosity"] / rho * u * length
+    return scales
 
 
 def stationary(
@@ -241,11 +243,16 @@ def stationary(
 
 
 def epsilon(
-    history: History, scales: dict[str, float], outputs: Sequence[str], rtol: float = RTOL
+    history: History,
+    scales: dict[str, float],
+    outputs: Sequence[str],
+    rtol: float = RTOL,
+    window: int = WINDOW,
 ) -> float:
     """The baseline's level of #493: the largest scaled residual at the first iteration from which
     every output in `outputs` (History field names, e.g. "cd") stays within `rtol` of its final
-    value. V0904 if the history never settles."""
+    value. V0904 unless the outputs then stay there for at least `window` iterations: a baseline
+    runs to its floor."""
     settled = np.ones(len(history.iterations), dtype=bool)
     for name in outputs:
         f = getattr(history, name)
@@ -253,8 +260,8 @@ def epsilon(
         # Within from that iteration to the end: a suffix of True.
         settled &= np.flip(np.logical_and.accumulate(np.flip(within)))
     hits = np.flatnonzero(settled)
-    if hits.size == 0:
-        msg = "the baseline history never settles"
+    if hits.size == 0 or len(history.iterations) - int(hits[0]) <= window:
+        msg = f"the baseline's outputs do not stay settled for {window} iterations"
         raise VVError(msg, code="V0904")
     k = int(hits[0])
     return max(float(r[k]) / scales[eq] for eq, r in history.residuals.items())

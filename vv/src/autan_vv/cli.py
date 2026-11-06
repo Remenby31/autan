@@ -298,9 +298,11 @@ def _cmd_su2_flatplate(args: argparse.Namespace) -> None:
                 value = f"{est['estimate']:.6e}" if "estimate" in est else est["error"]
                 _say(f"{model} {reading} continuum {key}: {value}")
             _say(f"{model} {reading} gate M3: {'PASS' if data[reading]['pass'] else 'FAIL'}")
+    # With --absolute, the reading of #493 decides; otherwise every reading must pass.
     readings = [
         r for data in report["models"].values()
-        for r in (data, data.get("amended", data), data.get("absolute", data))
+        for r in ([data["absolute"]] if "absolute" in data
+                  else [data, data.get("amended", data)])
     ]  # fmt: skip
     if not all(r["pass"] for r in readings):
         raise SystemExit(1)

@@ -867,7 +867,14 @@ CFL3D_CD = {816: 0.295438152e-2, 3264: 0.288437885e-2, 13056: 0.286620917e-2,
 
 
 def _flat_plate_run(
-    run: Path, model: str, cells: int, drop: float, first: float = -2.0, nu: float = 0.0
+    run: Path,
+    model: str,
+    cells: int,
+    drop: float,
+    first: float = -2.0,
+    nu: float = 0.0,
+    rows: int = 30,
+    settle: float = 0.0,
 ) -> None:
     from autan_vv.su2 import flatplate  # noqa: PLC0415
 
@@ -888,17 +895,17 @@ def _flat_plate_run(
     header = (DATA / "su2-v8.6.0-flatplate-35x25-history.csv").read_text().split("\n")[0]
     names = [h.strip().strip('"') for h in header.split(",")]
     lines = [header]
-    for i in range(30):
-        rms = first - drop * i / 29
-        row = {"Inner_Iter": i, "Time(sec)": 0.01, "CD": CFL3D_CD[cells]}
+    for i in range(rows):
+        rms = first - drop * i / (rows - 1)
+        row = {"Inner_Iter": i, "Time(sec)": 0.01, "CD": CFL3D_CD[cells] * (1 + settle * 0.97**i)}
         lines.append(",".join(
             str(row.get(n, rms + nu * (n == "rms[nu]") if n.startswith("rms[") else 0.0))
             for n in names
         ))  # fmt: skip
     (run / "history.csv").write_text("\n".join(lines) + "\n")
-    rows = ['"PointID","x","y","Skin_Friction_Coefficient_x"']
-    rows += [f"{k}, {x}, 0.0, {CFL3D_CF[cells]!r}" for k, x in enumerate((0.0, 0.5, 1.5, 2.0))]
-    (run / f"{flatplate.SURFACE}.csv").write_text("\n".join(rows) + "\n")
+    surface = ['"PointID","x","y","Skin_Friction_Coefficient_x"']
+    surface += [f"{k}, {x}, 0.0, {CFL3D_CF[cells]!r}" for k, x in enumerate((0.0, 0.5, 1.5, 2.0))]
+    (run / f"{flatplate.SURFACE}.csv").write_text("\n".join(surface) + "\n")
 
 
 def test_flat_plate_report_against_tmr(tmp_path: Path) -> None:
@@ -922,11 +929,36 @@ def test_flat_plate_report_against_tmr(tmp_path: Path) -> None:
     assert model["continuum"]["cd"]["estimate"] == pytest.approx(2.85924e-3, abs=5e-9)
     assert all(lv["gap"]["CFL3D"] == {"cf": 0.0, "cd": 0.0} for lv in model["levels"])
     assert model["pass"]
-    # The absolute criterion of #493 judges every run, from the published runs' own histories
-    # and logs; thirty iterations are fewer than the 500 over which CD must stay stationary.
-    absolute = flatplate.results(root, cache, ("sa-noft2",), absolute=root)["models"]["sa-noft2"]
-    assert [lv["absolute"]["converged"] for lv in absolute["levels"]] == [False] * 5
-    assert absolute["absolute"]["continuum"]["cf"] == {"error": "not converged"}
+    # The absolute criterion of #493 needs a baseline whose CD settles for a window: thirty
+    # iterations are not one.
+    with pytest.raises(VVError) as err:
+        flatplate.results(root, cache, ("sa-noft2",), absolute=root)
+    assert err.value.code == "V0904"
+    # Runs of 900 iterations whose CD is CFL3D's times 1 + 1e-3 0.97^i: CD is within 1e-7 of its
+    # final value from i = 303 (0.97^i <= 1e-4), so it has been stationary over 500 iterations
+    # from i = 803, the 804th iteration; the residuals are below their thresholds from 303 on.
+    settled = tmp_path / "settled"
+    for cells in CFL3D_CF:
+        _flat_plate_run(settled / "sa-noft2" / f"n{cells}", "sa-noft2", cells, drop=11.0,
+                        rows=900, settle=1e-3)  # fmt: skip
+    absolute = flatplate.results(settled, cache, ("sa-noft2",), absolute=settled)
+    absolute = absolute["models"]["sa-noft2"]
+    assert [lv["absolute"]["iterations"] for lv in absolute["levels"]] == [804] * 5
+    assert absolute["absolute"]["continuum"]["cd"]["estimate"] == pytest.approx(
+        2.85924e-3, abs=5e-9
+    )
+    # The stop.csv `prepare --absolute` writes stops the runner's watcher on that history.
+    finest = settled / "sa-noft2" / "n208896"
+    mesh = hashlib.sha256((finest / "m.su2").read_bytes()).hexdigest()
+    (finest / "stop.csv").write_text(flatplate.stop_csv(flatplate.stop_rule(finest, mesh)))
+    (finest / "watch.awk").write_text(_watcher("run.sh"))
+    cmd = ["awk", "-F,", "-v", "orders=10", "-v", "stall=2000", "-v", "skipzero=0", "-v",
+           "stopfile=stop.csv", "-f", "watch.awk", "history.csv"]  # fmt: skip
+    assert subprocess.run(cmd, cwd=finest, check=False).returncode == 0
+    # Its first 800 iterations do not meet it yet.
+    lines = (finest / "history.csv").read_text().splitlines()
+    (finest / "history.csv").write_text("\n".join(lines[:801]) + "\n")
+    assert subprocess.run(cmd, cwd=finest, check=False).returncode == 1
     # A variant whose first residuals are three orders lower stops 8.5 orders down, at or below the
     # levels the published runs had at the criterion: not converged by the protocol's rule, so no
     # estimate, but converged by the amended one (#195), with CFL3D's continuum again. The
@@ -1011,3 +1043,14 @@ def test_absolute_criterion_does_not_depend_on_the_initial_state() -> None:
         1.32905 * 69.4448 * (217705.0 + 114455.0 / 1.32905), rel=1e-15
     )
     assert flux["nu-tilde"] == pytest.approx(3.0 * 1.84592e-05 / 1.32905 * 69.4448, rel=1e-15)
+    # The residuals are in the solver's units, the "Non-dim. value" column; an Euler run prints no
+    # viscosity and has no SA scale.
+    table = (DATA / "su2-v8.6.0-flatplate-35x25-log-freestream.txt").read_text()
+    pressure = "|       Static Pressure|        114455|             1|        Pa|        114455|"
+    assert pressure in table
+    euler = table.replace(pressure, pressure[: -len("114455|")] + "0.7142857|")
+    euler = "\n".join(line for line in euler.splitlines() if "Viscosity" not in line)
+    fs = history.su2_freestream(euler)
+    assert fs["pressure"] == 0.7142857
+    assert "viscosity" not in fs
+    assert "nu-tilde" not in history.flux_scales(fs, 1.0)

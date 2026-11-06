@@ -38,9 +38,10 @@ stop_when_done() {
           nf = NF
           for (i = 1; i <= NF; i++) {
             name = $i; gsub(/[" ]/, "", name)
-            if (name ~ /^rms\[/) { col[i] = 1; level[i] = limit[name]; if (absolute && !(name in limit)) bad = 1 }
-            if (name in want) out[i] = 1
+            if (name ~ /^rms\[/) { col[i] = 1; if (name in limit) level[i] = limit[name]; else if (absolute) bad = 1 }
+            if (name in want) { out[i] = 1; seen[name] = 1 }
           }
+          for (name in want) if (!(name in seen)) bad = 1
           next
         }
         # SU2 writes the history in buffered blocks: its last line may be cut short.
@@ -53,7 +54,7 @@ stop_when_done() {
           for (i in out) val[NR, i] = $i + 0
           if (!above) started = 0
           else if (!started || staller < ref - 0.1) { ref = staller; since = NR; started = 1 }
-          else if (NR - since >= stall) found = 1
+          stalled = above && NR - since >= stall
           last = NR; lastabove = above
           next
         }
@@ -78,6 +79,8 @@ stop_when_done() {
           if (NR > stall + 2 && best[NR - stall] - best[NR] < 0.1) found = 1
         }
         END {
+          # A stall is judged at the last row, so a run that recovers is not stopped for an old one.
+          if (absolute && stalled) found = 1
           if (absolute && !bad && last && !lastabove && last - 1 > window) {
             still = 1
             for (i in out) {

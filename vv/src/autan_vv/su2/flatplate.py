@@ -340,9 +340,11 @@ def prepare(
                 "mesh": asdict(record),
             }
             if absolute is not None:
-                rule = stop_rule(absolute / MODEL_REFERENCE / run.name)
-                (run / "stop.csv").write_text(_stop_csv(rule))
-                level["stop"] = {**rule, "stop_csv_sha256": _sha256(_stop_csv(rule).encode())}
+                rule = stop_rule(absolute / MODEL_REFERENCE / run.name, record.file_sha256)
+                (run / "stop.csv").write_text(stop_csv(rule))
+                level["stop"] = {**rule, "stop_csv_sha256": _sha256(stop_csv(rule).encode())}
+            else:
+                (run / "stop.csv").unlink(missing_ok=True)
             (run / "level.json").write_text(json.dumps(level, indent=2) + "\n")
             dirs.append(run)
     return dirs
@@ -354,12 +356,21 @@ OUTPUTS = ("cd",)
 SU2_COLUMNS = {eq: col for col, eq in {**history.SU2_2D, **history.SU2_TURBULENCE}.items()}
 
 
-def stop_rule(baseline: Path) -> dict[str, Any]:
+def stop_rule(baseline: Path, mesh_sha256: str) -> dict[str, Any]:
     """The absolute criterion of #493 for one grid, from the published configuration's run on it
     (`baseline`): flux scales from the freestream in SU2's log and the configuration's reference
     length and FREESTREAM_NU_FACTOR (SU2's default 3), epsilon from its history (OUTPUTS, RTOL),
-    and each equation's threshold epsilon times its scale. V0904 if the run is not usable."""
+    and each equation's threshold epsilon times its scale. V0905 if `baseline` is not SU2's
+    published configuration (PUBLISHED_SHA256) on the mesh `mesh_sha256`; V0904 if the run is not
+    usable, its outputs not settled for a window included."""
     meta, runs = _history(baseline, MODEL_REFERENCE)
+    published = meta["level"]
+    if (
+        published.get("published_sha256") != PUBLISHED_SHA256
+        or published["mesh"]["file_sha256"] != mesh_sha256
+    ):
+        msg = f"{baseline}: not SU2's published configuration on this mesh"
+        raise VVError(msg, code="V0905")
     cfg = options((baseline / "case.cfg").read_text())
     freestream = history.su2_freestream((baseline / "log.txt").read_text())
     scales = history.flux_scales(
@@ -377,7 +388,9 @@ def stop_rule(baseline: Path) -> dict[str, Any]:
     }  # fmt: skip
 
 
-def _stop_csv(rule: dict[str, Any]) -> str:
+def stop_csv(rule: dict[str, Any]) -> str:
+    """The stop.csv the runner reads (vv/su2/run.sh): each SU2 residual column's log10 threshold,
+    the outputs kept stationary, the window and the tolerance of `rule` (`stop_rule`)."""
     lines = [
         f"threshold,{SU2_COLUMNS[eq]},{float(np.log10(t))!r}"
         for eq, t in rule["thresholds"].items()
@@ -454,8 +467,11 @@ def _run(
         "case_sha256": level["case_sha256"], "mesh_sha256": level["mesh"]["file_sha256"],
         "source_sha256": level["mesh"]["source_sha256"],
     }  # fmt: skip
+    if prov.get("stop", {}).get("stop_csv_sha256") and "stop" not in level:
+        msg = f"{run}: ran with a stop.csv its level.json does not record"
+        raise VVError(msg, code="V0905")
     if absolute is not None:
-        rule = stop_rule(absolute / MODEL_REFERENCE / run.name)
+        rule = stop_rule(absolute / MODEL_REFERENCE / run.name, level["mesh"]["file_sha256"])
         stop = level.get("stop")
         if stop is not None and (
             stop["thresholds"] != rule["thresholds"]
