@@ -170,7 +170,9 @@ jobs:
     # autan-bench and the runner hook, without a GPU (the GPU tests skip here and run in gpu-bench).
     name: Bench harness
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Measured on main on 2026-11-05: 8 to 9 min 45 s on a hosted runner (test_ctest_watchdog 3 min 45,
+    # test_campaign 2 min 30, the host guard 35 s), at 10 min the next added test cancels it.
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
