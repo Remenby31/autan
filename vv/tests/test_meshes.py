@@ -361,10 +361,10 @@ def test_vortex_families_are_periodic_and_nested(kind: str, tmp_path: Path) -> N
         gmsh.finalize()
 
 
-# Perturbed n = 6 files, perturbation 0.3, seed 2026, written by generate_level: measured
-# identical on x86-64 Linux and macOS arm64 (Gmsh has no aarch64 Linux wheel). Gmsh's builds
-# enumerate the same tetrahedra in other orders, and the perturbation must not depend on the CPU's
-# arithmetic: the files must show neither (#495).
+# Perturbed n = 6 files, perturbation 0.3, seed 2026, written by generate_level, as on x86-64
+# Linux, where CI and the vv-meshes workflow run (identical on every x86-64 runner measured). Our
+# perturbation, element order and geometry are platform-independent (#495); Gmsh's own
+# tetrahedralisation is not: macOS arm64 gives these two files but other tet meshes at other n.
 FILE_N6_SHA256 = {
     "tet": "a81fbda14c03eeea6382e2c32d6d44ffeeb7ef92c5804cc8015cd0c94b55f3db",
     "hybrid": "bfdc2d311e5de7b374787a97a95f876138957b50e549ee35ca8b7f56e902be5f",
