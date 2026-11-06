@@ -228,6 +228,7 @@ PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& g, const GlobalKe
       }
       continue;
     }
+    p.all_planar = false;
     std::size_t start = 0;
     for (std::size_t i = 1; i < nn; ++i) {
       if (point(i) < point(start)) {
