@@ -16,7 +16,7 @@ from itertools import pairwise
 import numpy as np
 
 from autan_vv.errors import VVError
-from autan_vv.meshes.facemesh import FaceMesh, FloatArray, IntArray, from_faces
+from autan_vv.meshes.facemesh import FaceMesh, FloatArray, IntArray, dot3, from_faces
 
 _TET_EDGES = ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3))
 _TET_FACES = ((0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3))
@@ -175,7 +175,7 @@ def median_dual(
         width = max(len(r) for r in rings)
         out = np.full((len(rings), width), -1, dtype=np.int64)
         for i, (r, d) in enumerate(zip(rings, direction, strict=True)):
-            rr = r if float(_newell(all_points[r]) @ d) > 0.0 else r[::-1]
+            rr = r if float(dot3(_newell(all_points[r]), d)) > 0.0 else r[::-1]
             out[i, : len(rr)] = rr
         return out
 

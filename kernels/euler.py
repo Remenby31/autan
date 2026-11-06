@@ -707,6 +707,83 @@ roe_faces = face_loop(roe_face, **FACE_ARGS, out=Inc(res, left=+1, right=-1))
 hllc_faces = face_loop(hllc_face, **FACE_ARGS, out=Inc(res, left=+1, right=-1))
 ausm_faces = face_loop(ausm_face, **FACE_ARGS, minf=mach_ref, out=Inc(res, left=+1, right=-1))
 
+
+# The same fluxes without the warped-face term, for meshes whose faces are all planar
+# (PackedGeometry::all_planar): there M = 0 exactly and that term is a signed zero wherever its
+# arithmetic stays finite.
+
+
+@pointwise
+def roe_face_planar(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    wr: State.Vec5,
+    gr: Grad.Mat53,
+    pr: State.Vec5,
+    xr: Geom.Vec3,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    g: Param,
+    pref: Param,
+) -> Residual.Vec5:
+    fl = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    fr = reconstruct(wr, gr, pr, rel(xf, xr), pref)
+    return area * roe(fl, fr, n, g, pref)
+
+
+@pointwise
+def hllc_face_planar(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    wr: State.Vec5,
+    gr: Grad.Mat53,
+    pr: State.Vec5,
+    xr: Geom.Vec3,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    g: Param,
+    pref: Param,
+) -> Residual.Vec5:
+    fl = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    fr = reconstruct(wr, gr, pr, rel(xf, xr), pref)
+    return area * hllc(fl, fr, n, g, pref)
+
+
+@pointwise
+def ausm_face_planar(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    wr: State.Vec5,
+    gr: Grad.Mat53,
+    pr: State.Vec5,
+    xr: Geom.Vec3,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    g: Param,
+    pref: Param,
+    minf: Param,
+) -> Residual.Vec5:
+    fl = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    fr = reconstruct(wr, gr, pr, rel(xf, xr), pref)
+    return area * ausm_up(fl, fr, n, g, minf, pref)
+
+
+PLANAR_FACE_ARGS = {k: v for k, v in FACE_ARGS.items() if k != "m"}
+roe_faces_planar = face_loop(roe_face_planar, **PLANAR_FACE_ARGS, out=Inc(res, left=+1, right=-1))
+hllc_faces_planar = face_loop(hllc_face_planar, **PLANAR_FACE_ARGS, out=Inc(res, left=+1, right=-1))
+ausm_faces_planar = face_loop(
+    ausm_face_planar, **PLANAR_FACE_ARGS, minf=mach_ref, out=Inc(res, left=+1, right=-1)
+)
+
 # The same fluxes with their face Jacobians dF/dW_L and dF/dW_R, the reconstruction's gradients
 # and limiter held fixed: the approximate Jacobian of the implicit solvers, fused with the residual.
 face_jac = faces.field("face_jac", Jac.shape(2, 5, 5))
@@ -817,6 +894,91 @@ roe_boundaries = boundary_loop(roe_boundary, **BOUNDARY_ARGS, out=Inc(res, left=
 hllc_boundaries = boundary_loop(hllc_boundary, **BOUNDARY_ARGS, out=Inc(res, left=+1))
 ausm_boundaries = boundary_loop(
     ausm_boundary, **BOUNDARY_ARGS, minf=mach_ref, out=Inc(res, left=+1)
+)
+
+
+@pointwise
+def roe_boundary_planar(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    kind: Geom,
+    data: State.Vec5,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    g: Param,
+    pref: Param,
+    rgas: Param,
+) -> Residual.Vec5:
+    wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    wb = boundary_value(wf, kind, data, n, g, rgas, pref)
+    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
+        f = area * wall_flux(wf, n)
+    else:
+        f = area * roe(wf, wb, n, g, pref)
+    return f
+
+
+@pointwise
+def hllc_boundary_planar(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    kind: Geom,
+    data: State.Vec5,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    g: Param,
+    pref: Param,
+    rgas: Param,
+) -> Residual.Vec5:
+    wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    wb = boundary_value(wf, kind, data, n, g, rgas, pref)
+    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
+        f = area * wall_flux(wf, n)
+    else:
+        f = area * hllc(wf, wb, n, g, pref)
+    return f
+
+
+@pointwise
+def ausm_boundary_planar(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    kind: Geom,
+    data: State.Vec5,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    g: Param,
+    pref: Param,
+    rgas: Param,
+    minf: Param,
+) -> Residual.Vec5:
+    wf = reconstruct(wl, gl, pl, rel(xf, xl), pref)
+    wb = boundary_value(wf, kind, data, n, g, rgas, pref)
+    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
+        f = area * wall_flux(wf, n)
+    else:
+        f = area * ausm_up(wf, wb, n, g, minf, pref)
+    return f
+
+
+PLANAR_BOUNDARY_ARGS = {k: v for k, v in BOUNDARY_ARGS.items() if k != "m"}
+roe_boundaries_planar = boundary_loop(
+    roe_boundary_planar, **PLANAR_BOUNDARY_ARGS, out=Inc(res, left=+1)
+)
+hllc_boundaries_planar = boundary_loop(
+    hllc_boundary_planar, **PLANAR_BOUNDARY_ARGS, out=Inc(res, left=+1)
+)
+ausm_boundaries_planar = boundary_loop(
+    ausm_boundary_planar, **PLANAR_BOUNDARY_ARGS, minf=mach_ref, out=Inc(res, left=+1)
 )
 
 bnd_jac = faces.field("bnd_jac", Jac.shape(5, 5))
