@@ -52,6 +52,7 @@ def _case(
     precision: str = "fp64",
     time: float | None = None,
     edit: Callable[[autan.Case], None] | None = None,
+    farfield: bool = True,
 ) -> autan.Case:
     oracle = get_oracle(oracle_name)
     case = autan.Case(f"verify-{oracle_name}", mesh=path)
@@ -64,7 +65,8 @@ def _case(
     case.freestream(mach=mach, pressure=1e5 * Pa, temperature=300 * K)
     if time is not None:
         case.time = autan.Unsteady(steps=1, dt=time * s)
-    case.boundary("*").farfield()
+    if farfield:  # a manufactured solution gives every boundary its data instead (E0416)
+        case.boundary("*").farfield()
     if edit is not None:
         edit(case)
     return case
@@ -624,7 +626,7 @@ def test_fp32_agreement_compares_the_manufactured_solution_by_its_sha256(
         def edit(case: autan.Case) -> None:
             case.verification = autan.Manufactured(path=str(out / "navier_stokes.json"), sha256=sha)
 
-        return _runs(out, meshes, "mms-euler", 2.0, precision=precision, edit=edit)
+        return _runs(out, meshes, "mms-euler", 2.0, precision=precision, edit=edit, farfield=False)
 
     double = runs(tmp_path / "fp64", "fp64", "a" * 64)
     single = runs(tmp_path / "fp32", "fp32+acc64", "a" * 64 if same_solution else "b" * 64)
