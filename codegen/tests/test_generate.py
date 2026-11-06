@@ -189,3 +189,30 @@ def test_generated_sources_do_not_depend_on_string_hashing(tmp_path: Path) -> No
         generated.append({f.name: f.read_bytes() for f in sorted(out.iterdir())})
     assert generated[0]
     assert all(g == generated[0] for g in generated[1:])
+
+
+@pytest.mark.parametrize("module", ["branches", "roe"])
+def test_two_checkouts_generate_the_same_text_relative_to_their_source_root(
+    tmp_path: Path, module: str
+) -> None:
+    # #line directives name the DSL source relative to --source-root, not by an absolute path.
+    # roe's Metal source spans several raw-string chunks, whose boundaries a path length moved.
+    text = BRANCHES if module == "branches" else (ROOT / "kernels" / "roe.py").read_text()
+    generated = []
+    for checkout in ("one", "a/longer/second"):
+        root = tmp_path / checkout
+        src = root / "kernels" / f"{module}.py"
+        src.parent.mkdir(parents=True)
+        src.write_text(text)
+        out = root / "generated"
+        subprocess.run(
+            [sys.executable, "-m", "autan_codegen", str(src), "--out", str(out),
+             "--backends", "cpu,gpu,metal", "--source-root", str(root)],
+            check=True,
+        )  # fmt: skip
+        generated.append({f.name: f.read_text() for f in sorted(out.iterdir())})
+    assert generated[0] == generated[1]
+    assert f'"kernels/{module}.py"' in generated[0][f"{module}.hpp"]
+    assert str(tmp_path) not in "".join(generated[0].values())
+    if module == "roe":
+        assert generated[0]["roe_metal.hpp"].count('R"autan_msl(') > 1
