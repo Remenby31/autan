@@ -13,8 +13,10 @@ on:
 
 permissions: {}
 
+# A push runs in a group of its own commit: a group holds one pending run, which the next one
+# replaces, so in a group shared by pushes a push to main could get no run at all.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -67,7 +69,9 @@ jobs:
         working-directory: codegen
         env:
           AUTAN_SPIKE_LIB: ${{ github.workspace }}/build/codegen/libautan_spike_metal.dylib
-        run: uv run --locked pytest tests/test_gpu.py tests/test_metal.py tests/test_jacobian.py --backend metal -m "not slow"
+        run: >-
+          uv run --locked pytest tests/test_gpu.py tests/test_metal.py tests/test_jacobian.py
+          tests/test_face_writes.py --backend metal -m "not slow"
       - name: Euler residual on Metal against the CPU physics
         if: steps.probe.outputs.device == 'true'
         run: build/tests/physics/autan_physics_metal_tests

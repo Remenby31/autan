@@ -9,10 +9,21 @@ export function PlanTable({ plan }: { plan: Plan }) {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap gap-x-8 gap-y-2 text-sm">
-        <span>
+        {/* One rank's host and device memory (one pool on a CPU or a GB10), then all ranks'. */}
+        <span data-testid="plan-memory">
           <span className="text-fg-3">Memory </span>
           <span className="font-mono">
-            {formatBytes(plan.memory.bytes_per_gpu)} / GPU × {plan.memory.gpus}
+            {formatBytes(plan.memory.bytes_per_gpu)} per rank
+            <span className="text-fg-3">
+              {" "}
+              ({formatBytes(plan.memory.bytes_host)} host
+              {plan.memory.device_kind === "cpu"
+                ? ", cpu"
+                : ` · ${formatBytes(plan.memory.bytes_device)} ${plan.memory.device_kind}`}
+              )
+            </span>{" "}
+            × {plan.memory.gpus} {plan.memory.gpus === 1 ? "rank" : "ranks"} ={" "}
+            {formatBytes(plan.memory.bytes_total)}
           </span>
         </span>
         <span>

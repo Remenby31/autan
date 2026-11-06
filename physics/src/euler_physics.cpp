@@ -15,6 +15,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "autan/core/lines.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/euler_device.hpp"
@@ -129,10 +130,14 @@ class EulerPhysics final : public runtime::Physics {
       if (keys_) matrix_->order_rows(*keys_);
       if (in.time.linear_solver == "multigrid") {
         multigrid_.emplace(mesh, ctx.geometry);
-        nlohmann::json nodes = nlohmann::json::array();
-        for (const auto& l : multigrid_->levels()) nodes.push_back(l.n_nodes);
+        nlohmann::json nodes = nlohmann::json::array(), edges = nlohmann::json::array();
+        for (const auto& l : multigrid_->levels()) {
+          nodes.push_back(l.n_nodes);
+          edges.push_back(l.owner.size());
+        }
         ctx.log.write("info", "linear", "agglomeration multigrid", {},
                       nlohmann::json{{"nodes", nodes},
+                                     {"edges", edges},
                                      {"coarsest", multigrid_->direct_coarsest() ? "lu" : "sweeps"}}
                           .dump());
       } else if (in.time.linear_solver == "lines") {
@@ -1196,24 +1201,29 @@ bool same_gas(const runtime::Medium& a, const runtime::Medium& b) {
 // What the Euler physics runs beyond its key: every cell zone of one ideal gas, boundary
 // conditions that apply to inviscid flow, and the multigrid on one rank without periodic pairs.
 std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in, int ranks) {
-  // case-schema.md#time: the coupled turbulence step is SA's, in the host's steady
-  // multigrid on one rank.
-  if (in.time.kind == "steady" && in.time.coupled_turbulence) {
-    if (in.turbulence.model != "sa") {
-      return runtime::PhysicsRefusal{
-          .message =
-              "time.coupled_turbulence needs the SA model, not '" + in.turbulence.model + "'",
-          .path = "time.coupled_turbulence",
-          .data_json = nlohmann::json{{"model", in.turbulence.model}}.dump(),
-          .code = "E0426"};
-    }
-    if (in.time.linear_solver != "multigrid" || ranks > 1) {
-      return runtime::PhysicsRefusal{
-          .message = "time.coupled_turbulence runs in the host multigrid on one rank",
-          .path = "time.coupled_turbulence",
-          .data_json =
-              nlohmann::json{{"linear_solver", in.time.linear_solver}, {"ranks", ranks}}.dump(),
-          .code = "E0427"};
+  // case-schema.md#time: the opt-in steps, the coupled turbulence step SA's and the matrix-free
+  // step laminar flow's, in the host's steady multigrid on one rank.
+  if (in.time.kind == "steady") {
+    for (const auto& [key, on, model, code] :
+         {std::tuple{"coupled_turbulence", in.time.coupled_turbulence, "sa", "E0426"},
+          std::tuple{"matrix_free", in.time.matrix_free, "laminar", "E0429"}}) {
+      if (!on) continue;
+      const std::string path = std::string("time.") + key;
+      if (in.turbulence.model != model) {
+        return runtime::PhysicsRefusal{
+            .message = path + " needs the " + model + " model, not '" + in.turbulence.model + "'",
+            .path = path,
+            .data_json = nlohmann::json{{"model", in.turbulence.model}}.dump(),
+            .code = code};
+      }
+      if (in.time.linear_solver != "multigrid" || ranks > 1) {
+        return runtime::PhysicsRefusal{
+            .message = path + " runs in the host multigrid on one rank",
+            .path = path,
+            .data_json =
+                nlohmann::json{{"linear_solver", in.time.linear_solver}, {"ranks", ranks}}.dump(),
+            .code = "E0427"};
+      }
     }
   }
   // Under reproducibility "ranks" Gauss-Seidel and "lines" sum each row in global face order;
@@ -1314,12 +1324,13 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
 // measure the circulation; the host's steady step does).
 std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverInput& in,
                                                           int ranks) {
-  if (in.time.kind == "steady" && in.time.coupled_turbulence) {
-    return runtime::PhysicsRefusal{
-        .message = "time.coupled_turbulence runs in the host multigrid, not on a device",
-        .path = "time.coupled_turbulence",
-        .data_json = "{}",
-        .code = "E0427"};
+  if (in.time.kind == "steady" && (in.time.coupled_turbulence || in.time.matrix_free)) {
+    const std::string path =
+        in.time.coupled_turbulence ? "time.coupled_turbulence" : "time.matrix_free";
+    return runtime::PhysicsRefusal{.message = path + " runs in the host multigrid, not on a device",
+                                   .path = path,
+                                   .data_json = "{}",
+                                   .code = "E0427"};
   }
   // The device loops sum in local order: the host's global-order gathers have no device
   // counterpart in the Euler physics yet.
@@ -1351,6 +1362,29 @@ std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverI
 }
 #endif
 
+// EulerPhysics::restart_fields' names: the conserved variables, the averaging sums and weight,
+// the steady solver's state, one circulation per point vortex.
+std::vector<std::string> euler_restart_names(const runtime::SolverInput& in, bool averaging) {
+  std::vector<std::string> out(conserved_names.begin(), conserved_names.end());
+  if (averaging) {
+    for (const char* name : field_names) out.push_back(std::string("AverageSum") + name);
+    out.emplace_back("AverageWeight");
+  }
+  if (in.time.kind == "steady") {
+    out.insert(out.end(),
+               {"SolverPenalty", "SolverShortened", "SolverSecondOrder", "SolverFirstOrderSteps"});
+    for (std::size_t k = 0; k < 5; ++k) {
+      out.push_back("SolverReferenceResidual" + std::to_string(k));
+    }
+    out.emplace_back("SolverCflCap");
+  }
+  std::size_t vortices = 0;
+  for (const auto& bc : in.boundaries) {
+    if (bc.point_vortex) out.push_back("VortexCirculation" + std::to_string(vortices++));
+  }
+  return out;
+}
+
 }  // namespace
 
 // linear_solver = "lines": the multigrid's fine lines, computed on the global mesh, which the
@@ -1358,21 +1392,21 @@ std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverI
 runtime::CellGroups euler_groups(const runtime::SolverInput& in, const Mesh& mesh,
                                  const Geometry& geometry) {
   if (in.time.kind != "steady" || in.time.linear_solver != "lines") return {};
-  auto lines = solvers::smoother_lines(mesh, geometry);
+  auto lines = smoother_lines(mesh, geometry);
   if (lines.cells.empty()) return {};
   return {std::move(lines.offsets), std::move(lines.cells)};
 }
 
 void register_euler(runtime::PhysicsRegistry& registry) {
   registry.add({"compressible", "inviscid", "fp64", "cpu"}, factory<kernels::fp64>(), euler_scope,
-               /*several_ranks=*/true, euler_groups);
+               /*several_ranks=*/true, euler_groups, euler_restart_names);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"}, factory<kernels::fp32_acc64>(),
-               euler_scope, /*several_ranks=*/true, euler_groups);
+               euler_scope, /*several_ranks=*/true, euler_groups, euler_restart_names);
 #ifdef AUTAN_PHYSICS_CUDA
   registry.add({"compressible", "inviscid", "fp64", "cuda"}, factory<kernels::fp64>(),
-               euler_device_scope);
+               euler_device_scope, /*several_ranks=*/false, {}, euler_restart_names);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cuda"}, factory<kernels::fp32_acc64>(),
-               euler_device_scope);
+               euler_device_scope, /*several_ranks=*/false, {}, euler_restart_names);
 #endif
 }
 

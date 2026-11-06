@@ -3,7 +3,6 @@
 #include <cstdio>
 #include <filesystem>
 #include <map>
-#include <optional>
 #include <string>
 #include <utility>
 
@@ -21,8 +20,8 @@ class RunDirectory {
   /// to `<run_id>`. Throws std::runtime_error when a step fails.
   RunDirectory(const std::filesystem::path& runs, const std::string& run_id,
                const std::string& run_json, const std::string& case_toml,
-               const std::string& mesh_info_json, const std::string& first_log_line,
-               const std::optional<std::string>& manufactured_json = std::nullopt,
+               const std::string& mesh_info_json, const std::string& first_log_lines,
+               const std::string* manufactured_json = nullptr,
                const std::map<std::string, std::string>& state_files = {});
   /// The published directory `path`, for another rank of the run to append
   /// to and write run.json in.
@@ -38,6 +37,12 @@ class RunDirectory {
   [[nodiscard]] std::filesystem::path solution_staging() const;
   /// Renames the staged solution to solution.cgns.
   void publish_solution();
+  [[nodiscard]] std::filesystem::path checkpoint_staging() const;
+  /// Renames the staged checkpoint over checkpoint.cgns: a kill before the rename leaves the
+  /// previous checkpoint whole.
+  void publish_checkpoint();
+  /// Removes checkpoint.cgns, once the final solution is published.
+  void remove_checkpoint();
 
  private:
   void append(int& fd, const char* name, const std::string& line);

@@ -32,7 +32,10 @@ if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
     target_compile_definitions(autan_halo_tests PRIVATE AUTAN_HAVE_CUDA)
     set(halo_labels mpi gpu)
   endif()
-  # The same tests on 1, 2, 4 and 8 ranks: results must not depend on the count.
+  # The same tests on 1, 2, 4 and 8 ranks: results must not depend on the count. A run takes
+  # about 10 s; 180 s names a hang in ctest's report, and leaves the CI watchdog
+  # (bench/ci/ctest-watchdog.sh, 120 s, then sampling and gdb) the time to dump every rank's
+  # stacks before ctest kills the launcher.
   foreach(ranks 1 2 4 8)
     add_test(
       NAME autan_halo_tests_${ranks}_ranks
@@ -42,7 +45,7 @@ if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
     )
     set_tests_properties(
       autan_halo_tests_${ranks}_ranks
-      PROPERTIES PROCESSORS ${ranks} TIMEOUT 600 LABELS "${halo_labels}"
+      PROPERTIES PROCESSORS ${ranks} TIMEOUT 180 LABELS "${halo_labels}"
     )
   endforeach()
 endif()

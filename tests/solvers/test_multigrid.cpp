@@ -20,6 +20,7 @@
 
 #include "autan/core/cellwise.hpp"
 #include "autan/core/geometry.hpp"
+#include "autan/core/lines.hpp"
 #include "autan/core/mesh.hpp"
 #include "autan/core/renumber.hpp"
 #include "autan/io/read_mesh.hpp"
@@ -450,6 +451,32 @@ TEST_CASE("agglomerates are connected, stay in one cell zone and lines join adja
   }
 }
 
+TEST_CASE("each level keeps at most min_coarsening of the finer level's nodes and edges",
+          "[multigrid]") {
+  // The option's contract (agglomeration.hpp). On the reference tetrahedra the first coarsening
+  // keeps 14 % of the nodes but 25.2 % of the edges, so at 0.25 the edge rule is the one that ends
+  // the hierarchy; the attempt it rejects leaves no storage in the coarsest level's maps.
+  const char* file = GENERATE(from_range(meshes));
+  const double ratio = GENERATE(0.8, 0.25);
+  INFO(file << " min_coarsening " << ratio);
+  const auto mesh = autan::io::read_mesh(mesh_dir / file);
+  const auto g = autan::compute_geometry(mesh);
+  autan::solvers::AgglomerationOptions opt;
+  opt.coarsest_nodes = 4;
+  opt.min_coarsening = ratio;
+  const auto levels = autan::solvers::agglomerate(mesh, g, opt);
+  for (std::size_t k = 1; k < levels.size(); ++k) {
+    INFO("level " << k);
+    CHECK(static_cast<double>(levels[k].n_nodes) <=
+          ratio * static_cast<double>(levels[k - 1].n_nodes));
+    CHECK(static_cast<double>(levels[k].owner.size()) <=
+          ratio * static_cast<double>(levels[k - 1].owner.size()));
+  }
+  CHECK(levels.back().coarse_node.capacity() == 0);
+  CHECK(levels.back().coarse_edge.capacity() == 0);
+  CHECK(levels.back().coarse_flipped.capacity() == 0);
+}
+
 TEST_CASE("wall layers form one line per wall cell, kept through the coarse levels",
           "[multigrid]") {
   const Fill fill = GENERATE(Fill::hexa, Fill::prism);
@@ -473,7 +500,7 @@ TEST_CASE("wall layers form one line per wall cell, kept through the coarse leve
   CHECK(first_layer == wall_cells);
   CHECK(lines >= wall_cells);
   // The lines a partition keeps whole: the same, without the single cells.
-  const auto groups = autan::solvers::smoother_lines(mesh, g);
+  const auto groups = autan::smoother_lines(mesh, g);
   CHECK(groups.offsets.size() == lines + 1);
   std::size_t from_wall = 0;
   for (std::size_t li = 0; li + 1 < groups.offsets.size(); ++li) {
@@ -646,7 +673,7 @@ TEST_CASE("one line sweep solves a block-tridiagonal system exactly", "[multigri
     x_exact[k] = std::sin(0.37 * static_cast<double>(k));
   const auto b = apply(mesh, s, x_exact);
   // The multigrid's smoother and the distributed line smoother on one part.
-  const auto lines = autan::solvers::smoother_lines(mesh, g);
+  const auto lines = autan::smoother_lines(mesh, g);
   REQUIRE(lines.offsets.size() == 2);
   const std::vector<std::int32_t> colours(n, 0);
   autan::solvers::LineSmoother ls(mesh, lines.offsets, lines.cells, colours, 1);
@@ -681,7 +708,7 @@ TEST_CASE("the line smoother repeats its bits on 1, 2 and 4 parts", "[multigrid]
   const auto g = autan::compute_geometry(mesh);
   const auto n = static_cast<std::size_t>(mesh.n_cells());
   const auto s = diffusion(mesh, g, 1e-3, 0.3, true);
-  const auto lines = autan::solvers::smoother_lines(mesh, g);
+  const auto lines = autan::smoother_lines(mesh, g);
   REQUIRE(lines.offsets.size() > 2);
   // Colours of the graph whose nodes are the lines and the cells outside them.
   std::vector<std::size_t> node(n);

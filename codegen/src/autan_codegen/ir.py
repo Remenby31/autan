@@ -7,6 +7,7 @@ and every instruction defines exactly one value, numbered by its position. A fun
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 # op -> number of operands; result kind is "bool" for comparisons, "real" otherwise.
@@ -68,6 +69,10 @@ class Function:
         return {i.attr: v for v, i in enumerate(self.instrs) if i.op == "input"}  # type: ignore[misc]
 
 
+def negative_zero(x: float | None) -> bool:
+    return x == 0.0 and math.copysign(1.0, x) < 0.0  # type: ignore[arg-type]
+
+
 def optimise(fn: Function) -> Function:
     """Constant folding of trivial identities, value numbering and dead-code elimination."""
     out = Function(fn.name, fn.arg_names, fn.arg_sizes, source=fn.source, compute=fn.compute)
@@ -79,7 +84,9 @@ def optimise(fn: Function) -> Function:
         return i.attr if i.op == "const" else None  # type: ignore[return-value]
 
     def emit(instr: Instr) -> int:
-        key = (instr.op, instr.args, instr.attr)
+        # A float attribute is keyed by its repr: 0.0 == -0.0, but they are different constants.
+        attr = repr(instr.attr) if isinstance(instr.attr, float) else instr.attr
+        key = (instr.op, instr.args, attr)
         if instr.op in ("add", "mul", "and", "or"):
             key = (instr.op, tuple(sorted(instr.args)), instr.attr)
         if key in table:
@@ -95,10 +102,11 @@ def optimise(fn: Function) -> Function:
         if ins.op == "mul" and (c[0] == 1.0 or c[1] == 1.0):
             remap[old] = args[1] if c[0] == 1.0 else args[0]
             continue
-        if ins.op == "add" and (c[0] == 0.0 or c[1] == 0.0):
-            remap[old] = args[1] if c[0] == 0.0 else args[0]
+        # x + (-0.0) and x - (+0.0) are x for every x; x + (+0.0) is +0.0 at x = -0.0.
+        if ins.op == "add" and (negative_zero(c[0]) or negative_zero(c[1])):
+            remap[old] = args[1] if negative_zero(c[0]) else args[0]
             continue
-        if ins.op == "sub" and c[1] == 0.0:
+        if ins.op == "sub" and c[1] == 0.0 and math.copysign(1.0, c[1]) > 0.0:
             remap[old] = args[0]
             continue
         if ins.op == "div" and c[1] == 1.0:

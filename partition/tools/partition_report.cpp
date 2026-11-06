@@ -83,7 +83,7 @@ autan::MeshInput hex_box(index_t n) {
   in.face_zones[1].name = "walls";
   in.cell_zones.resize(1);
   in.cell_zones[0].name = "fluid";
-  in.source = autan::MeshSource{.format = "memory", .path = ""};
+  in.source = autan::MeshSource{.format = "memory", .path = "", .nodes = 0};
   return in;
 }
 

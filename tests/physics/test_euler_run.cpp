@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -29,6 +30,7 @@
 extern char** environ;
 #endif
 
+#include "../runtime/planned.hpp"
 #include "autan/core/cellwise.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/io/mesh_info.hpp"
@@ -38,6 +40,7 @@ extern char** environ;
 #include "autan/partition/partition.hpp"
 #include "autan/physics/euler_physics.hpp"
 #include "autan/physics/manufactured.hpp"
+#include "autan/runtime/physics.hpp"
 #include "autan/runtime/run.hpp"
 #include "fixtures.hpp"
 
@@ -65,7 +68,7 @@ Json input(const char* file, const std::function<void(Json&)>& edit) {
   if (doc["verification"].is_object())
     doc["verification"]["path"] = fs::absolute(mms_path).string();
   edit(doc);
-  return doc;
+  return autan_test::planned(doc, mesh_path);
 }
 
 // How many times a run logged that it takes the planar loops (EulerPhysics, #412).
@@ -143,15 +146,11 @@ Json continue_from(const fs::path& previous, const std::string& mode = "continue
     std::ranges::sort(names);
     woken = Json(names);
   }
-  return Json{{"run", previous.string()},
-              {"run_id", info["run_id"]},
-              {"identity", info["identity"]},
-              {"mode", mode},
-              {"iterations", info["iterations"]},
-              {"time", info["time"]},
-              {"solution_sha256", hash},
-              {"residual_reference", reference},
-              {"woken", woken}};
+  return Json{{"run", previous.string()},         {"run_id", info["run_id"]},
+              {"identity", info["identity"]},     {"mode", mode},
+              {"iterations", info["iterations"]}, {"time", info["time"]},
+              {"solution_sha256", hash},          {"file", "solution"},
+              {"residual_reference", reference},  {"woken", woken}};
 }
 
 // Field `name` of the cell-centred FlowSolution_t `solution` of a run's solution.cgns.
@@ -213,8 +212,9 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
     if (steady) {
       d["time"]["max_iterations"] = 20;
     } else {
-      d["time"] = {
-          {"kind", "unsteady"}, {"steps", 20}, {"dt", nullptr}, {"cfl", 0.8}, {"average_from", 10}};
+      d["time"] = {{"kind", "unsteady"}, {"steps", 20},
+                   {"dt", nullptr},      {"cfl", 0.8},
+                   {"average_from", 10}, {"checkpoint", {{"seconds", 1800.0}}}};
     }
   });
   const auto out = run(doc);
@@ -298,6 +298,49 @@ TEST_CASE("a run takes the planar loops exactly when every face of the mesh is p
   CHECK(planar_events(out.run) == (planar ? 1 : 0));
 }
 
+// Two runs of `doc`, one with the default cadence and one with a checkpoint after every
+// iteration: the same history and solution, bit for bit (results.md#checkpointcgns), and no
+// checkpoint left once the run ends.
+void check_checkpoints_change_nothing(Json doc) {
+  doc["reproducibility"] = "run";
+  const auto plain = run(doc);
+  INFO(plain.err);
+  REQUIRE(plain.status == ExitStatus::finished);
+  doc["time"]["checkpoint"] = Json{{"iterations", 1}};
+  const auto every = run(doc);
+  INFO(every.err);
+  REQUIRE(every.status == ExitStatus::finished);
+  CHECK(read(every.run / "history.jsonl") == read(plain.run / "history.jsonl"));
+  for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
+    CAPTURE(name);
+    const auto a = field(plain.run, name), b = field(every.run, name);
+    REQUIRE(a.size() == b.size());
+    CHECK(std::memcmp(a.data(), b.data(), a.size() * sizeof(double)) == 0);
+  }
+  const Json info = Json::parse(read(every.run / "run.json"));
+  CHECK(info["checkpoint"].is_object());
+  CHECK(!fs::exists(every.run / "checkpoint.cgns"));
+}
+
+TEST_CASE("checkpoints change no Euler result", "[euler]") {
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  const bool steady = GENERATE(true, false);
+  CAPTURE(precision, steady);
+  check_checkpoints_change_nothing(input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, precision);
+    for (auto& b : d["boundaries"]) b["kind"] = "farfield";
+    auto& init = d["cell_zones"].back()["initial"];
+    init["pressure"] = 1.3 * init["pressure"].get<double>();
+    if (steady) {
+      d["time"]["max_iterations"] = 8;
+    } else {
+      d["time"] = {{"kind", "unsteady"}, {"steps", 8},
+                   {"dt", nullptr},      {"cfl", 0.8},
+                   {"average_from", 4},  {"checkpoint", {{"seconds", 1800.0}}}};
+    }
+  }));
+}
+
 TEST_CASE("a verification case converges to its discrete solution", "[euler]") {
   const char* precision = GENERATE("fp64", "fp32+acc64");
   const char* linear = GENERATE("multigrid", "gauss-seidel", "lines");
@@ -314,6 +357,35 @@ TEST_CASE("a verification case converges to its discrete solution", "[euler]") {
   const Json info = Json::parse(read(out.run / "run.json"));
   CHECK(info["status"] == "converged");
   CHECK(fs::exists(out.run / "manufactured.json"));
+}
+
+TEST_CASE("the multigrid builds the levels autan-mesh-info publishes", "[euler]") {
+  // mesh-info.md, quality.multigrid: the hierarchy a steady multigrid run builds on one rank, in
+  // the cell order it computes in, against the run's own log of it.
+  const char* order = GENERATE("rcm", "input");
+  CAPTURE(order);
+  REQUIRE(setenv("AUTAN_CELL_ORDER", order, 1) == 0);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, "fp64");
+    d["time"]["linear_solver"] = "multigrid";
+    d["time"]["max_iterations"] = 1;
+  });
+  const auto out = run(doc);
+  unsetenv("AUTAN_CELL_ORDER");
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  Json built;
+  std::ifstream log_in(out.run / "log.jsonl");
+  for (std::string line; std::getline(log_in, line);) {
+    const Json event = Json::parse(line);
+    // The linear solver's event of the hierarchy: its nodes and edges per level.
+    if (event["source"] == "linear" && event["data"].contains("edges")) built = event["data"];
+  }
+  REQUIRE(built.is_object());
+  const Json& published = doc["mesh_info"]["quality"]["multigrid"];
+  CHECK(doc["mesh_info"]["quality"]["lines"]["order"] == order);
+  CHECK(built["nodes"] == published["cells_by_level"]);
+  CHECK(built["edges"] == published["edges_by_level"]);
 }
 
 TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[euler]") {
@@ -333,11 +405,9 @@ TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[eule
         auto& init = d["cell_zones"].back()["initial"];
         init["density"] = 1.2 * init["density"].get<double>();
         init["pressure"] = 1.3 * init["pressure"].get<double>();
-        d["time"] = {{"kind", "unsteady"},
-                     {"steps", budget},
-                     {"dt", nullptr},
-                     {"cfl", 0.8},
-                     {"average_from", 2}};
+        d["time"] = {{"kind", "unsteady"}, {"steps", budget},
+                     {"dt", nullptr},      {"cfl", 0.8},
+                     {"average_from", 2},  {"checkpoint", {{"seconds", 1800.0}}}};
       }
     });
   };
@@ -441,11 +511,9 @@ TEST_CASE("a steady run reports the residual of its second-order scheme from the
       if (steady) {
         d["time"]["max_iterations"] = 1;
       } else {
-        d["time"] = {{"kind", "unsteady"},
-                     {"steps", 1},
-                     {"dt", nullptr},
-                     {"cfl", 0.8},
-                     {"average_from", nullptr}};
+        d["time"] = {{"kind", "unsteady"},      {"steps", 1},
+                     {"dt", nullptr},           {"cfl", 0.8},
+                     {"average_from", nullptr}, {"checkpoint", {{"seconds", 1800.0}}}};
       }
     });
   };
@@ -493,11 +561,9 @@ void unsteady_through_pairs(Json& d, int steps) {
   const double speed = f["speed"].get<double>();
   f["velocity"] = {0.6 * speed, 0.8 * speed, 0.0};
   for (auto& z : d["cell_zones"]) z["initial"]["velocity"] = f["velocity"];
-  d["time"] = {{"kind", "unsteady"},
-               {"steps", steps},
-               {"dt", nullptr},
-               {"cfl", 0.8},
-               {"average_from", nullptr}};
+  d["time"] = {{"kind", "unsteady"},      {"steps", steps},
+               {"dt", nullptr},           {"cfl", 0.8},
+               {"average_from", nullptr}, {"checkpoint", {{"seconds", 1800.0}}}};
 }
 
 }  // namespace
@@ -507,7 +573,7 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
   // The multigrid agglomerates one mesh's cells and takes no image ghosts: E0706 at
   // `time.linear_solver`. The multigrid sums in local cell order: reproducibility "ranks" is
   // E1109. The coupled turbulence step is SA's (case-schema.md#time): E0426 on inviscid flow.
-  const std::string reason = GENERATE("periodic", "ranks", "coupled");
+  const std::string reason = GENERATE("periodic", "ranks", "coupled", "matrix-free");
   CAPTURE(reason);
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     if (reason == "periodic") {
@@ -516,6 +582,7 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
       inviscid_along_x(d, "fp64");
       if (reason == "ranks") d["reproducibility"] = "ranks";
       if (reason == "coupled") d["time"]["coupled_turbulence"] = true;
+      if (reason == "matrix-free") d["time"]["matrix_free"] = true;
     }
   });
   const auto out = run(doc);
@@ -526,7 +593,8 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
   const std::map<std::string, std::pair<std::string, std::string>> expected = {
       {"periodic", {"E0706", "time.linear_solver"}},
       {"ranks", {"E1109", "reproducibility"}},
-      {"coupled", {"E0426", "time.coupled_turbulence"}}};
+      {"coupled", {"E0426", "time.coupled_turbulence"}},
+      {"matrix-free", {"E0429", "time.matrix_free"}}};
   CHECK(diagnostic["code"] == expected.at(reason).first);
   CHECK(diagnostic["location"]["path"] == expected.at(reason).second);
 }
@@ -545,11 +613,9 @@ TEST_CASE("a case with an initial-state file starts from the file's states", "[e
     for (auto& z : d["cell_zones"]) {
       z["initial"]["density"] = 2.0 * d["freestream"]["density"].get<double>();
     }
-    d["time"] = {{"kind", "unsteady"},
-                 {"steps", 3},
-                 {"dt", nullptr},
-                 {"cfl", 0.8},
-                 {"average_from", nullptr}};
+    d["time"] = {{"kind", "unsteady"},      {"steps", 3},
+                 {"dt", nullptr},           {"cfl", 0.8},
+                 {"average_from", nullptr}, {"checkpoint", {{"seconds", 1800.0}}}};
   });
   const auto& f = doc["freestream"];
   const double rho = f["density"].get<double>(), p = f["pressure"].get<double>();
@@ -596,11 +662,9 @@ TEST_CASE("a force monitor records the forces of its own iteration, whatever its
       auto& init = d["cell_zones"].back()["initial"];
       init["density"] = 1.2 * init["density"].get<double>();
       init["pressure"] = 1.3 * init["pressure"].get<double>();
-      d["time"] = {{"kind", "unsteady"},
-                   {"steps", 4},
-                   {"dt", nullptr},
-                   {"cfl", 0.8},
-                   {"average_from", nullptr}};
+      d["time"] = {{"kind", "unsteady"},      {"steps", 4},
+                   {"dt", nullptr},           {"cfl", 0.8},
+                   {"average_from", nullptr}, {"checkpoint", {{"seconds", 1800.0}}}};
       Json monitor = d["monitors"][0];
       monitor["every"] = every;
       d["monitors"] = Json::array();
@@ -697,11 +761,9 @@ TEST_CASE("cases outside the Euler physics are refused before any directory exis
       field = "mach";
       value = 1.0;
     } else {
-      d["time"] = {{"kind", "unsteady"},
-                   {"steps", 2},
-                   {"dt", nullptr},
-                   {"cfl", 0.8},
-                   {"average_from", nullptr}};
+      d["time"] = {{"kind", "unsteady"},      {"steps", 2},
+                   {"dt", nullptr},           {"cfl", 0.8},
+                   {"average_from", nullptr}, {"checkpoint", {{"seconds", 1800.0}}}};
       path = "time.kind";
       field = "time";
       value = "unsteady";
@@ -808,11 +870,9 @@ TEST_CASE("several ranks give the one-rank solution to round-off", "[euler][mpi]
       auto& init = d["cell_zones"].back()["initial"];
       init["density"] = 1.2 * init["density"].get<double>();
       init["pressure"] = 1.3 * init["pressure"].get<double>();
-      d["time"] = {{"kind", "unsteady"},
-                   {"steps", 12},
-                   {"dt", nullptr},
-                   {"cfl", 0.8},
-                   {"average_from", nullptr}};
+      d["time"] = {{"kind", "unsteady"},      {"steps", 12},
+                   {"dt", nullptr},           {"cfl", 0.8},
+                   {"average_from", nullptr}, {"checkpoint", {{"seconds", 1800.0}}}};
     }
   });
   const auto one = run(doc);
@@ -994,9 +1054,15 @@ TEST_CASE("a steady Gauss-Seidel or lines case on several ranks converges to the
   // Gauss-Seidel sweeps the runtime's colours by global id, and the step length, the worst cell
   // and the norms reduce over the ranks, so N ranks run the one-rank algorithm. "lines" sweeps
   // the multigrid's fine lines, kept whole by the partition, over the runtime's colouring of the
-  // lines. Under reproducibility "run" the face sums follow local order, so the bits differ:
-  // converged, the fields agree within 1e-9 of their magnitude (the largest speed for velocity
-  // components), 1e-5 in fp32+acc64 (5 orders), and a fixed rank count repeats bit for bit. Under
+  // lines. Under reproducibility "run" the face sums follow local order, so the bits differ and a
+  // fixed rank count repeats bit for bit. Converged in fp64, the fields agree within 1e-9 of their
+  // magnitude (the largest speed for velocity components). In fp32+acc64 the runs stop near the
+  // round-off floor, where the state drifts with the summation order (partition, cell order,
+  // processor), so the N-rank state is held to the stop rule instead (case-schema.md#time): one
+  // rank, started from it, reports for each equation a residual within the one-rank run's
+  // threshold, the larger of its iteration-1 residual times 10^-orders and the floor, plus the
+  // floor, which the contract places above the round-off of evaluating a residual, here of one
+  // state in another summation order. Under
   // "ranks" every sum follows the global order: bit for bit. Two zones at different states on the
   // hybrid mesh, farfield around.
   const int ranks = GENERATE(2, 4);
@@ -1023,23 +1089,63 @@ TEST_CASE("a steady Gauss-Seidel or lines case on several ranks converges to the
   const fs::path many = run_on_ranks(doc, ranks);
   REQUIRE(!many.empty());
   CHECK(Json::parse(read(many / "run.json"))["status"] == "converged");
-  const auto vx = field(one.run, "VelocityX"), vy = field(one.run, "VelocityY"),
-             vz = field(one.run, "VelocityZ");
-  double speed = 0.0;
-  for (std::size_t c = 0; c < vx.size(); ++c) {
-    speed = std::max(speed, std::hypot(vx[c], vy[c], vz[c]));
-  }
-  for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
-    const auto a = field(one.run, name), b = field(many, name);
-    REQUIRE(a.size() == b.size());
-    double diff = 0.0, scale = 0.0;
-    for (std::size_t c = 0; c < a.size(); ++c) {
-      diff = std::max(diff, std::abs(a[c] - b[c]));
-      scale = std::max(scale, std::abs(a[c]));
+  {
+    // Each rank owns the cells, and holds the ghosts, of autan-mesh-info --ranks N, with
+    // --groups lines when the case forms the lines (mesh-info.md, partition).
+    Json partitioned;
+    std::ifstream log_in(many / "log.jsonl");
+    for (std::string line; std::getline(log_in, line);) {
+      const Json event = Json::parse(line);
+      if (event["source"] == "mpi") partitioned = event["data"];
     }
-    if (std::string(name).starts_with("Velocity")) scale = speed;
-    INFO(name << " differs by " << diff / scale << " of its magnitude");
-    CHECK(diff <= (fp64 ? 1e-9 : 1e-5) * scale);
+    const autan::Mesh mesh = autan::io::read_mesh(mesh_path);
+    const auto groups =
+        std::string(linear) == "lines" ? autan::io::RankGroups::lines : autan::io::RankGroups::none;
+    const auto counts =
+        autan::io::run_counts(mesh, 1.0, autan::io::CellOrder::rcm,
+                              autan::io::RanksRequest{.ranks = ranks, .groups = groups});
+    REQUIRE(counts.partition);
+    CHECK(partitioned["owned_cells"] == Json(counts.partition->cells));
+    CHECK(partitioned["ghost_cells"] == Json(counts.partition->ghosts));
+  }
+  if (fp64) {
+    const auto vx = field(one.run, "VelocityX"), vy = field(one.run, "VelocityY"),
+               vz = field(one.run, "VelocityZ");
+    double speed = 0.0;
+    for (std::size_t c = 0; c < vx.size(); ++c) {
+      speed = std::max(speed, std::hypot(vx[c], vy[c], vz[c]));
+    }
+    for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
+      const auto a = field(one.run, name), b = field(many, name);
+      REQUIRE(a.size() == b.size());
+      double diff = 0.0, scale = 0.0;
+      for (std::size_t c = 0; c < a.size(); ++c) {
+        diff = std::max(diff, std::abs(a[c] - b[c]));
+        scale = std::max(scale, std::abs(a[c]));
+      }
+      if (std::string(name).starts_with("Velocity")) scale = speed;
+      INFO(name << " differs by " << diff / scale << " of its magnitude");
+      CHECK(diff <= 1e-9 * scale);
+    }
+  } else {
+    // History line 1 of a steady run is the residual of the state it starts from (results.md).
+    auto check = doc;
+    check["start"] = continue_from(many, "warm");
+    check["time"]["max_iterations"] = 1;
+    const auto from_many = run(check);
+    INFO(from_many.err);
+    REQUIRE(from_many.status == ExitStatus::finished);
+    const Json first = history(one.run).front()["residuals"];
+    const Json floor = Json::parse(read(one.run / "run.json"))["convergence"]["floor"];
+    const double drop = std::pow(10.0, -doc["time"]["residual_orders"].get<double>());
+    const Json residuals = history(from_many.run).front()["residuals"];
+    REQUIRE(residuals.size() == first.size());
+    for (const auto& [name, r] : residuals.items()) {
+      const double f = floor[name].get<double>();
+      const double bound = std::max(first[name].get<double>() * drop, f) + f;
+      INFO(name << ": residual " << r.get<double>() << ", bound " << bound);
+      CHECK(r.get<double>() <= bound);
+    }
   }
   if (std::string(reproducibility) == "ranks") check_bit_for_bit(one.run, many);
   const fs::path again = run_on_ranks(doc, ranks);
@@ -1101,12 +1207,16 @@ TEST_CASE("steady Gauss-Seidel steps through periodic pairs follow the one-rank 
 #endif
 
 TEST_CASE("an equation at the round-off floor does not set the steady CFL number", "[euler]") {
-  // tests/data/mesh/ringleb is one cell thick in z: the z-momentum is identically zero and its
-  // residual round-off. Two runs differ only by a uniform initial w of 1e-20 times the speed,
-  // which changes that round-off and the other equations by an ulp at most; the CFL law must
-  // ignore it (case-schema.md#time, the runtime's exemption), so over 40 steps the other
-  // equations' histories agree within 1e-6 (measured 8.5e-9; driven by the round-off, they
-  // differ by 3.4).
+  // tests/data/mesh/ringleb is one cell thick in z: the z-momentum is zero and its residual
+  // round-off. Two runs differ only by a uniform initial w of 1e-20 times the speed, which
+  // changes that round-off and the other equations by an ulp at most; the CFL law must ignore
+  // it (case-schema.md#time, the runtime's exemption), so over 40 steps the other equations'
+  // residuals agree within 1e-6 of each other plus the round-off they converge to. A cell's
+  // residual sums its n_f = 6 face fluxes, whose order (the cell order) changes it by at most
+  // n_f ε Σ|F| (Higham 2002, §4.2), Σ|F| the cell's flux magnitude, which the physics' flux scale
+  // Φ_k bounds (case-schema.md#time, computed here from its definition); the history's norm is
+  // an RMS over cells, as Φ_k, so it moves by as much: 2 n_f ε Φ_k with a margin of 2. Measured
+  // at 0.006 of that bound; with the exemption disabled, 3e4 times it.
   const fs::path mesh = data_dir / "mesh" / "ringleb" / "ringleb-n004.msh";
   auto doc = [&](double w) {
     return input("hybrid.solver-input.json", [&](Json& d) {
@@ -1143,18 +1253,45 @@ TEST_CASE("an equation at the round-off floor does not set the steady CFL number
   REQUIRE(b.status == ExitStatus::finished);
   const auto ha = history(a.run), hb = history(b.run);
   REQUIRE(ha.size() == hb.size());
+  // Φ_k as case-schema.md#time defines it: f_k √(Σ_i A_i² / N), A_i the surface of cell i.
+  const Json spec = doc(0.0);
+  const auto m = autan::io::read_mesh(mesh);
+  const auto g = autan::compute_geometry(m);
+  std::vector<double> surface(static_cast<std::size_t>(m.n_cells()), 0.0);
+  for (std::size_t f = 0; f < static_cast<std::size_t>(m.n_faces()); ++f) {
+    surface[static_cast<std::size_t>(m.owner()[f])] += g.face_area[f];
+    if (f < static_cast<std::size_t>(m.n_interior_faces())) {
+      surface[static_cast<std::size_t>(m.neighbour()[f])] += g.face_area[f];
+    }
+  }
+  double area = 0.0;
+  for (const double s : surface) area += s * s;
+  area = std::sqrt(area / static_cast<double>(surface.size()));
+  const auto& fs = spec["freestream"];
+  const double gamma = spec["cell_zones"][0]["medium"]["gamma"].get<double>();
+  const double rho = fs["density"].get<double>(), speed = fs["speed"].get<double>();
+  const double sound = std::sqrt(gamma * fs["pressure"].get<double>() / rho);
+  const double q = speed + sound;
+  const double enthalpy = sound * sound / (gamma - 1.0) + 0.5 * speed * speed;
+  const std::map<std::string, double> scale = {{"density", rho * q * area},
+                                               {"momentum-x", rho * q * q * area},
+                                               {"momentum-y", rho * q * q * area},
+                                               {"energy", rho * enthalpy * q * area}};
   bool noisy = false;
-  double worst = 0.0;
+  double worst = 0.0;  // the largest difference, in units of the bound
   for (std::size_t i = 0; i < ha.size(); ++i) {
     for (const char* k : {"density", "momentum-x", "momentum-y", "energy"}) {
       const double x = ha[i]["residuals"][k].get<double>();
       const double y = hb[i]["residuals"][k].get<double>();
-      worst = std::max(worst, std::abs(x - y) / std::abs(x));
+      const double flux = scale.at(k);
+      const double bound =
+          1e-6 * std::abs(x) + 12.0 * std::numeric_limits<double>::epsilon() * flux;
+      worst = std::max(worst, std::abs(x - y) / bound);
     }
     noisy = noisy || hb[i]["residuals"]["momentum-z"] != ha[i]["residuals"]["momentum-z"];
   }
   INFO("histories differ by " << worst);
-  CHECK(worst <= 1e-6);
+  CHECK(worst <= 1.0);
   // A continuation carries the exemption: from 20 steps, without `start.woken` it repeats the
   // uninterrupted run; with the z-momentum woken, that equation's round-off sets the CFL again.
   auto half = doc(1e-20);
@@ -1234,11 +1371,9 @@ TEST_CASE("a fast flow at low pressure that the kernels resolve is not taken for
       z["initial"]["velocity"] = f["velocity"];
     }
     for (auto& b : d["boundaries"]) b["kind"] = "farfield";
-    d["time"] = {{"kind", "unsteady"},
-                 {"steps", 3},
-                 {"dt", nullptr},
-                 {"cfl", 0.5},
-                 {"average_from", nullptr}};
+    d["time"] = {{"kind", "unsteady"},      {"steps", 3},
+                 {"dt", nullptr},           {"cfl", 0.5},
+                 {"average_from", nullptr}, {"checkpoint", {{"seconds", 1800.0}}}};
   });
   const auto out = run(doc);
   INFO(out.err);
@@ -1542,8 +1677,9 @@ TEST_CASE("on a device, a uniform flow along slip walls and farfield faces stays
     if (steady) {
       d["time"]["max_iterations"] = 20;
     } else {
-      d["time"] = {
-          {"kind", "unsteady"}, {"steps", 20}, {"dt", nullptr}, {"cfl", 0.8}, {"average_from", 10}};
+      d["time"] = {{"kind", "unsteady"}, {"steps", 20},
+                   {"dt", nullptr},      {"cfl", 0.8},
+                   {"average_from", 10}, {"checkpoint", {{"seconds", 1800.0}}}};
     }
   });
   const auto out = run(doc);
@@ -1558,6 +1694,19 @@ TEST_CASE("on a device, a uniform flow along slip walls and farfield faces stays
   for (const double v : field(out.run, "Pressure")) CHECK(std::abs(v - p) <= 64 * eps * p);
   for (const double v : field(out.run, "VelocityX")) CHECK(std::abs(v - speed) <= 64 * eps * speed);
   for (const double v : field(out.run, "VelocityZ")) CHECK(std::abs(v) <= 64 * eps * speed);
+}
+
+TEST_CASE("on a device, checkpoints change no Euler result", "[euler][gpu]") {
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  CAPTURE(precision);
+  check_checkpoints_change_nothing(input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, precision);
+    on_device(d);
+    for (auto& b : d["boundaries"]) b["kind"] = "farfield";
+    auto& init = d["cell_zones"].back()["initial"];
+    init["pressure"] = 1.3 * init["pressure"].get<double>();
+    d["time"]["max_iterations"] = 8;
+  }));
 }
 
 TEST_CASE("on a device, a verification case converges to the host's discrete solution",
@@ -1648,11 +1797,9 @@ TEST_CASE("on a device, a run repeats bit for bit and continues bit for bit", "[
       auto& init = d["cell_zones"].back()["initial"];
       init["density"] = 1.2 * init["density"].get<double>();
       init["pressure"] = 1.3 * init["pressure"].get<double>();
-      d["time"] = {{"kind", "unsteady"},
-                   {"steps", steps},
-                   {"dt", nullptr},
-                   {"cfl", 0.8},
-                   {"average_from", 2}};
+      d["time"] = {{"kind", "unsteady"}, {"steps", steps},
+                   {"dt", nullptr},      {"cfl", 0.8},
+                   {"average_from", 2},  {"checkpoint", {{"seconds", 1800.0}}}};
     });
   };
   const auto whole = run(doc(12));

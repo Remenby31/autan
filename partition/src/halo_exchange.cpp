@@ -9,8 +9,10 @@
 #include <limits>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
+#include "autan/core/device_memory.hpp"
 #include "autan/core/error.hpp"
 #include "halo_kernels.hpp"
 
@@ -69,11 +71,12 @@ struct HaloExchange::State {
   std::vector<index_t> send_cells, send_message, ghost_message;
   std::vector<index_t> reverse_cells, reverse_offsets, reverse_slots;
   halo::Layout layout{};
-  std::vector<void*> device_arrays;
+  std::vector<std::pair<void*, std::size_t>> device_arrays;  // and their bytes
   // Buffer `slots` holds messages laid out by send slot, `ghosts` by ghost.
   std::vector<std::byte> host_slots, host_ghosts;
   void* slots = nullptr;
   void* ghosts = nullptr;
+  std::size_t slots_bytes = 0, ghosts_bytes = 0;  // on the device
   std::vector<MPI_Request> receives, sends;
 
   bool pending = false;
@@ -92,10 +95,15 @@ struct HaloExchange::State {
     if (!sends.empty())
       MPI_Waitall(static_cast<int>(sends.size()), sends.data(), MPI_STATUSES_IGNORE);
 #ifdef AUTAN_HAVE_CUDA
-    for (void* p : device_arrays) cudaFree(p);
+    // Each device allocation is recorded in autan::device_memory, and released with its size.
+    for (const auto& [p, bytes] : device_arrays) {
+      cudaFree(p);
+      device_memory::released(bytes);
+    }
     if (space == MemorySpace::cuda) {
       cudaFree(slots);
       cudaFree(ghosts);
+      device_memory::released(slots_bytes + ghosts_bytes);
     }
 #endif
     if (comm != MPI_COMM_NULL) MPI_Comm_free(&comm);
@@ -106,7 +114,8 @@ struct HaloExchange::State {
 #ifdef AUTAN_HAVE_CUDA
     void* device = nullptr;
     cuda_check(cudaMalloc(&device, host.size() * sizeof(index_t)), "cudaMalloc");
-    device_arrays.push_back(device);
+    device_memory::allocated(host.size() * sizeof(index_t));
+    device_arrays.emplace_back(device, host.size() * sizeof(index_t));
     cuda_check(
         cudaMemcpy(device, host.data(), host.size() * sizeof(index_t), cudaMemcpyHostToDevice),
         "cudaMemcpy");
@@ -116,14 +125,19 @@ struct HaloExchange::State {
 #endif
   }
 
-  void* allocate(std::vector<std::byte>& host, std::size_t bytes) {
+  void* allocate(std::vector<std::byte>& host, std::size_t bytes,
+                 [[maybe_unused]] std::size_t& device_bytes) {
     if (space == MemorySpace::host) {
       host.resize(bytes);
       return host.data();
     }
 #ifdef AUTAN_HAVE_CUDA
     void* device = nullptr;
-    if (bytes > 0) cuda_check(cudaMalloc(&device, bytes), "cudaMalloc");
+    if (bytes > 0) {
+      cuda_check(cudaMalloc(&device, bytes), "cudaMalloc");
+      device_memory::allocated(bytes);
+      device_bytes = bytes;
+    }
     return device;
 #else
     return nullptr;
@@ -364,8 +378,8 @@ void HaloExchange::State::prepare(index_t n_owned_cells) {
   l.reverse_offsets = s.place(s.reverse_offsets);
   l.reverse_slots = s.place(s.reverse_slots);
   constexpr std::size_t widest = max_components * sizeof(double);
-  s.slots = s.allocate(s.host_slots, widest * at(l.n_send));
-  s.ghosts = s.allocate(s.host_ghosts, widest * at(l.n_ghost));
+  s.slots = s.allocate(s.host_slots, widest * at(l.n_send), s.slots_bytes);
+  s.ghosts = s.allocate(s.host_ghosts, widest * at(l.n_ghost), s.ghosts_bytes);
 }
 
 HaloExchange::~HaloExchange() = default;

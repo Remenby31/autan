@@ -244,9 +244,8 @@ class CudaStepper final : public DeviceStepper<P> {
     if (second_order_ && !scheme_.limiter) {
       phi_.upload(std::vector<S>(5 * n_, S(1)), stream_);
     }
-    mesh_.set_stencil_weights(host.gradient_weights());
-    mesh_.bind(d_);
-    mesh_.release_host();
+    mesh_.set_stencil_weights<D>(host.gradient_weights());
+    mesh_.bind_and_release(d_);
     d_.u = state_.get();
     d_.prim = prim_.get();
     d_.prim_b = prim_b_.get();

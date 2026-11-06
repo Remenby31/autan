@@ -239,17 +239,21 @@ class FakeBackend:
             raise CaseError(d for d in result.diagnostics if d.severity == "error")
         spec = case.spec
         started = utc_now()
-        solver = Solver(version=__version__, commit=COMMIT, backend="fake")
+        solver = Solver(version=__version__, commit=COMMIT, backend="fake", binary_sha256=None)
         devices = Devices(kind="cpu", count=1)
+        groups = mesh_info.groups_source.sha256 if mesh_info.groups_source else None
         info = RunInfo(
             run_id=RunWriter.new_run_id(started),
             identity="0" * 64,
             status="running",
             case=CaseIdentity(name=spec.name, sha256=spec.hash()),
-            mesh=MeshIdentity(path=str(case.mesh_path), sha256=mesh_info.source.sha256),
+            mesh=MeshIdentity(
+                path=str(case.mesh_path), sha256=mesh_info.source.sha256, groups_sha256=groups
+            ),
             solver=solver,
             precision=spec.physics.precision,
             devices=devices,
+            cell_order="input",
             started=iso(started),
             finished=None,
             iterations=0,
@@ -284,11 +288,20 @@ class FakeBackend:
         end = min(budget, CONVERGED_AT) if steady else budget
         # A started run begins from the state of the previous one, which the synthetic
         # trajectory leaves unchanged.
-        inherited = (
-            {name: Results.open(start.run).field(name) for name in field_names(spec)}
-            if start is not None
-            else None
-        )
+        inherited = None
+        if start is not None:
+            source = Results.open(start.run)
+            if start.info.file == "checkpoint":
+                sha256, read = source.checkpoint().sha256, source.checkpoint_field
+            else:
+                data = (start.run / "solution.cgns").read_bytes()
+                sha256, read = hashlib.sha256(data).hexdigest(), source.field
+            if sha256 != start.info.solution_sha256:
+                message = (
+                    f"the {start.info.file} of {start.run} changed after the input was written"
+                )
+                raise CaseError([diagnostic("E0709", message)])
+            inherited = {name: read(name) for name in field_names(spec)}
         # A continued run goes on counting; its trajectory is that of an uninterrupted run.
         offset = start.info.iterations if start and start.info.mode == "continue" else 0
         cap = offset + self.iterations

@@ -3,6 +3,10 @@ and the linear stability they restore on tetrahedra (Diskin and Thomas, AIAA J. 
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import autan_spike as s
@@ -65,6 +69,54 @@ def test_face2_stencil_holds_face_neighbours_and_theirs(kind: str) -> None:
         row = entries[offsets[c] : offsets[c + 1]]
         assert row[row >= 0].tolist() == sorted(ring)
         assert sorted(-row[row < 0] - 1) == sorted(faces)
+
+
+# The stencil of `fan_pair(m)` and how much the process's peak grew while it was built.
+_FAN = """
+import json, resource, sys
+import autan_spike as s, meshes
+m = s.mesh(meshes.fan_pair(int(sys.argv[2])))
+before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+size = s.set_stencil(m, sys.argv[1])
+grown = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before
+offsets, entries = s.stencil_arrays(m, size)
+unit = 1 if sys.platform == "darwin" else 1024
+print(json.dumps({"grown": grown * unit, "rows": [entries[offsets[c] : offsets[c + 1]].tolist()
+                                                  for c in range(2)]}))
+"""
+
+
+@pytest.mark.parametrize("stencil", STENCILS)
+def test_a_stencil_build_holds_its_stencil_however_many_faces_two_cells_share(
+    stencil: str,
+) -> None:
+    # Fluent polyhedra may share thousands of faces: the build is bounded by the stencil it
+    # returns (docs/design/setup-memory.md), not by the walks that reach it. Before the bound,
+    # these 4 097 shared faces grew the peak by 201 MB (face2) and 404 MB (vertex) on macOS to
+    # build 2 x 10 entries.
+    m = 4096
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(p for p in sys.path if p)}
+    out = subprocess.run(
+        [sys.executable, "-c", _FAN, stencil, str(m)],
+        check=False,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert out.returncode == 0, out.stderr
+    found = json.loads(out.stdout)
+    fa = meshes.fan_pair(m)
+    mesh = s.mesh(fa)
+    nodes, boundary = _cell_nodes(fa)
+    for c, row in enumerate(found["rows"]):
+        assert [e for e in row if e >= 0] == [1 - c]
+        faces = sorted(-e - 1 for e in row if e < 0)
+        if stencil == "face2":  # its own boundary faces and its neighbour's: all ten
+            assert faces == list(range(mesh.n_interior, mesh.n_faces))
+        else:  # the boundary faces sharing a node with it
+            assert len(faces) == sum(1 for _, poly in boundary if poly & nodes[c])
+    assert found["grown"] < 8 << 20
 
 
 @pytest.mark.parametrize("stencil", STENCILS)

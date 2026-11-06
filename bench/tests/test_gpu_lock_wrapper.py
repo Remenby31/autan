@@ -180,13 +180,47 @@ def test_a_signal_to_the_callers_process_group_still_cleans_up(lock, tmp_path):
     assert free(lock)
 
 
-def test_an_unwritable_log_is_reported_not_fatal(lock):
+def tagged(err: bytes) -> list[list[str]]:
+    """The events a wrapper that cannot write holders.log prints for the guard's reader."""
+    prefix = "autan-gpu-lock [for the guard]: "
+    return [line[len(prefix):].split("\t") for line in err.decode().splitlines()
+            if line.startswith(prefix)]  # fmt: skip
+
+
+def test_an_unwritable_log_sends_each_event_to_the_job_s_log(lock):
+    # As in a CI runner, whose mount of the lock's directory is read-only.
     (lock.parent / "holders.log").unlink()
     (lock.parent / "holders.log").mkdir()
     proc = wrapper(lock, "-m", "unit test", "--", "true")
     _, err = proc.communicate(timeout=10)
     assert proc.returncode == 0
-    assert err
+    records = tagged(err)
+    assert [r[1] for r in records] == ["wait", "take", "release"]
+    assert all(r[2] == "tester" and r[6] == "unit test" for r in records)
+    assert err.decode().count("is not writable here") == 1
+
+
+def test_the_job_s_text_in_the_tagged_events_is_never_a_workflow_command(lock):
+    # The runner parses "##[" anywhere in a line; "::" only at its start, which the tag holds.
+    (lock.parent / "holders.log").unlink()
+    (lock.parent / "holders.log").mkdir()
+    proc = wrapper(lock, "-m", "##[error]forged", "--", "sh", "-c", "true # ##[group]x")
+    _, err = proc.communicate(timeout=10)
+    assert proc.returncode == 0
+    assert tagged(err)
+    assert "##[" not in err.decode()
+    assert not [line for line in err.decode().splitlines() if line.startswith("::")]
+
+
+def test_a_memory_kill_reaches_the_job_s_log_when_holders_log_is_read_only(lock, tmp_path, meminfo):
+    (lock.parent / "holders.log").unlink()
+    (lock.parent / "holders.log").mkdir()
+    proc = wrapper(lock, "-m", "unit test", "-t", "60", "-f", "10G", "--", *sleeper(tmp_path))
+    pid_from(tmp_path / "worker.pid")
+    meminfo(5)
+    _, err = proc.communicate(timeout=30)
+    assert proc.returncode == 71
+    assert [r[1] for r in tagged(err)][-1] == "memory"
 
 
 def mem_available() -> int:
@@ -370,3 +404,31 @@ def test_a_docker_run_command_has_its_container_killed_with_it(lock, tmp_path, m
     finally:
         for cid in containers(label):
             subprocess.run(["docker", "rm", "-f", cid], capture_output=True, check=False)
+
+
+PROBE_UNTIMED = """import fcntl, sys
+with open(sys.argv[1]) as handle:
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        print("free")
+    except BlockingIOError:
+        print("held")
+"""
+
+
+@pytest.mark.parametrize(("flags", "expected"), [([], "free"), (["--untimed"], "held"),
+                                                 (["-n"], "free")])  # fmt: skip
+def test_only_an_untimed_hold_says_so(lock, tmp_path, flags, expected):
+    # --untimed holds untimed.lock, so campaigns keep running; every other hold freezes them.
+    untimed = lock.parent / "untimed.lock"
+    untimed.touch()
+    probe = tmp_path / "probe.py"
+    probe.write_text(PROBE_UNTIMED)
+    proc = wrapper(lock, *flags, "-m", "unit test", "--", sys.executable, str(probe), str(untimed),
+                   stdout=subprocess.PIPE)  # fmt: skip
+    out, _ = proc.communicate(timeout=30)
+    assert proc.returncode == 0
+    assert out.decode().strip() == expected
+    # Released with the wrapper.
+    with untimed.open() as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)

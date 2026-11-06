@@ -7,6 +7,8 @@ set -uo pipefail
 
 threads=$1
 image_id=$2
+# SU2's threads are its OpenMP threads (-t); no library may start one per core behind --cpus.
+export OMP_NUM_THREADS=$threads OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 shift 2
 cd /work
 

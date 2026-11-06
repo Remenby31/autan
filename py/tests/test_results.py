@@ -62,6 +62,7 @@ def test_run_directory_and_metadata_follow_the_contract(crm_run: autan.Results) 
     assert path.name == run["run_id"]
     assert run["status"] == "converged"
     assert run["solver"]["backend"] == "fake"
+    assert run["solver"]["binary_sha256"] is None
     assert re.fullmatch(r"[0-9a-f]{40}", run["solver"]["commit"])
     assert run["case"]["sha256"] == autan.load(path / "case.toml").spec.hash()
     assert run["mesh"]["path"] == str((EXAMPLES / "crm-hl.cgns").resolve())
@@ -912,7 +913,8 @@ def test_runs_of_one_study_differ_only_in_their_freestream(
     assert other.case_without_freestream != base.case_without_freestream
     moved = parts(CRM_HL, "moved.py", mesh="1" * 64)
     assert moved.fields["mesh.sha256"] != base.fields["mesh.sha256"]
-    assert list(base.fields) == identity_fields()[:7]  # no start: the start fields are absent
+    # No start: the start fields are absent.
+    assert list(base.fields) == [f for f in identity_fields() if not f.startswith("start.")]
 
 
 def _outside_storage(tree: h5py.File, outside: Path) -> None:

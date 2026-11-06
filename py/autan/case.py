@@ -48,12 +48,14 @@ from autan.schema import (
     _caller_location,
     diagnostics_from,
 )
+from autan.texts import load_json
 from autan.units import UnitOfLength
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from autan.fake import FakeBackend
+    from autan.memory import DeviceKind, StartMode
 
     # A quantity, or its text "<number> <unit>" as the case document writes it.
     type QuantityLike = pint.Quantity | str
@@ -216,9 +218,10 @@ class Case:
         self._freestream = Freestream(**given)
         self._locations["freestream"] = _caller_location()
 
-    def boundary(self, zones: str) -> BoundarySelector:
-        """Select boundary zones by glob pattern; call a condition method on the result."""
-        return BoundarySelector(self, zones)
+    def boundary(self, zones: str | None = None, *, group: str | None = None) -> BoundarySelector:
+        """Select boundary zones by a glob over their names, or by ``group``, a glob over the
+        mesh's zone group names; call a condition method on the result."""
+        return BoundarySelector(self, zones, group)
 
     def cell_zone(self, zones: str) -> CellZoneSelector:
         """Select cell zones by glob pattern; call ``fluid`` or ``solid`` on the result."""
@@ -358,19 +361,29 @@ class Case:
         checked = resolve_start(self.spec, mesh_info, start, mode)
         return backend.run(self, mesh_info, Path(runs), checked)
 
-    def plan(self, mesh_info: MeshInfo, *, gpus: int = 1) -> Plan:
-        """Resolve boundaries and cell zones against the mesh and estimate memory."""
-        return plan(self, mesh_info, gpus=gpus)
+    def plan(
+        self,
+        mesh_info: MeshInfo,
+        *,
+        gpus: int = 1,
+        device_kind: DeviceKind = "cuda",
+        start: StartMode | None = None,
+    ) -> Plan:
+        """Resolve boundaries and cell zones against the mesh and estimate memory, for a run
+        that starts from a previous one in mode ``start`` (``continue`` or ``warm``) if given."""
+        return plan(self, mesh_info, gpus=gpus, device_kind=device_kind, start=start)
 
 
 class BoundarySelector:
     """The boundary zones matching a pattern; each method adds one rule to the case."""
 
-    def __init__(self, case: Case, zones: str) -> None:
-        self._case, self._zones = case, zones
+    def __init__(self, case: Case, zones: str | None, group: str | None) -> None:
+        self._case, self._zones, self._group = case, zones, group
 
     def _add(self, condition: Any) -> None:
-        self._case._add_boundary(BoundaryRule(zones=self._zones, condition=condition))
+        self._case._add_boundary(
+            BoundaryRule(zones=self._zones, group=self._group, condition=condition)
+        )
 
     def wall(self, *, temperature: QuantityLike | None = None) -> None:
         """No-slip wall, adiabatic unless ``temperature`` is given."""
@@ -429,14 +442,16 @@ class CellZoneSelector:
 
 
 def forces(
-    surfaces: str,
+    surfaces: str | None = None,
     *,
+    group: str | None = None,
     name: str = "forces",
     ref_area: QuantityLike | None = None,
     moment_center: tuple[QuantityLike, QuantityLike, QuantityLike] | None = None,
 ) -> Forces:
-    """A forces monitor over the boundary zones matching ``surfaces``."""
-    given: dict[str, Any] = {"surfaces": surfaces, "name": name}
+    """A forces monitor over the boundary zones matching ``surfaces``, or the zones of the
+    groups matching ``group``."""
+    given: dict[str, Any] = {"surfaces": surfaces, "group": group, "name": name}
     if ref_area is not None:
         given["ref_area"] = ref_area
     if moment_center is not None:
@@ -462,9 +477,12 @@ def load(path: str | Path) -> Case:
     if path.suffix in (".toml", ".json"):
         try:
             text = path.read_text()
-            document = tomllib.loads(text) if path.suffix == ".toml" else json.loads(text)
-        except (tomllib.TOMLDecodeError, json.JSONDecodeError, UnicodeDecodeError) as error:
+            document = tomllib.loads(text) if path.suffix == ".toml" else load_json(text)
+        except ValueError as error:  # TOML, JSON, UTF-8 and nesting errors alike
             raise CaseError([diagnostic("E0001", f"{path}: {error}", location=where)]) from None
+        except RecursionError:  # tomllib on a document nested too deeply
+            message = f"{path}: nested too deeply"
+            raise CaseError([diagnostic("E0001", message, location=where)]) from None
         if not isinstance(document, dict):
             raise CaseError([diagnostic("E0003", f"{path}: not a table", location=where)])
         return Case.from_spec(CaseSpec.from_document(document, where), file=str(path))

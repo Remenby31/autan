@@ -397,6 +397,18 @@ def test_run_details_and_plan(runs: Path, server: str) -> None:
         z["name"] for z in mesh_info["boundary_zones"]
     }
 
+    # A started run is planned with the state it starts from.
+    case = autan.load(PY / "examples" / "crm_hl.py")
+    info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    first = autan.Results.open(runs / run_id)
+    continued = case.run(info, backend=autan.FakeBackend(iterations=60), runs=runs, start=first)
+
+    plan = httpx.get(f"{server}/api/runs/{continued.path.name}/plan").json()
+
+    devices = json.loads((continued.path / "run.json").read_text())["devices"]
+    expected = case.plan(info, gpus=devices["count"], device_kind=devices["kind"], start="continue")
+    assert plan["memory"] == expected.document()["memory"]
+
 
 @pytest.mark.parametrize(
     "target",
@@ -619,8 +631,14 @@ def _archived_state_run(kind: str, runs: Path, tmp_path: Path) -> tuple[Path, Pa
         case += f"case.boundary('farfield').oracle_state(path={str(source)!r}, sha256={digest!r})\n"
     else:
         mesh["counts"]["cells"] = 4
+        # A hand-written MeshInfo may omit its partition; this run extracts none.
+        del mesh["partition"]
         mesh["counts"]["cells_by_type"] = dict.fromkeys(mesh["counts"]["cells_by_type"], 0)
         mesh["counts"]["cells_by_type"]["hexa"] = 4
+        # Lines of cells within the 4 cells, as mesh.md bounds them.
+        mesh["quality"]["lines"] |= {"cells": 0, "long_cells": 0}
+        # One level, as mesh-info.md defines it: the 4 cells in a row and their 3 interior faces.
+        mesh["quality"]["multigrid"] = {"cells_by_level": [4], "edges_by_level": [3]}
         mesh["cell_zones"] = [{"name": "fluid", "type": None, "native_type": None, "cells": 4}]
         mesh["interfaces"] = []
         digest = autan.initial_state.write(
@@ -631,6 +649,9 @@ def _archived_state_run(kind: str, runs: Path, tmp_path: Path) -> tuple[Path, Pa
             values=[row] * 4,
         )
         case += f"case.initial_state = autan.StateFile(path={str(source)!r}, sha256={digest!r})\n"
+    # mesh-info.md: the finest level's edges are the interior faces, all faces less the boundary's.
+    boundary = sum(zone["faces"] for zone in mesh["boundary_zones"])
+    mesh["counts"]["faces"] = boundary + mesh["quality"]["multigrid"]["edges_by_level"][0]
     (tmp_path / "mesh.meshinfo.json").write_text(json.dumps(mesh))
     (tmp_path / "case.py").write_text(case)
     mesh_info = autan.MeshInfo.load(tmp_path / "mesh.meshinfo.json")
@@ -899,3 +920,26 @@ def test_runs_that_differ_only_by_freestream_and_name_are_one_study(tmp_path: Pa
     study = {name: s["study"] for name, s in Registry(runs).scan().summaries.items()}
     assert study[base] == study[swept]
     assert study[other] != study[base]
+
+
+@pytest.mark.parametrize(("kind", "host_solve"), [("cpu", True), ("cuda", False)])
+def test_a_runs_plan_counts_the_memory_of_the_devices_it_ran_on(
+    kind: str, host_solve: bool, runs: Path, server: str
+) -> None:
+    # memory.py (#358): a steady CPU run holds its Jacobian and host linear solver; a device run
+    # holds its state on the device instead. The run's devices are recorded in run.json, its
+    # identity recomputed as results.md defines it.
+    from autan.results import run_identity  # noqa: PLC0415
+
+    run = next(runs.iterdir())
+    document = json.loads((run / "run.json").read_text())
+    document["devices"] = {"kind": kind, "count": 1}
+    document["identity"] = run_identity(document)
+    (run / ".run.json").write_text(json.dumps(document))
+    (run / ".run.json").replace(run / "run.json")
+
+    plan = httpx.get(f"{server}/api/runs/{run.name}/plan").json()
+
+    components = {c["name"] for c in plan["memory"]["components"]}
+    assert ("jacobian" in components) is host_solve
+    assert plan["memory"]["device_kind"] == kind

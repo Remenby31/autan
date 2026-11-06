@@ -57,6 +57,7 @@ INTRINSIC_ARITY = {
     "rel": 2,
     "min": 2,
     "max": 2,
+    "Vec2": 2,
     "Vec3": 3,
     "Vec5": 5,
 }
@@ -65,6 +66,7 @@ INTRINSICS = UNARY_MATH | {
     "cross",
     "norm",
     "rel",
+    "Vec2",
     "Vec3",
     "Vec5",
     "transpose",
@@ -280,10 +282,12 @@ class _Builder:
         ids = []
         for i in range(n):
             for j in range(cols):
-                acc: Val = 0.0
+                # From the first product: 0.0 + p would turn a -0.0 product into +0.0.
+                acc: Val | None = None
                 for k in range(m):
-                    bk = b.ids[k * cols + j]
-                    acc = self.binop("add", acc, Real(self.emit("mul", a.ids[i * m + k], bk)))
+                    p = Real(self.emit("mul", a.ids[i * m + k], b.ids[k * cols + j]))
+                    acc = p if acc is None else self.binop("add", acc, p)
+                assert acc is not None
                 ids.append(self.real(acc))
         shape = (n, cols) if len(b.shape) == 2 else (n,)
         return Arr(tuple(ids), shape)
@@ -377,9 +381,11 @@ class _Builder:
                 and len(a.shape) == 1
             ):
                 raise self.err(Code.TYPE_MISMATCH, "dot takes two vectors of the same size")
-            acc: Val = 0.0
+            acc: Val | None = None
             for x, y in zip(a.ids, b.ids, strict=True):
-                acc = self.binop("add", acc, Real(self.emit("mul", x, y)))
+                p = Real(self.emit("mul", x, y))
+                acc = p if acc is None else self.binop("add", acc, p)
+            assert acc is not None
             return acc
         if fname == "norm":
             (a,) = args
@@ -394,7 +400,7 @@ class _Builder:
                 for i, j in ((1, 2), (2, 0), (0, 1))
             )
             return Arr(ids, (3,))
-        if fname in ("Vec3", "Vec5"):
+        if fname in ("Vec2", "Vec3", "Vec5"):
             n = int(fname[3])
             if len(args) != n:
                 raise self.err(Code.TYPE_MISMATCH, f"{fname} takes {n} scalars")
@@ -536,7 +542,9 @@ class _Builder:
                     )
                 if rt is not None:
                     return self.select(c, rt, rf)  # type: ignore[arg-type]
-                for name in set(env_t) | set(env_f):
+                # In source order: a set of names would order the selects by string hashes,
+                # which differ between Python processes.
+                for name in dict.fromkeys([*env_t, *env_f]):
                     if name not in env_t or name not in env_f:
                         raise self.err(
                             Code.INVALID_CONTROL_FLOW, f"{name!r} is assigned in only one branch"

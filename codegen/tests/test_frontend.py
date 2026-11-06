@@ -57,15 +57,15 @@ OPS = {
 }
 
 
-def run(fn: Function, *args: float | tuple[float, ...]) -> list[float]:
+def run(fn: Function, *args: float | tuple[float, ...], dtype: type = np.float64) -> list[float]:
     flat = [list(a) if isinstance(a, tuple) else [a] for a in args]
     v: list[object] = []
     for ins in fn.instrs:
         if ins.op == "input":
             k, c = ins.attr  # type: ignore[misc]
-            v.append(np.float64(flat[k][c]))
+            v.append(dtype(flat[k][c]))
         elif ins.op == "const":
-            v.append(np.float64(ins.attr))  # type: ignore[arg-type]
+            v.append(dtype(ins.attr))  # type: ignore[arg-type]
         else:
             v.append(OPS[ins.op](*(v[a] for a in ins.args)))
     return [v[o] for o in fn.outputs]  # type: ignore[misc]
@@ -104,6 +104,22 @@ def minmax_ties(a: State, b: State) -> tuple[State, State]:
     return min(a, b), max(a, b)
 
 
+@pointwise
+def signed_zeros(x: State) -> tuple[State, State, State]:
+    if x > 1.0:
+        a, b = 0.0, -0.0
+    else:
+        a, b = 2.0, 3.0
+    return (1.0 if 1.0 / b > 0.0 else -1.0) + a, x + 0.0, x - (-0.0)
+
+
+@pointwise
+def zero_products(
+    v: State.Vec3, g: Grad.Mat53, w: Geom.Vec3, m: Geom.Mat3
+) -> tuple[State, State.Vec5, Grad.Mat53]:
+    return dot(v, w), g @ w, g @ m
+
+
 def test_branches_see_the_value_their_predicate_was_computed_from() -> None:
     fn, _ = parse(reassigned_before_predicate)
     assert run(fn, 0.75) == [0.5]
@@ -121,6 +137,28 @@ def test_calls_are_inlined_and_vectors_scalarised() -> None:
     assert sig.names == ["u", "x", "y", "k"]
     # d = (1, 1, -1); u . d = 2 > k = -3 -> 2 * -3; abs(-3) u - d
     assert run(fn, (1.0, 2.0, 1.0), (2.0, 3.0, 0.0), (1.0, 2.0, 1.0), -3.0) == [-6.0, 2.0, 5.0, 4.0]
+
+
+def test_constants_and_identities_keep_the_sign_of_zero() -> None:
+    # IEEE 754: 1 / -0 = -inf, and -0 + 0 = -0 - (-0) = +0; 0.0 == -0.0 must not merge them.
+    fn, _ = parse(signed_zeros)
+    with np.errstate(divide="ignore"):
+        assert run(fn, 4.0)[0] == -1.0
+    _, plus, minus = run(fn, -0.0)
+    assert plus == 0.0
+    assert not np.signbit(plus)
+    assert minus == 0.0
+    assert not np.signbit(minus)
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_products_of_negative_zeros_are_negative_zero(dtype: type) -> None:
+    # A sum of -0.0 terms is -0.0; starting dot and @ from a literal 0.0 would make it +0.0.
+    fn, _ = parse(zero_products)
+    out = run(fn, (-0.0,) * 3, (-0.0,) * 15, (1.0,) * 3, (1.0,) * 9, dtype=dtype)
+    assert len(out) == 1 + 5 + 15
+    assert all(x == 0.0 for x in out)
+    assert all(np.signbit(x) for x in out)
 
 
 def test_min_and_max_select_the_first_argument_on_ties() -> None:
@@ -310,14 +348,28 @@ def copy_state(x: State) -> State:
     return x
 
 
-def test_boundary_states_from_active_data_must_be_declared_frozen() -> None:
+@pytest.mark.parametrize(
+    ("loop", "kind"), [(dsl.boundary_loop, "boundary_write"), (dsl.face_loop, "face_write")]
+)
+def test_face_data_from_active_data_must_be_declared_frozen(loop: object, kind: str) -> None:
     with pytest.raises(CodegenError) as info:
-        build_loop("bad", dsl.boundary_loop(copy_state, x=q.left, out=dsl.Write(q_face)))
+        build_loop("bad", loop(copy_state, x=q.left, out=dsl.Write(q_face)))  # type: ignore[operator]
     assert info.value.code == "E1012"
-    lm = build_loop(
-        "ok", dsl.boundary_loop(copy_state, x=q.left, out=dsl.Write(q_face), frozen=True)
-    )
-    assert lm.kind == "boundary_write"
+    lm = build_loop("ok", loop(copy_state, x=q.left, out=dsl.Write(q_face), frozen=True))  # type: ignore[operator]
+    assert lm.kind == kind
+
+
+def test_face_writes_take_face_data_only_and_flags_live_on_faces() -> None:
+    # Write and Inc in one face loop, frozen on a loop that writes no face data, a Flag on cells.
+    with pytest.raises(CodegenError) as info:
+        dsl.face_loop(copy_state, x=q.left, out=[dsl.Write(q_face), dsl.Inc(r, left=1, right=-1)])
+    assert info.value.code == "E1004"
+    with pytest.raises(CodegenError) as info:
+        dsl.face_loop(copy_state, x=q.left, out=dsl.Inc(r, left=1, right=-1), frozen=True)
+    assert info.value.code == "E1004"
+    with pytest.raises(CodegenError) as info:
+        cells.field("flags", dsl.Flag.Vec2)
+    assert info.value.code == "E1006"
 
 
 @pointwise

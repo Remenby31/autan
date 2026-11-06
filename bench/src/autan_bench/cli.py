@@ -9,7 +9,14 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 from autan_bench import gpu, pair, result, runner
-from autan_bench.compare import DEFAULT_THRESHOLD, INCONCLUSIVE, REGRESSION, compare
+from autan_bench.compare import (
+    DEFAULT_THRESHOLD,
+    HEALTH_MINIMUM,
+    INCONCLUSIVE,
+    REGRESSION,
+    compare,
+    health,
+)
 from autan_bench.errors import BenchError, Code
 
 MAX_BASELINE_CV = 0.02
@@ -112,6 +119,21 @@ def _compare(args: argparse.Namespace) -> int:
         )
         return 3
     return 0
+
+
+def _health(args: argparse.Namespace) -> int:
+    rows = health(result.load(args.result), result.load(args.baseline), args.minimum)
+    width = max(len(name) for name, _, _ in rows)
+    for name, share, ok in rows:
+        _say(f"{name:<{width}} {share:>7.1%}{'' if ok else '  BELOW'}")
+    if all(ok for _, _, ok in rows):
+        return 0
+    _say(
+        f"error[UNFIT]: below {args.minimum:.0%} of {args.baseline}: the machine is not fit to "
+        "measure",
+        err=True,
+    )
+    return 4
 
 
 def _pair_table(rows: list[pair.Row]) -> str:
@@ -389,6 +411,17 @@ def parser() -> argparse.ArgumentParser:
     )
     c.set_defaults(func=_compare)
 
+    h = sub.add_parser(
+        "health",
+        help="exit 4 unless every baseline benchmark reaches a share of its median (machine health)",
+    )
+    h.add_argument("result", type=Path)
+    h.add_argument("baseline", type=Path)
+    h.add_argument(
+        "--min", type=float, default=HEALTH_MINIMUM, dest="minimum", help="share of the baseline"
+    )
+    h.set_defaults(func=_health)
+
     b = sub.add_parser("baseline", help="promote a clean, low-noise result to a baseline")
     b.add_argument("results", type=Path, nargs="+", help="one run, or several runs to pool")
     b.add_argument("--out", type=Path, required=True)
@@ -466,7 +499,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point of the ``autan-bench`` command; returns 0 on success, 1 on regression, 2 on error, 3 when a comparison is inconclusive."""
+    """Entry point of the ``autan-bench`` command; returns 0 on success, 1 on regression, 2 on error, 3 when a comparison is inconclusive, 4 when ``health`` finds the machine unfit."""
     args = parser().parse_args(argv)
     try:
         return args.func(args)

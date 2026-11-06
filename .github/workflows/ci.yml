@@ -8,8 +8,10 @@ on:
 
 permissions: {}
 
+# A push runs in a group of its own commit: a group holds one pending run, which the next one
+# replaces, so in a group shared by pushes a push to main could get no run at all.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -168,7 +170,8 @@ jobs:
     # autan-bench and the runner hook, without a GPU (the GPU tests skip here and run in gpu-bench).
     name: Bench harness
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # The suite takes most of 10 minutes on a hosted runner: 20 leaves room for the next tests.
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -179,7 +182,7 @@ jobs:
         with:
           version: "0.13.6"
           enable-cache: false
-      - run: uv run --project bench --locked pytest -rs bench/tests docker/runner/tests
+      - run: uv run --project bench --locked pytest -rs bench/tests docker/runner/tests docker/host-guard/tests
 
   ui:
     # No path filter: the UI reads the SDK, the contracts and the fake backend, which live outside ui/.
