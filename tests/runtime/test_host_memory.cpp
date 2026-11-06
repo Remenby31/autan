@@ -18,6 +18,8 @@ namespace {
 
 constexpr std::int64_t gib = std::int64_t{1} << 30;
 
+#if !defined(__APPLE__)
+// For the /proc tests only: macOS has no /proc, and its tests below say so.
 fs::path fresh_dir() {
   std::random_device random;
   const fs::path dir =
@@ -30,6 +32,7 @@ void write(const fs::path& file, const std::string& text) {
   fs::create_directories(file.parent_path());
   std::ofstream(file) << text;
 }
+#endif
 
 }  // namespace
 

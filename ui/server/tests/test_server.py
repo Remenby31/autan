@@ -523,7 +523,7 @@ INF = math.inf
 
 
 @pytest.mark.parametrize(
-    ("first", "now", "woken", "floors", "expected", "now_woken"),
+    ("first", "now", "woken", "plateau", "expected", "now_woken"),
     [
         ({"rho": 1e-300, "e": 1.0}, {"rho": 1e-310, "e": 1e-8}, set(), {}, 8.0, set()),
         ({"rho": 1.0, "e": 0.0}, {"rho": 1e-8, "e": 0.0}, set(), {}, 8.0, set()),
@@ -545,45 +545,34 @@ INF = math.inf
             None,
             {"a", "b"},
         ),
-        # At or below its round-off floor (run.json convergence.floor), an equation has converged.
-        ({"rho": 1.0, "e": 1.0}, {"rho": 1e-4, "e": 1e-6}, set(), {"rho": 1e-4}, 6.0, set()),
-        (
-            {"rho": 1.0, "e": 1.0},
-            {"rho": 1e-4, "e": 1e-6},
-            set(),
-            {"rho": 1e-4, "e": 1e-6},
-            INF,
-            set(),
-        ),
-        (
-            {"rho": 1.0, "e": 1.0},
-            {"rho": 2e-4, "e": 1e-6},
-            set(),
-            {"rho": 1e-4, "e": 1e-6},
-            4 - math.log10(2),
-            set(),
-        ),
+        # On a round-off plateau (run.json convergence.plateau), an equation has converged;
+        # below its floor alone it has not (case-schema.md#time).
+        ({"rho": 1.0, "e": 1.0}, {"rho": 1e-4, "e": 1e-6}, set(), ["rho"], 6.0, set()),
+        ({"rho": 1.0, "e": 1.0}, {"rho": 1e-4, "e": 1e-6}, set(), ["rho", "e"], INF, set()),
+        ({"rho": 1.0, "e": 1.0}, {"rho": 2e-4, "e": 1e-6}, set(), [], 4 - math.log10(2), set()),
     ],
 )
 def test_residual_drop_is_the_slowest_equation_not_converged(
     first: dict[str, float],
     now: dict[str, float],
     woken: set[str],
-    floors: dict[str, float],
+    plateau: list[str],
     expected: float | None,
     now_woken: set[str],
 ) -> None:
-    orders = residual_orders(first, now, woken, floors)
+    orders = residual_orders(first, now, woken, plateau)
     assert orders == (None if expected is None else pytest.approx(expected))
     assert woken == now_woken
 
 
-def test_a_run_at_its_round_off_floors_reports_its_target(runs: Path) -> None:
+def test_a_run_converged_on_its_round_off_plateaus_reports_its_target(runs: Path) -> None:
     source = next(runs.iterdir())
     lines = (source / "history.jsonl").read_text().splitlines()
     last = json.loads(lines[-1])["residuals"]
     run = json.loads((source / "run.json").read_text())
-    (source / "run.json").write_text(json.dumps(run | {"convergence": {"floor": last}}))
+    convergence = {"floor": last, "plateau": list(last)}
+    converged = {"status": "converged", "convergence": convergence}
+    (source / "run.json").write_text(json.dumps(run | converged))
 
     summary = Registry(runs).scan().summaries[source.name]
 
@@ -592,13 +581,15 @@ def test_a_run_at_its_round_off_floors_reports_its_target(runs: Path) -> None:
     assert summary["trend"][-1] == case["time"]["residual_orders"]
 
 
-def test_floors_written_after_the_history_was_read_recompute_the_drop(runs: Path) -> None:
+def test_a_plateau_written_after_the_history_was_read_recomputes_the_drop(runs: Path) -> None:
     source = next(runs.iterdir())
     registry = Registry(runs)
     before = registry.scan().summaries[source.name]["orders"]
     last = json.loads((source / "history.jsonl").read_text().splitlines()[-1])["residuals"]
     run = json.loads((source / "run.json").read_text())
-    (source / "run.json").write_text(json.dumps(run | {"convergence": {"floor": last}}))
+    convergence = {"floor": last, "plateau": list(last)}
+    converged = {"status": "converged", "convergence": convergence}
+    (source / "run.json").write_text(json.dumps(run | converged))
 
     after = registry.scan().summaries[source.name]["orders"]
 

@@ -1,4 +1,4 @@
-"""`python -m autan_codegen KERNEL.py --out DIR [--backends cpu,gpu,metal]`."""
+"""`python -m autan_codegen KERNEL.py --out DIR [--backends cpu,gpu,metal] [--source-root DIR]`."""
 
 from __future__ import annotations
 
@@ -21,6 +21,12 @@ def main(argv: list[str] | None = None) -> int:
         "--no-line", action="store_true", help="omit #line directives to the DSL source"
     )
     ap.add_argument(
+        "--source-root",
+        type=Path,
+        default=None,
+        help="#line directives name the DSL sources relative to this directory",
+    )
+    ap.add_argument(
         "--policies",
         default=None,
         help="policies to instantiate (default: every policy the backends support)",
@@ -34,6 +40,7 @@ def main(argv: list[str] | None = None) -> int:
                 ns.backends.split(","),
                 line_directives=not ns.no_line,
                 policies=ns.policies.split(",") if ns.policies else None,
+                source_root=ns.source_root,
             )
     except CodegenError as exc:
         sys.stderr.write(f"error: {exc}\n")

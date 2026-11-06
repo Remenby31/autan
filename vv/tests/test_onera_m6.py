@@ -188,9 +188,9 @@ def test_study_cuts_the_wing_of_a_run(tmp_path: Path) -> None:
         ]
     experiment.write_text("\n".join(lines) + "\n")
     report = cases.study(run.path, experiment)
-    # write_run marks the run converged; its case asks for 10 orders, so the fp64 gate passes.
+    # write_run's converged run drops the 10 orders its case asks for, so the fp64 gate passes.
     assert report["gate"] == {"id": "onera-m6-residual-drop", "pass": True}
-    assert report["residual_drop"] == dict.fromkeys(report["residual_drop"], 0.0)
+    assert report["residual_drop"] == pytest.approx(dict.fromkeys(report["residual_drop"], 10.0))
     assert [row["eta"] for row in report["sections"]] == cases.conditions()["eta"]
     # The experiment's rise through Cp* between taps 0.1 and 0.5 (linear interpolation).
     cp_star = cases.critical_cp(mach)
