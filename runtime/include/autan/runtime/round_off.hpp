@@ -13,8 +13,9 @@ namespace autan::runtime {
 /// case-schema.md#time: an equation whose residual at iteration 1 of the original run is below
 /// 1e-12 of the largest residual there is identically zero (the spanwise momentum of a
 /// one-cell-thick slab); it is exempt while it stays at or below that floor, and once above it
-/// must drop like the others. The runtime's convergence decision and a physics' pseudo-time
-/// step use this one rule: fed the same reported residuals, they decide the same.
+/// must drop like the others from a reference of its kind (reference()). The runtime's
+/// convergence decision and a physics' pseudo-time step use this one rule: fed the same reported
+/// residuals, they decide the same.
 class RoundOffExemption {
  public:
   /// `names` are the equations; `woken`, those that left their floor earlier in a continued
@@ -28,8 +29,23 @@ class RoundOffExemption {
     if (!exempt_.empty()) return;
     floor_ = 1e-12 * *std::ranges::max_element(first);
     for (std::size_t e = 0; e < first.size(); ++e) {
-      exempt_.push_back(first[e] < floor_ && std::ranges::find(woken_, names_[e]) == woken_.end());
+      zero_.push_back(first[e] < floor_);
+      exempt_.push_back(zero_[e] && std::ranges::find(woken_, names_[e]) == woken_.end());
     }
+  }
+
+  /// The value equation `e` drops from, out of `values` (one per equation, at the start the drop
+  /// is measured from): its own, unless it was identically zero at iteration 1; then the largest
+  /// of the momentum components for a momentum component, which share units, and the largest of
+  /// all otherwise. Set reference() first.
+  [[nodiscard]] double reference(std::span<const double> values, std::size_t e) const {
+    if (!zero_[e]) return values[e];
+    const bool momentum = names_[e].starts_with("momentum-");
+    double largest = 0.0;
+    for (std::size_t k = 0; k < values.size(); ++k) {
+      if (!momentum || names_[k].starts_with("momentum-")) largest = std::max(largest, values[k]);
+    }
+    return largest;
   }
 
   /// This iteration's residuals: the equations that leave their floor now, no longer exempt.
@@ -51,7 +67,7 @@ class RoundOffExemption {
 
  private:
   std::vector<std::string> names_, woken_;
-  std::vector<bool> exempt_;
+  std::vector<bool> exempt_, zero_;
   double floor_ = 0.0;
 };
 
