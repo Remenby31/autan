@@ -70,17 +70,21 @@ meminfo=/proc/meminfo
 [[ -e $here/meminfo ]] && meminfo=$here/meminfo
 if ((10#$min_gib > 0)); then
   target_kib=$((10#$min_gib * 1048576))
-  deadline=$((SECONDS + 10#$wait_s))
-  announced=-60
+  # Elapsed time in microseconds (EPOCHREALTIME, bash 5): bash's SECONDS counts whole seconds
+  # from the hook's start, and a deadline in it can pass up to a second early.
+  now_us() { local t=${EPOCHREALTIME//[!0-9]/}; echo $((10#$t)); }
+  start_us=$(now_us)
+  deadline_us=$((start_us + 10#$wait_s * 1000000))
+  announce_us=$start_us
   while :; do
     free=$(awk '/^MemAvailable:/ {print $2}' "$meminfo" 2>/dev/null || true)
     [[ $free =~ ^[0-9]+$ ]] && ((free >= target_kib)) && break
     shown=$([[ $free =~ ^[0-9]+$ ]] && awk -v k="$free" 'BEGIN {printf "%.1f", k / 1048576}' || echo unknown)
-    ((SECONDS < deadline)) ||
+    (($(now_us) < deadline_us)) ||
       deny "host memory available $shown GiB, below this runner's floor of $min_gib GiB for ${wait_s} s: the host is busy, rerun later"
-    if ((SECONDS - announced >= 60)); then
+    if (($(now_us) >= announce_us)); then
       echo "autan-runner: WAITING FOR MEMORY: $shown GiB available, the job needs $min_gib GiB (at most ${wait_s} s)"
-      announced=$SECONDS
+      announce_us=$((announce_us + 60000000))
     fi
     sleep 1
   done

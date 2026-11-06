@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -31,6 +32,10 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 #include "../io/outside_data.hpp"
 #include "autan/core/geometry.hpp"
@@ -333,13 +338,13 @@ struct Spawned {
 };
 
 Spawned spawn_until(const Json& doc, const std::vector<std::string>& env,
-                    const std::function<bool(const fs::path&)>& ready, int poll_us = 2000) {
+                    const std::function<bool(const fs::path&)>& ready, int poll_us = 2000,
+                    const std::string& executable = AUTAN_RUN_RELAXATION) {
   const fs::path dir = fresh_dir();
   const fs::path input_file = dir / "solver-input.json";
   std::ofstream(input_file) << doc.dump();
   const std::string runs = (dir / "runs").string();
-  std::vector<std::string> args{AUTAN_RUN_RELAXATION, "--input", input_file.string(), "--runs",
-                                runs};
+  std::vector<std::string> args{executable, "--input", input_file.string(), "--runs", runs};
   std::vector<char*> argv;
   for (auto& a : args) argv.push_back(a.data());
   argv.push_back(nullptr);
@@ -349,8 +354,7 @@ Spawned spawn_until(const Json& doc, const std::vector<std::string>& env,
   for (auto& e : all) envp.push_back(e.data());
   envp.push_back(nullptr);
   Spawned s;
-  REQUIRE(posix_spawn(&s.pid, AUTAN_RUN_RELAXATION, nullptr, nullptr, argv.data(), envp.data()) ==
-          0);
+  REQUIRE(posix_spawn(&s.pid, executable.c_str(), nullptr, nullptr, argv.data(), envp.data()) == 0);
   for (int attempt = 0; attempt < 10'000'000 / poll_us; ++attempt) {
     if (fs::exists(runs)) {
       for (const auto& entry : fs::directory_iterator(runs)) {
@@ -588,6 +592,103 @@ TEST_CASE("A checkpoint names its iteration, and a start checks it", "[runtime]"
   CHECK(off.err.find("E0707") != std::string::npos);
 }
 
+// The SHA-256 of `file` by CMake's implementation, independent of the runtime's.
+std::string sha256_of(const std::string& file) {
+  const auto quoted = [](const std::string& s) {
+    std::string q = "'";
+    for (const char c : s) q += c == '\'' ? std::string("'\\''") : std::string(1, c);
+    return q + "'";
+  };
+  const std::string command = quoted(AUTAN_TEST_CMAKE) + " -E sha256sum " + quoted(file);
+  std::FILE* pipe = popen(command.c_str(), "r");
+  REQUIRE(pipe != nullptr);
+  std::array<char, 65> hex{};
+  const std::size_t got = std::fread(hex.data(), 1, 64, pipe);
+  REQUIRE(pclose(pipe) == 0);
+  REQUIRE(got == 64);
+  return std::string(hex.data(), 64);
+}
+
+// This test executable's.
+std::string own_sha256() {
+#ifdef __APPLE__
+  std::uint32_t size = 0;
+  (void)_NSGetExecutablePath(nullptr, &size);
+  std::string self(size, '\0');
+  REQUIRE(_NSGetExecutablePath(self.data(), &size) == 0);
+  self.resize(std::char_traits<char>::length(self.c_str()));
+  return sha256_of(self);
+#else
+  // Opens even if the file was replaced since; /proc/self would be cmake's own.
+  return sha256_of("/proc/" + std::to_string(getpid()) + "/exe");
+#endif
+}
+
+TEST_CASE("An executable's cached hash serves only that unchanged file", "[runtime]") {
+  // AUTAN_BINARY_HASH_CACHE keeps run.json's solver.binary_sha256 across processes, keyed by the
+  // file's device, inode, size, mtime and ctime. A file changed less than 2 s ago is not stored:
+  // a coarse timestamp could miss a second change within the same tick.
+  const fs::path dir = fresh_dir();
+  const fs::path exe = dir / "autan-run";
+  fs::copy_file(AUTAN_RUN_RELAXATION, exe);
+  fs::permissions(exe, fs::status(AUTAN_RUN_RELAXATION).permissions());
+  const fs::path cache = dir / "cache";
+  fs::path last_run;
+  const auto recorded = [&](const fs::path& cache_dir) {
+    const Spawned s = spawn_until(
+        input(), {"AUTAN_BINARY_HASH_CACHE=" + cache_dir.string()},
+        [](const fs::path&) { return true; }, 2000, exe.string());
+    int status = 0;
+    REQUIRE(waitpid(s.pid, &status, 0) == s.pid);
+    REQUIRE(WIFEXITED(status));
+    REQUIRE(WEXITSTATUS(status) == 0);
+    last_run = s.run;
+    return Json::parse(read(s.run / "run.json"))["solver"]["binary_sha256"].get<std::string>();
+  };
+  const auto entries = [&] {
+    std::vector<fs::path> files;
+    if (fs::exists(cache)) {
+      for (const auto& e : fs::directory_iterator(cache)) files.push_back(e.path());
+    }
+    return files;
+  };
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(2100));
+  const std::string hash = sha256_of(exe.string());
+  CHECK(recorded(cache) == hash);
+  REQUIRE(entries().size() == 1);
+  CHECK(read(entries()[0]) == hash + "\n");
+
+  // The entry is what a later process reads: a forged one is believed.
+  const std::string forged(64, 'f');
+  std::ofstream(entries()[0], std::ios::trunc) << forged << '\n';
+  CHECK(recorded(cache) == forged);
+
+  // A changed file has another key: its own hash is recorded, and any entry stored for it (once
+  // its ctime is 2 s old) holds that hash.
+  const fs::path forged_entry = entries()[0];
+  std::ofstream(exe, std::ios::binary | std::ios::app) << "autan";
+  const std::string changed = sha256_of(exe.string());
+  CHECK(changed != hash);
+  CHECK(recorded(cache) == changed);
+  for (const fs::path& e : entries()) {
+    CAPTURE(e);
+    CHECK(read(e) == (e == forged_entry ? forged : changed) + "\n");
+  }
+
+  // A cache it cannot use (a file where the directory should be) is logged, never silent.
+  const fs::path not_a_dir = dir / "file";
+  std::ofstream(not_a_dir) << "x";
+  CHECK(recorded(not_a_dir) == changed);
+  bool logged = false;
+  for (const std::string& line : lines_of(last_run / "log.jsonl")) {
+    const Json l = Json::parse(line);
+    logged =
+        logged || (l["level"] == "warning" && l["data"].value("cache", "") == not_a_dir.string());
+  }
+  CHECK(logged);
+}
+
 TEST_CASE("A converging run writes the run directory of results.md", "[runtime]") {
   // Residuals 0.5^(k-1) drop 8 orders at k = 28 (0.5^27 < 1e-8 < 0.5^26).
   const Json doc = input();
@@ -629,15 +730,19 @@ TEST_CASE("A converging run writes the run directory of results.md", "[runtime]"
                                {"commit", build.commit},
                                {"backend", "cpu"},
                                {"binary_sha256", info["solver"]["binary_sha256"]}});
-  CHECK(std::regex_match(info["solver"]["binary_sha256"].get<std::string>(),
-                         std::regex("[0-9a-f]{64}")));
-  // identity: SHA-256 of the eight fields joined by "\n" (results.md); the
-  // cell order is RCM by default.
+  // The executable that ran, hashed once per process: a second run records the same.
+  CHECK(info["solver"]["binary_sha256"] == own_sha256());
+  const Outcome again = run(doc);
+  REQUIRE(again.status == ExitStatus::finished);
+  CHECK(Json::parse(read(again.run / "run.json"))["solver"]["binary_sha256"] ==
+        info["solver"]["binary_sha256"]);
+  // identity: SHA-256 of the nine fields joined by "\n" (results.md), the zone groups' hash
+  // empty without a sidecar; the cell order is RCM by default.
   CHECK(info["cell_order"] == "rcm");
   std::string expected;
   picosha2::hash256_hex_string(doc["case"]["sha256"].get<std::string>() + "\n" +
-                                   doc["mesh"]["sha256"].get<std::string>() + "\n" + build.commit +
-                                   "\nfp32+acc64\ncpu\ncpu\n1\nrcm",
+                                   doc["mesh"]["sha256"].get<std::string>() + "\n\n" +
+                                   build.commit + "\nfp32+acc64\ncpu\ncpu\n1\nrcm",
                                expected);
   CHECK(info["identity"] == expected);
   CHECK(read(o.run / "case.toml") == doc["case"]["toml"].get<std::string>());
@@ -1180,6 +1285,12 @@ TEST_CASE("The input reader enforces the solver-input rules", "[runtime]") {
                   })),
                   "E0705");
   }
+  SECTION("a boundary's rule is an index or null") {
+    for (const Json& rule : {Json(-1), Json(1.5), Json("0")}) {
+      CAPTURE(rule);
+      require_error(run(input([&](Json& d) { d["boundaries"][0]["rule"] = rule; })), "E0705");
+    }
+  }
   SECTION("the mesh scale is finite and positive") {
     for (const double scale : {0.0, -0.0254}) {
       CAPTURE(scale);
@@ -1425,12 +1536,12 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
   // timing counts this run's iterations only.
   CHECK(info["timing"]["iterations"] ==
         info["iterations"].get<std::int64_t>() - second["start"]["iterations"].get<std::int64_t>());
-  // identity: the eight parts, then the start's identity, mode, iterations
+  // identity: the nine parts, then the start's identity, mode, iterations
   // and solution hash, joined by "\n" (results.md).
   const auto& s = second["start"];
   std::string identity;
   picosha2::hash256_hex_string(second["case"]["sha256"].get<std::string>() + "\n" +
-                                   second["mesh"]["sha256"].get<std::string>() + "\n" +
+                                   second["mesh"]["sha256"].get<std::string>() + "\n\n" +
                                    build.commit + "\nfp32+acc64\ncpu\ncpu\n1\nrcm\n" +
                                    s["identity"].get<std::string>() + "\ncontinue\n" +
                                    std::to_string(s["iterations"].get<int>()) + "\n" +
@@ -2805,8 +2916,9 @@ TEST_CASE("A mesh in inches gives the run of the same mesh in metres", "[runtime
     REQUIRE(toml.find(unit) != std::string::npos);
     in_inches["case"]["toml"] = toml.replace(toml.find(unit), unit.size(), "mesh_unit = \"in\"");
   }
-  in_inches["mesh"] = {
-      {"path", inches.string()}, {"sha256", autan::io::mesh_hash(inches)}, {"scale", 0.0254}};
+  in_inches["mesh"]["path"] = inches.string();
+  in_inches["mesh"]["sha256"] = autan::io::mesh_hash(inches);
+  in_inches["mesh"]["scale"] = 0.0254;
   autan::runtime::PhysicsRegistry registry;
   autan::physics::register_euler(registry);
   const Outcome a = run(metres, registry);
@@ -2849,4 +2961,47 @@ TEST_CASE("A mesh in inches gives the run of the same mesh in metres", "[runtime
     CAPTURE(axis);
     close(coordinates(a.run / "solution.cgns", axis), coordinates(b.run / "solution.cgns", axis));
   }
+}
+
+TEST_CASE("A run archives the zone groups its case was resolved with", "[runtime][groups]") {
+  // The hybrid mesh copied with a zone-groups sidecar: the input names the
+  // sidecar's hash (mesh.groups_sha256); run.json records it, the identity
+  // covers it, the archived MeshInfo carries the groups. A sidecar that is not
+  // the one named, present or absent, is refused before any directory.
+  const fs::path mesh = fresh_dir() / "polyMesh";
+  fs::copy(mesh_path, mesh, fs::copy_options::recursive);
+  const std::string hash = autan::io::mesh_hash(mesh);
+  const fs::path sidecar = mesh.string() + ".zones.json";
+  std::ofstream(sidecar) << Json{{"schema", "autan.zone-groups/1"},
+                                 {"mesh_sha256", hash},
+                                 {"provenance", Json::object()},
+                                 {"groups", {{"walls", {"ymin", "zmax"}}}}}
+                                .dump();
+  const std::string groups_hash = autan::io::mesh_hash(sidecar);
+  const auto on = [&](const Json& groups_sha256) {
+    return input([&](Json& d) {
+      d["mesh"]["path"] = mesh.string();
+      d["mesh"]["sha256"] = hash;
+      d["mesh"]["groups_sha256"] = groups_sha256;
+    });
+  };
+  const Outcome o = run(on(groups_hash), {.factor = 0.5});
+  REQUIRE(o.status == ExitStatus::finished);
+  const Json info = Json::parse(read(o.run / "run.json"));
+  CHECK(info["mesh"]["groups_sha256"] == groups_hash);
+  const Json archived = Json::parse(read(o.run / "mesh-info.json"));
+  CHECK(archived["groups"] == Json::parse(R"([{"name": "walls", "zones": ["ymin", "zmax"]}])"));
+  CHECK(archived["groups_source"]["sha256"] == groups_hash);
+  // The identity covers the groups' hash (results.md), the cell order RCM by default.
+  std::string expected;
+  picosha2::hash256_hex_string(info["case"]["sha256"].get<std::string>() + "\n" + hash + "\n" +
+                                   groups_hash + "\n" + build.commit +
+                                   "\nfp32+acc64\ncpu\ncpu\n1\nrcm",
+                               expected);
+  CHECK(info["identity"] == expected);
+
+  require_error(run(on(nullptr)), "E0137");               // a sidecar the input does not name
+  require_error(run(on(std::string(64, 'a'))), "E0137");  // another sidecar
+  fs::remove(sidecar);
+  require_error(run(on(groups_hash)), "E0137");  // the named sidecar is gone
 }

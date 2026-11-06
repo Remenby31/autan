@@ -8,6 +8,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <exception>
 #include <fstream>
@@ -30,10 +31,6 @@
 #include <picosha2.h>
 #include <sys/resource.h>
 
-#ifdef __APPLE__
-#include <mach-o/dyld.h>
-#endif
-
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/core/renumber.hpp"
@@ -44,6 +41,7 @@
 #include "autan/runtime/round_off.hpp"
 #include "comm.hpp"
 #include "device.hpp"
+#include "executable_hash.hpp"
 #include "run_directory.hpp"
 
 namespace autan::runtime {
@@ -291,32 +289,6 @@ std::string sha256_hex(const std::string& text) {
   std::string hash;
   picosha2::hash256_hex_string(text, hash);
   return hash;
-}
-
-// results.md, run.json `solver.binary_sha256`: the SHA-256 of the running executable, into
-// which the solver's code links statically.
-std::string executable_sha256() {
-#ifdef __APPLE__
-  std::uint32_t size = 0;
-  (void)_NSGetExecutablePath(nullptr, &size);
-  std::string path(size, '\0');
-  if (_NSGetExecutablePath(path.data(), &size) != 0)
-    throw std::runtime_error("cannot locate the running executable");
-  path.resize(std::char_traits<char>::length(path.c_str()));
-#else
-  const std::string path = "/proc/self/exe";
-#endif
-  std::ifstream in(path, std::ios::binary);
-  if (!in) throw std::runtime_error("cannot read the running executable '" + path + "'");
-  picosha2::hash256_one_by_one hasher;
-  std::vector<char> buffer(1 << 20);
-  while (in) {
-    in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-    hasher.process(buffer.begin(), buffer.begin() + in.gcount());
-  }
-  if (in.bad()) throw std::runtime_error("cannot read the running executable '" + path + "'");
-  hasher.finish();
-  return picosha2::get_hash_hex_string(hasher);
 }
 
 std::string read_text(const fs::path& path) {
@@ -954,7 +926,32 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
   }
   // solver-input.md, mesh.scale: the coordinates and periodic translations in
   // metres once checked against the file, before any geometry or pairing.
-  p.mesh_info = io::mesh_info_json(p.mesh, p.mesh_hash);
+  // The run archives the zone groups the case was resolved with: the sidecar
+  // must be the one the SDK hashed (solver-input.md, mesh.groups_sha256).
+  std::optional<io::ZoneGroups> groups;
+  try {
+    groups = io::read_zone_groups(p.input.mesh_path, p.mesh, p.mesh_hash);
+  } catch (const Error& e) {
+    throw InputError(Diagnostic{.code = error_code_string(e.code()),
+                                .message = e.what(),
+                                .path = "mesh.groups_sha256",
+                                .data_json = "{}"});
+  }
+  const std::optional<std::string> found =
+      groups ? std::optional<std::string>(groups->sha256) : std::nullopt;
+  if (found != p.input.mesh_groups_sha256) {
+    const auto text = [](const std::optional<std::string>& s) {
+      return s ? nlohmann::json(*s) : nlohmann::json(nullptr);
+    };
+    throw InputError(Diagnostic{
+        .code = "E0137",
+        .message = "the mesh's zone-groups file is not the one mesh.groups_sha256 names",
+        .path = "mesh.groups_sha256",
+        .data_json =
+            nlohmann::json{{"expected", text(p.input.mesh_groups_sha256)}, {"found", text(found)}}
+                .dump()});
+  }
+  p.mesh_info = io::mesh_info_json(p.mesh, p.mesh_hash, groups);
   if (p.input.mesh_scale != 1.0) p.mesh = scaled(p.mesh, p.input.mesh_scale);
   if (p.input.start) load_start(p);
   if (p.input.verification) {
@@ -1194,7 +1191,8 @@ class Run final : public Log {
     const std::string started_at = comm_.broadcast(utc(started, "%Y-%m-%dT%H:%M:%SZ"));
     const auto& in = p_.input;
     const std::string backend = in.device_kind;
-    std::string parts = in.case_sha256 + "\n" + p_.mesh_hash + "\n" + build.commit + "\n" +
+    std::string parts = in.case_sha256 + "\n" + p_.mesh_hash + "\n" +
+                        in.mesh_groups_sha256.value_or("") + "\n" + build.commit + "\n" +
                         in.precision + "\n" + backend + "\n" + in.device_kind + "\n" +
                         std::to_string(in.device_count) + "\n" + cell_order();
     Json start = nullptr;
@@ -1224,40 +1222,43 @@ class Run final : public Log {
     std::string binary;
     if (comm_.rank() == 0) {
       try {
-        binary = executable_sha256();
+        binary = executable_hash().sha256;
+        hash_cache_problem_ = executable_hash().cache_problem;
       } catch (const std::exception& e) {
         binary = std::string("!") + e.what();
       }
     }
     binary = comm_.broadcast(binary);
     if (binary.starts_with('!')) throw std::runtime_error(binary.substr(1));
-    info_ = Json{{"schema", "autan.results/1"},
-                 {"run_id", run_id},
-                 {"identity", identity},
-                 {"status", "running"},
-                 {"case", {{"name", in.case_name}, {"sha256", in.case_sha256}}},
-                 {"mesh",
-                  {{"path", fs::absolute(in.mesh_path).lexically_normal().string()},
-                   {"sha256", p_.mesh_hash}}},
-                 {"solver",
-                  {{"version", build.version},
-                   {"commit", build.commit},
-                   {"backend", backend},
-                   {"binary_sha256", binary}}},
-                 {"precision", in.precision},
-                 {"devices", {{"kind", in.device_kind}, {"count", in.device_count}}},
-                 {"cell_order", cell_order()},
-                 {"started", started_at},
-                 {"finished", nullptr},
-                 {"iterations", 0},
-                 {"time", in.time.kind == "unsteady" ? Json(0.0) : Json(nullptr)},
-                 {"averaging", nullptr},
-                 {"convergence", nullptr},
-                 {"checkpoint", nullptr},
-                 {"start", start},
-                 {"monitors", nullptr},
-                 {"timing", nullptr},
-                 {"diagnostics", Json::array()}};
+    info_ = Json{
+        {"schema", "autan.results/1"},
+        {"run_id", run_id},
+        {"identity", identity},
+        {"status", "running"},
+        {"case", {{"name", in.case_name}, {"sha256", in.case_sha256}}},
+        {"mesh",
+         {{"path", fs::absolute(in.mesh_path).lexically_normal().string()},
+          {"sha256", p_.mesh_hash},
+          {"groups_sha256", in.mesh_groups_sha256 ? Json(*in.mesh_groups_sha256) : Json(nullptr)}}},
+        {"solver",
+         {{"version", build.version},
+          {"commit", build.commit},
+          {"backend", backend},
+          {"binary_sha256", binary}}},
+        {"precision", in.precision},
+        {"devices", {{"kind", in.device_kind}, {"count", in.device_count}}},
+        {"cell_order", cell_order()},
+        {"started", started_at},
+        {"finished", nullptr},
+        {"iterations", 0},
+        {"time", in.time.kind == "unsteady" ? Json(0.0) : Json(nullptr)},
+        {"averaging", nullptr},
+        {"convergence", nullptr},
+        {"checkpoint", nullptr},
+        {"start", start},
+        {"monitors", nullptr},
+        {"timing", nullptr},
+        {"diagnostics", Json::array()}};
     if (continued()) {
       info_["iterations"] = in.start->iterations;
       if (in.time.kind == "unsteady") info_["time"] = *in.start->time;
@@ -1296,6 +1297,11 @@ class Run final : public Log {
     } else {
       note("warning", "solver", "the mesh's own cell order is kept (AUTAN_CELL_ORDER=input)", "",
            Json{{"order", "input"}}.dump());
+    }
+    if (!hash_cache_problem_.empty()) {
+      // Rank 0's: the only one that hashes. Every process then hashes its executable whole.
+      note("warning", "solver", "the executable's hash cache is not used: " + hash_cache_problem_,
+           "", Json{{"cache", std::getenv("AUTAN_BINARY_HASH_CACHE")}}.dump());
     }
     if (comm_.size() > 1) log_partition();
     if (const PeriodicSnap& snap = p_.mesh.periodic_snap(); snap.nodes > 0) {
@@ -2223,6 +2229,7 @@ class Run final : public Log {
   // Declared before the physics, so destroyed after it: its stream outlives the physics' use.
   std::optional<Gpu> gpu_;
   double renumber_seconds_ = 0.0;
+  std::string hash_cache_problem_;  // rank 0: why the executable hash cache was not used
   std::optional<Ordered> ordered_;
   CellGroups groups_;  // the physics' groups, over p_.mesh's cells
   Geometry geometry_;
