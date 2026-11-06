@@ -32,17 +32,27 @@ class Pair(TypedDict):
     fields: dict[str, float]
 
 
+def _without_paths(node: Any) -> None:
+    """Drop the path of every file the case records with its sha256, which stays."""
+    if isinstance(node, dict):
+        if "sha256" in node:
+            node.pop("path", None)
+        for value in node.values():
+            _without_paths(value)
+    elif isinstance(node, list):
+        for value in node:
+            _without_paths(value)
+
+
 def _problem(results: autan.Results) -> dict[str, Any]:
     """The case apart from its precision, the paths of its files and, for a steady case, its
-    stopping targets, which may differ between precisions. A study may keep its own copy of the mesh
-    and of the manufactured solution: the mesh is paired by its sha256, and the manufactured
-    solution is compared by the sha256 the case records with its path (#524)."""
+    stopping targets, which may differ between precisions. A study may keep its own copies of its
+    files (#524): the mesh is paired by its sha256, and every other file (manufactured solution,
+    initial state, oracle states) is compared by the sha256 the case records with its path."""
     doc: dict[str, Any] = results.case.model_dump(mode="json")
     doc["physics"].pop("precision", None)
     doc.pop("mesh", None)
-    manufactured = (doc.get("verification") or {}).get("manufactured")
-    if manufactured is not None:
-        manufactured.pop("path", None)
+    _without_paths(doc)
     if doc["time"]["kind"] == "steady":
         doc["time"].pop("residual_orders", None)
         doc["time"].pop("max_iterations", None)

@@ -14,7 +14,7 @@ The general statement holds, and the rows say so: a verdict in FP64; in `fp32+ac
 
 **This correction comes after results.** #524's failure was known when the decision was taken, and the re-evaluation of #137's FP32 runs under the stated rule followed it. All eight families (four cell types, clean and perturbed) pass `agree`, at most 15.9 × 2⁻²³ (#524). What changed is not the threshold but which rule applies to FP32: the one the document already stated, against the rows that contradicted it.
 
-`agree` also compares a study's files by content: the mesh by its sha256, the manufactured solution by the sha256 its case records, so that studies keeping their own copies of them pair (#524).
+`agree` also compares a study's files by content: the mesh by its sha256, and every other file the case records with its sha256 (manufactured solution, initial state, oracle states) by that sha256, so that studies keeping their own copies of them pair (#524).
 
 ## Consequences
 
