@@ -204,17 +204,35 @@ TEST_CASE("Invalid meshes are rejected with their documented code", "[mesh]") {
     auto in = two_cubes();
     in.face_zone.pop_back();
     require_error(ErrorCode::mesh_inconsistent_sizes, [&] { (void)autan::assemble(in); });
+    // As many ghosts as cells leaves no owned cell.
+    auto ghosts = two_cubes();
+    ghosts.n_ghost_cells = 2;
+    require_error(ErrorCode::mesh_inconsistent_sizes, [&] { (void)autan::assemble(ghosts); });
   }
   SECTION("E0102 node index out of range") {
     auto in = two_cubes();
     in.face_nodes[5] = 12;
     require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)autan::assemble(in); });
+    // A cell, face zone or cell zone index one past the last.
+    auto cell = two_cubes();
+    cell.face_cell0[1] = 2;
+    require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)autan::assemble(cell); });
+    auto zone = two_cubes();
+    zone.face_zone[0] = 2;
+    require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)autan::assemble(zone); });
+    auto cell_zone = two_cubes();
+    cell_zone.cell_zone[1] = 1;
+    require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)autan::assemble(cell_zone); });
   }
   SECTION("E0103 face with fewer than 3 nodes") {
-    auto in = two_cubes();
-    in.face_nodes.erase(in.face_nodes.begin() + 2, in.face_nodes.begin() + 4);
-    for (std::size_t f = 1; f < in.face_node_offsets.size(); ++f) in.face_node_offsets[f] -= 2;
-    require_error(ErrorCode::mesh_face_too_few_nodes, [&] { (void)autan::assemble(in); });
+    // Two nodes left, or none: equal offsets do not decrease.
+    for (const int removed : {2, 4}) {
+      auto in = two_cubes();
+      in.face_nodes.erase(in.face_nodes.begin() + 4 - removed, in.face_nodes.begin() + 4);
+      for (std::size_t f = 1; f < in.face_node_offsets.size(); ++f)
+        in.face_node_offsets[f] -= removed;
+      require_error(ErrorCode::mesh_face_too_few_nodes, [&] { (void)autan::assemble(in); });
+    }
   }
   SECTION("E0104 repeated node") {
     auto in = two_cubes();
@@ -488,6 +506,34 @@ TEST_CASE("Faces of owned cells come first, then the halo faces of ghost cells",
   // Renumbering keeps each ghost's translation with it.
   const autan::Mesh same = autan::renumber_cells(mesh, std::array<index_t, 2>{0, 1});
   CHECK(same.ghost_translation()[0] == std::array<double, 3>{1.0, 0.0, 0.0});
+
+  // An owned face in a higher zone than the ghost's faces still precedes them, in either
+  // input order of the faces.
+  in.face_zones.push_back(autan::FaceZone{
+      .name = "outlet", .bc_type = "", .kind = autan::BcKind::outlet, .provenance = {}});
+  in.face_zone[1] = 2;  // cube 0's face at x = 0
+  autan::MeshInput reversed = in;
+  reversed.face_node_offsets = {0};
+  reversed.face_nodes.clear();
+  for (std::size_t f = in.face_cell0.size(); f-- > 0;) {
+    reversed.face_nodes.insert(reversed.face_nodes.end(),
+                               in.face_nodes.begin() + in.face_node_offsets[f],
+                               in.face_nodes.begin() + in.face_node_offsets[f + 1]);
+    reversed.face_node_offsets.push_back(static_cast<offset_t>(reversed.face_nodes.size()));
+  }
+  std::ranges::reverse(reversed.face_cell0);
+  std::ranges::reverse(reversed.face_cell1);
+  std::ranges::reverse(reversed.face_zone);
+  for (const autan::MeshInput& input : {in, reversed}) {
+    const autan::Mesh zoned = autan::assemble(input);
+    CHECK(zoned.n_owned_faces() == 6);
+    CHECK(std::ranges::equal(zoned.boundary_zone_offsets(), std::array<index_t, 4>{1, 5, 5, 6}));
+    CHECK(std::ranges::equal(zoned.halo_boundary_zone_offsets(),
+                             std::array<index_t, 4>{6, 11, 11, 11}));
+    for (index_t f = zoned.n_interior_faces(); f < zoned.n_faces(); ++f) {
+      CHECK((zoned.owner()[static_cast<std::size_t>(f)] == 1) == (f >= 6));
+    }
+  }
 }
 
 TEST_CASE("A scaled mesh keeps its topology, scales lengths and periodic translations", "[mesh]") {
