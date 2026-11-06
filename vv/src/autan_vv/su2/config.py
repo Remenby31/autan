@@ -149,6 +149,9 @@ def config(
         if kind not in markers:
             msg = f"case {case.name}: boundary kind {kind!r} is not configured"
             raise VVError(msg, code="V0903")
+        if rule.zones is None:
+            msg = f"case {case.name}: a boundary rule by zone group is not configured"
+            raise VVError(msg, code="V0903")
         markers[kind] += _matching(rule.zones, zones)
     if mesh.dimension == 2 and sorted(markers["symmetry"]) != sorted(mesh.dropped_zones):
         msg = f"case {case.name}: the planes dropped in 2D must be its symmetry zones"
@@ -162,6 +165,9 @@ def config(
         raise VVError(msg, code="V0903")
     centre = [float(si(c, "m")) for c in forces.moment_center]
     ref_area = float(si(forces.ref_area, "m**2"))
+    if forces.surfaces is None:
+        msg = f"case {case.name}: a forces monitor by zone group is not configured"
+        raise VVError(msg, code="V0903")
     surfaces = _matching(forces.surfaces, list(mesh.markers))
     if mesh.dimension == 2:
         if centre[1] != 0.0:
