@@ -35,7 +35,6 @@ LEVEL_SCHEMA = "autan.su2-onera-m6-level/1"
 REPORT_SCHEMA = "autan.su2-onera-m6/1"
 # SU2 v8.6.0, TestCases/euler/oneram6/inv_ONERAM6.cfg.
 PUBLISHED_SHA256 = "f0f81240d05730b51c36575991c864733ed2243e7a69008b07203ebe119d9f58"
-# The family's zones and the marker names of SU2's published configuration.
 MARKERS = {"wing": "WING", "farfield": "FARFIELD", "symmetry": "SYMMETRY"}
 VTK_TRIANGLE, VTK_TETRA = 5, 10
 OUTPUTS = ("cl", "cd")
@@ -140,10 +139,20 @@ def configure(published: str, mesh_file: str, max_iterations: int = 50000) -> st
     return "\n".join([*kept, *(f"{k}= {ours[k]}" for k in ADOPTED_KEYS)]) + "\n"
 
 
-def prepare(family: Path, published: Path, out: Path, max_iterations: int = 50000) -> list[Path]:
-    """Convert every level of the onera-m6 family `family` (its manifest.json) to OUT/meshes/ and
-    write OUT/nNNN/{case.cfg, level.json}; returns the case directories, coarsest first. V0805 if
-    `family` is not an onera-m6 family, V0903 if `published` is not SU2's file (PUBLISHED_SHA256)."""
+def prepare(
+    family: Path,
+    published: Path,
+    out: Path,
+    max_iterations: int = 50000,
+    overrides: dict[str, str] | None = None,
+    levels: tuple[int, ...] | None = None,
+) -> list[Path]:
+    """Convert the levels of the onera-m6 family `family` (its manifest.json; `levels`, all by
+    default) to OUT/meshes/ and write OUT/nNNN/{case.cfg, level.json}; returns the case
+    directories, coarsest first. `overrides` (a declared diagnostic) replaces the value of keys the
+    configuration already has, and level.json records them. V0805 if `family` is not an onera-m6
+    family, V0903 if `published` is not SU2's file (PUBLISHED_SHA256) or an override names a key
+    the configuration does not have."""
     manifest = json.loads((family / "manifest.json").read_text())
     if manifest.get("schema") != "autan.mesh-family/1" or manifest.get("kind") != "onera-m6":
         msg = f"{family} is not an onera-m6 mesh family"
@@ -154,24 +163,40 @@ def prepare(family: Path, published: Path, out: Path, max_iterations: int = 5000
         raise VVError(msg, code="V0903")
     (out / "meshes").mkdir(parents=True, exist_ok=True)
     dirs = []
-    for level in sorted(manifest["levels"], key=lambda lv: lv["n_cells"]):
+    chosen = [lv for lv in manifest["levels"] if levels is None or lv["n"] in levels]
+    for level in sorted(chosen, key=lambda lv: lv["n_cells"]):
         source = family / level["file"]
         if _sha256(source.read_bytes()) != level["file_sha256"]:
             msg = f"{source} is not the manifest's file"
             raise VVError(msg, code="V0805")
         record = convert(source, out / "meshes" / source.with_suffix(".su2").name)
-        cfg = configure(text.decode(), f"../meshes/{record.file}", max_iterations)
+        cfg = apply_overrides(
+            configure(text.decode(), f"../meshes/{record.file}", max_iterations), overrides or {}
+        )
         run = out / f"n{level['n']:03d}"
         run.mkdir(parents=True, exist_ok=True)
         (run / "case.cfg").write_text(cfg)
         info = {
             "schema": LEVEL_SCHEMA, "n": level["n"], "cells": level["n_cells"], "h": level["h"],
             "published_sha256": PUBLISHED_SHA256, "case_sha256": _sha256(cfg.encode()),
-            "mesh": asdict(record),
+            "mesh": asdict(record), "overrides": overrides or {},
         }  # fmt: skip
         (run / "level.json").write_text(json.dumps(info, indent=2) + "\n")
         dirs.append(run)
     return dirs
+
+
+def apply_overrides(cfg: str, overrides: dict[str, str]) -> str:
+    """`cfg` with the value of each key of `overrides` replaced, the line written `KEY= value`.
+    V0903 if a key is not in `cfg` exactly once."""
+    lines = cfg.splitlines()
+    keys = [line.split("%", 1)[0].split("=", 1)[0].strip() for line in lines]
+    for key, value in overrides.items():
+        if keys.count(key) != 1:
+            msg = f"override {key}: the configuration has it {keys.count(key)} times, not once"
+            raise VVError(msg, code="V0903")
+        lines[keys.index(key)] = f"{key}= {value}"
+    return "\n".join(lines) + "\n"
 
 
 def read_su2_3d(path: Path) -> tuple[FloatArray, dict[str, IntArray]]:
@@ -256,17 +281,19 @@ def _level(run: Path) -> tuple[dict[str, Any], tuple[FloatArray, IntArray, Float
         raise VVError(msg, code="V0904")
     runs = history.read_su2(run / "history.csv")
     cfg = options((run / "case.cfg").read_text())
-    scales = history.flux_scales(
-        history.su2_freestream((run / "log.txt").read_text()), float(cfg["REF_LENGTH"])
-    )
+    # A 3D residual integrates fluxes over faces: its scale is a flux times an area.
+    area = float(cfg["REF_LENGTH"]) ** 2
+    scales = history.flux_scales(history.su2_freestream((run / "log.txt").read_text()), area)
     scales = {eq: scales[eq] for eq in runs.residuals}
     row: dict[str, Any] = {
         "n": level["n"], "cells": level["cells"], "h": level["h"], "su2": prov["su2"],
         "image_id": prov["image_id"], "case_sha256": level["case_sha256"],
         "mesh_sha256": level["mesh"]["file_sha256"],
         "source_sha256": level["mesh"]["source_sha256"],
+        "precision": "fp64", "overrides": level.get("overrides", {}),
         "last_iteration": int(runs.iterations[-1]), "cl": float(runs.cl[-1]),
         "cd": float(runs.cd[-1]),
+        "drop": {eq: float(np.log10(r[0] / r[-1])) for eq, r in runs.residuals.items()},
     }  # fmt: skip
     points, markers = read_su2_3d(mesh)
     cut = (points, markers["WING"], surface_cp(run / f"{SURFACE}.csv", len(points)))
@@ -295,8 +322,9 @@ def _richardson(h: list[float], values: list[float]) -> dict[str, Any]:
 
 def results(root: Path, cache: Path) -> dict[str, Any]:
     """The report (autan.su2-onera-m6/1) on the runs `prepare` wrote under `root`: per level,
-    convergence by the absolute criterion of #493 with the run as its own baseline (CL and CD
-    settled within RTOL for WINDOW iterations), CL and CD at the last iteration and, per span
+    the absolute criterion of #493 with the run as its own baseline, which with no independent
+    baseline establishes that CL and CD stayed settled within RTOL for WINDOW iterations, not
+    that the residuals fell (their drop from the first iteration is reported beside it), CL and CD at the last iteration and, per span
     station of `case_2308.dat`, the comparison of Autan's M2 study (upper-surface shocks against
     the experiment's, rear-shock gap, Cp RMS away from shocks); CL and CD in the continuum from the
     three levels (h of the manifest), none unless all three converged. V0904 if a run is not the

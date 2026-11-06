@@ -10,11 +10,23 @@
       "case_sha256": "6259823ff107b60d218a533b6781bd0f5486842adeb3068dd628f53201d5bce8",
       "mesh_sha256": "273310d5d962aa34f10deddd0181d48c4d738e6a96bc318d460f40237aab0d69",
       "source_sha256": "bd06c03c6e60252f1730dae32d1b61aaf6478565ada7c77c2c32ddcb724084f5",
+      "precision": "fp64",
+      "overrides": {
+        "CFL_NUMBER": "100.0",
+        "HISTORY_OUTPUT": "( ITER, RMS_RES, AERO_COEFF, WALL_TIME, LINSOL )"
+      },
       "last_iteration": 2558,
       "cl": 0.2827998041,
       "cd": 0.01035673786,
+      "drop": {
+        "density": 11.006010223999999,
+        "momentum-x": 10.744376928999998,
+        "momentum-y": 10.252262127000002,
+        "momentum-z": 10.368870815000003,
+        "energy": 10.969589215
+      },
       "converged": true,
-      "epsilon": 2.8155407332062814e-11,
+      "epsilon": 4.3579499639455186e-11,
       "iterations": 837,
       "sections": [
         {

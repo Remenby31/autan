@@ -315,7 +315,11 @@ def _cmd_su2_onera_m6(args: argparse.Namespace) -> None:
         if args.family is None or args.published is None:
             msg = "su2-onera-m6 prepare takes --family and --published (SU2's inv_ONERAM6.cfg)"
             raise VVError(msg, code="V0903")
-        for run in onera_m6.prepare(args.family, args.published, args.root, args.max_iterations):
+        overrides = dict(item.split("=", 1) for item in args.set)
+        for run in onera_m6.prepare(
+            args.family, args.published, args.root, args.max_iterations, overrides,
+            tuple(args.levels) if args.levels else None,
+        ):  # fmt: skip
             _say(str(run.relative_to(args.root)))
         return
     report = onera_m6.results(args.root, args.cache)
@@ -612,6 +616,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--family", type=Path, help="prepare: directory of the mesh manifest")
     p.add_argument("--published", type=Path, help="prepare: SU2's inv_ONERAM6.cfg")
     p.add_argument("--max-iterations", type=int, default=50000)
+    p.add_argument(
+        "--set", action="append", default=[], metavar="KEY=VALUE",
+        help="prepare: a declared diagnostic override of one configuration key",
+    )  # fmt: skip
+    p.add_argument("--levels", type=int, nargs="+", help="prepare: only these levels (n)")
     p.add_argument("--cache", type=Path, default=Path("~/.cache/autan-vv").expanduser())
     p.add_argument("--out", type=Path, help="results: report JSON")
     p.set_defaults(func=_cmd_su2_onera_m6)

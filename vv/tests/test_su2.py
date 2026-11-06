@@ -1068,6 +1068,10 @@ def _cube_msh(path: Path, zones: dict[str, list[tuple[int, ...]]]) -> None:
         for axis in (a, b, c):
             corner[axis] = 1
             chain.append(1 + corner[0] + 2 * corner[1] + 4 * corner[2])
+        # An odd permutation of the axes gives a negative volume: swap two nodes (Gmsh's
+        # tetrahedra have positive volume).
+        if (a, b, c) in ((0, 2, 1), (1, 0, 2), (2, 1, 0)):
+            chain[2], chain[3] = chain[3], chain[2]
         tets.append(chain)
     names = list(zones)
     lines = ["$MeshFormat", "4.1 0 8", "$EndMeshFormat", "$PhysicalNames", str(len(names) + 1)]
@@ -1115,7 +1119,12 @@ def test_onera_m6_mesh_converts_to_su2_tetrahedra_and_published_markers(tmp_path
     expected = [(i, j, k) for k in (0, 1) for j in (0, 1) for i in (0, 1)]
     assert points[:, :3].tolist() == [list(map(float, p)) for p in expected]
     assert set(elements[:, 0]) == {10}
-    assert all(0 in tet and 7 in tet for tet in elements[:, 1:5].tolist())
+    p = points[:, :3]
+    t = elements[:, 1:5]
+    volumes = np.einsum("ij,ij->i", p[t[:, 1]] - p[t[:, 0]],
+                        np.cross(p[t[:, 2]] - p[t[:, 0]], p[t[:, 3]] - p[t[:, 0]])) / 6.0  # fmt: skip
+    assert volumes.tolist() == [1.0 / 6.0] * 6
+    assert all(0 in tet and 7 in tet for tet in t.tolist())
     # Zones under the published configuration's marker names, triangles (VTK 5).
     assert {k: len(v) for k, v in markers.items()} == {"WING": 2, "FARFIELD": 8, "SYMMETRY": 2}
     assert sorted(map(sorted, markers["WING"][:, 1:].tolist())) == [[0, 1, 3], [0, 2, 3]]
@@ -1144,9 +1153,21 @@ def test_onera_m6_configuration_and_surface(tmp_path: Path) -> None:
     )
     before = config.options(published)
     after = config.options(onera_m6.configure(published, "m6.su2"))
-    assert {k: v for k, v in before.items() if k not in onera_m6.ADOPTED_KEYS} == {
-        k: v for k, v in after.items() if k not in onera_m6.ADOPTED_KEYS
+    # The pre-registration's list (#195): mesh, references, iterations, stop and outputs.
+    allowed = {"MESH_FILENAME", "MESH_FORMAT", "REF_AREA", "REF_LENGTH", "ITER", "CONV_FIELD",
+               "CONV_RESIDUAL_MINVAL", "HISTORY_OUTPUT", "TABULAR_FORMAT", "CONV_FILENAME",
+               "OUTPUT_FILES", "OUTPUT_WRT_FREQ", "SURFACE_FILENAME", "VOLUME_OUTPUT",
+               "WRT_RESTART_COMPACT", "SCREEN_OUTPUT"}  # fmt: skip
+    assert {k: v for k, v in before.items() if k not in allowed} == {
+        k: v for k, v in after.items() if k not in allowed
     }
+    assert float(after["CONV_RESIDUAL_MINVAL"]) == -16.0
+    # A declared diagnostic replaces one existing key's value, nothing else.
+    cfl = onera_m6.apply_overrides(published + "CFL_NUMBER= 1000.0\n", {"CFL_NUMBER": "100.0"})
+    assert config.options(cfl) == {**before, "CFL_NUMBER": "100.0"}
+    with pytest.raises(VVError) as err:
+        onera_m6.apply_overrides(published, {"CFL_NUMBER": "100.0"})
+    assert err.value.code == "V0903"
     # Schmitt and Charpin's reference area and mean aerodynamic chord (AGARD AR-138, B1).
     assert float(after["REF_AREA"]) == 0.7532
     assert float(after["REF_LENGTH"]) == 0.64607
