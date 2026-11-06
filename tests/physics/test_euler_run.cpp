@@ -333,6 +333,29 @@ TEST_CASE("checkpoints change no Euler result", "[euler]") {
   }));
 }
 
+TEST_CASE("a steady run whose transverse momenta wake at iteration 2 converges", "[euler]") {
+  // #432: from a state along x the transverse momenta are round-off at iteration 1, below the
+  // exemption threshold, and wake at iteration 2 (W0710); they then fall with the other
+  // equations, so a reachable reference lets the run converge within its budget.
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, "fp64");
+    for (auto& b : d["boundaries"]) b["kind"] = "farfield";
+    // Pressure and density 1.3 times the freestream's, at its temperature.
+    for (auto& z : d["cell_zones"]) {
+      for (const char* key : {"pressure", "density"})
+        z["initial"][key] = 1.3 * z["initial"][key].get<double>();
+    }
+    d["time"]["max_iterations"] = 1000;
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  const Json info = Json::parse(read(out.run / "run.json"));
+  CHECK(info["status"] == "converged");
+  CHECK(std::ranges::count_if(info["diagnostics"],
+                              [](const Json& d) { return d["code"] == "W0710"; }) == 2);
+}
+
 TEST_CASE("a verification case converges to its discrete solution", "[euler]") {
   const char* precision = GENERATE("fp64", "fp32+acc64");
   const char* linear = GENERATE("multigrid", "gauss-seidel", "lines");
