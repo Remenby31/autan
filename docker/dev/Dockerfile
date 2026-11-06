@@ -94,21 +94,6 @@ RUN fetch https://mvapich.cse.ohio-state.edu/download/mvapich/osu-micro-benchmar
       --enable-cuda --with-cuda=/usr/local/cuda LDFLAGS="-L${CUDA_STUBS}" \
  && make -j"$(nproc)" && make install && cd .. && rm -rf osu-*
 
-# ShellCheck, for actionlint (pre-commit), which skips the shell checks of every workflow, without a
-# word, when shellcheck is not on PATH. Static release binaries; last, so a bump rebuilds nothing else.
-ARG SHELLCHECK_VERSION=0.11.0
-ARG SHELLCHECK_SHA256_AMD64=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
-ARG SHELLCHECK_SHA256_ARM64=12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588
-ARG TARGETARCH
-RUN case "${TARGETARCH}" in \
-      amd64) arch=x86_64 sum=${SHELLCHECK_SHA256_AMD64} ;; \
-      arm64) arch=aarch64 sum=${SHELLCHECK_SHA256_ARM64} ;; \
-      *) echo "no ShellCheck release for ${TARGETARCH}" >&2; exit 1 ;; \
-    esac \
- && fetch https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.${arch}.tar.xz "${sum}" \
- && install -m 0755 shellcheck-v${SHELLCHECK_VERSION}/shellcheck ${PREFIX}/bin/shellcheck \
- && rm -rf shellcheck-v*
-
 FROM base AS dev
 COPY --from=uv /uv /uvx /usr/local/bin/
 COPY --from=build /opt/autan /opt/autan
