@@ -119,6 +119,9 @@ def test_a_continued_run_drops_from_the_original_reference(
     verify([freestream_run(start=start([]), residuals=lines(1e-4, 1e-9))], "freestream")
     run = freestream_run(start=start([]), residuals=lines(1e-4, {"energy": 1e-7}))
     assert refused(run) == {"iteration": 7, "equation": "energy"}
+    # max_iterations counts the whole chain: a continuation stops at 7, unconverged.
+    run = freestream_run(max_iterations=7, start=start([]), residuals=lines(1e-4, 1e-6, 1e-9))
+    assert refused(run) == {"iteration": 8, "equation": None}
 
 
 def test_an_identically_zero_equation_is_exempt_until_it_leaves_its_floor(
@@ -166,3 +169,10 @@ def test_an_fp32_run_may_converge_on_a_round_off_plateau_within_ten_floors(
     # Above ten floors, or before 100 iterations without a new reference.
     assert refused(run(102, 2e-7, EQUATIONS)) == {"iteration": 102, "equation": "density"}
     assert refused(run(60, 5e-8, EQUATIONS)) == {"iteration": 60, "equation": "density"}
+    # Density sits in its band, energy above it: energy is the one that fails.
+    mixed = freestream_run(
+        precision="fp32+acc64",
+        residuals=lines(1.0, *[{"density": 5e-8, "energy": 2e-7}] * 101),
+        convergence=Convergence(floor=floors, plateau=["density"]),
+    )
+    assert refused(mixed) == {"iteration": 102, "equation": "energy"}

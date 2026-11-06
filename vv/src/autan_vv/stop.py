@@ -75,6 +75,11 @@ def _disagreement(h: _History, run: RunInfo, budget: int, provisional: int) -> _
             f"went on to {h.iterations[last]}",
             h.iterations[stop],
         )
+    if h.iterations[last] > budget:
+        return _Disagreement(
+            f"the run went on to iteration {h.iterations[last]}, past max_iterations {budget}",
+            h.iterations[last],
+        )
     if run.status == "completed":
         if stop is not None:
             return _Disagreement(
@@ -89,11 +94,14 @@ def _disagreement(h: _History, run: RunInfo, budget: int, provisional: int) -> _
         return None
     if stop is None:
         line = h.residuals[last]
-        e = next(
+        failing = [
             e
             for e, r in enumerate(line)
             if last >= h.exempt_until[e] and r > h.reference[e] * h.drop
-        )
+        ]
+        # Name one outside its plateau band if any: one inside may only lack its 100 iterations.
+        outside = [e for e in failing if h.floors is None or line[e] > BAND * h.floors[e]]
+        e = (outside or failing)[0]
         return _Disagreement(
             f"at iteration {h.iterations[last]} {h.equations[e]} is {line[e]:.6g}, above its "
             f"reference {h.reference[e]:.6g} dropped {-math.log10(h.drop):g} orders and on no "
@@ -118,8 +126,8 @@ def check_stop(results: autan.Results) -> None:
     `converged` run's last history line is the first one where every equation has dropped
     `residual_orders` from its reference (iteration 1, or `start.residual_reference` of a
     continuation), is identically zero and still at its floor, or in `fp32+acc64` sits on a
-    round-off plateau within 10 floors; a `completed` run has no such line and ends at
-    `max_iterations`. `convergence.plateau` and the `W0710` diagnostics must be the ones the
+    round-off plateau within 10 floors, at most at `max_iterations`; a `completed` run has no
+    such line and ends at `max_iterations`. `convergence.plateau` and the `W0710` diagnostics must be the ones the
     history gives. Other statuses and unsteady runs are not judged.
 
     Not guaranteed: the history does not say which iterations were provisional (a first-order
