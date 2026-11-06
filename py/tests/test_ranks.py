@@ -14,12 +14,17 @@ from pathlib import Path
 import autan
 import pytest
 
-from tests.conftest import CRM_HL, mesh_document
+from tests.conftest import CRM_HL, mesh_document, prepared
+
+
+def crm_on(ranks: int) -> autan.MeshInfo:
+    return autan.MeshInfo.from_document(
+        prepared(mesh_document("crm-hl"), ranks=ranks), autan.Location()
+    )
 
 
 def test_several_devices_start_one_rank_each(
     write_case: Callable[..., Path],
-    crm_mesh: autan.MeshInfo,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -33,13 +38,12 @@ def test_several_devices_start_one_rank_each(
     monkeypatch.setenv("AUTAN_MPIEXEC", str(launcher))
     backend = autan.SolverBackend(devices=autan.Devices(kind="cuda", count=4), executable=runtime)
     with pytest.raises(autan.CaseError):
-        autan.load(write_case(CRM_HL)).run(crm_mesh, backend=backend, runs=tmp_path / "runs")
+        autan.load(write_case(CRM_HL)).run(crm_on(4), backend=backend, runs=tmp_path / "runs")
     assert arguments.read_text().splitlines()[:3] == ["-n", "4", str(runtime)]
 
 
 def test_several_devices_need_a_launcher(
     write_case: Callable[..., Path],
-    crm_mesh: autan.MeshInfo,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -50,13 +54,12 @@ def test_several_devices_need_a_launcher(
     monkeypatch.setenv("PATH", str(tmp_path))  # no mpiexec, no mpirun
     backend = autan.SolverBackend(devices=autan.Devices(kind="cuda", count=2), executable=runtime)
     with pytest.raises(autan.CaseError) as error:
-        autan.load(write_case(CRM_HL)).run(crm_mesh, backend=backend, runs=tmp_path / "runs")
+        autan.load(write_case(CRM_HL)).run(crm_on(2), backend=backend, runs=tmp_path / "runs")
     assert error.value.codes == ["E0808"]
 
 
 def test_an_explicit_relative_launcher_is_the_one_in_the_working_directory(
     write_case: Callable[..., Path],
-    crm_mesh: autan.MeshInfo,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -71,7 +74,7 @@ def test_an_explicit_relative_launcher_is_the_one_in_the_working_directory(
     monkeypatch.setenv("PATH", "/usr/bin:/bin")  # another mpiexec there must not be taken
     backend = autan.SolverBackend(devices=autan.Devices(kind="cuda", count=2), executable=runtime)
     with pytest.raises(autan.CaseError):
-        autan.load(write_case(CRM_HL)).run(crm_mesh, backend=backend, runs=tmp_path / "runs")
+        autan.load(write_case(CRM_HL)).run(crm_on(2), backend=backend, runs=tmp_path / "runs")
     assert arguments.read_text().splitlines()[:2] == ["-n", "2"]
 
 
@@ -105,7 +108,7 @@ def test_a_stuck_launcher_cannot_keep_the_sdk_waiting(
     runtime.write_text("#!/bin/sh\nexit 0\n")
     runtime.chmod(0o755)
     meshinfo = tmp_path / "crm.meshinfo.json"
-    meshinfo.write_text(json.dumps(mesh_document("crm-hl")))
+    meshinfo.write_text(json.dumps(prepared(mesh_document("crm-hl"), ranks=2)))
     env = {**os.environ, "AUTAN_MPIEXEC": str(launcher)}
     process = subprocess.Popen(
         [

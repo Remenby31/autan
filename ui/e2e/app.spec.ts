@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
 import { RUNS } from "../playwright.config";
 import type { Run } from "../src/api/contracts";
+import { formatBytes } from "../src/components/run/format";
 
 async function runs(page: Page): Promise<Run[]> {
   return (await (await page.request.get("/api/runs")).json()).runs;
@@ -1011,4 +1012,48 @@ test("at 390 px every page fits the width, and navigation sits behind a menu", a
   const row = page.locator(`a[data-run="${run.run_id}"]`);
   await expect(row.getByTestId("mach")).toBeHidden();
   await expect(row).toContainText(run.run_id.slice(-8));
+});
+
+test("a run's plan gives the memory of one rank, host and device apart, and of all ranks", async ({
+  page,
+}) => {
+  const memory = async (id: string) =>
+    (await (await page.request.get(`/api/runs/${id}/plan`)).json()).memory;
+  const plan = page.getByTestId("plan-memory");
+  const open = async (id: string) => {
+    await page.goto(`/runs/${id}`);
+    await page.getByRole("button", { name: /^Plan/ }).click();
+  };
+
+  // formatBytes itself is pinned by its unit test (format.test.ts); here the bytes are /plan's.
+  // A fake run ran on one CPU rank: host memory only.
+  const cpu = (await runs(page)).find((r) => r.status === "converged") as Run;
+  const host = await memory(cpu.run_id);
+  expect(host.device_kind).toBe("cpu");
+  expect(host.bytes_host).toBeGreaterThan(1000);
+  await open(cpu.run_id);
+  await expect(plan).toContainText(`${formatBytes(host.bytes_per_gpu)} per rank`);
+  await expect(plan).toContainText(`${formatBytes(host.bytes_host)} host, cpu`);
+  await expect(plan).toContainText(`× 1 rank = ${formatBytes(host.bytes_total)}`);
+
+  // The same run recorded on two CUDA ranks (its identity recomputed as results.md defines it):
+  // device memory beside the host's, and the total over both ranks.
+  const runJson = join(RUNS, cpu.run_id, "run.json");
+  const original = readFileSync(runJson, "utf8");
+  try {
+    execFileSync("uv", [
+      ...["run", "--locked", "--project", "server", "python", "-c"],
+      "import json, sys\nfrom autan.results import run_identity\nd = json.load(open(sys.argv[1]))\nd['devices'] = {'kind': 'cuda', 'count': 2}\nd['identity'] = run_identity(d)\nopen(sys.argv[1] + '.new', 'w').write(json.dumps(d))",
+      runJson,
+    ]);
+    renameSync(`${runJson}.new`, runJson);
+    await expect.poll(async () => (await memory(cpu.run_id)).device_kind).toBe("cuda");
+    const device = await memory(cpu.run_id);
+    await open(cpu.run_id);
+    await expect(plan).toContainText(`${formatBytes(device.bytes_device)} cuda`);
+    await expect(plan).toContainText(`× 2 ranks = ${formatBytes(device.bytes_total)}`);
+  } finally {
+    writeFileSync(`${runJson}.new`, original);
+    renameSync(`${runJson}.new`, runJson);
+  }
 });

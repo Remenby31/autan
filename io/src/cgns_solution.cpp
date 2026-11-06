@@ -1,9 +1,13 @@
 // Reading back the cell fields of a solution.cgns (results.md) to restart.
 
+#include <array>
 #include <cstdint>
 #include <limits>
+#include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <cgnslib.h>
@@ -12,6 +16,7 @@
 #include "autan/io/cgns.hpp"
 #include "cgns_util.hpp"
 #include "self_contained.hpp"
+#include "text_limit.hpp"
 
 namespace autan::io {
 namespace {
@@ -27,7 +32,85 @@ void ok(int status, const std::string& what) {
 
 }  // namespace
 
-StoredSolution read_solution(const std::filesystem::path& file) {
+std::int64_t solution_cells(const std::filesystem::path& file) {
+  reject_outside_data(file);
+  const CgioTree tree(file);
+  if (count_nodes(tree).beyond()) {
+    throw Error(ErrorCode::io_malformed,
+                file.string() + ": more than " + std::to_string(max_cgns_nodes) + " nodes or " +
+                    std::to_string(max_cgns_depth) + " levels, or " +
+                    std::to_string(max_cgns_eager_bytes) + " bytes read when the file opens");
+  }
+  const auto base = tree.child(tree.root(), "CGNSBase_t");
+  const auto zone = base ? tree.child(*base, "Zone_t") : std::nullopt;
+  if (!zone) throw Error(ErrorCode::io_malformed, file.string() + ": no zone");
+  std::array<std::int64_t, 2> size{};  // [nodes, cells, ...]
+  tree.read_integers(*zone, size);
+  return size[1];
+}
+
+void check_start_solution(const std::filesystem::path& file, const StartLimits& limits) {
+  reject_outside_data(file);
+  const CgioTree tree(file);
+  const auto refuse = [&](const std::string& what) {
+    throw Error(ErrorCode::io_malformed,
+                file.string() + ": " + what + ", which results.md's writer does not write");
+  };
+  if (count_nodes(tree).beyond()) {
+    refuse("more than " + std::to_string(max_cgns_nodes) + " nodes or " +
+           std::to_string(max_cgns_depth) + " levels, or " + std::to_string(max_cgns_eager_bytes) +
+           " bytes read when the file opens");
+  }
+  std::int64_t translations = 0, families = 0;
+  // Every descriptor of the tree, where the writer puts them and no larger than it writes them,
+  // depth first in the file's order: (node, its parent's label) still to visit.
+  std::vector<std::pair<double, std::string>> pending;
+  const auto push_children = [&](double node, const std::string& label) {
+    const std::vector<double> children = tree.children(node);
+    for (const double child : std::views::reverse(children)) pending.emplace_back(child, label);
+  };
+  push_children(tree.root(), "");
+  while (!pending.empty()) {
+    const auto [child, parent] = pending.back();
+    pending.pop_back();
+    const std::string label = tree.label(child);
+    if (label == "Descriptor_t") {
+      const std::string name = tree.name(child);
+      const std::int64_t bytes = tree.logical_bytes(child);
+      const bool in_base = parent == "CGNSBase_t";
+      if (in_base && name == "RunMetadata" && bytes <= std::int64_t{64} * 1024) continue;
+      if (in_base && name == "ZoneNames" && bytes <= (limits.zones + 1) * 25600) continue;
+      if (parent == "GridConnectivity_t" && name == "PeriodicTranslation" && bytes <= 4096 &&
+          ++translations <= 2 * limits.periodic_pairs) {
+        continue;
+      }
+      refuse("a descriptor '" + name + "' of " + std::to_string(bytes) + " bytes");
+    }
+    if (label == "Family_t" && ++families > limits.zones)
+      refuse(std::to_string(families) + " families for " + std::to_string(limits.zones) + " zones");
+    push_children(child, label);
+  }
+  if (largest_filtered_bytes(file) > 0) refuse("a filtered (compressed) dataset");
+}
+
+std::map<std::string, std::vector<std::string>> solution_field_names(
+    const std::filesystem::path& file) {
+  const CgioTree tree(file);
+  const auto base = tree.child(tree.root(), "CGNSBase_t");
+  const auto zone = base ? tree.child(*base, "Zone_t") : std::nullopt;
+  std::map<std::string, std::vector<std::string>> out;
+  if (!zone) return out;
+  for (const double solution : tree.children(*zone)) {
+    if (tree.label(solution) != "FlowSolution_t") continue;
+    auto& names = out[tree.name(solution)];
+    for (const double array : tree.children(solution)) {
+      if (tree.label(array) == "DataArray_t") names.push_back(tree.name(array));
+    }
+  }
+  return out;
+}
+
+StoredSolution read_solution(const std::filesystem::path& file, bool whole_state) {
   reject_outside_data(file);  // E0134, before the library reads anything
   const CgnsFile in(file, CG_MODE_READ);
   const int fn = in.handle();
@@ -48,14 +131,15 @@ StoredSolution read_solution(const std::filesystem::path& file) {
     unsupported(file, std::to_string(size[1]) + " cells");
   }
   out.cells = static_cast<index_t>(size[1]);
-  ok(cg_goto(fn, 1, "end"), "go to the base");
-  int descriptors = 0;
-  ok(cg_ndescriptors(&descriptors), "count descriptors");
-  for (int d = 1; d <= descriptors; ++d) {
-    char* text = nullptr;
-    ok(cg_descriptor_read(d, name, &text), "read a descriptor");
-    if (std::string_view(name) == "RunMetadata") out.run_metadata = text;
-    cg_free(text);
+  // results.md, RunMetadata: run.json's fields with two free texts (the case name, the mesh
+  // path) of at most 4096 bytes, each escaped up to 6 bytes per byte by ensure_ascii, and fixed
+  // structure: at most 64 KiB, sized from its node before it is read. No other descriptor is read.
+  const CgioTree tree(fn);
+  const auto base = tree.child(tree.root(), "CGNSBase_t");
+  if (const auto node = base ? tree.child(*base, "Descriptor_t", "RunMetadata") : std::nullopt) {
+    check_text(file.string(), "RunMetadata descriptor",
+               static_cast<std::size_t>(tree.logical_bytes(*node)), std::size_t{64} << 10U);
+    out.run_metadata = tree.text(*node);
   }
   int solutions = 0;
   ok(cg_nsols(fn, 1, 1, &solutions), "count solutions");
@@ -64,6 +148,7 @@ StoredSolution read_solution(const std::filesystem::path& file) {
     ok(cg_sol_info(fn, 1, 1, s, name, &location), "read a solution");
     const std::string solution = name;
     std::vector<Field>* target = solution == "FlowSolution"       ? &out.fields
+                                 : !whole_state                   ? nullptr
                                  : solution == "FlowSolutionMean" ? &out.mean_fields
                                  : solution == "RestartState"     ? &out.restart_fields
                                                                   : nullptr;
