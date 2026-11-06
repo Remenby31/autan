@@ -92,11 +92,13 @@ jobs:
       # asserted *optional, a checked front() and back(). They catch undefined behaviour the tests
       # reach but that neither the Release builds nor AddressSanitizer see (Noyau's mutation runs).
       # METIS too: without it the partitioner's paths are not reached, and its bugs not caught.
+      # conda-forge's clang sets no library architecture, so CMake would not search Ubuntu's
+      # multiarch directory, where libmetis is: named for every compiler.
       - name: Configure
         run: >-
           cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="${MAMBA_ROOT_PREFIX}/envs/cgns"
           -DCMAKE_BUILD_TYPE=Debug -DAUTAN_WARNINGS_AS_ERRORS=ON -DAUTAN_ENABLE_METIS=ON
-          -DCMAKE_CXX_FLAGS=-D_GLIBCXX_ASSERTIONS
+          -DCMAKE_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu -DCMAKE_CXX_FLAGS=-D_GLIBCXX_ASSERTIONS
       - name: Build
         run: cmake --build build
       - name: Test
