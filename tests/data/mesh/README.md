@@ -26,6 +26,6 @@ Every mesh except `hanging` and `ringleb` fills the unit cube with sides `xmin` 
 2. `convert.sh` runs in `opencfd/openfoam-default:2506`: `gmshToFoam`, then `polyDualMesh` for `poly`, `checkMesh` (must report `Mesh OK`), `foamMeshToFluent` for the Fluent files and `foamFormatConvert` for the binary polyMesh.
 3. `fluent_binary.py` re-encodes the ASCII Fluent files with binary node, cell and face sections, copying values unchanged.
 
-`ringleb/` is not from `make.sh`: `autan-vv meshes ringleb --levels 4` wrote both files ([meshes.md](../../../docs/validation/meshes.md)). Nor is `naca0012/`: `autan-vv meshes naca0012 --levels 32` wrote it on linux-aarch64 (Gmsh's byte layout without Gmsh; the field nodes differ from macOS arm64 by up to 7e-14 relative, meshes.md), and the tests read this file, not a regenerated one.
+`ringleb/` is not from `make.sh`: `autan-vv meshes ringleb --levels 4` wrote both files ([meshes.md](../../../docs/validation/meshes.md)). Nor is `naca0012/`: `autan-vv meshes naca0012 --levels 32` wrote it on linux-aarch64, and other platforms write slightly different nodes ([meshes.md](../../../docs/validation/meshes.md)), so the tests read this file, never a regenerated one.
 
 `foamMeshToFluent` writes coordinates with 10 significant digits, a single cell zone `fluid-1`, and types every non-wall, non-symmetry patch as `pressure-outlet`; the tests account for this. Gmsh and OpenFOAM are GPL tools used only to produce these data files; nothing of them is linked or shipped.
