@@ -1,4 +1,5 @@
-# TEMPORARY (#534): "A run logs the memory it used", 40 times on macos-26, before and after the fix.
+# TEMPORARY (#534): "A run logs the memory it used", 40 times on macos-26 under simulated critical
+# memory pressure, before and after the fix.
 # Deleted before this pull request is ready.
 name: tmp-534-macos
 on:
@@ -45,8 +46,14 @@ jobs:
           cmake --build build --target autan_runtime_tests autan-run autan-run-relaxation > /dev/null
           fails=0
           for i in $(seq 40); do
+            # Critical system memory pressure from 2 s before the test until it ends (#535).
+            memory_pressure -S -l critical > /dev/null 2>&1 &
+            pressure=$!
+            sleep 2
             if ! (cd build && tests/runtime/autan_runtime_tests "A run logs the memory it used" > "/tmp/run-$i.txt" 2>&1); then
               fails=$((fails + 1)); grep -A3 "with expansion" "/tmp/run-$i.txt" | head -4
             fi
+            kill "$pressure" 2>/dev/null || true
+            wait "$pressure" 2>/dev/null || true
           done
           echo "RESULT ${{ matrix.variant }}: $fails failures out of 40"
