@@ -6,7 +6,7 @@ import numpy as np
 
 a, b = np.load(sys.argv[1]), np.load(sys.argv[2])
 for key in a.files:
-    x, y = a[key], b[key]
+    x, y = np.atleast_1d(a[key]), np.atleast_1d(b[key])
     xs = x.view(np.float64) if x.dtype == np.complex128 else x
     ys = y.view(np.float64) if y.dtype == np.complex128 else y
     differ = int((xs != ys).sum())

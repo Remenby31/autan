@@ -1,5 +1,5 @@
 # TEMPORARY (#536): naca0012.plane_grid's intermediate arrays on x86-64 and aarch64, compared bit for
-# bit. Deleted before any pull request of #536 is ready.
+# bit (scalars as 1-element arrays). Deleted before any pull request of #536 is ready.
 name: tmp-536-naca
 on:
   pull_request:
