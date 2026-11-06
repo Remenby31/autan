@@ -792,9 +792,17 @@ Fix: Check the boundary conditions and the mesh: a symmetric or 2D problem whose
 
 **Checkpoint not written** (warning)
 
-Writing the restart checkpoint failed (results.md#checkpointcgns), or removing it once the final solution was written: the run goes on, and the previous checkpoint, if any, stays whole. `data` gives the iteration when a write failed.
+Writing the restart checkpoint failed (results.md#checkpointcgns), or removing it once the final solution was written: the run goes on, and the previous checkpoint, if any, stays whole. For failed writes, `data` counts them and gives the first and the last (`failures`, `first_iteration`, `first_time`, `last_iteration`, `last_time`).
 
 Fix: Check the space and permissions of the run directory's file system.
+
+## W0715
+
+**Different solver binary** (warning)
+
+This `continue` run's `autan-run` executable is not the one that wrote the state it starts from (run.json `solver.binary_sha256`, results.md#runjson): the chain may not be bit for bit the uninterrupted run. `data` gives the `expected` and `found` SHA-256.
+
+Fix: Continue with the binary of the original run, or start the chain again with this one.
 
 ## W0801
 

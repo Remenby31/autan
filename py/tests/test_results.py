@@ -62,6 +62,7 @@ def test_run_directory_and_metadata_follow_the_contract(crm_run: autan.Results) 
     assert path.name == run["run_id"]
     assert run["status"] == "converged"
     assert run["solver"]["backend"] == "fake"
+    assert run["solver"]["binary_sha256"] is None
     assert re.fullmatch(r"[0-9a-f]{40}", run["solver"]["commit"])
     assert run["case"]["sha256"] == autan.load(path / "case.toml").spec.hash()
     assert run["mesh"]["path"] == str((EXAMPLES / "crm-hl.cgns").resolve())

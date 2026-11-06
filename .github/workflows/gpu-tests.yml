@@ -20,10 +20,11 @@ on:
 
 permissions: {}
 
-# Pull requests cancel their older run; runs on main queue, each checking a merged commit.
-# The nightly has its own group: a push to main would otherwise replace it while it is pending.
+# A group holds one pending run, which the next one replaces. Pull requests cancel their older run;
+# a push runs in a group of its own commit, so no push to main loses its run to a later one; the
+# nightly has its own group, which a push would otherwise replace while it is pending.
 concurrency:
-  group: gpu-tests-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
+  group: gpu-tests-${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

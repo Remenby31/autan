@@ -18,7 +18,11 @@ RUN test "$(dpkg --print-architecture)" = arm64 \
 
 COPY --chmod=0555 job-started.sh entrypoint.sh /opt/autan-runner/
 ARG REPOSITORY=Remenby31/autan
+# The host memory a job waits for before its first step, in GiB (0: none); root-owned, like the
+# repository, so no workflow can change it.
+ARG MIN_AVAILABLE_GIB=0
 RUN echo "${REPOSITORY}" > /opt/autan-runner/repository \
+ && echo "${MIN_AVAILABLE_GIB}" > /opt/autan-runner/min-available-gib \
  && install -d -o runner -g runner /state /work
 ENV ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/autan-runner/job-started.sh
 USER runner

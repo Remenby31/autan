@@ -96,6 +96,8 @@ def test_a_real_run_reads_back_through_the_results_contract(
     run = result.run
     assert run.status in ("converged", "completed")
     assert run.solver.backend == "cpu"
+    assert RELAXATION is not None
+    assert run.solver.binary_sha256 == hashlib.sha256(RELAXATION.read_bytes()).hexdigest()
     assert run.case.sha256 == case.spec.hash()
     assert run.mesh.sha256 == mesh.source.sha256
     assert run.identity == identity_of(run.document())
@@ -302,6 +304,20 @@ def test_continue_through_the_runtime_matches_the_uninterrupted_run(
     assert lines(first) + lines(rest) == lines(whole)
     assert (rest.run.status, rest.run.iterations) == (whole.run.status, whole.run.iterations)
     assert rest.field("Density").tobytes() == whole.field("Density").tobytes()
+    assert "W0715" not in [d.code for d in rest.run.diagnostics]
+    # results.md, solver.binary_sha256: a continuation by another binary warns.
+    assert RELAXATION is not None
+    other = tmp_path / "autan-run-other"
+    other.write_bytes(RELAXATION.read_bytes() + b"\0")
+    other.chmod(0o755)
+    elsewhere = case(10000).run(
+        mesh, backend=autan.SolverBackend(executable=other), runs=tmp_path / "other", start=first
+    )
+    [warning] = [d for d in elsewhere.run.diagnostics if d.code == "W0715"]
+    assert warning.data == {
+        "expected": first.run.solver.binary_sha256,
+        "found": hashlib.sha256(other.read_bytes()).hexdigest(),
+    }
 
 
 def _killed(

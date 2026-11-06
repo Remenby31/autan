@@ -30,6 +30,10 @@
 #include <picosha2.h>
 #include <sys/resource.h>
 
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
+
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/core/renumber.hpp"
@@ -289,6 +293,32 @@ std::string sha256_hex(const std::string& text) {
   return hash;
 }
 
+// results.md, run.json `solver.binary_sha256`: the SHA-256 of the running executable, into
+// which the solver's code links statically.
+std::string executable_sha256() {
+#ifdef __APPLE__
+  std::uint32_t size = 0;
+  (void)_NSGetExecutablePath(nullptr, &size);
+  std::string path(size, '\0');
+  if (_NSGetExecutablePath(path.data(), &size) != 0)
+    throw std::runtime_error("cannot locate the running executable");
+  path.resize(std::char_traits<char>::length(path.c_str()));
+#else
+  const std::string path = "/proc/self/exe";
+#endif
+  std::ifstream in(path, std::ios::binary);
+  if (!in) throw std::runtime_error("cannot read the running executable '" + path + "'");
+  picosha2::hash256_one_by_one hasher;
+  std::vector<char> buffer(1 << 20);
+  while (in) {
+    in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+    hasher.process(buffer.begin(), buffer.begin() + in.gcount());
+  }
+  if (in.bad()) throw std::runtime_error("cannot read the running executable '" + path + "'");
+  hasher.finish();
+  return picosha2::get_hash_hex_string(hasher);
+}
+
 std::string read_text(const fs::path& path) {
   const std::ifstream in(path, std::ios::binary);
   if (!in) {
@@ -334,6 +364,7 @@ struct Prepared {
   const PartitionGroups* groups = nullptr;  // the physics' groups; null or empty: none
   std::optional<StartState> start;          // input.start, read and checked
   Json start_averaging;                     // `continue`: the previous run's averaging
+  Json start_binary;                        // `continue`: the previous run's binary_sha256
   // oracle-state: paired face states per face zone, and the files to archive (sha256, bytes).
   std::map<index_t, std::vector<double>> boundary_states;
   std::map<std::string, std::string> state_files;
@@ -513,6 +544,11 @@ void load_start(Prepared& p) {
     if (!metadata.contains("averaging") || !is_averaging(metadata["averaging"]))
       unusable("RunMetadata has no valid averaging");
     p.start_averaging = metadata["averaging"];
+    const Json solver = metadata.contains("solver") ? metadata["solver"] : Json::object();
+    if (!solver.is_object() || !solver.contains("binary_sha256") ||
+        !(solver["binary_sha256"].is_string() || solver["binary_sha256"].is_null()))
+      unusable("RunMetadata has no solver.binary_sha256");
+    p.start_binary = solver["binary_sha256"];
     state.mean_fields = std::move(stored.mean_fields);
     state.restart_fields = std::move(stored.restart_fields);
   }
@@ -880,6 +916,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
              .cell_order = {},
              .start = std::nullopt,
              .start_averaging = {},
+             .start_binary = {},
              .boundary_states = {},
              .state_files = {},
              .initial = std::nullopt,
@@ -1183,30 +1220,44 @@ class Run final : public Log {
                    {"woken", s.woken ? Json(*s.woken) : Json(nullptr)}};
     }
     const std::string identity = sha256_hex(parts);
-    info_ = Json{
-        {"schema", "autan.results/1"},
-        {"run_id", run_id},
-        {"identity", identity},
-        {"status", "running"},
-        {"case", {{"name", in.case_name}, {"sha256", in.case_sha256}}},
-        {"mesh",
-         {{"path", fs::absolute(in.mesh_path).lexically_normal().string()},
-          {"sha256", p_.mesh_hash}}},
-        {"solver", {{"version", build.version}, {"commit", build.commit}, {"backend", backend}}},
-        {"precision", in.precision},
-        {"devices", {{"kind", in.device_kind}, {"count", in.device_count}}},
-        {"cell_order", cell_order()},
-        {"started", started_at},
-        {"finished", nullptr},
-        {"iterations", 0},
-        {"time", in.time.kind == "unsteady" ? Json(0.0) : Json(nullptr)},
-        {"averaging", nullptr},
-        {"convergence", nullptr},
-        {"checkpoint", nullptr},
-        {"start", start},
-        {"monitors", nullptr},
-        {"timing", nullptr},
-        {"diagnostics", Json::array()}};
+    // Rank 0 hashes its executable; a failure ends every rank.
+    std::string binary;
+    if (comm_.rank() == 0) {
+      try {
+        binary = executable_sha256();
+      } catch (const std::exception& e) {
+        binary = std::string("!") + e.what();
+      }
+    }
+    binary = comm_.broadcast(binary);
+    if (binary.starts_with('!')) throw std::runtime_error(binary.substr(1));
+    info_ = Json{{"schema", "autan.results/1"},
+                 {"run_id", run_id},
+                 {"identity", identity},
+                 {"status", "running"},
+                 {"case", {{"name", in.case_name}, {"sha256", in.case_sha256}}},
+                 {"mesh",
+                  {{"path", fs::absolute(in.mesh_path).lexically_normal().string()},
+                   {"sha256", p_.mesh_hash}}},
+                 {"solver",
+                  {{"version", build.version},
+                   {"commit", build.commit},
+                   {"backend", backend},
+                   {"binary_sha256", binary}}},
+                 {"precision", in.precision},
+                 {"devices", {{"kind", in.device_kind}, {"count", in.device_count}}},
+                 {"cell_order", cell_order()},
+                 {"started", started_at},
+                 {"finished", nullptr},
+                 {"iterations", 0},
+                 {"time", in.time.kind == "unsteady" ? Json(0.0) : Json(nullptr)},
+                 {"averaging", nullptr},
+                 {"convergence", nullptr},
+                 {"checkpoint", nullptr},
+                 {"start", start},
+                 {"monitors", nullptr},
+                 {"timing", nullptr},
+                 {"diagnostics", Json::array()}};
     if (continued()) {
       info_["iterations"] = in.start->iterations;
       if (in.time.kind == "unsteady") info_["time"] = *in.start->time;
@@ -1259,6 +1310,15 @@ class Run final : public Log {
                                        {"max_relative", snap.max_relative},
                                        {"max_volume_change", snap.max_volume_change}}
                                       .dump()});
+    }
+    if (continued() && p_.start_binary != info_["solver"]["binary_sha256"]) {
+      // results.md, run.json `solver.binary_sha256`: bit-for-bit continuation needs the binary.
+      add_diagnostic(Diagnostic{.code = "W0715",
+                                .message = "this run continues a run of another solver binary",
+                                .path = "start.run",
+                                .data_json = Json{{"expected", p_.start_binary},
+                                                  {"found", info_["solver"]["binary_sha256"]}}
+                                                 .dump()});
     }
     if (comm_.size() > 1 && p_.input.reproducibility != "ranks") {
       note("info", "solver",
@@ -1840,7 +1900,7 @@ class Run final : public Log {
           dir_->write_run_json(info_.dump(2));
           note("info", "writer", "checkpoint", "",
                Json{{"iteration", it},
-                    {"seconds", seconds},
+                    {"write_seconds", seconds},
                     {"bytes", ec ? Json(nullptr) : Json(static_cast<std::int64_t>(bytes))}}
                    .dump());
         }
@@ -1850,11 +1910,22 @@ class Run final : public Log {
       failure = comm_.broadcast(failure);
     }
     if (failure.empty()) return;
-    const Diagnostic warning{.code = "W0714",
-                             .message = "the checkpoint of iteration " + std::to_string(it) +
-                                        " was not written: " + failure,
-                             .path = "",
-                             .data_json = Json{{"iteration", it}}.dump()};
+    // One W0714 in run.json counts the failed writes (results.md#checkpointcgns): it does not
+    // grow with the run's length. The log has one line per failure, each with the data of
+    // that moment.
+    ++write_failures_;
+    if (write_failures_ == 1) first_failure_ = Json{{"iteration", it}, {"time", info_["time"]}};
+    const Diagnostic warning{
+        .code = "W0714",
+        .message = "checkpoint writes failed: " + std::to_string(write_failures_) +
+                   ", the last at iteration " + std::to_string(it) + ": " + failure,
+        .path = "",
+        .data_json = Json{{"failures", write_failures_},
+                          {"first_iteration", first_failure_["iteration"]},
+                          {"first_time", first_failure_["time"]},
+                          {"last_iteration", it},
+                          {"last_time", info_["time"]}}
+                         .dump()};
     std::string unlogged;
     try {
       note("warning", "solver", warning.message, warning.code, warning.data_json);
@@ -1862,9 +1933,14 @@ class Run final : public Log {
       unlogged = e.what();
     }
     // run.json names only diagnostics the log holds (results.md, Log): a warning the log
-    // cannot take is recorded nowhere.
-    if (comm_.broadcast(unlogged).empty())
-      info_["diagnostics"].push_back(Json::parse(warning.json()));
+    // cannot take leaves run.json's as it was.
+    if (!comm_.broadcast(unlogged).empty()) return;
+    auto& diagnostics = info_["diagnostics"];
+    if (!write_warning_) {
+      write_warning_ = diagnostics.size();
+      diagnostics.push_back(nullptr);
+    }
+    diagnostics[*write_warning_] = Json::parse(warning.json());
   }
 
   // The mesh index of the least diverged cell over all ranks, from the cell
@@ -1931,10 +2007,14 @@ class Run final : public Log {
   io::Solution gathered_solution(const Json& checkpoint) {
     const auto& in = p_.input;
     io::Solution s;
-    Json metadata = info_;
-    for (const char* key :
-         {"status", "finished", "iterations", "monitors", "timing", "diagnostics", "checkpoint"})
-      metadata.erase(key);
+    // run.json without what only the end of the run knows, and without its diagnostics, which
+    // are not copied.
+    static const std::set<std::string> left_out{"status", "finished",    "iterations", "monitors",
+                                                "timing", "diagnostics", "checkpoint"};
+    Json metadata = Json::object();
+    for (const auto& [key, value] : info_.items()) {
+      if (!left_out.contains(key)) metadata[key] = value;
+    }
     if (!checkpoint.is_null()) metadata["checkpoint"] = checkpoint;
     // ASCII JSON, as readers decode CGNS descriptors.
     s.run_metadata = metadata.dump(-1, ' ', true);
@@ -2132,6 +2212,11 @@ class Run final : public Log {
   std::chrono::steady_clock::time_point launched_;  // run_case's entry
   // The end of the last checkpoint, or the start of the iterations.
   std::chrono::steady_clock::time_point last_checkpoint_ = std::chrono::steady_clock::now();
+  // The failed checkpoint writes: their count, the first one's iteration and time, and their
+  // W0714's index in run.json `diagnostics` once logged.
+  std::int64_t write_failures_ = 0;
+  Json first_failure_ = nullptr;
+  std::optional<std::size_t> write_warning_;
   double log_seconds_ = 0.0;    // spent in write()
   fs::path stop_file_;          // --stop-file; empty: none
   double solve_seconds_ = 0.0;  // this rank's step() and accumulate_average()

@@ -712,8 +712,17 @@ _CODES = [
         "Checkpoint not written",
         "Writing the restart checkpoint failed (results.md#checkpointcgns), or removing it once "
         "the final solution was written: the run goes on, and the previous checkpoint, if any, "
-        "stays whole. `data` gives the iteration when a write failed.",
+        "stays whole. For failed writes, `data` counts them and gives the first and the last "
+        "(`failures`, `first_iteration`, `first_time`, `last_iteration`, `last_time`).",
         "Check the space and permissions of the run directory's file system.",
+    ),
+    Code(
+        "W0715",
+        "Different solver binary",
+        "This `continue` run's `autan-run` executable is not the one that wrote the state it "
+        "starts from (run.json `solver.binary_sha256`, results.md#runjson): the chain may not be "
+        "bit for bit the uninterrupted run. `data` gives the `expected` and `found` SHA-256.",
+        "Continue with the binary of the original run, or start the chain again with this one.",
     ),
     Code(
         "D0107",

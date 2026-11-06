@@ -1,11 +1,15 @@
 // C ABI over autan::physics::Euler for the manufactured-solution study (euler_mms.py): reads a
 // mesh through the core readers and evaluates the residual on the host in FP64 arrays.
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <exception>
 #include <memory>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -70,6 +74,51 @@ void in_policy(E& e, const double* a, const double* b, double* out, F&& f) {
   for (std::size_t i = 0; i < n; ++i) {
     out[i] = static_cast<double>(r[i]);
   }
+}
+
+using Block = std::array<double, 25>;
+
+// c = a b for 5x5 row-major blocks.
+void multiply(const double* a, const double* b, double* c) {
+  for (int i = 0; i < 5; ++i) {
+    for (int j = 0; j < 5; ++j) {
+      double s = 0.0;
+      for (int k = 0; k < 5; ++k) s += a[5 * i + k] * b[5 * k + j];
+      c[5 * i + j] = s;
+    }
+  }
+}
+
+// Inverse of a 5x5 block by Gauss-Jordan elimination with partial pivoting; false on a zero pivot
+// or a non-finite inverse.
+bool invert(const double* a, double* inverse) {
+  std::array<std::array<double, 10>, 5> m{};
+  for (std::size_t i = 0; i < 5; ++i) {
+    for (std::size_t j = 0; j < 5; ++j) m[i][j] = a[5 * i + j];
+    m[i][5 + i] = 1.0;
+  }
+  for (std::size_t p = 0; p < 5; ++p) {
+    std::size_t best = p;
+    for (std::size_t r = p + 1; r < 5; ++r) {
+      if (std::abs(m[r][p]) > std::abs(m[best][p])) best = r;
+    }
+    if (!(std::abs(m[best][p]) > 0.0) || !std::isfinite(m[best][p])) return false;
+    std::swap(m[p], m[best]);
+    const double d = m[p][p];
+    for (double& v : m[p]) v /= d;
+    for (std::size_t r = 0; r < 5; ++r) {
+      if (r == p) continue;
+      const double f = m[r][p];
+      for (std::size_t j = 0; j < 10; ++j) m[r][j] -= f * m[p][j];
+    }
+  }
+  for (std::size_t i = 0; i < 5; ++i) {
+    for (std::size_t j = 0; j < 5; ++j) {
+      if (!std::isfinite(m[i][5 + j])) return false;
+      inverse[5 * i + j] = m[i][5 + j];
+    }
+  }
+  return true;
 }
 
 }  // namespace
@@ -212,6 +261,84 @@ int autan_mms_euler_first_order_tangent(void* euler, const double* u, const doub
         },
         static_cast<EulerHandle*>(euler)->euler);
   });
+}
+
+/// Block ILU(0) of a matrix of 5x5 blocks in block CSR (n block rows, indptr of n + 1 offsets,
+/// sorted column indices, row-major blocks), in place: the strictly lower blocks become L (unit
+/// block diagonal), the others U, and `inverse` receives the inverse of each pivot block. No block
+/// outside the matrix's own pattern is created. Fails on a block row without a diagonal block or
+/// with a singular pivot block.
+int autan_mms_block_ilu0(std::int64_t n, const std::int64_t* indptr, const std::int32_t* indices,
+                         double* blocks, double* inverse, char* err, std::size_t err_len) {
+  return guarded(err, err_len, [&] {
+    const auto rows = static_cast<std::size_t>(n);
+    std::vector<std::int64_t> where(rows, -1);
+    std::vector<std::int64_t> diagonal(rows, -1);
+    Block product{};
+    // Saad (2003), Algorithm 10.4 (ILU(0), IKJ variant) with blocks for scalars.
+    for (std::size_t i = 0; i < rows; ++i) {
+      for (auto p = indptr[i]; p < indptr[i + 1]; ++p) {
+        const auto j = static_cast<std::size_t>(indices[p]);
+        where[j] = p;
+        if (j == i) diagonal[i] = p;
+      }
+      if (diagonal[i] < 0) {
+        throw std::domain_error("block row " + std::to_string(i) + " has no diagonal block");
+      }
+      for (auto p = indptr[i]; p < diagonal[i]; ++p) {
+        const auto k = static_cast<std::size_t>(indices[p]);
+        multiply(blocks + 25 * p, inverse + 25 * k, product.data());
+        std::copy(product.begin(), product.end(), blocks + 25 * p);
+        for (auto q = diagonal[k] + 1; q < indptr[k + 1]; ++q) {
+          const auto at = where[static_cast<std::size_t>(indices[q])];
+          if (at < 0) continue;
+          multiply(blocks + 25 * p, blocks + 25 * q, product.data());
+          for (std::size_t e = 0; e < 25; ++e)
+            blocks[25 * at + static_cast<std::int64_t>(e)] -= product[e];
+        }
+      }
+      if (!invert(blocks + 25 * diagonal[i], inverse + 25 * i)) {
+        throw std::domain_error("singular pivot block in block row " + std::to_string(i));
+      }
+      for (auto p = indptr[i]; p < indptr[i + 1]; ++p)
+        where[static_cast<std::size_t>(indices[p])] = -1;
+    }
+  });
+}
+
+/// x = (LU)^-1 b for the factors autan_mms_block_ilu0 left in `blocks` and `inverse`; b and x hold
+/// 5 values per block row and may not alias.
+void autan_mms_block_ilu0_solve(std::int64_t n, const std::int64_t* indptr,
+                                const std::int32_t* indices, const double* blocks,
+                                const double* inverse, const double* b, double* x) {
+  std::array<double, 5> s{};
+  for (std::int64_t i = 0; i < n; ++i) {
+    std::copy(b + 5 * i, b + 5 * i + 5, s.begin());
+    for (auto p = indptr[i]; p < indptr[i + 1] && indices[p] < i; ++p) {
+      const double* l = blocks + 25 * p;
+      const double* y = x + 5 * static_cast<std::int64_t>(indices[p]);
+      for (int r = 0; r < 5; ++r) {
+        for (int c = 0; c < 5; ++c) s[static_cast<std::size_t>(r)] -= l[5 * r + c] * y[c];
+      }
+    }
+    std::copy(s.begin(), s.end(), x + 5 * i);
+  }
+  for (std::int64_t i = n - 1; i >= 0; --i) {
+    std::copy(x + 5 * i, x + 5 * i + 5, s.begin());
+    for (auto p = indptr[i + 1] - 1; p >= indptr[i] && indices[p] > i; --p) {
+      const double* u = blocks + 25 * p;
+      const double* y = x + 5 * static_cast<std::int64_t>(indices[p]);
+      for (int r = 0; r < 5; ++r) {
+        for (int c = 0; c < 5; ++c) s[static_cast<std::size_t>(r)] -= u[5 * r + c] * y[c];
+      }
+    }
+    const double* d = inverse + 25 * i;
+    for (int r = 0; r < 5; ++r) {
+      double v = 0.0;
+      for (int c = 0; c < 5; ++c) v += d[5 * r + c] * s[static_cast<std::size_t>(c)];
+      x[5 * i + r] = v;
+    }
+  }
 }
 
 }  // extern "C"
