@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from autan_codegen import model
 from autan_codegen.derive import derive
@@ -13,6 +12,9 @@ from autan_codegen.emit_gpu import POLICIES, emit_gpu_header, emit_gpu_instances
 from autan_codegen.emit_metal import POLICIES as METAL_POLICIES
 from autan_codegen.emit_metal import emit_metal_header
 from autan_codegen.errors import Code, CodegenError
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 BACKENDS = ("cpu", "gpu", "metal")
 
@@ -47,7 +49,7 @@ def generate(
             )
     m = model.load(path.resolve())
     derive(m)
-    files = {f"{m.name}.hpp": emit_common_header(m, line_directives)}
+    files = {f"{m.name}.hpp": emit_common_header(m, line_directives, source_root)}
     if "cpu" in backends:
         files[f"{m.name}_cpu.hpp"] = emit_cpu_header(m)
     if "gpu" in backends:
@@ -55,10 +57,8 @@ def generate(
         files[f"{m.name}_gpu.cu"] = emit_gpu_instances(m, policies)
     if "metal" in backends:
         files[f"{m.name}_metal.hpp"] = emit_metal_header(
-            m, [p for p in policies if p in METAL_POLICIES], line_directives
+            m, [p for p in policies if p in METAL_POLICIES], line_directives, source_root
         )
-    if source_root is not None:
-        files = {name: relative_lines(text, source_root) for name, text in files.items()}
     out.mkdir(parents=True, exist_ok=True)
     written = []
     for name, text in files.items():
@@ -68,19 +68,3 @@ def generate(
             p.write_text(text)
         written.append(p)
     return written
-
-
-LINE = re.compile(r'^#line (\d+) "([^"]+)"$', re.MULTILINE)
-
-
-def relative_lines(text: str, root: Path) -> str:
-    """`#line N "<path>"` with <path> relative to `root` when it lies under it."""
-    base = root.resolve()
-
-    def rewrite(m: re.Match[str]) -> str:
-        path = Path(m.group(2))
-        if path.is_absolute() and path.is_relative_to(base):
-            return f'#line {m.group(1)} "{path.relative_to(base).as_posix()}"'
-        return m.group(0)
-
-    return LINE.sub(rewrite, text)
