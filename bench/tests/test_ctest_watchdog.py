@@ -272,3 +272,23 @@ def test_markers_relative_to_the_launcher_s_directory_are_found(tmp_path, count)
     proc = watchdog(env, 60, tmp_path / "stacks", command)
     assert proc.returncode == 0, proc.stdout
     assert "ranks proven ended by their exit markers: 2/2" in proc.stdout
+
+
+@pytest.mark.parametrize("given", [True, False])
+def test_only_the_watched_command_gets_the_ptracer_library(tmp_path, given):
+    # The self-hosted runner names it; the command under the watchdog, and its children, preload
+    # it. Without it (a hosted runner), nothing is preloaded.
+    library = tmp_path / "libautan_ptracer.so"
+    library.write_bytes(b"")  # the loader ignores an unloadable preload, with a warning
+    # Neither inherited: the runner's image itself names the library.
+    env = {k: v for k, v in os.environ.items() if k not in ("LD_PRELOAD", "AUTAN_WATCHDOG_PTRACER")}
+    if given:
+        env["AUTAN_WATCHDOG_PTRACER"] = str(library)
+    seen = tmp_path / "seen"
+    proc = subprocess.run(
+        [str(WATCHDOG), "30", str(tmp_path / "stacks"), "--", "sh", "-c",
+         f'sh -c \'printf "%s" "${{LD_PRELOAD:-}}"\' > {seen}'],
+        check=False, env=env, capture_output=True, text=True, timeout=60,
+    )  # fmt: skip
+    assert proc.returncode == 0
+    assert seen.read_text() == (str(library) if given else "")
