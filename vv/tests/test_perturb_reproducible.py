@@ -2,6 +2,8 @@
 
 import hashlib
 import itertools
+import math
+from fractions import Fraction
 
 import numpy as np
 from autan_vv.meshes import families
@@ -63,3 +65,19 @@ def test_canonical_tets_keep_each_tetrahedron_and_its_orientation_whatever_the_i
         assert np.array_equal(families.canonical_tets(shuffled), canonical)
     # By hand: (1, 2, 0, 3) is (0, 1, 2, 3) rotated by a 3-cycle.
     assert families.canonical_tets(np.array([[1, 2, 0, 3]])).tolist() == [[0, 1, 2, 3]]
+
+
+def test_the_manifest_s_cube_root_is_correctly_rounded() -> None:
+    # h = cbrt(volume / n_cells) is written in every manifest: it must be the double nearest the
+    # exact cube root, which no platform's libm guarantees for pow.
+    rng = np.random.default_rng(3)
+    for x in [*rng.random(300) * 1e-3, *rng.random(300), 1.0, 8.0, 0.125, 1e-12, 3.0]:
+        y = families.cbrt(float(x))
+        exact = Fraction(float(x))
+        up, down = math.nextafter(y, math.inf), math.nextafter(y, 0.0)
+        assert (
+            ((Fraction(down) + Fraction(y)) / 2) ** 3
+            <= exact
+            <= ((Fraction(y) + Fraction(up)) / 2) ** 3
+        )
+    assert families.cbrt(8.0) == 2.0

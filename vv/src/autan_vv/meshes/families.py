@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict, dataclass
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -111,8 +113,26 @@ def level_record(n: int, path: Path, mesh: FaceMesh) -> Level:
         cell_counts=counts,
         min_subvolume_ratio=mesh.min_subvolume_ratio(),
         volume=volume,
-        h=(volume / mesh.n_cells) ** (1.0 / 3.0),
+        h=cbrt(volume / mesh.n_cells),
     )
+
+
+def cbrt(x: float) -> float:
+    """The cube root of `x` > 0, correctly rounded: the same double on every platform.
+
+    `x ** (1/3)` is libm's `pow`, whose last bit may differ between platforms, and a manifest records
+    it (#495). From it, step by one ulp while the exact cube of a midpoint says the root lies beyond.
+    """
+    y = x ** (1.0 / 3.0)
+    exact = Fraction(x)
+    while True:
+        up, down = math.nextafter(y, math.inf), math.nextafter(y, 0.0)
+        if ((Fraction(y) + Fraction(up)) / 2) ** 3 < exact:
+            y = up
+        elif ((Fraction(down) + Fraction(y)) / 2) ** 3 > exact:
+            y = down
+        else:
+            return y
 
 
 def write_manifest(family: Family, out_dir: Path) -> None:
