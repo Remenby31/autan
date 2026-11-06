@@ -1,11 +1,11 @@
 #include "executable_hash.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -53,12 +53,14 @@ std::string hash_file(const std::string& path) {
   return picosha2::get_hash_hex_string(hasher);
 }
 
-struct FileTimes {
+struct FileStat {
   std::string key;  // device, inode, size, mtime and ctime in nanoseconds
+  std::uint64_t device = 0;
+  std::int64_t mtime_ns = 0;
   std::int64_t ctime_ns = 0;
 };
 
-std::optional<FileTimes> file_times(const std::string& path) {
+std::optional<FileStat> file_stat(const std::string& path) {
   struct stat st{};
   if (stat(path.c_str(), &st) != 0) return std::nullopt;
 #ifdef __APPLE__
@@ -69,65 +71,83 @@ std::optional<FileTimes> file_times(const std::string& path) {
   const auto ns = [](const timespec& t) {
     return static_cast<std::int64_t>(t.tv_sec) * 1'000'000'000 + t.tv_nsec;
   };
-  return FileTimes{.key = std::to_string(st.st_dev) + "-" + std::to_string(st.st_ino) + "-" +
-                          std::to_string(st.st_size) + "-" + std::to_string(ns(mt)) + "-" +
-                          std::to_string(ns(ct)),
-                   .ctime_ns = ns(ct)};
+  return FileStat{.key = std::to_string(st.st_dev) + "-" + std::to_string(st.st_ino) + "-" +
+                         std::to_string(st.st_size) + "-" + std::to_string(ns(mt)) + "-" +
+                         std::to_string(ns(ct)),
+                  .device = static_cast<std::uint64_t>(st.st_dev),
+                  .mtime_ns = ns(mt),
+                  .ctime_ns = ns(ct)};
 }
 
-bool is_sha256_hex(const std::string& s) {
-  return s.size() == 64 && std::all_of(s.begin(), s.end(), [](char c) {
-           return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
-         });
+// An entry is exactly 64 lower-case hex digits and a newline.
+std::optional<std::string> read_entry(const fs::path& entry) {
+  std::ifstream in(entry, std::ios::binary);
+  if (!in) return std::nullopt;
+  std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  if (text.size() != 65 || text.back() != '\n') return std::nullopt;
+  text.pop_back();
+  const bool hex = std::all_of(text.begin(), text.end(), [](char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+  });
+  return hex ? std::optional<std::string>(text) : std::nullopt;
 }
 
 // A file whose ctime is this recent may still change within the same timestamp tick on a file
-// system with coarse timestamps, so its hash is not stored (git's racy index entries).
+// system with coarse timestamps, so its hash is not stored (git's racy index entries). "Now" is
+// the cache file system's own clock, read from the entry written for it, so a skew between that
+// clock and the process's cannot shorten the margin.
 constexpr std::int64_t settled_ns = 2'000'000'000;
 
-std::string hash_executable() {
+ExecutableHash hash_executable() {
   const std::string path = executable_path();
   const char* dir = std::getenv("AUTAN_BINARY_HASH_CACHE");
-  if (dir == nullptr || *dir == '\0') return hash_file(path);
+  if (dir == nullptr || *dir == '\0') return {hash_file(path), ""};
 
   // Opt-in cache, for test suites that start many processes: an entry is keyed by what any
   // change to the file changes. A write changes mtime and ctime, a rename or chmod ctime, a copy
   // the inode; ctime cannot be set from user space.
-  const auto before = file_times(path);
-  if (!before) return hash_file(path);
+  const auto before = file_stat(path);
+  if (!before) return {hash_file(path), "cannot stat the executable"};
   const fs::path entry = fs::path(dir) / (before->key + ".sha256");
+  if (const auto stored = read_entry(entry)) return {*stored, ""};
+
+  ExecutableHash h{hash_file(path), ""};
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  if (ec) {
+    h.cache_problem = "cannot create " + std::string(dir) + ": " + ec.message();
+    return h;
+  }
+  const fs::path tmp = entry.string() + "." + std::to_string(getpid()) + ".tmp";
   {
-    std::ifstream in(entry);
-    std::string stored;
-    if (in && std::getline(in, stored) && is_sha256_hex(stored)) return stored;
-  }
-  const std::string hash = hash_file(path);
-  const auto after = file_times(path);
-  const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                       std::chrono::system_clock::now().time_since_epoch())
-                       .count();
-  if (after && after->key == before->key && now - after->ctime_ns >= settled_ns) {
-    std::error_code ec;
-    fs::create_directories(dir, ec);
-    const fs::path tmp = entry.string() + "." + std::to_string(getpid()) + ".tmp";
-    bool written = false;
-    {
-      std::ofstream out(tmp);
-      out << hash << '\n';
-      out.close();
-      written = !out.fail();
+    std::ofstream out(tmp, std::ios::binary);
+    out << h.sha256 << '\n';
+    out.close();
+    if (out.fail()) {
+      fs::remove(tmp, ec);
+      h.cache_problem = "cannot write in " + std::string(dir);
+      return h;
     }
-    if (written) fs::rename(tmp, entry, ec);
-    fs::remove(tmp, ec);
   }
-  return hash;
+  const auto after = file_stat(path);
+  const auto now = file_stat(tmp.string());
+  if (!after || !now) {
+    h.cache_problem = "cannot stat the executable or the cache";
+  } else if (after->device != now->device) {
+    h.cache_problem = "the executable and the cache are on different file systems";
+  } else if (after->key == before->key && now->mtime_ns - after->ctime_ns >= settled_ns) {
+    fs::rename(tmp, entry, ec);
+    if (ec) h.cache_problem = "cannot store the entry: " + ec.message();
+  }
+  fs::remove(tmp, ec);
+  return h;
 }
 
 }  // namespace
 
-std::string executable_sha256() {
+const ExecutableHash& executable_hash() {
   // A static whose initialiser throws is initialised again by the next call.
-  static const std::string hash = hash_executable();
+  static const ExecutableHash hash = hash_executable();
   return hash;
 }
 

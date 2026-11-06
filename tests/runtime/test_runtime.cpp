@@ -633,14 +633,16 @@ TEST_CASE("An executable's cached hash serves only that unchanged file", "[runti
   fs::copy_file(AUTAN_RUN_RELAXATION, exe);
   fs::permissions(exe, fs::status(AUTAN_RUN_RELAXATION).permissions());
   const fs::path cache = dir / "cache";
-  const auto recorded = [&] {
+  fs::path last_run;
+  const auto recorded = [&](const fs::path& cache_dir) {
     const Spawned s = spawn_until(
-        input(), {"AUTAN_BINARY_HASH_CACHE=" + cache.string()},
+        input(), {"AUTAN_BINARY_HASH_CACHE=" + cache_dir.string()},
         [](const fs::path&) { return true; }, 2000, exe.string());
     int status = 0;
     REQUIRE(waitpid(s.pid, &status, 0) == s.pid);
     REQUIRE(WIFEXITED(status));
     REQUIRE(WEXITSTATUS(status) == 0);
+    last_run = s.run;
     return Json::parse(read(s.run / "run.json"))["solver"]["binary_sha256"].get<std::string>();
   };
   const auto entries = [&] {
@@ -653,21 +655,38 @@ TEST_CASE("An executable's cached hash serves only that unchanged file", "[runti
 
   std::this_thread::sleep_for(std::chrono::milliseconds(2100));
   const std::string hash = sha256_of(exe.string());
-  CHECK(recorded() == hash);
+  CHECK(recorded(cache) == hash);
   REQUIRE(entries().size() == 1);
   CHECK(read(entries()[0]) == hash + "\n");
 
   // The entry is what a later process reads: a forged one is believed.
   const std::string forged(64, 'f');
   std::ofstream(entries()[0], std::ios::trunc) << forged << '\n';
-  CHECK(recorded() == forged);
+  CHECK(recorded(cache) == forged);
 
-  // A changed file has another key, and is too recent to be stored.
+  // A changed file has another key: its own hash is recorded, and any entry stored for it (once
+  // its ctime is 2 s old) holds that hash.
+  const fs::path forged_entry = entries()[0];
   std::ofstream(exe, std::ios::binary | std::ios::app) << "autan";
   const std::string changed = sha256_of(exe.string());
   CHECK(changed != hash);
-  CHECK(recorded() == changed);
-  CHECK(entries().size() == 1);
+  CHECK(recorded(cache) == changed);
+  for (const fs::path& e : entries()) {
+    CAPTURE(e);
+    CHECK(read(e) == (e == forged_entry ? forged : changed) + "\n");
+  }
+
+  // A cache it cannot use (a file where the directory should be) is logged, never silent.
+  const fs::path not_a_dir = dir / "file";
+  std::ofstream(not_a_dir) << "x";
+  CHECK(recorded(not_a_dir) == changed);
+  bool logged = false;
+  for (const std::string& line : lines_of(last_run / "log.jsonl")) {
+    const Json l = Json::parse(line);
+    logged =
+        logged || (l["level"] == "warning" && l["data"].value("cache", "") == not_a_dir.string());
+  }
+  CHECK(logged);
 }
 
 TEST_CASE("A converging run writes the run directory of results.md", "[runtime]") {
