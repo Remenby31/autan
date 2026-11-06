@@ -361,13 +361,18 @@ def test_vortex_families_are_periodic_and_nested(kind: str, tmp_path: Path) -> N
         gmsh.finalize()
 
 
-# The perturbed tet n = 6 file, perturbation 0.3, seed 2026: measured identical on x86-64 Linux and
-# macOS arm64 (Gmsh has no aarch64 Linux wheel). Gmsh's builds enumerate the same tetrahedra in
-# other orders; the file must not show it (#495).
-TET_N6_FILE_SHA256 = "a81fbda14c03eeea6382e2c32d6d44ffeeb7ef92c5804cc8015cd0c94b55f3db"
+# Perturbed n = 6 files, perturbation 0.3, seed 2026, written by generate_level: measured
+# identical on x86-64 Linux and macOS arm64 (Gmsh has no aarch64 Linux wheel). Gmsh's builds
+# enumerate the same tetrahedra in other orders, and the perturbation must not depend on the CPU's
+# arithmetic: the files must show neither (#495).
+FILE_N6_SHA256 = {
+    "tet": "a81fbda14c03eeea6382e2c32d6d44ffeeb7ef92c5804cc8015cd0c94b55f3db",
+    "hybrid": "bfdc2d311e5de7b374787a97a95f876138957b50e549ee35ca8b7f56e902be5f",
+}
 
 
-def test_a_perturbed_tet_file_is_the_same_bytes_on_every_platform(tmp_path: Path) -> None:
-    path = tmp_path / "tet.msh"
-    generate_level("tet", 6, perturbation=0.3, seed=2026, path=path)
-    assert hashlib.sha256(path.read_bytes()).hexdigest() == TET_N6_FILE_SHA256
+@pytest.mark.parametrize("kind", sorted(FILE_N6_SHA256))
+def test_a_perturbed_file_is_the_same_bytes_on_every_platform(tmp_path: Path, kind: str) -> None:
+    path = tmp_path / f"{kind}.msh"
+    generate_level(kind, 6, perturbation=0.3, seed=2026, path=path)
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == FILE_N6_SHA256[kind]
