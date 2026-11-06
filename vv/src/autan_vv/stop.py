@@ -20,8 +20,8 @@ PLATEAU_RATIO = 0.9
 PLATEAU_STEPS = 100
 BAND = 10.0
 # euler.md#time-stepping: the first-order start, the only iterations a physics marks provisional,
-# ends after 200 steps at the latest.
-MAX_PROVISIONAL = 200
+# ends with its 201st step at the latest.
+MAX_PROVISIONAL = 201
 
 
 @dataclass(frozen=True)
@@ -131,7 +131,7 @@ def check_stop(results: autan.Results) -> None:
     history gives. Other statuses and unsteady runs are not judged.
 
     Not guaranteed: the history does not say which iterations were provisional (a first-order
-    start), so a verdict is accepted when some provisional prefix of 0 to 200 iterations gives
+    start), so a verdict is accepted when some provisional prefix of 0 to 201 iterations gives
     it. The drop, the exemption, W0710 and the budget are exact; a plateau is checked as the
     band and 100 iterations without a new reference, not from its exact start. The floors are
     run.json's `convergence.floor`, not recomputed from the mesh.
