@@ -972,6 +972,9 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(history(o.run).size() == 3);
     CHECK(info["monitors"].is_null());
     CHECK(info["timing"].is_null());  // a failed run is not timed
+    const auto log = lines_of(o.run / "log.jsonl");
+    REQUIRE_FALSE(log.empty());
+    CHECK(Json::parse(log.back())["level"] == "error");
   }
   SECTION("unsteady with averaging: time, averaging and FlowSolutionMean") {
     // Written by `autan prepare` with time = Unsteady(steps=6, dt=0.01 s,
@@ -1599,6 +1602,7 @@ TEST_CASE("log.jsonl records the run's events in the results.md shape", "[runtim
   CHECK((*d0107)["data"] == info["diagnostics"][0]["data"]);
   CHECK((*d0107)["iteration"] == 4);
   CHECK(lines.back()["data"]["status"] == "diverged");
+  CHECK(lines.back()["level"] == "info");
 }
 
 TEST_CASE("A continued run goes on bit for bit from the run it continues", "[runtime]") {
