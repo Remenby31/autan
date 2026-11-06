@@ -53,6 +53,7 @@ class Solver(_Strict):
     version: str
     commit: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
     backend: Literal["cuda", "hip", "cpu", "fake"]
+    binary_sha256: Hex | None
 
 
 class Devices(_Strict):
@@ -826,6 +827,8 @@ def run_problems(run: RunInfo, case: CaseSpec, mesh_info: MeshInfo) -> list[str]
         found.append("averaging is only for unsteady runs")
     if run.status == "diverged" and not any(d.code.startswith("D") for d in run.diagnostics):
         found.append("a diverged run must carry a D diagnostic")
+    if (run.solver.backend == "fake") != (run.solver.binary_sha256 is None):
+        found.append("solver.binary_sha256 must be null exactly for the fake backend")
     found += convergence_problems(run, case)
     found += final_monitor_problems(run, case)
     found += timing_problems(run, mesh_info)
