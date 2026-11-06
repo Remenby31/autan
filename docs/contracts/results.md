@@ -103,7 +103,7 @@ A **study** is a set of runs that solve one problem at several freestream states
 `history.jsonl` holds one JSON object per line, in increasing `iteration`:
 
 ```json
-{"iteration": 10, "time": null, "residuals": {"density": 1.2e-3, "momentum-x": 4.1e-4, "momentum-y": 2.0e-4, "momentum-z": 3.3e-4, "energy": 2.9e-3, "nu-tilde": 7.7e-5}, "monitors": {"forces": {"fx": 1.2e4, "fy": 0.0, "fz": 9.8e4, "mx": 0.0, "my": -3.1e4, "mz": 0.0, "cl": 2.04, "cd": 0.31, "cs": 0.0, "cmx": 0.0, "cmy": -0.4, "cmz": 0.0}}}
+{"iteration": 10, "time": null, "residuals": {"density": 1.2e-3, "momentum-x": 4.1e-4, "momentum-y": 2.0e-4, "momentum-z": 3.3e-4, "energy": 2.9e-3, "nu-tilde": 7.7e-5}, "monitors": {"forces": {"fx": 1.2e4, "fy": 0.0, "fz": 9.8e4, "mx": 0.0, "my": -3.1e4, "mz": 0.0, "cl": 2.04, "cd": 0.31, "cs": 0.0, "cmx": 0.0, "cmy": -0.4, "cmz": 0.0}}, "provisional": false}
 ```
 
 - `time`: physical time in seconds for unsteady runs, `null` for steady runs.
