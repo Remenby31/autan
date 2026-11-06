@@ -7,6 +7,7 @@
   p = 1, and refuse families or runs that do not fit.
 """
 
+import hashlib
 import itertools
 import json
 import re
@@ -26,6 +27,7 @@ from autan_vv.initial_state import write_initial_state
 from autan_vv.meshes.facemesh import FaceMesh
 from autan_vv.meshes.families import cartesian, generate_family
 from autan_vv.meshes.fluent import write_fluent
+from autan_vv.mms import CATALOG, dump_json
 from autan_vv.oracles.registry import get_oracle
 from autan_vv.runs import mesh_info, write_run
 
@@ -329,11 +331,20 @@ def test_runs_that_do_not_fit_the_oracle_or_each_other_are_rejected(tmp_path: Pa
         with pytest.raises(VVError) as err:
             call()
         assert err.value.code == code
+
     # One manufactured solution, the same bytes, named by another path in each study directory:
     # one family (#466). Another solution is another case.
-    same = autan.Manufactured(path="euler-one.mms.json", sha256="a" * 64)
-    moved = autan.Manufactured(path="euler-two.mms.json", sha256="a" * 64)
-    different = autan.Manufactured(path="euler-two.mms.json", sha256="b" * 64)
+    def solution(directory: Path, text: str) -> autan.Manufactured:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "euler.mms.json").write_text(text)
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        return autan.Manufactured(path=str(directory / "euler.mms.json"), sha256=digest)
+
+    text = dump_json(CATALOG["euler"]())
+    same = solution(tmp_path / "one", text)
+    moved = solution(tmp_path / "two", text)
+    # The same solution in other bytes (one more newline): another file, another case.
+    different = solution(tmp_path / "three", text + "\n")
     one = _runs(tmp_path / "one", meshes[:2], "mms-euler", 2.0, manufactured=same)
     two = _runs(tmp_path / "two", meshes[2:], "mms-euler", 2.0, manufactured=moved)
     assert verify([*one, *two], "mms-euler")["oracle"]["name"] == "mms-euler"
