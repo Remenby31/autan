@@ -22,8 +22,8 @@ struct RanksRequest {
   RankGroups groups = RankGroups::none;
 };
 
-/// The MeshInfoRun of `mesh`, an unpartitioned mesh as read, as autan-run would compute on it
-/// with `scale` metres per mesh unit (solver-input.md, mesh.scale): on scaled(mesh, scale) and its
+/// The MeshInfoRun of `read`, an unpartitioned mesh as read, as autan-run would compute on it
+/// with `scale` metres per mesh unit (solver-input.md, mesh.scale): on scaled(read, scale) and its
 /// compute_geometry, whose round-off decides couplings at the lines' threshold:
 /// - lines: smoother_lines on the mesh in `order` (for rcm, renumber_cells by
 ///   rcm_order with renumber_geometry, as the run renumbers), cells in lines of
@@ -37,7 +37,7 @@ struct RanksRequest {
 ///   partition (cell_cost_weights, its groups kept whole), and each rank's owned
 ///   cells, ghost cells, faces, interior faces and face2 stencil entries.
 /// Throws as partition_cells for an invalid rank count (E0140 to E0143).
-MeshInfoRun run_counts(const Mesh& mesh, double scale, CellOrder order,
+MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
                        std::optional<RanksRequest> ranks = std::nullopt);
 
 }  // namespace autan::io

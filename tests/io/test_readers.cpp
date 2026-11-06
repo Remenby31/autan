@@ -782,11 +782,12 @@ TEST_CASE("A Fluent zone of interior faces keeps no name of its own", "[io]") {
 TEST_CASE("Sizes a text reader is told are checked before they are allocated", "[io]") {
   SECTION("a polyMesh uniform list longer than the mesh's faces") {
     // mesh.md, Readers: N{v} expands to N labels from a few bytes of text; owner holds as many
-    // as the faces file has faces. 2^28 is refused before the 2 GiB are allocated.
+    // as the faces file has faces. 2^28 is refused before the 2 GiB are allocated: anything
+    // sized by N costs at least N bytes, sixteen times the bound.
     const fs::path dir = single_hex_polymesh();
     write_temp("single-hex/owner", foam_header("ascii", "labelList", "owner") + "268435456{0}\n");
     const std::int64_t peak = peak_of([&] { require_error(autan::ErrorCode::io_malformed, dir); });
-    CHECK(peak <= std::int64_t{1} << 20);
+    CHECK(peak <= std::int64_t{1} << 24U);
   }
   SECTION("a polyMesh header key longer than 4096 bytes") {
     const fs::path dir = single_hex_polymesh();

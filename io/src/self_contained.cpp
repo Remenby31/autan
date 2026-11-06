@@ -122,7 +122,7 @@ void scan_cgns_links(const std::filesystem::path& file) {
     std::size_t parent;
     int depth;
   };
-  constexpr std::size_t none = static_cast<std::size_t>(-1);
+  constexpr auto none = static_cast<std::size_t>(-1);
   std::vector<Frame> visited;
   std::size_t found = none;
   bool broken = false;

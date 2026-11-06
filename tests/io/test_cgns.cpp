@@ -1346,14 +1346,15 @@ std::int64_t open_bytes(const fs::path& file) {
     std::vector<double> ids(static_cast<std::size_t>(n));
     int got = 0;
     if (n > 0) REQUIRE(cgio_children_ids(cgio, node, 1, n, &got, ids.data()) == CGIO_ERR_NONE);
-    for (int i = 0; i < got; ++i) {
+    ids.resize(static_cast<std::size_t>(got));
+    for (const double id : ids) {
       char label[CGIO_MAX_LABEL_LENGTH + 1] = {};
       char type[CGIO_MAX_DATATYPE_LENGTH + 1] = {};
       int ndims = 0;
       cgsize_t dims[CGIO_MAX_DIMENSIONS] = {};
-      REQUIRE(cgio_get_label(cgio, ids[i], label) == CGIO_ERR_NONE);
-      REQUIRE(cgio_get_data_type(cgio, ids[i], type) == CGIO_ERR_NONE);
-      REQUIRE(cgio_get_dimensions(cgio, ids[i], &ndims, dims) == CGIO_ERR_NONE);
+      REQUIRE(cgio_get_label(cgio, id, label) == CGIO_ERR_NONE);
+      REQUIRE(cgio_get_data_type(cgio, id, type) == CGIO_ERR_NONE);
+      REQUIRE(cgio_get_dimensions(cgio, id, &ndims, dims) == CGIO_ERR_NONE);
       const std::string l = label;
       const bool read = l != "Descriptor_t" && l != "IndexArray_t" &&
                         (l != "DataArray_t" || std::ranges::find(lazy, parent) == lazy.end());
@@ -1362,7 +1363,7 @@ std::int64_t open_bytes(const fs::path& file) {
         for (int d = 0; d < ndims; ++d) values *= dims[d];
         bytes += values * size.at(type);
       }
-      pending.emplace_back(ids[i], l);
+      pending.emplace_back(id, l);
     }
   }
   REQUIRE(cgio_close_file(cgio) == CGIO_ERR_NONE);

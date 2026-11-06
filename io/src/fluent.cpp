@@ -370,22 +370,26 @@ class FluentReader {
     const std::size_t at = c_.position();
     auto [id, info] = zone_record(c_);
     skip_rest();
-    if (info.type == "fluid" || info.type == "solid" || info.type == "interior") {
-      // Real meshes have a few: at most 16 384 of them.
-      if (++cell_zone_records_ > max_cell_zone_records) {
-        c_.unsupported("more than " + std::to_string(max_cell_zone_records) +
-                       " fluid, solid or interior zone records");
-      }
+    // Real meshes have a few fluid, solid or interior records: at most 16 384 of them.
+    if ((info.type == "fluid" || info.type == "solid" || info.type == "interior") &&
+        ++cell_zone_records_ > max_cell_zone_records) {
+      c_.unsupported("more than " + std::to_string(max_cell_zone_records) +
+                     " fluid, solid or interior zone records");
     }
     records_[id] = at;
   }
 
   // The zone record of zone `id`, the last one given winning.
-  std::optional<ZoneInfo> zone_info(std::int64_t id) const {
+  [[nodiscard]] std::optional<ZoneInfo> zone_info(std::int64_t id) const {
     const auto it = records_.find(id);
     if (it == records_.end()) return std::nullopt;
+    return record_at(it->second);
+  }
+
+  // The zone record at `offset` in the file.
+  [[nodiscard]] ZoneInfo record_at(std::size_t offset) const {
     Cursor c(data_, c_.path());
-    c.advance(it->second);
+    c.advance(offset);
     return zone_record(c).second;
   }
 
@@ -454,7 +458,7 @@ class FluentReader {
     for (const auto& [id, offset] : records_) {
       const bool cells = std::ranges::find(cell_zone_order_, id) != cell_zone_order_.end();
       if (cells || face_zone_index.contains(id)) continue;
-      const ZoneInfo info = *zone_info(id);
+      const ZoneInfo info = record_at(offset);
       if (info.type == "fluid" || info.type == "solid" || info.type == "interior") continue;
       face_zone_index[id] = static_cast<index_t>(in.face_zones.size());
       in.face_zones.push_back(FaceZone{

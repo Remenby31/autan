@@ -4,8 +4,10 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <cgnslib.h>
@@ -60,29 +62,34 @@ void check_start_solution(const std::filesystem::path& file, const StartLimits& 
            " bytes read when the file opens");
   }
   std::int64_t translations = 0, families = 0;
-  // Every descriptor of the tree, where the writer puts them and no larger than it writes them.
-  const auto walk = [&](const auto& self, double node, const std::string& parent) -> void {
-    for (const double child : tree.children(node)) {
-      const std::string label = tree.label(child);
-      if (label == "Descriptor_t") {
-        const std::string name = tree.name(child);
-        const std::int64_t bytes = tree.logical_bytes(child);
-        const bool in_base = parent == "CGNSBase_t";
-        if (in_base && name == "RunMetadata" && bytes <= (std::int64_t{64} << 10)) continue;
-        if (in_base && name == "ZoneNames" && bytes <= (limits.zones + 1) * 25600) continue;
-        if (parent == "GridConnectivity_t" && name == "PeriodicTranslation" && bytes <= 4096 &&
-            ++translations <= 2 * limits.periodic_pairs) {
-          continue;
-        }
-        refuse("a descriptor '" + name + "' of " + std::to_string(bytes) + " bytes");
-      }
-      if (label == "Family_t" && ++families > limits.zones)
-        refuse(std::to_string(families) + " families for " + std::to_string(limits.zones) +
-               " zones");
-      self(self, child, label);
-    }
+  // Every descriptor of the tree, where the writer puts them and no larger than it writes them,
+  // depth first in the file's order: (node, its parent's label) still to visit.
+  std::vector<std::pair<double, std::string>> pending;
+  const auto push_children = [&](double node, const std::string& label) {
+    const std::vector<double> children = tree.children(node);
+    for (const double child : std::views::reverse(children)) pending.emplace_back(child, label);
   };
-  walk(walk, tree.root(), "");
+  push_children(tree.root(), "");
+  while (!pending.empty()) {
+    const auto [child, parent] = pending.back();
+    pending.pop_back();
+    const std::string label = tree.label(child);
+    if (label == "Descriptor_t") {
+      const std::string name = tree.name(child);
+      const std::int64_t bytes = tree.logical_bytes(child);
+      const bool in_base = parent == "CGNSBase_t";
+      if (in_base && name == "RunMetadata" && bytes <= std::int64_t{64} * 1024) continue;
+      if (in_base && name == "ZoneNames" && bytes <= (limits.zones + 1) * 25600) continue;
+      if (parent == "GridConnectivity_t" && name == "PeriodicTranslation" && bytes <= 4096 &&
+          ++translations <= 2 * limits.periodic_pairs) {
+        continue;
+      }
+      refuse("a descriptor '" + name + "' of " + std::to_string(bytes) + " bytes");
+    }
+    if (label == "Family_t" && ++families > limits.zones)
+      refuse(std::to_string(families) + " families for " + std::to_string(limits.zones) + " zones");
+    push_children(child, label);
+  }
   if (largest_filtered_bytes(file) > 0) refuse("a filtered (compressed) dataset");
 }
 
@@ -131,7 +138,7 @@ StoredSolution read_solution(const std::filesystem::path& file, bool whole_state
   const auto base = tree.child(tree.root(), "CGNSBase_t");
   if (const auto node = base ? tree.child(*base, "Descriptor_t", "RunMetadata") : std::nullopt) {
     check_text(file.string(), "RunMetadata descriptor",
-               static_cast<std::size_t>(tree.logical_bytes(*node)), std::size_t{64} << 10);
+               static_cast<std::size_t>(tree.logical_bytes(*node)), std::size_t{64} << 10U);
     out.run_metadata = tree.text(*node);
   }
   int solutions = 0;

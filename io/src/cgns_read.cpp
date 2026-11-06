@@ -104,7 +104,7 @@ bool is_face_type(CGNS_ENUMT(ElementType_t) type) {
 // chunk_entries connectivity entries (1 MiB), whatever the section's size: what reading a section
 // costs beside the elements kept is a constant, and nothing for the points and edges skipped.
 constexpr std::size_t chunk_elements = 4096;
-constexpr std::int64_t chunk_entries = std::int64_t{1} << 17;
+constexpr std::int64_t chunk_entries = std::int64_t{128} * 1024;
 
 // The count of `tree`, E0133 beyond its nodes, depth or data read at open, naming the commonest
 // label for too many nodes.
@@ -500,54 +500,55 @@ class Reader {
     const auto base = tree.child(tree.root(), "CGNSBase_t");
     const auto zone = base ? tree.child(*base, "Zone_t") : std::nullopt;
     if (!zone) return;
-    // The point sets' containers, walked twice: their lists' entries counted, then read.
-    const auto containers = [&](const auto& visit) {
+    // The point sets' containers, walked twice: their lists' entries counted, then read. `visit`
+    // gets each IndexArray_t and IndexRange_t under them, descriptors aside.
+    const auto point_sets = [&](const auto& visit) {
+      std::vector<double> pending;
       for (const double child : tree.children(*zone)) {
         const std::string label = tree.label(child);
         if (label == "ZoneBC_t" || label == "ZoneSubRegion_t" ||
             label == "ZoneGridConnectivity_t") {
-          visit(visit, child);
+          pending.push_back(child);
+        }
+      }
+      while (!pending.empty()) {
+        const double node = pending.back();
+        pending.pop_back();
+        for (const double child : tree.children(node)) {
+          const std::string label = tree.label(child);
+          if (label == "IndexArray_t" || label == "IndexRange_t") {
+            visit(child, label);
+          } else if (label != "Descriptor_t") {
+            pending.push_back(child);
+          }
         }
       }
     };
     // The listed ids are held in storage sized once, 8 bytes per entry the lists give
     // (source.point_list_ids), so that it never grows, whatever their stored width.
     std::int64_t entries = 0;
-    containers([&](const auto& self, double node) -> void {
-      for (const double child : tree.children(node)) {
-        const std::string label = tree.label(child);
-        if (label == "IndexArray_t") {
-          entries += tree.values(child);
-        } else if (label != "IndexRange_t" && label != "Descriptor_t") {
-          self(self, child);
-        }
-      }
+    point_sets([&](double node, const std::string& label) {
+      if (label == "IndexArray_t") entries += tree.values(node);
     });
     referenced_ids_.reserve(static_cast<std::size_t>(entries));
     std::vector<cgsize_t> chunk;
-    const auto walk = [&](const auto& self, double node) -> void {
-      for (const double child : tree.children(node)) {
-        const std::string label = tree.label(child);
-        if (label == "IndexRange_t") {
-          std::array<cgsize_t, 2> range{};
-          tree.read_integers(child, 0, range);
-          const cgsize_t lo = std::min(range[0], range[1]), hi = std::max(range[0], range[1]);
-          if (mark(lo, hi)) referenced_ranges_.emplace_back(lo, hi);
-        } else if (label == "IndexArray_t") {
-          const std::int64_t count = tree.values(child);
-          for (std::int64_t first = 0; first < count; first += chunk_entries) {
-            chunk.resize(static_cast<std::size_t>(std::min(chunk_entries, count - first)));
-            tree.read_integers(child, first, chunk);
-            for (const cgsize_t id : chunk) {
-              if (mark(id, id)) referenced_ids_.push_back(id);
-            }
-          }
-        } else if (label != "Descriptor_t") {
-          self(self, child);
+    point_sets([&](double node, const std::string& label) {
+      if (label == "IndexRange_t") {
+        std::array<cgsize_t, 2> range{};
+        tree.read_integers(node, 0, range);
+        const cgsize_t lo = std::min(range[0], range[1]), hi = std::max(range[0], range[1]);
+        if (mark(lo, hi)) referenced_ranges_.emplace_back(lo, hi);
+        return;
+      }
+      const std::int64_t count = tree.values(node);
+      for (std::int64_t first = 0; first < count; first += chunk_entries) {
+        chunk.resize(static_cast<std::size_t>(std::min(chunk_entries, count - first)));
+        tree.read_integers(node, first, chunk);
+        for (const cgsize_t id : chunk) {
+          if (mark(id, id)) referenced_ids_.push_back(id);
         }
       }
-    };
-    containers(walk);
+    });
     std::ranges::sort(referenced_ids_);
     referenced_ids_.erase(std::ranges::unique(referenced_ids_).begin(), referenced_ids_.end());
     // The ranges merged, disjoint and ascending: at most one per IndexRange_t node.
@@ -1283,22 +1284,26 @@ LogicalBytes cgns_logical_bytes(const fs::path& file) {
   out.nodes = count.nodes;
   out.eager = count.eager_bytes;
   // Every Descriptor_t, at any level: cg_open loads them all.
-  const auto descriptors = [&](const auto& self, double node) -> void {
+  for (std::vector<double> pending{tree.root()}; !pending.empty();) {
+    const double node = pending.back();
+    pending.pop_back();
     for (const double child : tree.children(node)) {
       if (tree.label(child) == "Descriptor_t") out.descriptors += tree.logical_bytes(child);
-      self(self, child);
+      pending.push_back(child);
     }
-  };
-  descriptors(descriptors, tree.root());
+  }
   // The datasets the reader reads, descriptors aside.
   std::int64_t arrays = 0;
   // `lists`: under a BC, subregion or connectivity container, where IndexArray_t are point lists.
-  const auto subtree = [&](const auto& self, double node, bool lists) -> void {
-    const std::int64_t bytes = tree.logical_bytes(node);
-    arrays += bytes;
-    if (lists && tree.label(node) == "IndexArray_t") out.point_list_ids += tree.values(node);
-    for (const double child : tree.children(node)) {
-      if (tree.label(child) != "Descriptor_t") self(self, child, lists);
+  const auto subtree = [&](double top, bool lists) {
+    for (std::vector<double> pending{top}; !pending.empty();) {
+      const double node = pending.back();
+      pending.pop_back();
+      arrays += tree.logical_bytes(node);
+      if (lists && tree.label(node) == "IndexArray_t") out.point_list_ids += tree.values(node);
+      for (const double child : tree.children(node)) {
+        if (tree.label(child) != "Descriptor_t") pending.push_back(child);
+      }
     }
   };
   for (const double base : tree.children(tree.root())) {
@@ -1308,7 +1313,7 @@ LogicalBytes cgns_logical_bytes(const fs::path& file) {
       out.zone_names = tree.logical_bytes(*names);
     for (const double node : tree.children(base)) {
       const std::string label = tree.label(node);
-      if (label == "Family_t") subtree(subtree, node, false);
+      if (label == "Family_t") subtree(node, false);
       if (label != "Zone_t") continue;
       arrays += tree.logical_bytes(node);
       for (const double child : tree.children(node)) {
@@ -1317,7 +1322,7 @@ LogicalBytes cgns_logical_bytes(const fs::path& file) {
             kind == "ZoneBC_t" || kind == "ZoneSubRegion_t" || kind == "ZoneGridConnectivity_t";
         if (lists || kind == "ZoneType_t" || kind == "GridCoordinates_t" ||
             kind == "FamilyName_t") {
-          subtree(subtree, child, lists);
+          subtree(child, lists);
         } else if (kind == "Elements_t") {
           // A section of points or edges: its header and range only (mesh.md, Readers).
           std::array<std::int64_t, 2> header{};
@@ -1327,7 +1332,7 @@ LogicalBytes cgns_logical_bytes(const fs::path& file) {
             if (const auto range = tree.child(child, "IndexRange_t", "ElementRange"))
               arrays += tree.logical_bytes(*range);
           } else {
-            subtree(subtree, child, false);
+            subtree(child, false);
           }
         }
       }

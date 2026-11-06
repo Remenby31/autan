@@ -125,9 +125,9 @@ int main(int argc, char* const* argv) {
     } else if (arg == "--cell-order" && !order && (next == "rcm" || next == "input")) {
       order = next == "rcm" ? autan::io::CellOrder::rcm : autan::io::CellOrder::input;
       ++i;
-    } else if (arg == "--ranks" && !ranks && rank_count(next)) {
-      ranks = autan::io::RanksRequest{.ranks = *rank_count(next),
-                                      .groups = autan::io::RankGroups::none};
+    } else if (const auto count = arg == "--ranks" && !ranks ? rank_count(next) : std::nullopt;
+               count) {
+      ranks = autan::io::RanksRequest{.ranks = *count, .groups = autan::io::RankGroups::none};
       ++i;
     } else if (arg == "--groups" && !groups && next == "lines") {
       groups = true;

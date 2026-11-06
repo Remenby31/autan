@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -168,7 +169,7 @@ class CgioTree {
     std::array<cgsize_t, CGIO_MAX_DIMENSIONS> extent{};
     check(cgio_get_dimensions(cgio_, node, &dims, extent.data()), "read dimensions");
     // One-dimensional, or an IndexArray_t of index dimension 1: extents (1, n).
-    if (dims != 1 && !(dims == 2 && extent[0] == 1)) {
+    if (dims != 1 && (dims != 2 || extent[0] != 1)) {
       throw Error(ErrorCode::io_malformed, "CGNS: '" + name(node) + "' is not 1-D");
     }
     // cgio reads one start, end and stride per dimension of the node: every one is given.
@@ -217,18 +218,16 @@ constexpr int max_cgns_depth = 16;
 // descriptor_bytes), a point set's (cgi_read_ptset skips it) and a DataArray_t's under the parents
 // cgi_read_array leaves unread (CGNS 4.5.2, cgns_internals.c:5184). At most 1 MiB, 24 times the
 // 42 KB of the CRM-HL grid (DPW4: 3.2 KB).
-constexpr std::int64_t max_cgns_eager_bytes = std::int64_t{1} << 20;
+constexpr std::int64_t max_cgns_eager_bytes = std::int64_t{1024} * 1024;
 
 // Whether cg_open reads the data of a node labelled `label` under one labelled `parent`.
 inline bool read_at_open(std::string_view label, std::string_view parent) {
   if (label == "Descriptor_t" || label == "IndexArray_t") return false;
   if (label != "DataArray_t") return true;
-  for (const std::string_view lazy :
-       {"GridCoordinates_t", "FlowSolution_t", "Elements_t", "ZoneSubRegion_t", "DiscreteData_t",
-        "ParticleCoordinates_t", "ParticleSolution_t", "UserDefinedData_t"}) {
-    if (parent == lazy) return false;
-  }
-  return true;
+  constexpr std::array<std::string_view, 8> lazy{
+      "GridCoordinates_t", "FlowSolution_t",        "Elements_t",         "ZoneSubRegion_t",
+      "DiscreteData_t",    "ParticleCoordinates_t", "ParticleSolution_t", "UserDefinedData_t"};
+  return std::ranges::find(lazy, parent) == lazy.end();
 }
 
 // The nodes of a tree by label, as far as the walk went: it stops once it passes max_cgns_nodes

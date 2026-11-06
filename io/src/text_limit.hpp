@@ -19,8 +19,8 @@ inline void check_text(const std::string& path, std::string_view what, std::size
   throw Error(ErrorCode::mesh_text_too_long,
               path + ": a " + std::string(what) + " of " + std::to_string(bytes) +
                   " bytes exceeds " + std::to_string(limit),
-              "{\"what\":\"" + std::string(what) + "\",\"bytes\":" + std::to_string(bytes) +
-                  ",\"limit\":" + std::to_string(limit) + "}");
+              R"({"what":")" + std::string(what) + R"(","bytes":)" + std::to_string(bytes) +
+                  R"(,"limit":)" + std::to_string(limit) + "}");
 }
 
 }  // namespace autan::io

@@ -258,11 +258,11 @@ class GmshReader {
   }
 
   // The physical groups of the entities of dimension 2 or 3 that a block of elements names
-  // (entities): the blocks' (dim, tag) are gathered max_block_entities distinct at a time and
-  // looked up in $Entities, so what is held beside the groups kept is fixed. The blocks'
-  // elements are read past.
+  // (entities): the blocks' (dim, tag) are gathered max_block_entities distinct at a time, in
+  // storage sized once, and looked up in $Entities, so what is held beside the groups kept is
+  // fixed. The blocks' elements are read past.
   void block_entities() {
-    constexpr std::size_t max_block_entities = std::size_t{1} << 16;
+    constexpr std::size_t max_block_entities = std::size_t{1} << 16U;
     const Cursor at = c_;
     if (binary_) (void)c_.line();
     const std::uint64_t n_blocks = next_size();
@@ -271,6 +271,7 @@ class GmshReader {
     (void)next_size();
     c_.check_fits(n_blocks, min_bytes(4));
     std::vector<std::pair<int, int>> used;
+    used.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(n_blocks, max_block_entities)));
     const auto distinct = [&] {
       std::ranges::sort(used);
       used.erase(std::ranges::unique(used).begin(), used.end());
