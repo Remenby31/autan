@@ -98,7 +98,9 @@ class Family:
 
 def level_record(n: int, path: Path, mesh: FaceMesh) -> Level:
     """The manifest entry of level `n`, written to `path` from `mesh`."""
-    volume = float(mesh.geometry.cell_volume.sum())
+    # fsum: the exactly rounded sum. NumPy's sum splits it differently on NEON and AVX, and the
+    # manifest records it (#495).
+    volume = math.fsum(mesh.geometry.cell_volume.tolist())
     counts: dict[str, int] = {}
     for k in mesh.cell_kinds or ("polyhedron",) * mesh.n_cells:
         counts[k] = counts.get(k, 0) + 1
