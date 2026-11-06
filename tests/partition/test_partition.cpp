@@ -217,11 +217,17 @@ TEST_CASE("Graph partitioners return balanced, reproducible parts", "[partition]
   const auto q = autan::partition_quality(global, parts, n_parts, options.cell_weights);
   CHECK(q.imbalance <= 1.0 + options.imbalance_tolerance + 1e-12);
   CHECK(std::all_of(q.owned_cells.begin(), q.owned_cells.end(), [](auto c) { return c > 0; }));
-  // A partitioner beats slabs, whose cut is (n_parts - 1) layers of the box.
+  // Slabs cut (n_parts - 1) planes of the box. On 2 parts that plane is the least bisection, which
+  // a multilevel partitioner need not find: it must cut fewer than two planes. On 4 and 8 parts
+  // blocks cut 2 and 3 planes against 3 and 7: a partitioner beats slabs.
   const auto slab_cut = autan::partition_quality(
                             global, slabs(autan::compute_geometry(global), n_parts, 1.0), n_parts)
                             .cut_faces;
-  CHECK(q.cut_faces <= slab_cut);
+  if (n_parts == 2) {
+    CHECK(q.cut_faces < 2 * slab_cut);
+  } else {
+    CHECK(q.cut_faces <= slab_cut);
+  }
   check_split(global, parts, n_parts);
 }
 #endif
