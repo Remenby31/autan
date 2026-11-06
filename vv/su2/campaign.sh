@@ -16,10 +16,10 @@ stop_when_done() {
   # SU2 measures a residual's drop from its largest value, the protocol from its first: SIGTERM
   # SU2 (it ends the iteration and writes its output) once every rms[...] of history.csv is ORDERS
   # below its first value, or once the worst equation's drop has not grown by 0.1 orders in STALL
-  # iterations.
+  # iterations (with STALL_SKIP_ZERO=1, the worst of those that did not start identically zero).
   local pid=$1 history=$2
   while kill -0 "$pid" 2>/dev/null; do
-    if [ -f "$history" ] && awk -F, -v orders="${ORDERS:-10}" -v stall="${STALL:-2000}" '
+    if [ -f "$history" ] && awk -F, -v orders="${ORDERS:-10}" -v stall="${STALL:-2000}" -v skipzero="${STALL_SKIP_ZERO:-0}" '
         NR == 1 { for (i = 1; i <= NF; i++) if ($i ~ /"rms\[/) col[i] = 1; next }
         NR == 2 {
           top = -1e300
@@ -29,15 +29,16 @@ stop_when_done() {
           for (i in col) if (first[i] < top - 12) zero[i] = 1
         }
         {
-          worst = -1e300
+          worst = -1e300; staller = -1e300
           for (i in col) {
             if (zero[i] && $i + 0 > top - 12) risen[i] = 1
             if (zero[i] && !risen[i]) continue
             if ($i + 0 - first[i] > worst) worst = $i + 0 - first[i]
+            if (!(skipzero && zero[i]) && $i + 0 - first[i] > staller) staller = $i + 0 - first[i]
           }
           # 1e-6 order stricter, so that the linear-space test of autan_vv.su2.history agrees.
           if (worst <= -orders - 1e-6) found = 1
-          best[NR] = (NR == 2 || worst < best[NR - 1]) ? worst : best[NR - 1]
+          best[NR] = (NR == 2 || staller < best[NR - 1]) ? staller : best[NR - 1]
           if (NR > stall + 2 && best[NR - stall] - best[NR] < 0.1) found = 1
         }
         END { exit !found }' "$history"; then
