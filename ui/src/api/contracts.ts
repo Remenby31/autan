@@ -46,8 +46,9 @@ export interface Run {
   diagnostics: Diagnostic[];
   /** Where the run started from, null from the freestream (results.md#runjson). */
   start: RunStart | null;
-  /** Round-off floor of every equation of a steady fp32+acc64 run (case-schema.md#time). */
-  convergence: { floor: Record<string, number> } | null;
+  /** Round-off floor of every equation of a steady fp32+acc64 run, and the equations a converged
+   * run counted converged on a round-off plateau (case-schema.md#time). */
+  convergence: { floor: Record<string, number>; plateau: string[] } | null;
   /** The last checkpoint written while running, null before the first (results.md#runjson). */
   checkpoint: { iteration: number; time: number | null; write_seconds: number } | null;
   /** Timing of this run alone, null while running, without iterations and for the fake backend
