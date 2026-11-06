@@ -616,20 +616,32 @@ def test_fp32_agreement_pairs_studies_that_keep_their_own_copies_of_the_mesh(
 def test_fp32_agreement_compares_the_manufactured_solution_by_its_sha256(
     tmp_path: Path, same_solution: bool
 ) -> None:
-    # The case records the manufactured solution's path and sha256: two copies of one solution
-    # differ only by their path and pair; another solution has another sha256 and is refused.
+    # The case records the manufactured solution's path and sha256: each study keeps its own copy,
+    # so two copies of one solution differ only by their path and pair; another file has another
+    # sha256 and is refused.
+    import hashlib  # noqa: PLC0415
+    import json  # noqa: PLC0415
+
     from autan_vv.agreement import agreement  # noqa: PLC0415
+    from autan_vv.mms import CATALOG, dump_json  # noqa: PLC0415
 
     meshes = _family(tmp_path, "hex", (4, 6))
+    text = dump_json(CATALOG["euler"]())
 
-    def runs(out: Path, precision: str, sha: str) -> list[Path]:
+    def runs(out: Path, precision: str, content: str) -> list[Path]:
+        solution = out / "euler.json"
+        solution.parent.mkdir(parents=True, exist_ok=True)
+        solution.write_text(content)
+        sha = hashlib.sha256(solution.read_bytes()).hexdigest()
+
         def edit(case: autan.Case) -> None:
-            case.verification = autan.Manufactured(path=str(out / "navier_stokes.json"), sha256=sha)
+            case.verification = autan.Manufactured(path=str(solution), sha256=sha)
 
         return _runs(out, meshes, "mms-euler", 2.0, precision=precision, edit=edit, farfield=False)
 
-    double = runs(tmp_path / "fp64", "fp64", "a" * 64)
-    single = runs(tmp_path / "fp32", "fp32+acc64", "a" * 64 if same_solution else "b" * 64)
+    double = runs(tmp_path / "fp64", "fp64", text)
+    other = text if same_solution else json.dumps(json.loads(text), indent=4)
+    single = runs(tmp_path / "fp32", "fp32+acc64", other)
     if same_solution:
         assert agreement(double, single)["pass"]
     else:
