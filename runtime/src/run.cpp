@@ -8,6 +8,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <exception>
 #include <fstream>
@@ -1221,7 +1222,8 @@ class Run final : public Log {
     std::string binary;
     if (comm_.rank() == 0) {
       try {
-        binary = executable_sha256();
+        binary = executable_hash().sha256;
+        hash_cache_problem_ = executable_hash().cache_problem;
       } catch (const std::exception& e) {
         binary = std::string("!") + e.what();
       }
@@ -1295,6 +1297,11 @@ class Run final : public Log {
     } else {
       note("warning", "solver", "the mesh's own cell order is kept (AUTAN_CELL_ORDER=input)", "",
            Json{{"order", "input"}}.dump());
+    }
+    if (!hash_cache_problem_.empty()) {
+      // Rank 0's: the only one that hashes. Every process then hashes its executable whole.
+      note("warning", "solver", "the executable's hash cache is not used: " + hash_cache_problem_,
+           "", Json{{"cache", std::getenv("AUTAN_BINARY_HASH_CACHE")}}.dump());
     }
     if (comm_.size() > 1) log_partition();
     if (const PeriodicSnap& snap = p_.mesh.periodic_snap(); snap.nodes > 0) {
@@ -2238,6 +2245,7 @@ class Run final : public Log {
   // Declared before the physics, so destroyed after it: its stream outlives the physics' use.
   std::optional<Gpu> gpu_;
   double renumber_seconds_ = 0.0;
+  std::string hash_cache_problem_;  // rank 0: why the executable hash cache was not used
   std::optional<Ordered> ordered_;
   CellGroups groups_;  // the physics' groups, over p_.mesh's cells
   Geometry geometry_;
