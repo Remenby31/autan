@@ -836,6 +836,14 @@ Writing the restart checkpoint failed (results.md#checkpointcgns), or removing i
 
 Fix: Check the space and permissions of the run directory's file system.
 
+## W0715
+
+**Different solver binary** (warning)
+
+This `continue` run's `autan-run` executable is not the one that wrote the state it starts from (run.json `solver.binary_sha256`, results.md#runjson): the chain may not be bit for bit the uninterrupted run. `data` gives the `expected` and `found` SHA-256.
+
+Fix: Continue with the binary of the original run, or start the chain again with this one.
+
 ## W0801
 
 **No NVIDIA GPU found** (warning)

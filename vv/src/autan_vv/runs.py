@@ -273,7 +273,7 @@ def write_run(
         raise VVError(msg, code="V0731")
     started = utc_now()
     # Always the fake backend: fixture fields are given, never computed, so they are never evidence.
-    solver = Solver(version=__version__, commit=COMMIT, backend="fake")
+    solver = Solver(version=__version__, commit=COMMIT, backend="fake", binary_sha256=None)
     devices = Devices(kind="cpu", count=1)
     run = RunInfo(
         run_id=RunWriter.new_run_id(started),

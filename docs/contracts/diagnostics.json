@@ -625,6 +625,12 @@
       "fix": "Check the space and permissions of the run directory's file system.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#w0714"
     },
+    "W0715": {
+      "severity": "warning",
+      "title": "Different solver binary",
+      "fix": "Continue with the binary of the original run, or start the chain again with this one.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0715"
+    },
     "W0801": {
       "severity": "warning",
       "title": "No NVIDIA GPU found",
