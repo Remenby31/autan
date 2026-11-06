@@ -491,9 +491,11 @@ TEST_CASE("Periodic sides split into several pairs share their direction",
       CHECK(std::hypot(dx, dy) < 0.75);
     }
   }
+}
 
-  // Translations (1, 0, 0) and (2, 0, 0) give two directions that are not independent: the unit
-  // cube beside a disjoint [0,2]x[3,4]x[0,1] hexahedron, each periodic in x.
+TEST_CASE("Periodic directions that are not independent are refused", "[partition][periodic]") {
+  // partitioning.md: at most three directions, linearly independent, else E0140. Translations
+  // (1, 0, 0) and (2, 0, 0): the unit cube beside a disjoint [0,2]x[3,4]x[0,1] hexahedron.
   autan::CellwiseMesh line = autan::test::box(1, autan::test::BoxFill::hexa);
   constexpr std::array<std::array<double, 3>, 8> corners{
       {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}}};
@@ -722,7 +724,8 @@ TEST_CASE("Groups of cells stay in one part", "[partition][graph]") {
   std::iota(all.begin(), all.end(), index_t{0});
   refused({0, 0, static_cast<autan::offset_t>(all.size())}, all);
   refused({}, {0, 1});
-  // A group weighs up to 2^31 - 1 in total; the method may then refuse the graph's total (E0142).
+  // A group weighs up to 2^31 - 1 in total on two parts or more; the method may then refuse the
+  // graph's total (E0142) or leave a part empty (E0143), as the backend allows.
   const std::vector<autan::offset_t> pair_offsets{0, 2};
   const std::vector<index_t> pair_cells{0, 1};
   std::vector<std::int32_t> heavy(at(mesh.n_cells()), 1);
@@ -731,13 +734,18 @@ TEST_CASE("Groups of cells stay in one part", "[partition][graph]") {
     (void)autan::partition_cells(
         mesh, 2, {.cell_weights = heavy, .group_offsets = pair_offsets, .group_cells = pair_cells});
   } catch (const autan::Error& e) {
-    CHECK(e.code() == autan::ErrorCode::partition_backend_failed);
+    CHECK((e.code() == autan::ErrorCode::partition_backend_failed ||
+           e.code() == autan::ErrorCode::partition_empty_part));
   }
   heavy[0] = std::numeric_limits<std::int32_t>::max();
   require_error(autan::ErrorCode::partition_invalid_request, [&] {
     (void)autan::partition_cells(
         mesh, 2, {.cell_weights = heavy, .group_offsets = pair_offsets, .group_cells = pair_cells});
   });
+  CHECK(autan::partition_cells(
+            mesh, 1,
+            {.cell_weights = heavy, .group_offsets = pair_offsets, .group_cells = pair_cells}) ==
+        std::vector<std::int32_t>(at(mesh.n_cells()), 0));
   const std::vector<autan::offset_t> halves{0, static_cast<autan::offset_t>(all.size() / 2),
                                             static_cast<autan::offset_t>(all.size())};
   for (const auto method : methods) {
@@ -820,6 +828,13 @@ TEST_CASE("Graph parts send each other exactly the ghosts they hold", "[partitio
         l.node_global_id.begin() + static_cast<std::ptrdiff_t>(l.n_owned), l.node_global_id.end());
     CHECK(held.size() == ghosts.size());
     CHECK(std::set<std::int64_t>(held.begin(), held.end()) == ghosts);
+    CHECK(std::is_sorted(l.node_global_id.begin(),
+                         l.node_global_id.begin() + static_cast<std::ptrdiff_t>(l.n_owned)));
+    const auto by_part = [&](std::size_t i) {
+      return std::pair(parts[at(l.node_source[i])], l.node_global_id[i]);
+    };
+    for (std::size_t i = l.n_owned + 1; i < l.node_global_id.size(); ++i)
+      CHECK(by_part(i - 1) < by_part(i));
     CHECK(l.edge_global_id.size() == edges.size());
     CHECK(std::set<std::int64_t>(l.edge_global_id.begin(), l.edge_global_id.end()) == edges);
     // Local edges: local owner < neighbour, the level's cells, reversed as flagged.
@@ -868,8 +883,6 @@ TEST_CASE("Graph parts send each other exactly the ghosts they hold", "[partitio
         },
         [](const autan::LocalGraph& l) { return l.n_owned_edges; });
 
-  // A rank, part or coarse part out of range is refused, as is a node out of range, as an edge's
-  // end or as a coarse node.
   const auto refused = [&](const autan::GraphLevel& level, std::span<const std::int32_t> p,
                            std::int32_t rank, std::span<const index_t> c,
                            std::span<const std::int32_t> c_parts) {
@@ -891,6 +904,13 @@ TEST_CASE("Graph parts send each other exactly the ghosts they hold", "[partitio
     refused({.n_nodes = dual.level.n_nodes,
              .owner = owner,
              .neighbour = dual.neighbour,
+             .global_id = dual.ids},
+            parts, 0, coarse, cp);
+    auto neighbour = dual.neighbour;
+    neighbour.front() = wrong;
+    refused({.n_nodes = dual.level.n_nodes,
+             .owner = dual.owner,
+             .neighbour = neighbour,
              .global_id = dual.ids},
             parts, 0, coarse, cp);
   }
