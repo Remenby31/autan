@@ -51,6 +51,7 @@ jobs:
                   out = d / f"family-{kind}"
                   F.generate_family(kind, (4, 6), out, perturbation=0.3, seed=2026)
                   print(f"GOLDEN {kind}-family-manifest", hashlib.sha256((out / "manifest.json").read_bytes()).hexdigest())
+                  (d / f"manifest-{kind}.json").write_bytes((out / "manifest.json").read_bytes())
               if __import__("platform").machine() == "x86_64":
                   for kind, n, want in (("hex", 128, "80944ef7400a2470041edc03bdec5196f39c3b6753aeeed08a86707e1f8f9b78"), ("tet", 96, "4ac29fee81d3680b12a4390245bede1c68a712192418964436fc94e5c6efec95")):
                       path = d / f"{kind}-n{n:03d}.msh"
