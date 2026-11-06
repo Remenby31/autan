@@ -40,8 +40,8 @@ struct Euler<P>::Impl {
   stored<decltype(D::stencil_lsq_weight)> stencil_lsq_weight;
   kernels::CellStencil stencil;
   std::vector<kernels::offset_t> twin;  // stencil_twin(), on demand
-  // Boundary band: its quadratic fit's stencil (two vertex rings) and weights, as a topology of
-  // its own for band_gradients (empty outside the band).
+  // Quadratic gradient: its fit's stencil (two vertex rings) and weights, as a topology of its own
+  // for band_gradients (empty under GradientFit::linear).
   kernels::CellStencil vertex;
   stored<decltype(D::band)> band;
   stored<decltype(D::band_weight)> band_weight;
@@ -89,7 +89,7 @@ struct Euler<P>::Impl {
     fill_ghosts(prim, 5);
     ek::cpu::boundary_states(d);
     if (scheme.second_order) {
-      if (scheme.boundary_gradient == BoundaryGradient::quadratic) band_gradients();
+      if (scheme.gradient_fit == GradientFit::quadratic) band_gradients();
       ek::cpu::gradients(d);
       fill_ghosts(grad, 15);
       if (scheme.limiter) {
@@ -275,34 +275,22 @@ struct Euler<P>::Impl {
       if (!weights(false)) weights(true);
     }
     d.stencil_lsq_weight = stencil_lsq_weight.data();
-    if (scheme.boundary_gradient == BoundaryGradient::quadratic) band_weights(kind);
+    if (scheme.gradient_fit == GradientFit::quadratic) band_weights(kind);
   }
 
-  // The boundary band's weights (kernels/euler.py, band_gradients): for every cell of face rings 1
-  // and 2 of the boundary (the cells whose face2 stencil reaches a boundary face), the gradient at
-  // its centroid of the quadratic phi_c + g . d + d^T H d / 2 fitted, with weights 1/|d|^2
-  // (Mavriplis 2003), to the values at the centroids of the cells within two vertex rings and at
-  // their boundary faces that give the state. Each unknown is scaled by the stencil's extent along
-  // its directions and the weights taken in those scaled coordinates; directions where no entry
-  // extends (the span of a one-cell-thick slab) are left out. Solved by Householder QR. A cell
-  // with fewer than 1.5 entries per unknown, or whose entries leave the fit undetermined, keeps
-  // the face2 gradient: band_gradient() reports how many (docs/design/euler.md, Boundary band).
+  // The quadratic gradient's weights (kernels/euler.py, band_gradients): for every cell, the
+  // gradient at its centroid of the quadratic phi_c + g . d + d^T H d / 2 fitted, with weights
+  // 1/|d|^2 (Mavriplis 2003), to the values at the centroids of the cells within two vertex rings
+  // and at their boundary faces that give the state, all as point values. Each unknown is scaled by
+  // the stencil's extent along its directions and the weights taken in those scaled coordinates;
+  // directions where no entry extends (the span of a one-cell-thick slab) are left out. Solved by
+  // Householder QR. A cell with fewer than 1.5 entries per unknown, or whose entries leave the fit
+  // undetermined, keeps the linear gradient: quadratic_gradient() reports how many
+  // (docs/design/euler.md, Quadratic gradient).
   void band_weights(std::span<const BoundaryKind> kind) {
     const auto nc = static_cast<std::size_t>(topo.n_cells);
     const auto ni = static_cast<std::size_t>(topo.n_interior_faces);
     const auto nf = static_cast<std::size_t>(topo.n_faces);
-    std::vector<int> ring(nc, 0);
-    for (std::size_t f = ni; f < nf; ++f) ring[static_cast<std::size_t>(topo.owner[f])] = 1;
-    for (int depth = 2; depth <= 2; ++depth) {
-      auto next = ring;
-      for (std::size_t f = 0; f < ni; ++f) {
-        const auto o = static_cast<std::size_t>(topo.owner[f]);
-        const auto n = static_cast<std::size_t>(topo.neighbour[f]);
-        if (ring[o] == depth - 1 && ring[n] == 0) next[n] = depth;
-        if (ring[n] == depth - 1 && ring[o] == 0) next[o] = depth;
-      }
-      ring = std::move(next);
-    }
     auto gives = [&](index_t e) {
       return kind[static_cast<std::size_t>(-e - 1) - ni] == BoundaryKind::state;
     };
@@ -334,7 +322,6 @@ struct Euler<P>::Impl {
     std::vector<index_t> cells, points;
     for (std::size_t c = 0; c < nc; ++c) {
       band_offsets[c + 1] = static_cast<kernels::offset_t>(band_entries.size());
-      if (ring[c] == 0) continue;
       cells.assign(1, static_cast<index_t>(c));
       points.clear();
       for (int r = 0; r < 2; ++r) {
@@ -375,7 +362,7 @@ struct Euler<P>::Impl {
       }
       const auto m = used.size();
       // Scaled row of entry e: d / extent, and d_i d_j / (extent_i extent_j): every value a point
-      // value at its centroid (docs/design/euler.md, Boundary band).
+      // value at its centroid (docs/design/euler.md, Quadratic gradient).
       auto row = [&](index_t e) {
         const auto dk = offset(e);
         std::vector<double> r(m);
@@ -619,14 +606,14 @@ std::vector<double> Euler<P>::gradient_weights() const {
 }
 
 template <class P>
-void Euler<P>::face2_gradient(std::span<typename P::grad> out) {
+void Euler<P>::linear_gradient(std::span<typename P::grad> out) {
   auto& m = *impl_;
   if (out.size() != m.grad.size()) throw std::invalid_argument("gradient array size");
-  if (m.scheme.boundary_gradient == BoundaryGradient::face2) {
+  if (m.scheme.gradient_fit == GradientFit::linear) {
     std::copy(m.grad.begin(), m.grad.end(), out.begin());
     return;
   }
-  // The gradients loop with no band and its limiter bounds into scratch.
+  // The gradients loop with no quadratic fit and its limiter bounds into scratch.
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   std::vector<State> lo(5 * nc), hi(5 * nc);
   std::vector<typename decltype(m.band)::value_type> none(nc, 0);
@@ -639,7 +626,7 @@ void Euler<P>::face2_gradient(std::span<typename P::grad> out) {
 }
 
 template <class P>
-typename Euler<P>::BandGradient Euler<P>::band_gradient() const {
+typename Euler<P>::QuadraticGradient Euler<P>::quadratic_gradient() const {
   const auto& m = *impl_;
   return {{m.band.begin(), m.band.end()},
           {m.band_offsets.begin(), m.band_offsets.end()},

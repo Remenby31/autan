@@ -16,7 +16,7 @@ R_c = R_c^Euler − Σ_f F_v · S_f, with F_v = (0, τ n, u · τ n + k ∇T · 
 | Warped faces | the stress work through the fan triangles, τ : (∇u M), M the face moment of [euler.md](euler.md#warped-faces) | |
 | ∇T | from the gradients of ρ and p: ∇T = (∇p − R T ∇ρ)/(ρ R) | |
 
-The least-squares gradients are the Euler ones (unlimited, face2 stencil); the limiter acts on the convective reconstruction only.
+The viscous terms take the Euler linear least-squares gradient (unlimited, face2 stencil). The convective reconstruction takes the quadratic gradient in every cell ([euler.md](euler.md#quadratic-gradient)), and the limiter acts on it only.
 
 ## Boundary conditions
 
@@ -40,7 +40,7 @@ The viscous face loops write their Jacobian blocks dF_v/dW_L, dF_v/dW_R in the s
 
 ## Verification
 
-**Status: Navier-Stokes order verification incomplete.** `ns-mms-order` fails at its declared levels (hex 32–128 density L2 fit 1.78, finest pair 1.88; poly 16–64 1.80, 1.86): the one-sided face2 gradient of the convective reconstruction near the boundary limits the order at μ = 10. Diagnosis and the remedies under measurement: #137.
+**Status.** `ns-mms-order` passes in FP64 on every family, clean and perturbed, and in FP32 on all but the clean hexahedral one: there, ρv's error at n = 96 and 128 falls under the gate's evidence threshold of 100 times the FP32 rounding floor, as it does for any scheme this accurate (#524). `rans-sa-mms-order` falls short on ρE at n = 16–48, a pre-asymptotic deficit that one level finer removes (#497). Measurements and the choice of the quadratic gradient: [#137](https://github.com/Remenby31/autan/issues/137).
 
 | Test | Oracle | Where |
 |---|---|---|

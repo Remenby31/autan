@@ -466,11 +466,11 @@ boundary_states = boundary_loop(
 )
 
 
-# Boundary band (face rings 1 and 2 of the boundary, `band` = 1: the cells whose face2 stencil
-# reaches a boundary face, where its linear fit is one-sided and first order): the gradient of a
-# quadratic least-squares fit over two vertex rings (docs/design/euler.md, Boundary band). Its
-# weights per entry of its own stencil (Topology::stencil of the band, empty outside it) make it a
-# weighted sum like the face2 one; `band_gradients` runs before `gradients`, which takes it there.
+# Quadratic gradient (`band` = 1 in the cells it serves: every cell whose two vertex rings determine
+# it): the gradient of a quadratic least-squares fit over two vertex rings (docs/design/euler.md,
+# Quadratic gradient). Its weights per entry of its own stencil (Topology::stencil of the fit, empty
+# where it does not apply) make it a weighted sum like the linear one; `band_gradients` runs before
+# `gradients`, which takes it where `band` = 1.
 band = cells.field("band", Geom)
 grad_band = cells.field("grad_band", Grad.Mat53)
 band_weight = Dataset("band_weight", MeshSet.STENCIL, Geom.Vec3, geometry=True)

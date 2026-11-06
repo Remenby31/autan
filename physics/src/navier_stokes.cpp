@@ -21,6 +21,10 @@ namespace nk = autan::kernels::navier_stokes;
 template <class P>
 struct NavierStokes<P>::Impl {
   Euler<P> euler;
+  // The viscous terms' gradient: the reconstruction's under GradientFit::linear; the linear one in
+  // grad_v under quadratic, which serves the convective reconstruction only.
+  bool quadratic;
+  std::vector<typename P::grad> grad_v;
   kernels::Topology topo{};
   // Each geometry array has the element type its Data<P> member stores (P::geom_value for
   // geometry the bodies read only as values).
@@ -56,7 +60,7 @@ struct NavierStokes<P>::Impl {
   void share() {
     const auto a = euler.arrays();
     d.prim = a.prim;
-    d.grad = a.grad;
+    d.grad = quadratic ? grad_v.data() : a.grad;
     d.prim_b = a.prim_b;
     d.bc_kind = a.bc_kind;
     d.bc = a.bc;
@@ -595,7 +599,11 @@ struct NavierStokes<P>::Impl {
   }
 
   Impl(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme, Transport t)
-      : euler(mesh, geometry, gas, scheme), geo(geometry) {
+      : euler(mesh, geometry, gas, scheme),
+        quadratic(scheme.gradient_fit == GradientFit::quadratic),
+        geo(geometry) {
+    if (quadratic)
+      grad_v.assign(15 * static_cast<std::size_t>(mesh.n_cells()), typename P::grad(0));
     if (!(t.mu_ref > 0.0) || !(t.prandtl > 0.0) || !(t.prandtl_turbulent > 0.0) ||
         (t.sutherland && (!(t.t_ref > 0.0) || !(t.s >= 0.0)))) {
       throw std::invalid_argument("transport properties must be positive");
@@ -741,7 +749,9 @@ void NavierStokes<P>::set_eddy_viscosity(std::span<const double> cells,
 template <class P>
 typename NavierStokes<P>::Arrays NavierStokes<P>::arrays() noexcept {
   auto& m = *impl_;
-  return {m.euler.arrays(), m.mu_t.data(), m.mu_t_b.data(), static_cast<double>(m.d.p_ref[0]),
+  auto flow = m.euler.arrays();
+  if (m.quadratic) flow.grad = m.grad_v.data();
+  return {flow, m.mu_t.data(), m.mu_t_b.data(), static_cast<double>(m.d.p_ref[0]),
           static_cast<double>(m.d.gas_constant[0])};
 }
 
@@ -755,6 +765,7 @@ void NavierStokes<P>::residual(std::span<const State> s, std::span<Res> res) {
   auto& m = *impl_;
   if (!m.bounded) throw std::logic_error("NavierStokes: set_boundary before the residual");
   m.euler.residual(s, res);
+  if (m.quadratic) m.euler.linear_gradient(m.grad_v);
   m.share();
   m.fit();
   m.d.res = res.data();
@@ -767,6 +778,7 @@ void NavierStokes<P>::residual_and_jacobian(std::span<const State> s, std::span<
   auto& m = *impl_;
   if (!m.bounded) throw std::logic_error("NavierStokes: set_boundary before the residual");
   m.euler.residual_and_jacobian(s, res);
+  if (m.quadratic) m.euler.linear_gradient(m.grad_v);
   m.share();
   m.fit();
   m.d.res = res.data();
@@ -843,6 +855,11 @@ void NavierStokes<P>::viscous_traction(std::span<double> t) const {
       t[k * nb + b] = static_cast<double>(m.traction[(1 + k) * nf + ni + b]);
     }
   }
+}
+
+template <class P>
+typename Euler<P>::QuadraticGradient NavierStokes<P>::quadratic_gradient() const {
+  return impl_->euler.quadratic_gradient();
 }
 
 template class NavierStokes<kernels::fp64>;

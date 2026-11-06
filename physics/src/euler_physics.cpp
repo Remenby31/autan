@@ -468,7 +468,12 @@ class EulerPhysics final : public runtime::Physics {
   static Flow make_flow(const PhysicsContext& ctx, const Gas& gas,
                         const kernels::GlobalKeys* keys) {
     if constexpr (is_viscous) {
-      return Flow(ctx.mesh, ctx.geometry, gas, scheme(ctx.input), transport_of(ctx.input));
+      // The quadratic gradient in every cell: with the linear one near the boundary only, or with
+      // the fit to cell averages, ns-mms-order loses its order on tetrahedra or hexahedra
+      // (docs/design/euler.md, Quadratic gradient).
+      Scheme s = scheme(ctx.input);
+      s.gradient_fit = GradientFit::quadratic;
+      return Flow(ctx.mesh, ctx.geometry, gas, s, transport_of(ctx.input));
     } else {
       return Flow(ctx.mesh, ctx.geometry, gas, scheme(ctx.input), keys);
     }
@@ -741,13 +746,13 @@ class EulerPhysics final : public runtime::Physics {
       }
     }
     euler_.set_boundary(kind, data);
-    const auto band = euler_.band_gradient();
-    if (band.linear_cells > 0) {
+    const auto quadratic = euler_.quadratic_gradient();
+    if (quadratic.linear_cells > 0) {
       ctx_.log.write(
           "warning", "solver",
-          "cells of the boundary band keep the linear gradient: too few neighbours "
-          "for the quadratic fit",
-          {}, nlohmann::json{{"cells", band.linear_cells}, {"first", band.first_linear}}.dump());
+          "cells keep the linear gradient: too few neighbours for the quadratic fit", {},
+          nlohmann::json{{"cells", quadratic.linear_cells}, {"first", quadratic.first_linear}}
+              .dump());
     }
     boundary_data_ = std::move(data);
   }

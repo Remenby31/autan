@@ -471,7 +471,7 @@ TEMPLATE_TEST_CASE("a linear flow through a thin tetrahedron has the exact mass 
   }
   Scheme s = second_order(Flux::roe, 0.3);
   s.limiter = false;
-  s.boundary_gradient = autan::physics::BoundaryGradient::quadratic;
+  s.gradient_fit = autan::physics::GradientFit::quadratic;
   Euler<P> e(c.mesh, c.geometry, air, s);
   e.set_boundary(std::vector<BoundaryKind>(nb, BoundaryKind::state), data);
   const auto u = stored(e, uniform(Prim{1.0, {a * c.geometry.cell_centroid_x[0], 0.0, 0.0}, p}, 1));
@@ -479,11 +479,11 @@ TEMPLATE_TEST_CASE("a linear flow through a thin tetrahedron has the exact mass 
   e.residual(u, r);
   const double v = c.geometry.cell_volume[0];
   CHECK(std::abs(static_cast<double>(r[0]) - a * v) <= 64 * eps<P>() * a * c.cell_surface()[0]);
-  // Its only neighbours are its four faces: too few for the boundary band's quadratic fit, so it
-  // keeps the linear one, and says so.
-  const auto band = e.band_gradient();
-  CHECK(band.linear_cells == 1);
-  CHECK(band.first_linear == 0);
+  // Its only neighbours are its four faces: too few for the quadratic fit, so it keeps the linear
+  // one, and says so.
+  const auto quadratic = e.quadratic_gradient();
+  CHECK(quadratic.linear_cells == 1);
+  CHECK(quadratic.first_linear == 0);
 }
 
 TEMPLATE_TEST_CASE("a one-cell-thick slab keeps a flow without spanwise velocity planar", "[euler]",
@@ -607,11 +607,11 @@ TEMPLATE_TEST_CASE("a one-cell-thick slab keeps a flow without spanwise velocity
   }
 }
 
-// In face rings 1 and 2 of the boundary the gradient is that of a quadratic fit to the values at
-// cell and face centroids (Euler<P>::band_gradient): applied to a quadratic field's values there,
-// its weights give the field's exact gradient at each cell centroid, where the linear least-squares
-// fit of a one-sided stencil would be off by O(h).
-TEMPLATE_TEST_CASE("the boundary band's gradient of a quadratic field is exact", "[euler]",
+// In every cell the gradient is that of a quadratic fit to the values at cell and face centroids
+// (Euler<P>::quadratic_gradient): applied to a quadratic field's values there, its weights give the
+// field's exact gradient at each cell centroid, where the linear least-squares fit is off by O(h)
+// next to the boundary.
+TEMPLATE_TEST_CASE("the quadratic gradient of a quadratic field is exact in every cell", "[euler]",
                    autan::kernels::fp64, autan::kernels::fp32_acc64) {
   using P = TestType;
   const auto* file = GENERATE(from_range(meshes));
@@ -622,7 +622,7 @@ TEMPLATE_TEST_CASE("the boundary band's gradient of a quadratic field is exact",
   const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
   const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
   Scheme scheme;
-  scheme.boundary_gradient = autan::physics::BoundaryGradient::quadratic;
+  scheme.gradient_fit = autan::physics::GradientFit::quadratic;
   Euler<P> e(mesh, g, air, scheme);
   e.set_boundary(std::vector<BoundaryKind>(nb, BoundaryKind::state), std::vector<double>(5 * nb));
   auto phi = [](const std::array<double, 3>& x) {
@@ -638,14 +638,14 @@ TEMPLATE_TEST_CASE("the boundary band's gradient of a quadratic field is exact",
   for (std::size_t c = 0; c < n; ++c) {
     value[c] = phi({g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]});
   }
-  const auto band = e.band_gradient();
+  const auto band = e.quadratic_gradient();
   CHECK(band.linear_cells == 0);
   const auto nst = band.entries.size();
-  std::size_t in_band = 0;
+  std::size_t fitted = 0;
   double worst = 0.0;
   for (std::size_t c = 0; c < n; ++c) {
-    if (band.band[c] == 0.0) continue;
-    ++in_band;
+    if (band.fitted[c] == 0.0) continue;
+    ++fitted;
     std::array<double, 3> grad{};
     double magnitude = 0.0;  // sum_k |w_k| (|phi_k| + |phi_c|): the round-off the sum carries
     for (auto k = static_cast<std::size_t>(band.offsets[c]);
@@ -669,15 +669,15 @@ TEMPLATE_TEST_CASE("the boundary band's gradient of a quadratic field is exact",
       worst = std::max(worst, std::abs(grad[j] - expected[j]) / magnitude);
     }
   }
-  CHECK(in_band > 0);
+  CHECK(fitted == n);
   // Round-off of the weights (QR in scaled coordinates, then stored in the policy's geometry
   // type) and of the sum, relative to its terms.
   CHECK(worst <= 1024 * eps<P>());
 }
 
-// Under the quadratic boundary gradient the face2 gradient stays available (viscous terms that
-// keep it), the same bits as the face2 policy's own.
-TEMPLATE_TEST_CASE("the face2 gradient is the same under either boundary gradient", "[euler]",
+// Under the quadratic gradient the linear one stays available (viscous terms that keep it), the
+// same bits as the linear fit's own.
+TEMPLATE_TEST_CASE("the linear gradient is the same under either fit", "[euler]",
                    autan::kernels::fp64, autan::kernels::fp32_acc64) {
   using P = TestType;
   const auto* file = GENERATE(from_range(meshes));
@@ -692,7 +692,7 @@ TEMPLATE_TEST_CASE("the face2 gradient is the same under either boundary gradien
   }
   Scheme s = second_order(Flux::roe, 0.3);
   Euler<P> face2(c.mesh, c.geometry, air, s);
-  s.boundary_gradient = autan::physics::BoundaryGradient::quadratic;
+  s.gradient_fit = autan::physics::GradientFit::quadratic;
   Euler<P> quadratic(c.mesh, c.geometry, air, s);
   const std::vector<BoundaryKind> kind(nb, BoundaryKind::state);
   face2.set_boundary(kind, data);
@@ -705,11 +705,11 @@ TEMPLATE_TEST_CASE("the face2 gradient is the same under either boundary gradien
   face2.residual(std::span<const typename P::state>(st), r);
   quadratic.residual(std::span<const typename P::state>(st), r);
   std::vector<typename P::grad> a(15 * nc), b(15 * nc);
-  face2.face2_gradient(a);
-  quadratic.face2_gradient(b);
+  face2.linear_gradient(a);
+  quadratic.linear_gradient(b);
   CHECK(a == b);
-  CHECK(quadratic.band_gradient().linear_cells == 0);
-  CHECK(face2.band_gradient().entries.empty());
+  CHECK(quadratic.quadratic_gradient().linear_cells == 0);
+  CHECK(face2.quadratic_gradient().entries.empty());
 }
 
 TEST_CASE("the point-vortex farfield state is the freestream plus the Prandtl-Glauert vortex",
