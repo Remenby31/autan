@@ -369,8 +369,8 @@ struct Euler<P>::Impl {
         if (spans(i < 3 ? static_cast<int>(i) : pair[i][0]) && spans(pair[i][1])) used.push_back(i);
       }
       const auto m = used.size();
-      // Scaled row of entry e: d / extent, and (d_i d_j + M_k,ij - M_c,ij) / (extent_i extent_j)
-      // for a cell k, (d_i d_j - M_c,ij) / (...) for a face (its state is a point value).
+      // Scaled row of entry e: d / extent, and d_i d_j / (extent_i extent_j): every value a point
+      // value at its centroid (docs/design/euler.md, Boundary band).
       auto row = [&](index_t e) {
         const auto dk = offset(e);
         std::vector<double> r(m);
