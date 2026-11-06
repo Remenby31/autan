@@ -33,7 +33,7 @@ boundaries  7/7 zones covered
   …
   fuselage       0.7 M faces  wall           mesh
   …
-memory      46.6 GB total · 46.6 GB/GPU on 1 GPU · 6 equations (autan.memory/1)
+memory      650.2 GB per rank (450.5 host, 199.7 cuda) x 1 · 6 equations (autan.memory/2)
 warning[W0205]: mesh '…/crm-hl.cgns' not found; the MeshInfo is taken as given
 plan OK
 ```

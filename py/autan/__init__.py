@@ -8,6 +8,7 @@ from autan import gases, materials, units
 from autan.case import Case, forces, load
 from autan.errors import CaseError, Diagnostic, Location
 from autan.fake import FakeBackend
+from autan.memory import Memory
 from autan.meshinfo import MeshInfo
 from autan.plan import Plan
 from autan.results import Devices, Results, RunInfo
@@ -58,6 +59,7 @@ __all__ = [
     "Laminar",
     "Location",
     "Manufactured",
+    "Memory",
     "MeshInfo",
     "Plan",
     "PointVortex",

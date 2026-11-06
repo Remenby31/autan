@@ -7,33 +7,38 @@
 namespace autan::kernels {
 
 HostColouring colour_faces(const Topology& topo, index_t first, index_t last) {
-  // used[c] is a bit set of the colours already incident to cell c (up to 64 per word).
-  std::vector<std::vector<std::uint64_t>> used(static_cast<std::size_t>(topo.n_cells));
+  // Greedy, faces in order: a face takes the least colour none of the faces already coloured
+  // at its cells has. stamp[k] == f marks colour k taken for face f: memory in the faces and
+  // colours, however many faces a cell has.
   std::vector<index_t> colour(static_cast<std::size_t>(last - first));
+  std::vector<index_t> stamp;
   index_t n_colours = 0;
-  auto taken = [&](index_t cell, index_t k) {
-    const auto& u = used[static_cast<std::size_t>(cell)];
-    const auto w = static_cast<std::size_t>(k / 64);
-    return w < u.size() && ((u[w] >> (k % 64)) & 1U) != 0;
-  };
-  auto take = [&](index_t cell, index_t k) {
-    auto& u = used[static_cast<std::size_t>(cell)];
-    const auto w = static_cast<std::size_t>(k / 64);
-    if (u.size() <= w) {
-      u.resize(w + 1, 0);
+  auto mark = [&](index_t cell, index_t f) {
+    const auto c = static_cast<std::size_t>(cell);
+    const offset_t begin = topo.cell_face_offsets[c];
+    // CSR, or the sliced layout (Topology::incidence_stride).
+    const bool sliced = topo.incidence_length != nullptr;
+    const offset_t count = sliced ? topo.incidence_length[c]
+                                  : topo.cell_face_offsets[c + 1] - topo.cell_face_offsets[c];
+    const offset_t step = sliced ? topo.incidence_stride : 1;
+    for (offset_t j = 0; j < count; ++j) {
+      const index_t g = topo.cell_faces[begin + j * step];
+      if (g >= first && g < f) {
+        stamp[static_cast<std::size_t>(colour[static_cast<std::size_t>(g - first)])] = f;
+      }
     }
-    u[w] |= std::uint64_t{1} << (k % 64);
   };
   for (index_t f = first; f < last; ++f) {
     const index_t l = topo.owner[f];
     const index_t r = f < topo.n_interior_faces ? topo.neighbour[f] : -1;
-    index_t k = 0;
-    while (taken(l, k) || (r >= 0 && taken(r, k))) {
-      ++k;
-    }
-    take(l, k);
+    stamp.resize(static_cast<std::size_t>(n_colours) + 1, -1);
+    mark(l, f);
     if (r >= 0) {
-      take(r, k);
+      mark(r, f);
+    }
+    index_t k = 0;
+    while (stamp[static_cast<std::size_t>(k)] == f) {
+      ++k;
     }
     colour[static_cast<std::size_t>(f - first)] = k;
     n_colours = std::max(n_colours, k + 1);

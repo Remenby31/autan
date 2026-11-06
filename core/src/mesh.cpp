@@ -185,7 +185,16 @@ void check_cells_closed(const Mesh& mesh) {
     std::uint64_t key;
     bool forward;
   };
+  // Sized once for the cell with the most face nodes, at most counts.face_nodes, so that it never
+  // holds two copies while it grows (setup-memory.md, Assembly).
+  std::size_t largest = 0;
+  for (index_t c = 0; c < mesh.n_owned_cells(); ++c) {
+    std::size_t n = 0;
+    for (const index_t f : mesh.cell_faces(c)) n += mesh.face_nodes(f).size();
+    largest = std::max(largest, n);
+  }
   std::vector<Edge> edges;
+  edges.reserve(largest);
   for (index_t c = 0; c < mesh.n_owned_cells(); ++c) {
     edges.clear();
     for (const index_t f : mesh.cell_faces(c)) {
@@ -304,6 +313,13 @@ Mesh assemble(MeshInput in, AssemblyMap* map) {
   std::vector<index_t> point_map(in.x.size(), -1);
   for (const index_t node : in.face_nodes) point_map[to_size(node)] = 0;
   Mesh mesh;
+  // Every array of the mesh is allocated at its size: what it holds is what it takes.
+  const auto used = static_cast<std::size_t>(std::ranges::count(point_map, 0));
+  mesh.x_.reserve(used);
+  mesh.y_.reserve(used);
+  mesh.z_.reserve(used);
+  mesh.neighbour_.reserve(static_cast<std::size_t>(
+      std::ranges::count_if(in.face_cell1, [](index_t c) { return c != no_cell; })));
   index_t n_used = 0;
   for (std::size_t p = 0; p < point_map.size(); ++p) {
     if (point_map[p] == 0) {
@@ -389,9 +405,11 @@ Mesh assemble(MeshInput in, AssemblyMap* map) {
     for (std::size_t f = 0; f < n_faces; ++f) map->face_reversed[f] = reversed[to_size(order[f])];
   }
   mesh.cell_zone_ = std::move(in.cell_zone);
+  mesh.cell_zone_.shrink_to_fit();
   mesh.face_zones_ = std::move(in.face_zones);
   mesh.cell_zones_ = std::move(in.cell_zones);
   mesh.source_ = std::move(in.source);
+  if (mesh.source_.nodes == 0) mesh.source_.nodes = static_cast<std::int64_t>(in.x.size());
 
   check_cells_closed(mesh);
   PeriodicMatch match = match_periodic_faces(mesh, in.periodic);
