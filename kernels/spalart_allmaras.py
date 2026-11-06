@@ -53,6 +53,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from euler import (
     BC_FARFIELD,
     BC_INLET,
+    BC_OUTLET,
+    BC_SLIP,
     BC_STATE,
     BC_WALL,
     bc_kind,
@@ -328,8 +330,19 @@ def nt_boundary(
     nu = lam_nu(wb, rgas, pref, mref, tref, s, law)
     gn = corrected_boundary(tl, ntb - ntl, e, inv_d)
     diff = wb[0] * (nu + ntb * fn(ntb / nu)) / SIGMA * dot(gn, n) * area
-    wall = kind > BC_WALL - 0.5
-    return 0.0 * conv - diff if wall else conv - diff
+    # Slip faces and outlets take nt from the interior: zero normal derivative, no diffusion; the
+    # flow crosses neither a wall nor a slip face.
+    slip = kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5
+    outlet = kind > BC_OUTLET - 0.5 and kind < BC_OUTLET + 0.5
+    if kind > BC_WALL - 0.5:
+        f = 0.0 * conv - diff
+    elif slip:
+        f = 0.0 * conv
+    elif outlet:
+        f = conv
+    else:
+        f = conv - diff
+    return f
 
 
 @pointwise

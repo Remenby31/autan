@@ -1,4 +1,5 @@
-// The viscous fluxes of autan::physics::NavierStokes on the test meshes of tests/data/mesh.
+// The viscous fluxes of autan::physics::NavierStokes and the boundary fluxes of
+// autan::physics::SpalartAllmaras, on the test meshes of tests/data/mesh and generated slabs.
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -20,6 +21,7 @@
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/navier_stokes.hpp"
+#include "autan/physics/spalart_allmaras.hpp"
 
 namespace {
 
@@ -31,6 +33,7 @@ using autan::physics::Euler;
 using autan::physics::Gas;
 using autan::physics::NavierStokes;
 using autan::physics::Scheme;
+using autan::physics::SpalartAllmaras;
 using autan::physics::Transport;
 
 const fs::path mesh_dir{AUTAN_TEST_MESH_DIR};
@@ -49,34 +52,47 @@ std::array<double, 5> primitive(double x, double y, double z) {
   return {rho, a[0] * y, a[1] * y, a[2] * y, 1.0e5 + 2000.0 * x + 500.0 * z};
 }
 
-// One layer of hexahedra over [0,1]^2 x [0,1], the spacing in y growing geometrically from 1e-5 at
-// y = 0 (aspect ratio 10^4 at the wall, as in the wall-resolved 2D grids of the NASA TMR), zones
-// xmin ... ymax and `sides` for z = 0 and z = 1; turned by `angle` (radians) about z.
-autan::Mesh stretched_slab(double angle = 0.0) {
+struct Slab {
+  double first = 1.0e-5;  // spacing in y at y = 0
+  int nz = 1;             // layers in z
+  double angle = 0.0;     // turned about z (radians)
+  double shear = 0.0;     // x shifted by shear y
+  double warp = 0.0;      // the nodes of y = 0 at y = warp (2 z - 1) x: the wall's faces warped
+};
+
+// Hexahedra over [0,1]^3, 8 along x, 12 along y with the spacing growing geometrically from
+// `first` at y = 0 (1e-5: aspect ratio 10^4 at the wall, as in the wall-resolved 2D grids of the
+// NASA TMR), `nz` along z; zones xmin ... ymax and `sides` for z = 0 and z = 1.
+autan::Mesh stretched_slab(const Slab& slab = {}) {
   constexpr int nx = 8;
   constexpr int ny = 12;
-  constexpr double first = 1.0e-5;
+  const int nz = slab.nz;
   double lo = 1.0, hi = 4.0;
   for (int it = 0; it < 200; ++it) {
     const double ratio = 0.5 * (lo + hi);
-    (first * (std::pow(ratio, ny) - 1.0) / (ratio - 1.0) > 1.0 ? hi : lo) = ratio;
+    (slab.first * (std::pow(ratio, ny) - 1.0) / (ratio - 1.0) > 1.0 ? hi : lo) = ratio;
   }
   autan::MeshInput in;
-  double y = 0.0, dy = first;
+  double y = 0.0, dy = slab.first;
   for (int j = 0; j <= ny; ++j) {
-    for (int k = 0; k <= 1; ++k) {
+    for (int k = 0; k <= nz; ++k) {
+      const double zk = static_cast<double>(k) / nz;
       for (int i = 0; i <= nx; ++i) {
-        const double xi = static_cast<double>(i) / nx, yj = j == ny ? 1.0 : y;
-        in.x.push_back(std::cos(angle) * xi - std::sin(angle) * yj);
-        in.y.push_back(std::sin(angle) * xi + std::cos(angle) * yj);
-        in.z.push_back(k);
+        const double xi = static_cast<double>(i) / nx;
+        const double yj = j == ny ? 1.0 : j == 0 ? slab.warp * (2 * zk - 1) * xi : y;
+        const double xs = xi + slab.shear * yj;
+        in.x.push_back(std::cos(slab.angle) * xs - std::sin(slab.angle) * yj);
+        in.y.push_back(std::sin(slab.angle) * xs + std::cos(slab.angle) * yj);
+        in.z.push_back(zk);
       }
     }
     y += dy;
     dy *= lo;
   }
-  auto p = [](int i, int j, int k) { return static_cast<index_t>(i + (nx + 1) * (k + 2 * j)); };
-  auto cell = [](int i, int j) { return static_cast<index_t>(i + nx * j); };
+  auto p = [&](int i, int j, int k) {
+    return static_cast<index_t>(i + (nx + 1) * (k + (nz + 1) * j));
+  };
+  auto cell = [&](int i, int j, int k) { return static_cast<index_t>(i + nx * (k + nz * j)); };
   in.face_node_offsets.push_back(0);
   auto face = [&](std::array<index_t, 4> nodes, bool flip, index_t c0, index_t c1, index_t zone) {
     if (flip) std::reverse(nodes.begin(), nodes.end());
@@ -88,36 +104,48 @@ autan::Mesh stretched_slab(double angle = 0.0) {
   };
   constexpr index_t interior = 5;
   for (int j = 0; j < ny; ++j) {
-    for (int i = 0; i <= nx; ++i) {
-      const std::array<index_t, 4> q{p(i, j, 0), p(i, j + 1, 0), p(i, j + 1, 1), p(i, j, 1)};
-      if (i == 0)
-        face(q, true, cell(0, j), autan::no_cell, 0);
-      else if (i == nx)
-        face(q, false, cell(nx - 1, j), autan::no_cell, 1);
-      else
-        face(q, false, cell(i - 1, j), cell(i, j), interior);
+    for (int k = 0; k < nz; ++k) {
+      for (int i = 0; i <= nx; ++i) {
+        const std::array<index_t, 4> q{p(i, j, k), p(i, j + 1, k), p(i, j + 1, k + 1),
+                                       p(i, j, k + 1)};
+        if (i == 0)
+          face(q, true, cell(0, j, k), autan::no_cell, 0);
+        else if (i == nx)
+          face(q, false, cell(nx - 1, j, k), autan::no_cell, 1);
+        else
+          face(q, false, cell(i - 1, j, k), cell(i, j, k), interior);
+      }
     }
   }
   for (int j = 0; j <= ny; ++j) {
-    for (int i = 0; i < nx; ++i) {
-      const std::array<index_t, 4> q{p(i, j, 0), p(i, j, 1), p(i + 1, j, 1), p(i + 1, j, 0)};
-      if (j == 0)
-        face(q, true, cell(i, 0), autan::no_cell, 2);
-      else if (j == ny)
-        face(q, false, cell(i, ny - 1), autan::no_cell, 3);
-      else
-        face(q, false, cell(i, j - 1), cell(i, j), interior);
+    for (int k = 0; k < nz; ++k) {
+      for (int i = 0; i < nx; ++i) {
+        const std::array<index_t, 4> q{p(i, j, k), p(i, j, k + 1), p(i + 1, j, k + 1),
+                                       p(i + 1, j, k)};
+        if (j == 0)
+          face(q, true, cell(i, 0, k), autan::no_cell, 2);
+        else if (j == ny)
+          face(q, false, cell(i, ny - 1, k), autan::no_cell, 3);
+        else
+          face(q, false, cell(i, j - 1, k), cell(i, j, k), interior);
+      }
     }
   }
   for (int j = 0; j < ny; ++j) {
     for (int i = 0; i < nx; ++i) {
-      for (int k = 0; k <= 1; ++k) {
-        face({p(i, j, k), p(i + 1, j, k), p(i + 1, j + 1, k), p(i, j + 1, k)}, k == 0, cell(i, j),
-             autan::no_cell, 4);
+      for (int k = 0; k <= nz; ++k) {
+        const std::array<index_t, 4> q{p(i, j, k), p(i + 1, j, k), p(i + 1, j + 1, k),
+                                       p(i, j + 1, k)};
+        if (k == 0)
+          face(q, true, cell(i, j, 0), autan::no_cell, 4);
+        else if (k == nz)
+          face(q, false, cell(i, j, nz - 1), autan::no_cell, 4);
+        else
+          face(q, false, cell(i, j, k - 1), cell(i, j, k), interior);
       }
     }
   }
-  in.cell_zone.assign(static_cast<std::size_t>(nx * ny), 0);
+  in.cell_zone.assign(static_cast<std::size_t>(nx * ny * nz), 0);
   for (const char* name : {"xmin", "xmax", "ymin", "ymax", "sides"}) {
     in.face_zones.push_back(autan::FaceZone{
         .name = name, .bc_type = "", .kind = autan::BcKind::unspecified, .provenance = {}});
@@ -136,6 +164,11 @@ autan::Mesh stretched_slab(double angle = 0.0) {
 template <class P>
 constexpr double eps() {
   return std::numeric_limits<typename P::compute>::epsilon();
+}
+
+// The larger error, NaN when either is: std::max(worst, NaN) would keep worst.
+double worse(double worst, double error) {
+  return std::isnan(worst) || error <= worst ? worst : error;
 }
 
 }  // namespace
@@ -231,7 +264,7 @@ TEMPLATE_TEST_CASE("viscous residual of linear velocity and temperature is the d
       const double viscous =
           static_cast<double>(r_ns[k * n + c]) - static_cast<double>(r_euler[k * n + c]);
       const double expected = k == 4 ? -g.cell_volume[c] * dissipation : 0.0;
-      worst = std::max(worst, std::abs(viscous - expected) / scale);
+      worst = worse(worst, std::abs(viscous - expected) / scale);
     }
   }
   // The least-squares gradients of the stored states carry the round-off of each cell value
@@ -255,7 +288,7 @@ TEMPLATE_TEST_CASE("wall shear stress of a cubic velocity is exact", "[navier-st
   const bool slab = file == "stretched slab" || file == "turned slab";
   const double angle = file == "turned slab" ? std::acos(-1.0) / 6.0 : 0.0;
   const double ca = std::cos(angle), sa = std::sin(angle);
-  const auto mesh = slab ? stretched_slab(angle) : autan::io::read_mesh(mesh_dir / file);
+  const auto mesh = slab ? stretched_slab({.angle = angle}) : autan::io::read_mesh(mesh_dir / file);
   const auto g = autan::compute_geometry(mesh);
   const auto n = static_cast<std::size_t>(mesh.n_cells());
   const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
@@ -323,7 +356,7 @@ TEMPLATE_TEST_CASE("wall shear stress of a cubic velocity is exact", "[navier-st
     const double tx = mu * (30.0 + 8.0 * x - 5.0 * z + 4.0 * x * x - 2.0 * x * z);
     const std::array<double, 3> exact{ca * tx, sa * tx, mu * (-10.0 + 6.0 * x + 2.0 * z * z)};
     for (std::size_t k = 0; k < 3; ++k) {
-      worst = std::max(worst, std::abs(traction[k * nb + b] - exact[k]) / (mu * 45.0));
+      worst = worse(worst, std::abs(traction[k * nb + b] - exact[k]) / (mu * 45.0));
     }
   }
   // Round-off of the fit, amplified by its conditioning like the linear gradients above. The turned
@@ -332,4 +365,201 @@ TEMPLATE_TEST_CASE("wall shear stress of a cubic velocity is exact", "[navier-st
   const double geometry =
       angle != 0.0 ? std::numeric_limits<double>::epsilon() * 1.5 / 1.0e-5 : 0.0;
   CHECK(worst <= 4096 * (eps<P>() + geometry));
+}
+
+// An adiabatic wall at rest takes no energy from the flow: its velocity is zero over the whole of
+// each face, so neither conduction nor the work of the stress crosses it, warped faces included
+// (here the wall y = 0.02 (2 z - 1) x). In a slab closed by such walls (y = 0, x = 0 and x = 1) and
+// slip faces, which pass no energy either, the energy residuals of the cells sum to zero: each
+// interior face adds its flux to one cell and subtracts it from the other.
+TEMPLATE_TEST_CASE("an adiabatic wall at rest exchanges no energy", "[navier-stokes]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  using P = TestType;
+  const auto mesh = stretched_slab({.first = 0.05, .nz = 4, .warp = 0.02});
+  const auto g = autan::compute_geometry(mesh);
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  constexpr double p = 1.0e5;
+  auto velocity = [](double x, double y, double z) {
+    return std::array<double, 3>{y * (30.0 + 8.0 * x), 4.0 * y * y,
+                                 y * (-10.0 + 6.0 * x + 2.0 * z)};
+  };
+  Scheme scheme;
+  scheme.limiter = false;
+  scheme.reference = {rho, 0.0, 0.0, 0.0, p / (air.gamma - 1.0)};
+  Transport t;
+  t.sutherland = false;
+  t.mu_ref = mu;
+  t.prandtl = prandtl;
+  NavierStokes<P> ns(mesh, g, air, scheme, t);
+  std::vector<BoundaryKind> kind(nb, BoundaryKind::slip);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const auto f = static_cast<std::size_t>(mesh.n_interior_faces()) + b;
+    const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[f])].name;
+    if (zone == "ymin" || zone == "xmin" || zone == "xmax") kind[b] = BoundaryKind::wall;
+  }
+  ns.set_boundary(kind, std::vector<double>(5 * nb, 0.0));
+  std::vector<double> u(5 * n);
+  double speed = 0.0;
+  for (std::size_t c = 0; c < n; ++c) {
+    const auto v = velocity(g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]);
+    u[c] = rho;
+    for (std::size_t k = 0; k < 3; ++k) u[(1 + k) * n + c] = rho * v[k];
+    u[4 * n + c] = p / (air.gamma - 1.0) + 0.5 * rho * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    speed = std::max(speed, std::hypot(v[0], v[1], v[2]));
+  }
+  std::vector<typename P::state> s(5 * n);
+  std::vector<typename P::residual> r(5 * n);
+  ns.state(u, s);
+  ns.residual(s, r);
+  double total = 0.0;
+  for (std::size_t c = 0; c < n; ++c) total += static_cast<double>(r[4 * n + c]);
+  // The face fluxes cancel in pairs as computed, so only the accumulation in the residual's
+  // precision rounds; the enthalpy flux bounds each face's energy flux.
+  double scale = 0.0;
+  for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
+    scale += 2.0 * air.gamma / (air.gamma - 1.0) * p * speed * g.face_area[f];
+  }
+  CHECK(std::abs(total) <= 64 * std::numeric_limits<typename P::residual>::epsilon() * scale);
+}
+
+// A slip or outlet face takes nt from the interior and passes none by diffusion (zero normal
+// derivative). On the slab sheared by x += y / 2, nt = nu (50 + 5 (x - y / 2)) is the same at the
+// centroid of each y face as at its cell's, so the interior value is exact there, but dnt/dy is
+// not zero. The flow at rest and the wall distance (1e10 m) leave production and destruction
+// negligible, and the residuals sum to the budget of the equation: -1/sigma int rho (nu + nt)
+// grad nt . dS over the faces that give nt, and the cb2 term -int rho cb2 |grad nt|^2 / sigma dV.
+TEMPLATE_TEST_CASE("slip and outlet faces pass no nt by diffusion", "[spalart-allmaras]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  using P = TestType;
+  const auto neumann = GENERATE(BoundaryKind::slip, BoundaryKind::outlet);
+  CAPTURE(neumann == BoundaryKind::slip);
+  constexpr double shear = 0.5;
+  const auto mesh = stretched_slab({.first = 0.05, .shear = shear});
+  const auto g = autan::compute_geometry(mesh);
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  constexpr double p = 1.0e5;
+  constexpr double mu_air = 1.8e-5;
+  constexpr double sigma = 2.0 / 3.0;
+  constexpr double cb2 = 0.622;
+  const double nu = mu_air / rho;
+  const std::array<double, 3> grad{5.0 * nu, -5.0 * shear * nu, 0.0};
+  auto nt = [&](double x, double y) { return nu * (50.0 + 5.0 * (x - shear * y)); };
+  Scheme scheme;
+  scheme.limiter = false;
+  scheme.reference = {rho, 0.0, 0.0, 0.0, p / (air.gamma - 1.0)};
+  Transport t;
+  t.sutherland = false;
+  t.mu_ref = mu_air;
+  t.prandtl = prandtl;
+  NavierStokes<P> ns(mesh, g, air, scheme, t);
+  std::vector<BoundaryKind> kind(nb, BoundaryKind::state);
+  std::vector<double> data(5 * nb, 0.0), nt_b(nb);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const auto f = ni + b;
+    const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[f])].name;
+    nt_b[b] = nt(g.face_centroid_x[f], g.face_centroid_y[f]);
+    data[4 * nb + b] = p;
+    if (zone == "ymax") {
+      kind[b] = neumann;
+    } else if (zone == "sides") {
+      kind[b] = BoundaryKind::slip;
+    } else {
+      data[b] = rho;
+    }
+  }
+  ns.set_boundary(kind, data);
+  std::vector<double> u(5 * n, 0.0);
+  for (std::size_t c = 0; c < n; ++c) {
+    u[c] = rho;
+    u[4 * n + c] = p / (air.gamma - 1.0);
+  }
+  std::vector<typename P::state> s(5 * n);
+  std::vector<typename P::residual> r(5 * n);
+  ns.state(u, s);
+  ns.residual(s, r);
+  SpalartAllmaras<P> sa(mesh, g, ns, t, /*ft2=*/false);
+  sa.set_boundary(nt_b);
+  sa.set_wall_distance(std::vector<double>(n, 1.0e10));
+  std::vector<typename P::state> rn(n);
+  for (std::size_t c = 0; c < n; ++c) {
+    rn[c] = static_cast<typename P::state>(rho * nt(g.cell_centroid_x[c], g.cell_centroid_y[c]));
+  }
+  std::vector<typename P::residual> res(n);
+  sa.residual(rn, res);
+
+  const double g2 = grad[0] * grad[0] + grad[1] * grad[1] + grad[2] * grad[2];
+  double total = 0.0, expected = 0.0, scale = 0.0;
+  for (std::size_t c = 0; c < n; ++c) {
+    total += static_cast<double>(res[c]);
+    expected -= g.cell_volume[c] * rho * cb2 * g2 / sigma;
+  }
+  for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
+    const double coefficient = rho * (nu + nt(g.face_centroid_x[f], g.face_centroid_y[f])) / sigma;
+    scale += coefficient * std::sqrt(g2) * g.face_area[f];
+    if (f >= ni && kind[f - ni] == BoundaryKind::state) {
+      expected -= coefficient * (grad[0] * g.face_area_x[f] + grad[1] * g.face_area_y[f] +
+                                 grad[2] * g.face_area_z[f]);
+    }
+  }
+  CAPTURE(total, expected, scale);
+  CHECK(std::abs(total - expected) <= 4096 * eps<P>() * scale);
+}
+
+// A slip face passes no nt by convection: the flow does not cross it. With nt uniform, a flow and
+// its reverse give the same source (|curl u| does not see the sign) and opposite convective
+// fluxes, so half the difference of their residuals sums to the nt convected through the
+// boundary, zero in a box closed by slip faces; here for u = 10 (x - 1/2, y - 1/2, z - 1/2).
+TEMPLATE_TEST_CASE("slip faces pass no nt by convection", "[spalart-allmaras]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  using P = TestType;
+  const auto* file = GENERATE(from_range(meshes));
+  CAPTURE(file);
+  const auto mesh = autan::io::read_mesh(mesh_dir / file);
+  const auto g = autan::compute_geometry(mesh);
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  constexpr double p = 1.0e5;
+  constexpr double mu_air = 1.8e-5;
+  constexpr double alpha = 10.0;
+  const double nt = 50.0 * mu_air / rho;
+  Scheme scheme;
+  scheme.limiter = false;
+  scheme.reference = {rho, 0.0, 0.0, 0.0, p / (air.gamma - 1.0)};
+  Transport t;
+  t.sutherland = false;
+  t.mu_ref = mu_air;
+  t.prandtl = prandtl;
+  NavierStokes<P> ns(mesh, g, air, scheme, t);
+  ns.set_boundary(std::vector<BoundaryKind>(nb, BoundaryKind::slip),
+                  std::vector<double>(5 * nb, 0.0));
+  SpalartAllmaras<P> sa(mesh, g, ns, t);
+  const std::vector<typename P::state> rn(n, static_cast<typename P::state>(rho * nt));
+  std::vector<typename P::state> s(5 * n);
+  std::vector<typename P::residual> r(5 * n), res(n);
+  double half = 0.0, speed = 0.0;
+  for (const double sign : {1.0, -1.0}) {
+    std::vector<double> u(5 * n);
+    for (std::size_t c = 0; c < n; ++c) {
+      const std::array<double, 3> v{sign * alpha * (g.cell_centroid_x[c] - 0.5),
+                                    sign * alpha * (g.cell_centroid_y[c] - 0.5),
+                                    sign * alpha * (g.cell_centroid_z[c] - 0.5)};
+      u[c] = rho;
+      for (std::size_t k = 0; k < 3; ++k) u[(1 + k) * n + c] = rho * v[k];
+      u[4 * n + c] = p / (air.gamma - 1.0) + 0.5 * rho * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+      speed = std::max(speed, std::hypot(v[0], v[1], v[2]));
+    }
+    ns.state(u, s);
+    ns.residual(s, r);
+    sa.residual(rn, res);
+    for (std::size_t c = 0; c < n; ++c) half += 0.5 * sign * static_cast<double>(res[c]);
+  }
+  double scale = 0.0;
+  for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
+    scale += rho * speed * nt * g.face_area[f];
+  }
+  CAPTURE(half, scale);
+  CHECK(std::abs(half) <= 4096 * eps<P>() * scale);
 }

@@ -13,7 +13,7 @@ R_c = R_c^Euler − Σ_f F_v · S_f, with F_v = (0, τ n, u · τ n + k ∇T · 
 | Conduction | k = c_p (μ / Pr + μ_t / Pr_t), Pr_t = 0.9 | TMR |
 | Face gradients | average of the two cells' least-squares gradients, its component along the line of centres replaced by the difference quotient: ∇φ_f = ∇̄φ + ((φ_R − φ_L)/\|d\| − ∇̄φ · e) e, e = d/\|d\| | Blazek (2015), eq. 5.69 |
 | Face values | average of both linear reconstructions at the face centroid (unlimited) | |
-| Warped faces | the stress work through the fan triangles, τ : (∇u M), M the face moment of [euler.md](euler.md#warped-faces) | |
+| Warped faces | the stress work through the fan triangles, τ : (∇u M), M the face moment of [euler.md](euler.md#warped-faces); none on a wall at rest, whose velocity is zero over the whole face | |
 | ∇T | from the gradients of ρ and p: ∇T = (∇p − R T ∇ρ)/(ρ R) | |
 
 The viscous terms take the Euler linear least-squares gradient (unlimited, face2 stencil). The convective reconstruction takes the quadratic gradient in every cell ([euler.md](euler.md#quadratic-gradient)), and the limiter acts on it only.
@@ -34,6 +34,8 @@ The boundary state is that of the Euler boundary condition ([euler.md](euler.md#
 
 The convective flux of a `wall` face is the pressure flux of a slip face (v · n = 0 on both). Wall faces are not in the least-squares stencil, like slip faces: only the velocity is known there.
 
+Spalart-Allmaras takes ν̃ = 0 on a `wall`, the data on `state`, `farfield` and `inlet` faces, and the adjacent cell's value on `slip` and `outlet` faces, which then carry no diffusive flux of ν̃ (zero normal derivative). No ν̃ is convected through a `wall` or a `slip` face.
+
 ## Implicit solver
 
 The viscous face loops write their Jacobian blocks dF_v/dW_L, dF_v/dW_R in the same pass as the residual, the cell gradients held fixed: the difference quotients of the face gradients give the compact part of the viscous Jacobian. `NavierStokes<P>::assemble` adds them, times dW/dU, to the Euler blocks. The local time step adds four times the viscous spectral radius Σ_f max(4/3, γ) (μ/Pr + μ_t/Pr_t) A² / (ρ V) to the convective one (Blazek 2015, eqs. 6.20 and 6.22). With Spalart-Allmaras, every flow residual reads the μ_t of its own state, from that state's primitives and ρν̃, which costs one more flow evaluation per step: the residual is then a function of the state alone, and a continued run repeats the uninterrupted one bit for bit (#430).
@@ -46,6 +48,9 @@ The viscous face loops write their Jacobian blocks dF_v/dW_L, dF_v/dW_R in the s
 |---|---|---|
 | Linear velocity and temperature, every cell type, `fp64` and `fp32+acc64`, with and without a no-slip wall (isothermal and adiabatic) | viscous residual = −V (0, 0, 0, 0, τ : ∇u) to round-off | `tests/physics/test_navier_stokes.cpp` |
 | Cubic velocity vanishing on a wall, every cell type and a one-layer slab stretched 10⁴:1 at the wall ending at an outlet, both precisions | wall shear stress μ ∂u_t/∂y at each face to round-off | same |
+| Slab closed by adiabatic walls at rest, one with warped faces, and by slip faces, both precisions | the energy residuals sum to zero | same |
+| ν̃ linear with a gradient normal to a slip or outlet face, on a sheared slab, both precisions | the ν̃ residuals sum to the boundary diffusion through the other faces plus the cb2 volume term | same |
+| Uniform ν̃, a flow and its reverse, every cell type closed by slip faces, both precisions | no ν̃ convected through the boundary | same |
 | MMS `navier_stokes` through `autan-run` and `autan-vv verify`, gate `ns-mms-order` | Roy et al. (2004) form, μ = 10, Pr = 0.72 | `physics/mms/study.sh` |
 | MMS `rans_sa`, gate `rans-sa-mms-order` | Eça et al. (2007), Oliver et al. (2012) principles, wall y = 0 | same |
 

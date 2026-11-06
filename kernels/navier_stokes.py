@@ -636,7 +636,9 @@ def viscous_boundary(
     mu = viscosity(tb, mref, tref, s, law)
     k = 0.0 if adiabatic else g * rgas / (g - 1.0) * (mu / prl + mb / prt)
     fv = area * viscous_flux(velocity(wb), gu, gv, gwz, gt, mu + mb, k, n)
-    f = -(fv + Vec5(0.0, 0.0, 0.0, 0.0, warp_work(gu, gv, gwz, m, mu + mb)))
+    # A wall at rest does no work: its velocity is zero over the whole face, not only at x_f.
+    work = 0.0 * mu if kind > BC_WALL - 0.5 else warp_work(gu, gv, gwz, m, mu + mb)
+    f = -(fv + Vec5(0.0, 0.0, 0.0, 0.0, work))
     slip = kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5
     return 0.0 * f if slip else f
 
