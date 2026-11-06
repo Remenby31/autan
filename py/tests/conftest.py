@@ -34,7 +34,7 @@ def identity_of(run: dict[str, Any]) -> str:
         value: Any = run
         for key in path.split("."):
             value = value[key]
-        parts.append(str(value))
+        parts.append("" if value is None else str(value))
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
