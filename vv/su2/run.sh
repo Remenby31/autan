@@ -72,6 +72,7 @@ cat >"$dir/provenance.json" <<JSON
   "image_id": "$image_id",
   "su2": "$version",
   "threads": $threads,
+  "stop": {"orders": ${ORDERS:-10}, "stall": ${STALL:-2000}, "stall_skip_zero": ${STALL_SKIP_ZERO:-0}},
   "case_sha256": "$case_sha",
   "mesh_sha256": "$mesh_sha",
   "cpu": "$(lscpu | sed -n 's/^Model name: *//p' | sort -u | paste -sd '+')",
