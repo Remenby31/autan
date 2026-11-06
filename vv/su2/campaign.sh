@@ -10,7 +10,7 @@ image_id=$2
 # SU2's threads are its OpenMP threads (-t); no library may start one per core behind --cpus.
 export OMP_NUM_THREADS=$threads OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 shift 2
-cd /work
+cd /work || exit 1
 
 stop_when_done() {
   # SU2 measures a residual's drop from its largest value, the protocol from its first: SIGTERM
