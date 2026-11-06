@@ -29,6 +29,9 @@ struct StepReport {
   /// First cell whose state or residual is non-finite or non-physical; set
   /// when the solution diverged.
   std::optional<index_t> diverged_cell;
+  /// The step solved a provisional discretisation (a first-order start): its residuals do not
+  /// count towards a round-off plateau (case-schema.md#time).
+  bool provisional = false;
 };
 
 /// Force and moment the fluid exerts on a monitor's surfaces (results.md,
@@ -120,9 +123,12 @@ struct PhysicsContext {
   std::int32_t n_group_colours = 0;
 };
 
-// case-schema.md#time: C * eps32 with C = 0.5, at least 4.3 times the round-off plateaus
-// measured on a NACA 0012 slice, manufactured solutions and Ni's transonic bump.
+// case-schema.md#time: the round-off floor is C * eps32 times an equation's flux scale, C = 0.5.
+// Round-off plateaus lie between 1/15 (fp32+acc64 NACA 0012, #473) and 1.5 times (NS
+// manufactured solution on tetrahedra, #467) of it: an equation converges at a plateau at most
+// round_off_band floors high.
 inline constexpr double round_off_floor = 0.5 * 0x1p-23;
+inline constexpr double round_off_band = 10.0;
 
 /// A discretisation of the case's equations. The runtime owns the iteration
 /// loop, convergence, signals and outputs; an implementation owns its state
@@ -143,8 +149,8 @@ class Physics {
   [[nodiscard]] virtual std::vector<io::Field> fields(bool mean) const = 0;
   /// A constant flux scale per equation of residual_names(input), in that
   /// order, finite and >= 0; empty for none. Called once, after
-  /// construction: in fp32+acc64, an equation converges at a residual of
-  /// round_off_floor times its scale at the latest (docs/contracts/runtime.md).
+  /// construction: in fp32+acc64, an equation also converges at a round-off plateau at most
+  /// round_off_band times round_off_floor times its scale high (case-schema.md#time).
   [[nodiscard]] virtual std::vector<double> residual_scales() const = 0;
   /// Cell-centred state beyond fields(false) that a `continue` needs to go
   /// on bit for bit (earlier time levels, averaging sums); empty when none.
