@@ -594,8 +594,9 @@ class EulerPhysics final : public runtime::Physics {
          .since = static_cast<std::size_t>(v[12].second)});
   }
 
-  // SA-neg: rho nt from the zones' initial nt, nt at the boundary faces that give it, the wall
-  // distance; a manufactured solution gives its own nt, wall distance and source.
+  // SA-neg: rho nt from the zones' initial nt, the freestream nt at farfield faces and the ratio
+  // nt / nu at inlets, the wall distance; a manufactured solution gives its own nt, wall distance
+  // and source.
   void init_sa(const Manufactured* mms) {
     const auto& mesh = ctx_.mesh;
     const auto& g = ctx_.geometry;
@@ -635,6 +636,12 @@ class EulerPhysics final : public runtime::Physics {
       }
       if (walls.empty()) throw std::invalid_argument("the SA physics needs a wall");
       d = wall_distance(mesh, g, walls);
+      for (std::size_t b = 0; b < nb; ++b) {
+        const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[ni + b])];
+        const auto it = kinds.find(zone.name);
+        if (it != kinds.end() && it->second == "inlet")
+          nt_b[b] = in.turbulence.nu_tilde_ratio.value();
+      }
     }
     t.model.set_boundary(nt_b);
     t.model.set_wall_distance(d);
@@ -813,22 +820,27 @@ class EulerPhysics final : public runtime::Physics {
     return force;
   }
 
-  // Each vortex's circulation from the lift of the residual just evaluated, Kutta-Joukowski
-  // L' = rho V Gamma; it takes effect at the end of the step.
+  // Each vortex's circulation from the lift of the residual just evaluated, pressure and viscous
+  // traction as in the force monitors, Kutta-Joukowski L' = rho V Gamma; it takes effect at the
+  // end of the step.
   void measure_circulation() {
     if (vortices_.empty()) return;
     const auto& mesh = ctx_.mesh;
     const auto& fs = ctx_.input.freestream;
     const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
-    std::vector<double> p(nb), face_force(3 * nb);
+    std::vector<double> p(nb), face_force(3 * nb), traction;
     euler_.boundary_pressure(p, face_force);
+    if constexpr (is_viscous) {
+      traction.assign(3 * nb, 0.0);
+      euler_.viscous_traction(traction);
+    }
     const auto off = mesh.boundary_zone_offsets();
     for (auto& v : vortices_) {
       std::array<runtime::ExactSum, 2> force;
       for (const auto z : v.zones) {
         for (auto f = off[static_cast<std::size_t>(z)]; f < off[static_cast<std::size_t>(z) + 1];
              ++f) {
-          const auto load = wall_force(face_force, {}, static_cast<std::size_t>(f));
+          const auto load = wall_force(face_force, traction, static_cast<std::size_t>(f));
           force[0].add(load[0]);
           force[1].add(load[2]);
         }
@@ -1563,6 +1575,21 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
 // distances from, unless a manufactured solution gives them.
 std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::SolverInput& in,
                                                            int ranks) {
+  // case-schema.md#time's opt-in steady steps: neither is written for this physics yet.
+  if (in.time.kind == "steady" && in.time.coupled_turbulence) {
+    return runtime::PhysicsRefusal{
+        .message = "the Navier-Stokes physics has no coupled turbulence step yet",
+        .path = "time.coupled_turbulence",
+        .data_json = "{}",
+        .code = "E0426"};
+  }
+  if (in.time.kind == "steady" && in.time.matrix_free) {
+    return runtime::PhysicsRefusal{
+        .message = "the Navier-Stokes physics has no matrix-free step yet",
+        .path = "time.matrix_free",
+        .data_json = "{}",
+        .code = "E0429"};
+  }
   // NavierStokes<P> and SpalartAllmaras<P> fill no ghost cells of their own (their fields, fits
   // and Jacobian blocks would be wrong across a periodic pair): one rank, no periodic pairs.
   if (!in.periodic.empty()) {
@@ -1601,10 +1628,13 @@ std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::Solver
           .data_json = "{}"};
     }
   }
-  // The gas checks are the Euler physics' own; its condition check is replaced above.
-  runtime::SolverInput gas_only = in;
-  gas_only.boundaries.clear();
-  return euler_scope(gas_only, ranks);
+  // The Euler physics' checks, the gas's and the point vortex's among them, a wall standing for
+  // the slip wall it is to the inviscid flux.
+  runtime::SolverInput as_euler = in;
+  for (auto& b : as_euler.boundaries) {
+    if (b.kind == "wall") b.kind = "slip";
+  }
+  return euler_scope(as_euler, ranks);
 }
 
 #ifdef AUTAN_PHYSICS_CUDA
@@ -1710,10 +1740,10 @@ void register_navier_stokes(runtime::PhysicsRegistry& registry) {
   for (const char* model : {"laminar", "sa"}) {
     registry.add({"compressible", model, "fp64", "cpu"},
                  factory<kernels::fp64, NavierStokes<kernels::fp64>>(), navier_stokes_scope,
-                 /*several_ranks=*/false, {}, euler_restart_names);
+                 /*several_ranks=*/false, euler_groups, euler_restart_names);
     registry.add({"compressible", model, "fp32+acc64", "cpu"},
                  factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>(),
-                 navier_stokes_scope, /*several_ranks=*/false, {}, euler_restart_names);
+                 navier_stokes_scope, /*several_ranks=*/false, euler_groups, euler_restart_names);
   }
 }
 

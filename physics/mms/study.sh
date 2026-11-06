@@ -16,6 +16,8 @@ declare -A oracle=([euler]=mms-euler [navier_stokes]=mms-navier-stokes [rans_sa]
 declare -A gate=([euler]=euler-mms-order [navier_stokes]=ns-mms-order [rans_sa]=rans-sa-mms-order)
 declare -A model=([euler]=inviscid [navier_stokes]=laminar [rans_sa]=sa)
 mkdir -p "$out"
+# The case files resolve paths from their own directory.
+meshes=$(cd "$meshes" && pwd) out=$(cd "$out" && pwd)
 "${vv[@]}" mms "$solution" --out "$out" >/dev/null
 mms="$out/$solution.json"
 sha=$(sha256sum "$mms" | cut -d' ' -f1)

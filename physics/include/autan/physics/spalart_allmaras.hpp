@@ -26,8 +26,9 @@ class SpalartAllmaras {
   SpalartAllmaras(const SpalartAllmaras&) = delete;
   SpalartAllmaras& operator=(const SpalartAllmaras&) = delete;
 
-  /// nt at every boundary face whose condition gives it (manufactured, farfield, inlet; the
-  /// others are ignored): n_boundary_faces values, m^2/s.
+  /// Per boundary face, n_boundary_faces values: nt (m^2/s) where the condition gives it
+  /// (manufactured, farfield); at inlets the ratio nt / nu, nu the laminar viscosity of the
+  /// inlet's boundary state at each evaluation; ignored elsewhere.
   void set_boundary(std::span<const double> nt);
   /// Distance of every cell centroid to the nearest wall (m); a manufactured solution's own.
   void set_wall_distance(std::span<const double> d);

@@ -424,16 +424,19 @@ TEMPLATE_TEST_CASE("an adiabatic wall at rest exchanges no energy", "[navier-sto
 }
 
 // A slip or outlet face takes nt from the interior and passes none by diffusion (zero normal
-// derivative). On the slab sheared by x += y / 2, nt = nu (50 + 5 (x - y / 2)) is the same at the
-// centroid of each y face as at its cell's, so the interior value is exact there, but dnt/dy is
-// not zero. The flow at rest and the wall distance (1e10 m) leave production and destruction
-// negligible, and the residuals sum to the budget of the equation: -1/sigma int rho (nu + nt)
-// grad nt . dS over the faces that give nt, and the cb2 term -int rho cb2 |grad nt|^2 / sigma dV.
+// derivative). On the slab sheared by x += y / 2, nt is a linear function of x - y / 2, the same
+// at the centroid of each y face as at its cell's, so the interior value is exact there, but
+// dnt/dy is not zero. The flow at rest and the wall distance (1e10 m) leave production and
+// destruction negligible, and the residuals sum to the budget of the equation: -1/sigma int rho
+// (nu + nt f_n) grad nt . dS over the faces that give nt, on each of which nt is constant, and the
+// cb2 term -int rho cb2 |grad nt|^2 / sigma dV. Also for negative nt, whose diffusion coefficient
+// takes f_n = (cn1 + chi^3) / (cn1 - chi^3), cn1 = 16 (Allmaras et al. 2012, eq. 21).
 TEMPLATE_TEST_CASE("slip and outlet faces pass no nt by diffusion", "[spalart-allmaras]",
                    autan::kernels::fp64, autan::kernels::fp32_acc64) {
   using P = TestType;
   const auto neumann = GENERATE(BoundaryKind::slip, BoundaryKind::outlet);
-  CAPTURE(neumann == BoundaryKind::slip);
+  const bool negative = GENERATE(false, true);
+  CAPTURE(neumann == BoundaryKind::slip, negative);
   constexpr double shear = 0.5;
   const auto mesh = stretched_slab({.first = 0.05, .shear = shear});
   const auto g = autan::compute_geometry(mesh);
@@ -445,8 +448,13 @@ TEMPLATE_TEST_CASE("slip and outlet faces pass no nt by diffusion", "[spalart-al
   constexpr double sigma = 2.0 / 3.0;
   constexpr double cb2 = 0.622;
   const double nu = mu_air / rho;
-  const std::array<double, 3> grad{5.0 * nu, -5.0 * shear * nu, 0.0};
-  auto nt = [&](double x, double y) { return nu * (50.0 + 5.0 * (x - shear * y)); };
+  const double base = negative ? -0.5 : 50.0, slope = negative ? -0.1 : 5.0;
+  const std::array<double, 3> grad{slope * nu, -slope * shear * nu, 0.0};
+  auto nt = [&](double x, double y) { return nu * (base + slope * (x - shear * y)); };
+  auto fn = [&](double v) {
+    const double chi3 = (v / nu) * (v / nu) * (v / nu);
+    return v < 0.0 ? (16.0 + chi3) / (16.0 - chi3) : 1.0;
+  };
   Scheme scheme;
   scheme.limiter = false;
   scheme.reference = {rho, 0.0, 0.0, 0.0, p / (air.gamma - 1.0)};
@@ -497,7 +505,8 @@ TEMPLATE_TEST_CASE("slip and outlet faces pass no nt by diffusion", "[spalart-al
     expected -= g.cell_volume[c] * rho * cb2 * g2 / sigma;
   }
   for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
-    const double coefficient = rho * (nu + nt(g.face_centroid_x[f], g.face_centroid_y[f])) / sigma;
+    const double nt_f = nt(g.face_centroid_x[f], g.face_centroid_y[f]);
+    const double coefficient = rho * (nu + nt_f * fn(nt_f)) / sigma;
     scale += coefficient * std::sqrt(g2) * g.face_area[f];
     if (f >= ni && kind[f - ni] == BoundaryKind::state) {
       expected -= coefficient * (grad[0] * g.face_area_x[f] + grad[1] * g.face_area_y[f] +
@@ -562,4 +571,205 @@ TEMPLATE_TEST_CASE("slip faces pass no nt by convection", "[spalart-allmaras]",
   }
   CAPTURE(half, scale);
   CHECK(std::abs(half) <= 4096 * eps<P>() * scale);
+}
+
+// The local time step's viscous spectral radius takes, per face, the larger of the momentum
+// diffusion 4/3 mu A^2 / (rho V) and the heat diffusion gamma mu / Pr A^2 / (rho V): at Pr = 100
+// the momentum's, which a radius scaled by 1 / Pr alone would lose. NavierStokes adds 4 times it
+// to the convective radius of Euler (Blazek 2015, eq. 6.20).
+TEMPLATE_TEST_CASE("the viscous spectral radius bounds momentum diffusion at any Prandtl number",
+                   "[navier-stokes]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  using P = TestType;
+  const auto* file = GENERATE(from_range(meshes));
+  CAPTURE(file);
+  const auto mesh = autan::io::read_mesh(mesh_dir / file);
+  const auto g = autan::compute_geometry(mesh);
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  constexpr double p = 1.0e5;
+  Scheme scheme;
+  scheme.limiter = false;
+  scheme.reference = {rho, 0.0, 0.0, 0.0, p / (air.gamma - 1.0)};
+  Transport t;
+  t.sutherland = false;
+  t.mu_ref = mu;
+  t.prandtl = 100.0;
+  NavierStokes<P> ns(mesh, g, air, scheme, t);
+  Euler<P> euler(mesh, g, air, scheme);
+  const std::vector<BoundaryKind> kind(nb, BoundaryKind::slip);
+  const std::vector<double> data(5 * nb, 0.0);
+  ns.set_boundary(kind, data);
+  euler.set_boundary(kind, data);
+  std::vector<double> u(5 * n, 0.0);
+  for (std::size_t c = 0; c < n; ++c) {
+    u[c] = rho;
+    u[4 * n + c] = p / (air.gamma - 1.0);
+  }
+  std::vector<typename P::state> s(5 * n), lambda_ns(n), lambda_euler(n);
+  std::vector<typename P::residual> r(5 * n);
+  ns.state(u, s);
+  ns.residual(s, r);
+  ns.spectral_radius(lambda_ns);
+  euler.residual(s, r);
+  euler.spectral_radius(lambda_euler);
+  std::vector<double> viscous(n, 0.0);
+  for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
+    const double a2 = g.face_area[f] * g.face_area[f] * 4.0 / 3.0 * mu / rho;
+    const auto o = static_cast<std::size_t>(mesh.owner()[f]);
+    viscous[o] += a2 / g.cell_volume[o];
+    if (f < ni) {
+      const auto nb_cell = static_cast<std::size_t>(mesh.neighbour()[f]);
+      viscous[nb_cell] += a2 / g.cell_volume[nb_cell];
+    }
+  }
+  double worst = 0.0;
+  for (std::size_t c = 0; c < n; ++c) {
+    const double total = static_cast<double>(lambda_ns[c]);
+    const double expected = static_cast<double>(lambda_euler[c]) + 4.0 * viscous[c];
+    worst = worse(worst, std::abs(total - expected) / expected);
+  }
+  CHECK(worst <= 64 * eps<P>());
+}
+
+// An inlet gives SA the ratio nt / nu of the case, nu the laminar viscosity of the inlet's own
+// state (case-schema.md#turbulence), not a fixed nt. A uniform flow enters the slab through xmin
+// at its own total pressure and temperature, so that the inlet's state is the cell's, and leaves
+// through the outlet xmax at its static pressure, with nt = 3 nu uniform: nothing varies, and
+// every cell's residual is zero to round-off, the wall distance (1e10 m) leaving production and
+// destruction negligible.
+TEMPLATE_TEST_CASE("an inlet gives nt the case's ratio to its own viscosity", "[spalart-allmaras]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  using P = TestType;
+  const auto mesh = stretched_slab({.first = 0.05});
+  const auto g = autan::compute_geometry(mesh);
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  constexpr double p = 1.0e5;
+  constexpr double speed = 50.0;
+  constexpr double mu_air = 1.8e-5;
+  constexpr double ratio = 3.0;
+  const double temperature = p / (rho * air.gas_constant);
+  const double cp = air.gamma * air.gas_constant / (air.gamma - 1.0);
+  const double t0 = temperature + 0.5 * speed * speed / cp;
+  const double p0 = p * std::pow(t0 / temperature, air.gamma / (air.gamma - 1.0));
+  Scheme scheme;
+  scheme.limiter = false;
+  scheme.reference = {rho, rho * speed, 0.0, 0.0,
+                      p / (air.gamma - 1.0) + 0.5 * rho * speed * speed};
+  Transport t;
+  t.sutherland = false;
+  t.mu_ref = mu_air;
+  t.prandtl = prandtl;
+  NavierStokes<P> ns(mesh, g, air, scheme, t);
+  std::vector<BoundaryKind> kind(nb, BoundaryKind::slip);
+  std::vector<double> data(5 * nb, 0.0), nt_b(nb, 0.0);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[ni + b])].name;
+    if (zone == "xmin") {
+      kind[b] = BoundaryKind::inlet;
+      data[b] = p0;
+      data[nb + b] = t0;
+      nt_b[b] = ratio;
+    } else if (zone == "xmax") {
+      kind[b] = BoundaryKind::outlet;
+      data[4 * nb + b] = p;
+    }
+  }
+  ns.set_boundary(kind, data);
+  std::vector<double> u(5 * n, 0.0);
+  for (std::size_t c = 0; c < n; ++c) {
+    u[c] = rho;
+    u[n + c] = rho * speed;
+    u[4 * n + c] = p / (air.gamma - 1.0) + 0.5 * rho * speed * speed;
+  }
+  std::vector<typename P::state> s(5 * n);
+  std::vector<typename P::residual> r(5 * n);
+  ns.state(u, s);
+  ns.residual(s, r);
+  SpalartAllmaras<P> sa(mesh, g, ns, t);
+  sa.set_boundary(nt_b);
+  sa.set_wall_distance(std::vector<double>(n, 1.0e10));
+  const double nt = ratio * mu_air / rho;
+  const std::vector<typename P::state> rn(n, static_cast<typename P::state>(rho * nt));
+  std::vector<typename P::residual> res(n);
+  sa.residual(rn, res);
+  std::vector<double> surface(n, 0.0);
+  for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
+    surface[static_cast<std::size_t>(mesh.owner()[f])] += g.face_area[f];
+    if (f < ni) surface[static_cast<std::size_t>(mesh.neighbour()[f])] += g.face_area[f];
+  }
+  double worst = 0.0;
+  for (std::size_t c = 0; c < n; ++c) {
+    worst = worse(worst, std::abs(static_cast<double>(res[c])) / (rho * speed * nt * surface[c]));
+  }
+  CHECK(worst <= 4096 * eps<P>());
+}
+
+// SA-neg (Allmaras et al. 2012; TMR SA page) for nt < 0: production cb1 (1 - ct3) Omega nt,
+// destruction -cw1 (nt / d)^2, and no eddy viscosity. A uniform negative nt in a flow at rest
+// closed by slip faces leaves each cell only its destruction, -V rho cw1 (nt / d)^2 with
+// cw1 = cb1 / kappa^2 + (1 + cb2) / sigma; and the flow's next residual is the laminar one.
+TEMPLATE_TEST_CASE("negative nt is destroyed and gives no eddy viscosity", "[spalart-allmaras]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  using P = TestType;
+  const auto* file = GENERATE(from_range(meshes));
+  CAPTURE(file);
+  const auto mesh = autan::io::read_mesh(mesh_dir / file);
+  const auto g = autan::compute_geometry(mesh);
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  constexpr double p = 1.0e5;
+  constexpr double mu_air = 1.8e-5;
+  constexpr double kappa = 0.41;
+  constexpr double cw1 = 0.1355 / (kappa * kappa) + (1.0 + 0.622) / (2.0 / 3.0);
+  const double nt = -0.5 * mu_air / rho;
+  Scheme scheme;
+  scheme.limiter = false;
+  scheme.reference = {rho, 0.0, 0.0, 0.0, p / (air.gamma - 1.0)};
+  Transport t;
+  t.sutherland = false;
+  t.mu_ref = mu_air;
+  t.prandtl = prandtl;
+  NavierStokes<P> ns(mesh, g, air, scheme, t);
+  const std::vector<BoundaryKind> kind(nb, BoundaryKind::slip);
+  const std::vector<double> data(5 * nb, 0.0);
+  ns.set_boundary(kind, data);
+  std::vector<double> u(5 * n, 0.0), d(n);
+  for (std::size_t c = 0; c < n; ++c) {
+    u[c] = rho;
+    u[4 * n + c] = p / (air.gamma - 1.0);
+    d[c] = 0.05 + g.cell_centroid_y[c];
+  }
+  std::vector<typename P::state> s(5 * n);
+  std::vector<typename P::residual> r(5 * n);
+  ns.state(u, s);
+  ns.residual(s, r);
+  SpalartAllmaras<P> sa(mesh, g, ns, t);
+  sa.set_wall_distance(d);
+  const std::vector<typename P::state> rn(n, static_cast<typename P::state>(rho * nt));
+  std::vector<typename P::residual> res(n);
+  sa.residual(rn, res);
+  double worst = 0.0;
+  for (std::size_t c = 0; c < n; ++c) {
+    const double expected = -g.cell_volume[c] * rho * cw1 * (nt / d[c]) * (nt / d[c]);
+    worst = worse(worst, std::abs(static_cast<double>(res[c]) - expected) / std::abs(expected));
+  }
+  CHECK(worst <= 64 * eps<P>());
+
+  // The flow's residual of a sheared state, after SA wrote the eddy viscosity of rn, against a
+  // flow that never had one.
+  for (std::size_t c = 0; c < n; ++c) {
+    const auto w = primitive(g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]);
+    for (std::size_t k = 0; k < 3; ++k) u[(1 + k) * n + c] = rho * w[1 + k];
+    u[4 * n + c] = w[4] / (air.gamma - 1.0) + 0.5 * rho * (w[1] * w[1] + w[2] * w[2] + w[3] * w[3]);
+  }
+  NavierStokes<P> laminar(mesh, g, air, scheme, t);
+  laminar.set_boundary(kind, data);
+  std::vector<typename P::residual> r_laminar(5 * n);
+  ns.state(u, s);
+  ns.residual(s, r);
+  laminar.residual(s, r_laminar);
+  CHECK(r == r_laminar);
 }
