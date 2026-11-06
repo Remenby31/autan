@@ -66,6 +66,7 @@ The code, this file, `docs/PLAN.md`, the contracts in `docs/contracts/` and the 
 - A regression test fails on the code before the fix, for the reason the bug gives.
 - No mocks of our own classes; fakes only at external boundaries. Assert outcomes and error codes, never exact message text.
 - No redundant tests: delete a test that guards nothing another test does not.
+- Mutants run through `tools/mutate.py`, whose docstring states its input, verdicts and guards; report its verdicts by their names, `caught by timeout` apart from `caught`.
 
 ## Docs
 
