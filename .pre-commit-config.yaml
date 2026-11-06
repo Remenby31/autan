@@ -65,6 +65,10 @@ repos:
     rev: 357f7eec6dec49bf7693dc0dbec30212226d5492  # frozen: v1.7.12.25
     hooks:
       - id: actionlint
+        # actionlint skips the workflows' shell checks, without a word, when no shellcheck is on
+        # PATH (the dev image has none). This one is the hook's own, wherever pre-commit runs.
+        # ShellCheck is GPL-3.0: a development-time tool only, never shipped.
+        additional_dependencies: [shellcheck-py==0.11.0.1]
 
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
     rev: c92afdf2c6ca336aaa8f39e2bd8d48f62dbd8e1f  # frozen: v1.31.1
