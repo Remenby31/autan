@@ -1388,6 +1388,8 @@ std::vector<std::string> euler_restart_names(const runtime::SolverInput& in, boo
       out.push_back("SolverReferenceResidual" + std::to_string(k));
     }
     out.emplace_back("SolverCflCap");
+    out.insert(out.end(), {"SolverFirstOrderPlateauReference", "SolverFirstOrderPlateauCount",
+                           "SolverFirstOrderPlateauSince"});
   }
   std::size_t vortices = 0;
   for (const auto& bc : in.boundaries) {
