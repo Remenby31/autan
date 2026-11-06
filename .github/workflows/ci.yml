@@ -71,7 +71,7 @@ jobs:
         with:
           micromamba-version: 2.3.3-0
           environment-name: cgns
-          create-args: -c conda-forge cgns=4.5.2 ninja=1.13.2 metis=5.2.1 ${{ matrix.conda }}
+          create-args: -c conda-forge cgns=4.5.2 ninja=1.13.2 ${{ matrix.conda }}
           init-shell: none
           cache-downloads: false
           cache-environment: false
@@ -81,6 +81,13 @@ jobs:
           echo "${MAMBA_ROOT_PREFIX}/envs/cgns/bin" >> "${GITHUB_PATH}"
       - name: Show the compiler
         run: ${CXX} --version
+      # Ubuntu's METIS 5.1.0, the dev image's: the partitioner's tests hold for it (conda-forge's
+      # 5.2.1 cuts more than slabs on the hybrid box), and the conda environment stays unchanged.
+      - name: Install METIS
+        timeout-minutes: 5
+        run: |
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install --yes --no-install-recommends libmetis-dev
       # libstdc++'s assertions (all three compilers use it here): a bounds-checked operator[], an
       # asserted *optional, a checked front() and back(). They catch undefined behaviour the tests
       # reach but that neither the Release builds nor AddressSanitizer see (Noyau's mutation runs).
