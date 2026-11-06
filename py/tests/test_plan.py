@@ -321,7 +321,7 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     assert by_name["runtime"].bytes_host == 26 * 2**20  # measured, plan.md
     assert by_name["binary hash"].bytes_host == 2**20
     assert by_name["binary hash"].transient
-    # A zone-groups sidecar of at most 1 MiB, its text three times and parsed at 40 B a byte.
+    # A zone-groups sidecar of at most 1 MiB, read and parsed at 96 B a byte (plan.md).
     assert "zone groups" not in by_name
     sidecar = tiny_mesh(20).document()
     sidecar["groups"] = [{"name": "far", "zones": ["farfield"]}]
@@ -330,7 +330,7 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
         autan.MeshInfo.from_document(sidecar, autan.Location()), device_kind="cpu"
     )
     groups = {c.name: c for c in grouped.memory.components}["zone groups"]
-    assert groups.bytes_host == 43 * 2**20
+    assert groups.bytes_host == 96 * 2**20
     assert groups.transient
     # The solver input at most: the case's TOML escaped (6 B a byte), the MeshInfo indented
     # one level deeper (4 B a line), each zone's name and resolved condition or medium as JSON
