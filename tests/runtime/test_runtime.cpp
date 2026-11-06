@@ -2013,7 +2013,39 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
     require_error(from([](Json& d) { d["start"]["woken"] = Json::array({"vorticity"}); }), "E0705");
     require_error(from([](Json& d) { d["start"]["woken"] = Json::array({"energy", "density"}); }),
                   "E0705");
+    require_error(from([](Json& d) { d["start"]["time"] = 0.0; }), "E0705");
+    const Outcome u =
+        run(input([](Json& d) { d["time"]["steps"] = 4; }, "hybrid-unsteady.solver-input.json"));
+    REQUIRE(u.status == ExitStatus::finished);
+    const auto unsteady = [&](double time) {
+      Json doc =
+          input([](Json& d) { d["time"]["steps"] = 6; }, "hybrid-unsteady.solver-input.json");
+      doc["start"] = start_from(u.run, "continue");
+      doc["start"]["time"] = time;
+      return run(doc);
+    };
+    require_error(unsteady(-1.0), "E0705");
+    CHECK(unsteady(0.0).status == ExitStatus::finished);
   }
+}
+
+TEST_CASE("A run reads nothing on its standard input and runs with it closed", "[runtime]") {
+  // solver-input.md, Invocation: the run's own files may then take descriptor 0.
+  const fs::path dir = fresh_dir();
+  const fs::path input_file = dir / "solver-input.json";
+  std::ofstream(input_file) << input().dump();
+  std::FILE* out = std::tmpfile();
+  std::FILE* err = std::tmpfile();
+  const int saved = ::dup(0);
+  REQUIRE(saved >= 0);
+  ::close(0);
+  const ExitStatus status = autan::runtime::run_case(
+      input_file, dir / "runs", autan_test::relaxation_registry({}), build, out, err, {}, {});
+  REQUIRE(::dup2(saved, 0) == 0);
+  ::close(saved);
+  std::fclose(out);
+  std::fclose(err);
+  CHECK(status == ExitStatus::finished);
 }
 
 TEST_CASE("A periodic mesh runs through its image ghosts", "[runtime][periodic]") {
