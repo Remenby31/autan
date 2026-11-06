@@ -329,4 +329,8 @@ def test_probe_the_committed_slab_is_this_platforms_level_32(tmp_path: Path) -> 
     root = Path(__file__).resolve().parents[2]
     committed = root / "tests" / "data" / "mesh" / "naca0012" / "naca0012-n0032.msh"
     naca0012.generate_level(32, tmp_path / "n.msh")
-    assert (tmp_path / "n.msh").read_bytes() == committed.read_bytes()
+    ours = (tmp_path / "n.msh").read_text().splitlines()
+    theirs = committed.read_text().splitlines()
+    differ = [i for i, (a, b) in enumerate(zip(ours, theirs, strict=True)) if a != b]
+    first = (ours[differ[0]], theirs[differ[0]]) if differ else None
+    assert not differ, f"{len(differ)} of {len(ours)} lines differ, first: {first}"
