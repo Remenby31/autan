@@ -2,6 +2,7 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -1818,9 +1819,11 @@ TEST_CASE("A warm start takes the previous state and counts from 1", "[runtime]"
 
 TEST_CASE("A start from a run with the longest case name and mesh path is honoured", "[runtime]") {
   // results.md, RunMetadata: a case name of 4096 control bytes, which ensure_ascii writes as
-  // \u00XX (6 bytes each), and a mesh path of about 4000 bytes stay under its 64 KiB.
+  // \u00XX (6 bytes each), and a mesh path as long as the system allows (about 4000 bytes on
+  // Linux; PATH_MAX is 1024 on macOS) stay under its 64 KiB.
+  const std::size_t longest = std::min<std::size_t>(3800, PATH_MAX - 300);
   fs::path deep = fresh_dir();
-  while (deep.string().size() < 3800) deep /= std::string(200, 'd');
+  while (deep.string().size() < longest) deep /= std::string(200, 'd');
   fs::create_directories(deep);
   const fs::path mesh = deep / "polyMesh";
   fs::copy(data_dir / "mesh" / "hybrid" / "polyMesh", mesh, fs::copy_options::recursive);
