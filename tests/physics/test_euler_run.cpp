@@ -987,11 +987,9 @@ TEST_CASE("ranks that disagree on planar faces all run the full loops", "[euler]
     zone["zone"] = "fluid";
     zone["initial"]["density"] = 1.2 * zone["initial"]["density"].get<double>();
     d["cell_zones"] = Json::array({zone});
-    d["time"] = {{"kind", "unsteady"},
-                 {"steps", 6},
-                 {"dt", nullptr},
-                 {"cfl", 0.8},
-                 {"average_from", nullptr}};
+    d["time"] = {{"kind", "unsteady"},      {"steps", 6},
+                 {"dt", nullptr},           {"cfl", 0.8},
+                 {"average_from", nullptr}, {"checkpoint", {{"seconds", 1800.0}}}};
   });
   const auto one = run(doc);
   INFO(one.err);
