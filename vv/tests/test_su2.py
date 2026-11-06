@@ -1054,3 +1054,104 @@ def test_absolute_criterion_does_not_depend_on_the_initial_state() -> None:
     assert fs["pressure"] == 0.7142857
     assert "viscosity" not in fs
     assert "nu-tilde" not in history.flux_scales(fs, 1.0)
+
+
+def test_accuracy_study_compares_both_codes_each_its_own_baseline(tmp_path: Path) -> None:
+    import autan  # noqa: PLC0415
+    from autan.units import deg, m  # noqa: PLC0415
+    from autan_vv.runs import mesh_info, write_run  # noqa: PLC0415
+    from autan_vv.su2 import accuracy  # noqa: PLC0415
+
+    levels = (8, 16, 32)
+    family, meshes = naca0012.generate_family(levels, tmp_path / "family")
+    # Forces F(h) = F0 + C h^2 exactly: Richardson recovers F0. Each history settles as
+    # 1 + 1e-3 0.97^i: within 1e-7 of its end from i = 303, steady over 500 iterations from i = 803.
+    f0 = {"cl": 0.35, "cd": 0.0224, "cmy": -0.038}
+    slope = {"cl": 0.5, "cd": 0.1, "cmy": -0.2}
+    rows = 900
+
+    def forces(n: int, offset: float) -> dict[str, float]:
+        return {k: f0[k] + slope[k] / n**2 + offset for k in f0}
+
+    autan_runs, su2_cases = [], []
+    for lv, face_mesh in zip(family.levels, meshes, strict=True):
+        path = tmp_path / "family" / lv.file
+        case = autan.Case("naca0012-m080-a125", mesh=str(path))
+        case.physics = autan.Compressible(turbulence=autan.Inviscid(), precision="fp64")
+        case.freestream(mach=0.8, aoa=1.25 * deg, pressure=101325.0 * autan.units.ureg.Pa,
+                        ref_length=1.0 * m)  # fmt: skip
+        case.time = autan.Steady(max_iterations=rows, residual_orders=99.0)
+        for zone, kind in (("airfoil", "slip"), ("farfield", "farfield"), ("back", "symmetry"),
+                           ("front", "symmetry")):  # fmt: skip
+            getattr(case.boundary(zone), kind)()
+        cells = face_mesh.n_cells
+        fields = {"Density": np.ones(cells), "VelocityX": np.zeros(cells),
+                  "VelocityY": np.zeros(cells), "VelocityZ": np.zeros(cells),
+                  "Pressure": np.full(cells, 101325.0), "Temperature": np.full(cells, 288.15)}  # fmt: skip
+        info = mesh_info(face_mesh, path, "gmsh")
+        run = write_run(tmp_path / "autan", case, face_mesh, info, fields).path
+        target = forces(lv.n, 0.0)
+        lines = []
+        for i in range(rows):
+            settle = 1.0 + 1e-3 * 0.97**i
+            equations = ("density", "momentum-x", "momentum-y", "momentum-z", "energy")
+            residuals = dict.fromkeys(equations, 1e-2 * 0.97**i + 1e-14)
+            monitors = {"forces": {k: v * settle for k, v in target.items()}}
+            lines.append(json.dumps({"iteration": i + 1, "time": None, "residuals": residuals,
+                                     "monitors": monitors}))  # fmt: skip
+        (run / "history.jsonl").write_text("\n".join(lines) + "\n")
+        autan_runs.append(run)
+        # SU2 on the same file: forces lower by 1e-4, its own settling history and wall nodes.
+        d = tmp_path / "su2" / f"n{lv.n:04d}"
+        d.mkdir(parents=True)
+        record = mesh.convert(path, d / "mesh.su2", 2)
+        _, _, points, markers = _read_su2_mesh(d / "mesh.su2")
+        nodes = np.unique(markers["airfoil"][:, 1:])
+        surface = ['"PointID","x","y","Density","Momentum_x","Momentum_y","Energy"']
+        surface += [f"{k}, {points[k, 0]:.17g}, {points[k, 1]:.17g}, 1.0, 0.0, 0.0, 2.5"
+                    for k in nodes.tolist()]  # fmt: skip
+        (d / "surface.csv").write_text("\n".join(surface) + "\n")
+        theirs = forces(lv.n, -1e-4)
+        header = (DATA / "su2-v8.6.0-naca0012-m080-a125-n0032-2d.csv").read_text().split("\n")[0]
+        names = [h.strip().strip('"') for h in header.split(",")]
+        csv_rows = [header]
+        for i in range(rows):
+            settle = 1.0 + 1e-3 * 0.97**i
+            row = {"Inner_Iter": i, "Time(sec)": 0.01, "CL": theirs["cl"] * settle,
+                   "CD": theirs["cd"] * settle, "CMz": -theirs["cmy"] * settle}  # fmt: skip
+            rms = float(np.log10(1e-2 * 0.97**i + 1e-14))
+            csv_rows.append(",".join(repr(float(row.get(n, rms if n.startswith("rms[") else 0.0)))
+                                     for n in names))  # fmt: skip
+        (d / "history.csv").write_text("\n".join(csv_rows) + "\n")
+        shutil.copy(DATA / "su2-v8.6.0-flatplate-35x25-log-freestream.txt", d / "log.txt")
+        (d / "case.cfg").write_text("MESH_FILENAME= mesh.su2\n")
+        (d / "level.json").write_text(json.dumps({
+            "condition": "m080-a125", "n": lv.n, "scheme": "jst",
+            "mesh": {"source_sha256": record.source_sha256},
+        }))  # fmt: skip
+        (d / "provenance.json").write_text(json.dumps({
+            "exit_status": 0, "su2": "v8.6.0", "image_id": "sha256:i", "case_sha256": "c",
+        }))  # fmt: skip
+        su2_cases.append(d)
+    report = accuracy.study(autan_runs, su2_cases)
+    assert report["condition"] == "m080-a125"
+    assert report["outputs"] == ["cl", "cd", "cmy"]
+    for row, lv in zip(report["levels"], family.levels, strict=True):
+        assert row["autan"]["iterations"] == 804
+        assert row["su2"]["iterations"] == 804
+        settled = 1.0 + 1e-3 * 0.97 ** (rows - 1)
+        assert row["difference"]["cd"] == pytest.approx(1e-4 * settled, rel=1e-9)
+        assert row["cp"]["faces"] == lv.n
+    for code, offset in (("autan", 0.0), ("su2", -1e-4)):
+        continuum = report["continuum"][code]
+        assert continuum["levels"] == list(levels)
+        for k in ("cl", "cd"):
+            expected = (f0[k] + offset) * (1.0 + 1e-3 * 0.97 ** (rows - 1))
+            assert continuum[k]["estimate"] == pytest.approx(expected, rel=1e-6)
+    # Another mesh file on one side is another problem.
+    level = json.loads((su2_cases[0] / "level.json").read_text())
+    level["mesh"]["source_sha256"] = "0" * 64
+    (su2_cases[0] / "level.json").write_text(json.dumps(level))
+    with pytest.raises(VVError) as err:
+        accuracy.study(autan_runs, su2_cases)
+    assert err.value.code == "V0905"
