@@ -248,7 +248,7 @@ Fix: Export the mesh without the feature named in the message.
 
 **File refers to another file** (error)
 
-A CGNS file the code reads (a mesh, a `start` solution, a run's solution) has data in another file: a CGNS link, an HDF5 external link, a dataset with external storage or a virtual dataset (`data.node` names the first). Files must be self-contained.
+A CGNS file the code reads (a mesh, a `start` solution, a run's solution) has data in another file: a CGNS link, an HDF5 link of a user-defined class (64 to 255, 64 being the external link), a dataset with external storage or a virtual dataset (`data.node` names the first). Files must be self-contained.
 
 Fix: Export a self-contained file: no links to other files, no external storage or virtual datasets.
 
