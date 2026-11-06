@@ -585,3 +585,52 @@ def test_fp32_agreement_measures_the_relative_difference_in_units_of_eps32(tmp_p
             assert pair["fields"]["Density"] == pytest.approx(delta / EPS32, rel=1e-9)
             assert pair["fields"]["Pressure"] == 0.0
         assert report["pass"] is (delta / EPS32 <= 500.0)
+
+
+def test_fp32_agreement_pairs_studies_that_keep_their_own_copies_of_the_mesh(
+    tmp_path: Path,
+) -> None:
+    # Each study keeps its own copy of the mesh: the fp32 cases name another path, the same file.
+    # The pair is the same problem (#524): the mesh is paired by its sha256, not by its path.
+    import shutil  # noqa: PLC0415
+
+    from autan_vv.agreement import agreement  # noqa: PLC0415
+
+    meshes = _family(tmp_path, "hex", (4, 6))
+    double = _runs(tmp_path / "fp64", meshes, "mms-euler", 2.0)
+    copies = []
+    for mesh, path, fmt in meshes:
+        copy = tmp_path / "fp32-study" / path.name
+        copy.parent.mkdir(exist_ok=True)
+        shutil.copy(path, copy)
+        copies.append((mesh, copy, fmt))
+    single = _runs(tmp_path / "fp32", copies, "mms-euler", 2.0, precision="fp32+acc64")
+    report = agreement(double, single)
+    assert report["pass"]
+    assert [p["n_cells"] for p in report["pairs"]] == [64, 216]
+
+
+@pytest.mark.parametrize("same_solution", [True, False])
+def test_fp32_agreement_compares_the_manufactured_solution_by_its_sha256(
+    tmp_path: Path, same_solution: bool
+) -> None:
+    # The case records the manufactured solution's path and sha256: two copies of one solution
+    # differ only by their path and pair; another solution has another sha256 and is refused.
+    from autan_vv.agreement import agreement  # noqa: PLC0415
+
+    meshes = _family(tmp_path, "hex", (4, 6))
+
+    def runs(out: Path, precision: str, sha: str) -> list[Path]:
+        def edit(case: autan.Case) -> None:
+            case.verification = autan.Manufactured(path=str(out / "navier_stokes.json"), sha256=sha)
+
+        return _runs(out, meshes, "mms-euler", 2.0, precision=precision, edit=edit)
+
+    double = runs(tmp_path / "fp64", "fp64", "a" * 64)
+    single = runs(tmp_path / "fp32", "fp32+acc64", "a" * 64 if same_solution else "b" * 64)
+    if same_solution:
+        assert agreement(double, single)["pass"]
+    else:
+        with pytest.raises(VVError) as refused:
+            agreement(double, single)
+        assert refused.value.code == "V0727"
