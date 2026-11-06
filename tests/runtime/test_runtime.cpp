@@ -625,7 +625,12 @@ TEST_CASE("A converging run writes the run directory of results.md", "[runtime]"
   CHECK(std::regex_match(info["finished"].get<std::string>(),
                          std::regex("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z")));
   CHECK(info["mesh"]["path"] == fs::absolute(mesh_path).lexically_normal().string());
-  CHECK(info["solver"] == Json{{"version", "0.0.0"}, {"commit", build.commit}, {"backend", "cpu"}});
+  CHECK(info["solver"] == Json{{"version", "0.0.0"},
+                               {"commit", build.commit},
+                               {"backend", "cpu"},
+                               {"binary_sha256", info["solver"]["binary_sha256"]}});
+  CHECK(std::regex_match(info["solver"]["binary_sha256"].get<std::string>(),
+                         std::regex("[0-9a-f]{64}")));
   // identity: SHA-256 of the nine fields joined by "\n" (results.md), the zone groups' hash
   // empty without a sidecar; the cell order is RCM by default.
   CHECK(info["cell_order"] == "rcm");

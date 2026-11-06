@@ -767,6 +767,14 @@ _CODES = [
         "Check the space and permissions of the run directory's file system.",
     ),
     Code(
+        "W0715",
+        "Different solver binary",
+        "This `continue` run's `autan-run` executable is not the one that wrote the state it "
+        "starts from (run.json `solver.binary_sha256`, results.md#runjson): the chain may not be "
+        "bit for bit the uninterrupted run. `data` gives the `expected` and `found` SHA-256.",
+        "Continue with the binary of the original run, or start the chain again with this one.",
+    ),
+    Code(
         "D0107",
         "Divergence",
         "The solution diverged: a residual or a state became non-finite or non-physical. "

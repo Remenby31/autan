@@ -1,5 +1,15 @@
 FetchContent_GetProperties(picosha2)
 
+# results.md, run.json `solver.binary_sha256`: the hash of autan-run covers the solver only when
+# every library of ours links into it statically.
+if(BUILD_SHARED_LIBS)
+  message(
+    FATAL_ERROR
+    "autan-run links our libraries statically (results.md, solver.binary_sha256): "
+    "configure with BUILD_SHARED_LIBS=OFF"
+  )
+endif()
+
 add_library(
   autan_runtime
   src/comm.cpp
