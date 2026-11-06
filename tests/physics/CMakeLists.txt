@@ -71,11 +71,14 @@ if(AUTAN_ENABLE_CGNS)
     add_dependencies(autan_euler_run_tests autan-run)
   endif()
   # [mpi] cases carry the CTest label mpi: CI's hosted MPI ranks job selects them by it.
-  catch_discover_tests(autan_euler_run_tests TEST_SPEC "~[gpu]~[mpi]")
-  catch_discover_tests(autan_euler_run_tests TEST_SPEC "[mpi]~[gpu]" PROPERTIES LABELS mpi)
+  # Processes started by these tests share their executables' hash (run.json
+  # solver.binary_sha256) through a cache in the build tree.
+  set(hash_cache "AUTAN_BINARY_HASH_CACHE=${PROJECT_BINARY_DIR}/binary-hash-cache")
+  catch_discover_tests(autan_euler_run_tests TEST_SPEC "~[gpu]~[mpi]" PROPERTIES ENVIRONMENT ${hash_cache})
+  catch_discover_tests(autan_euler_run_tests TEST_SPEC "[mpi]~[gpu]" PROPERTIES ENVIRONMENT ${hash_cache} LABELS mpi)
   if(AUTAN_ENABLE_CUDA)
     target_link_libraries(autan_euler_run_tests PRIVATE autan::physics)
-    catch_discover_tests(autan_euler_run_tests TEST_SPEC "[gpu]" PROPERTIES LABELS gpu)
+    catch_discover_tests(autan_euler_run_tests TEST_SPEC "[gpu]" PROPERTIES ENVIRONMENT ${hash_cache} LABELS gpu)
   endif()
 endif()
 
