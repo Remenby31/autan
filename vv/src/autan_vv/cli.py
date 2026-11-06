@@ -308,6 +308,36 @@ def _cmd_su2_flatplate(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+def _cmd_su2_onera_m6(args: argparse.Namespace) -> None:
+    from autan_vv.su2 import onera_m6  # noqa: PLC0415
+
+    if args.action == "prepare":
+        if args.family is None or args.published is None:
+            msg = "su2-onera-m6 prepare takes --family and --published (SU2's inv_ONERAM6.cfg)"
+            raise VVError(msg, code="V0903")
+        for run in onera_m6.prepare(args.family, args.published, args.root, args.max_iterations):
+            _say(str(run.relative_to(args.root)))
+        return
+    report = onera_m6.results(args.root, args.cache)
+    if args.out is not None:
+        args.out.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+    for lv in report["levels"]:
+        state = f"converged in {lv['iterations']}" if lv["converged"] else "NOT converged, last"
+        _say(
+            f"n{lv['n']:03d}: {state} iterations, CL {lv['cl']:.6f}, CD {lv['cd']:.6f}; Cp RMS "
+            + ", ".join(
+                f"{row['eta']:.2f} {row['cp_rms_off_shocks']:.3f}"
+                for row in lv["sections"]
+                if row["cp_rms_off_shocks"] is not None
+            )
+        )
+    for key, est in report["continuum"].items():
+        value = (
+            f"{est['estimate']:.6f}, p = {est['order']:.2f}" if "estimate" in est else est["error"]
+        )
+        _say(f"continuum {key.upper()}: {value}")
+
+
 def _cmd_sections(args: argparse.Namespace) -> None:
     from autan_vv.cases import onera_m6  # noqa: PLC0415
 
@@ -572,6 +602,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--cache", type=Path, default=Path("~/.cache/autan-vv").expanduser())
     p.add_argument("--out", type=Path, help="results: report JSON (exit 1 if a gate fails)")
     p.set_defaults(func=_cmd_su2_flatplate)
+
+    p = sub.add_parser(
+        "su2-onera-m6",
+        help="SU2 on the ONERA M6 family: prepare its meshes and cases, or report its runs",
+    )
+    p.add_argument("action", choices=("prepare", "results"))
+    p.add_argument("root", type=Path, help="the directory prepare writes and the runs fill")
+    p.add_argument("--family", type=Path, help="prepare: directory of the mesh manifest")
+    p.add_argument("--published", type=Path, help="prepare: SU2's inv_ONERAM6.cfg")
+    p.add_argument("--max-iterations", type=int, default=50000)
+    p.add_argument("--cache", type=Path, default=Path("~/.cache/autan-vv").expanduser())
+    p.add_argument("--out", type=Path, help="results: report JSON")
+    p.set_defaults(func=_cmd_su2_onera_m6)
 
     p = sub.add_parser(
         "order", help="observed order from errors on a mesh family (JSON in, JSON out)"

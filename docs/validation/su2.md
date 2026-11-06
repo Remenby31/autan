@@ -172,6 +172,16 @@ autan-vv su2-flatplate results plate --out report.json                    # crit
 autan-vv su2-flatplate results variant --models sa-noft2 --reference plate   # a variant, both criteria
 ```
 
+## ONERA M6: SU2 alone
+
+Run 2308 of Schmitt and Charpin (M 0.8395, α 3.06°) in Euler flow, SU2 alone on the three levels of the [ONERA M6 family](meshes.md#onera-m6-meshes) (12, 24, 48: 52 k to 2.75 M tetrahedra), pre-registered on #195; the comparison with Autan on the same files is declared once Autan's runs on them exist. `autan_vv.su2.onera_m6` converts each level to SU2's 3D format (tetrahedra; triangle markers under the names SU2's published `inv_ONERAM6.cfg` uses, `WING`, `FARFIELD`, `SYMMETRY`) and runs that file with only its mesh, Schmitt and Charpin's reference area and mean aerodynamic chord (Autan's case), its outputs and its own residual stop changed (`onera_m6.ADOPTED_KEYS`). Each run goes to its floor and is judged by the [absolute criterion](#fairness-protocol) as its own baseline (CL and CD). Results: CL and CD per level and in the continuum (h of the manifest), and Cp at the experiment's seven stations, cut and compared with the functions of Autan's M2 study ([cases.md](cases.md#onera-m6-inviscid)). SU2 is vertex-centred: on these files it has 11 k to 497 k control volumes where Autan has 52 k to 2.75 M.
+
+```sh
+autan-vv su2-onera-m6 prepare m6 --family meshes-onera-m6 --published inv_ONERAM6.cfg
+ORDERS=99 vv/su2/run.sh m6 n024 8                      # each level in turn, to the floor
+autan-vv su2-onera-m6 results m6 --out m6.json
+```
+
 ## Tests
 
 `vv/tests/test_su2.py`: the converted file parsed independently and compared with the slab the generator writes (points bit for bit, counterclockwise cells, area equal to the annulus between the far-field and airfoil polygons, airfoil nodes on eq. 1 of the paper, hashes from both files); refusals `V0901`, `V0902`, `V0903`; the configuration against the case (R from CODATA and the molar mass of air); K_SU2 on a Cartesian slab against (a² s)^(1/3) K; the criterion on geometric residual sequences; SU2 v8.6.0's history columns and axes from real 2D and 3D runs (excerpts in `vv/tests/data/`); the study reproducing the paper's FLO82 extrapolation (Table 3). Flat plate: a PLOT3D grid converted with TMR's boundaries (markers, edge orientation, area, `V0902` for a grid that is not the plate), the same grid renumbered and partly reversed recognised as the same and a moved point not, the configuration changing only `ADOPTED_KEYS` (`V0903`), cf and the SA residual read from SU2 v8.6.0's own 35×25 outputs (excerpts in `vv/tests/data/`), and the report on runs carrying CFL3D's values, which gives CFL3D's continuum from TMR's files and passes, gives no estimate when the finest run has not converged, judges a variant that stops above ten orders but at the published runs' residual levels converged only by the amended criterion, and refuses a configuration changed after its run.

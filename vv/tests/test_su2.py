@@ -1054,3 +1054,114 @@ def test_absolute_criterion_does_not_depend_on_the_initial_state() -> None:
     assert fs["pressure"] == 0.7142857
     assert "viscosity" not in fs
     assert "nu-tilde" not in history.flux_scales(fs, 1.0)
+
+
+# MSH 4.1 ASCII (Gmsh reference manual, "MSH file format") of the unit cube: node tag
+# 1 + i + 2j + 4k at (i, j, k), the six tetrahedra around the diagonal (0, 0, 0)-(1, 1, 1), and the
+# zones `zones` (node tags; three nodes a triangle, four a quadrangle).
+def _cube_msh(path: Path, zones: dict[str, list[tuple[int, ...]]]) -> None:
+    nodes = [(i, j, k) for k in (0, 1) for j in (0, 1) for i in (0, 1)]
+    tets = []
+    for a, b, c in ((0, 1, 2), (0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 0, 1), (2, 1, 0)):
+        corner = [0, 0, 0]
+        chain = [1]
+        for axis in (a, b, c):
+            corner[axis] = 1
+            chain.append(1 + corner[0] + 2 * corner[1] + 4 * corner[2])
+        tets.append(chain)
+    names = list(zones)
+    lines = ["$MeshFormat", "4.1 0 8", "$EndMeshFormat", "$PhysicalNames", str(len(names) + 1)]
+    lines += [f'2 {k + 1} "{name}"' for k, name in enumerate(names)]
+    lines += [f'3 {len(names) + 1} "fluid"', "$EndPhysicalNames", "$Entities"]
+    lines += [f"0 0 {len(names)} 1"]
+    lines += [f"{k + 1} 0 0 0 1 1 1 1 {k + 1} 0" for k in range(len(names))]
+    lines += [f"1 0 0 0 1 1 1 1 {len(names) + 1} 0", "$EndEntities", "$Nodes", "1 8 1 8", "3 1 0 8"]
+    lines += [str(t) for t in range(1, 9)]
+    lines += [f"{i} {j} {k}" for i, j, k in nodes]
+    total = sum(len(t) for t in zones.values()) + len(tets)
+    lines += ["$EndNodes", "$Elements", f"{len(names) + 1} {total} 1 {total}"]
+    tag = 1
+    for k, name in enumerate(names):
+        lines.append(f"2 {k + 1} {2 if len(zones[name][0]) == 3 else 3} {len(zones[name])}")
+        for tri in zones[name]:
+            lines.append(" ".join(map(str, (tag, *tri))))
+            tag += 1
+    lines.append(f"3 1 4 {len(tets)}")
+    for tet in tets:
+        lines.append(" ".join(map(str, (tag, *tet))))
+        tag += 1
+    lines += ["$EndElements"]
+    path.write_text("\n".join(lines) + "\n")
+
+
+CUBE_ZONES: dict[str, list[tuple[int, ...]]] = {
+    "wing": [(1, 2, 4), (1, 4, 3)],  # z = 0
+    "symmetry": [(1, 2, 6), (1, 6, 5)],  # y = 0
+    "farfield": [(1, 3, 7), (1, 7, 5), (2, 4, 8), (2, 8, 6), (3, 4, 8), (3, 8, 7), (5, 6, 8),
+                 (5, 8, 7)],
+}  # fmt: skip
+
+
+def test_onera_m6_mesh_converts_to_su2_tetrahedra_and_published_markers(tmp_path: Path) -> None:
+    from autan_vv.su2 import onera_m6  # noqa: PLC0415
+
+    source = tmp_path / "cube.msh"
+    _cube_msh(source, CUBE_ZONES)
+    record = onera_m6.convert(source, tmp_path / "cube.su2")
+    dim, elements, points, markers = _read_su2_mesh(tmp_path / "cube.su2")
+    assert dim == 3
+    assert (record.points, record.tetrahedra) == (8, 6)
+    # Points bit for bit and in the source's order; tetrahedra (VTK 10) as the source's nodes.
+    expected = [(i, j, k) for k in (0, 1) for j in (0, 1) for i in (0, 1)]
+    assert points[:, :3].tolist() == [list(map(float, p)) for p in expected]
+    assert set(elements[:, 0]) == {10}
+    assert all(0 in tet and 7 in tet for tet in elements[:, 1:5].tolist())
+    # Zones under the published configuration's marker names, triangles (VTK 5).
+    assert {k: len(v) for k, v in markers.items()} == {"WING": 2, "FARFIELD": 8, "SYMMETRY": 2}
+    assert sorted(map(sorted, markers["WING"][:, 1:].tolist())) == [[0, 1, 3], [0, 2, 3]]
+    assert all(set(v[:, 0]) == {5} for v in markers.values())
+    assert record.file_sha256 == hashlib.sha256((tmp_path / "cube.su2").read_bytes()).hexdigest()
+    # Not the M6 mesh: a zone missing, a zone of quadrangles.
+    quads: dict[str, list[tuple[int, ...]]] = {"wing": [(1, 2, 4, 3)]}
+    for zones in (
+        {k: v for k, v in CUBE_ZONES.items() if k != "symmetry"},
+        {**CUBE_ZONES, **quads},
+    ):
+        _cube_msh(source, zones)
+        with pytest.raises(VVError) as err:
+            onera_m6.convert(source, tmp_path / "bad.su2")
+        assert err.value.code == "V0902"
+
+
+def test_onera_m6_configuration_and_surface(tmp_path: Path) -> None:
+    from autan_vv.su2 import onera_m6  # noqa: PLC0415
+
+    published = (
+        "% published\nSOLVER= EULER\nMACH_NUMBER= 0.8395\nAOA= 3.06\nFREESTREAM_PRESSURE= 101325.0\n"
+        "REF_LENGTH= 1.0\nREF_AREA= 0\nMARKER_EULER= ( WING )\nMARKER_FAR= ( FARFIELD )\n"
+        "MARKER_SYM= ( SYMMETRY )\nCONV_NUM_METHOD_FLOW= JST\nMESH_FILENAME= theirs.su2\n"
+        "OUTPUT_FILES= (RESTART_ASCII, CGNS, SURFACE_CGNS)\nCONV_RESIDUAL_MINVAL= -12\n"
+    )
+    before = config.options(published)
+    after = config.options(onera_m6.configure(published, "m6.su2"))
+    assert {k: v for k, v in before.items() if k not in onera_m6.ADOPTED_KEYS} == {
+        k: v for k, v in after.items() if k not in onera_m6.ADOPTED_KEYS
+    }
+    # Schmitt and Charpin's reference area and mean aerodynamic chord (AGARD AR-138, B1).
+    assert float(after["REF_AREA"]) == 0.7532
+    assert float(after["REF_LENGTH"]) == 0.64607
+    assert after["MESH_FILENAME"] == "m6.su2"
+    with pytest.raises(VVError) as err:
+        onera_m6.configure(published.replace("( WING )", "( BODY )"), "m6.su2")
+    assert err.value.code == "V0903"
+    # SU2's surface file gives Cp per point, NaN off the wing; a constant Cp cuts to itself.
+    surface = tmp_path / "surface.csv"
+    surface.write_text('"PointID","x","y","z","Pressure_Coefficient"\n0, 0, 0, 0, -0.5\n'
+                       "1, 3, 0, 0, -0.5\n2, 3, 1.2, 0, -0.5\n3, -1, 1.2, 0, -0.5\n")  # fmt: skip
+    cp = onera_m6.surface_cp(surface, 5)
+    assert cp[:4].tolist() == [-0.5] * 4
+    assert math.isnan(cp[4])
+    points = np.array([[0, 0, 0], [3, 0, 0], [3, 1.2, 0], [-1, 1.2, 0], [9, 9, 9]], dtype=float)
+    wing = np.array([[0, 1, 2], [0, 2, 3]])
+    cut = onera_m6.sections(points, wing, cp, [0.2, 0.65])
+    assert all(np.all(s.upper[:, 1] == -0.5) and s.lower.size == 0 for s in cut.values())
