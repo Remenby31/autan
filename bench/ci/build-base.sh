@@ -52,7 +52,7 @@ git worktree add --detach "$dir" "$rev" || {
 # missing lock file, a signal), leaves none and is never blamed on the base.
 status_file="$dir/.autan-build-status"
 # shellcheck disable=SC2016 # $1 expands in the inner bash, the worktree passed as its argument.
-bench/lock/autan-gpu-lock -m "gpu-bench: build the base's benchmarks" \
+bench/lock/autan-gpu-lock --untimed -m "gpu-bench: build the base's benchmarks" \
   -w "${AUTAN_BENCH_LOCK_TIMEOUT:-3600}" -t 600 -- bash -c '
   cmake -S "$1/bench" -B "$1/build/bench" && cmake --build "$1/build/bench"
   status=$?; echo "$status" > "$2"; exit "$status"' build-base "$dir" "$status_file"

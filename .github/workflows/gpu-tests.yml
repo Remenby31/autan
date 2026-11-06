@@ -70,7 +70,7 @@ jobs:
         # launcher alive past 120 s has its processes' activity (state, CPU, wait channel) and any
         # stacks dumped, then is killed, so the hung test is named before the lock's 10 minutes.
         run: >-
-          bench/lock/autan-gpu-lock -m "gpu-tests: ctest -L gpu" -t 600 --
+          bench/lock/autan-gpu-lock --untimed -m "gpu-tests: ctest -L gpu" -t 600 --
           bench/ci/ctest-watchdog.sh 120 "$RUNNER_TEMP/mpi-hang-stacks" --
           ctest --test-dir build -L gpu -j 1 --output-on-failure --no-tests=error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -89,7 +89,7 @@ jobs:
         env:
           AUTAN_SPIKE_LIB: ${{ github.workspace }}/build/codegen/libautan_spike_gpu.so
         run: >-
-          ../bench/lock/autan-gpu-lock -m "gpu-tests: codegen pytest --backend gpu, not slow" -t 600 --
+          ../bench/lock/autan-gpu-lock --untimed -m "gpu-tests: codegen pytest --backend gpu, not slow" -t 600 --
           uv run --locked pytest --backend gpu -m "not slow" -q
       # The 25 slow ones (second-order MMS on the device, ~55 s each, 22 min in all on the Spark)
       # in 4 shards of about 6 minutes, each its own hold of the lock: nightly and on demand on
@@ -106,7 +106,7 @@ jobs:
           echo "$(wc -l < "$RUNNER_TEMP/slow") slow tests"
           for k in 0 1 2 3; do
             mapfile -t shard < <(awk -v k="$k" 'NR % 4 == k' "$RUNNER_TEMP/slow")
-            ../bench/lock/autan-gpu-lock -m "gpu-tests: codegen slow shard $((k + 1))/4" -t 600 -- \
+            ../bench/lock/autan-gpu-lock --untimed -m "gpu-tests: codegen slow shard $((k + 1))/4" -t 600 -- \
               uv run --locked pytest --backend gpu -q "${shard[@]}"
           done
       - name: Release the GPU lock priority
