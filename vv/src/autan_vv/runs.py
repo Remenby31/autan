@@ -90,6 +90,8 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str, scale: float = 1.0) 
             "cgns_nodes": 0,
             "point_list_ids": 0,
         },
+        "groups": [],
+        "groups_source": None,
         "bounds": {
             "min": [float(x) for x in mesh.points.min(axis=0)],
             "max": [float(x) for x in mesh.points.max(axis=0)],
@@ -275,12 +277,15 @@ def write_run(
     # Always the fake backend: fixture fields are given, never computed, so they are never evidence.
     solver = Solver(version=__version__, commit=COMMIT, backend="fake", binary_sha256=None)
     devices = Devices(kind="cpu", count=1)
+    groups = info.groups_source.sha256 if info.groups_source else None
     run = RunInfo(
         run_id=RunWriter.new_run_id(started),
         identity="0" * 64,
         status="running",
         case=CaseIdentity(name=spec.name, sha256=spec.hash()),
-        mesh=MeshIdentity(path=str(case.mesh_path), sha256=info.source.sha256),
+        mesh=MeshIdentity(
+            path=str(case.mesh_path), sha256=info.source.sha256, groups_sha256=groups
+        ),
         solver=solver,
         precision=spec.physics.precision,
         devices=devices,

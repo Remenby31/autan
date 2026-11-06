@@ -233,6 +233,34 @@ _CODES = [
         "Assign each entity to one zone in the meshing tool.",
     ),
     Code(
+        "E0136",
+        "Zone groups file unreadable",
+        "The mesh's `<mesh>.zones.json` is not JSON, or not an `autan.zone-groups/1` document "
+        "(missing or unknown key, wrong type).",
+        "Fix the file against docs/contracts/mesh-info.md, or remove it.",
+    ),
+    Code(
+        "E0137",
+        "Zone groups file describes another mesh",
+        "The `mesh_sha256` of the mesh's `<mesh>.zones.json` differs from the mesh hash, or the "
+        "file the runtime reads differs from the solver input's `mesh.groups_sha256`.",
+        "Regenerate the groups for this mesh, then the MeshInfo and the solver input.",
+    ),
+    Code(
+        "E0138",
+        "Bad zone group",
+        "A group of the mesh's `<mesh>.zones.json` names a boundary zone the mesh does not "
+        "have (names are exact, spaces included), lists a zone twice, is empty, or has a name "
+        "outside `[A-Za-z0-9_.-]` or starting with `-`.",
+        "Correct the group against the zone names of the mesh's MeshInfo.",
+    ),
+    Code(
+        "E0139",
+        "Zone group defined twice",
+        "Two groups of the mesh's `<mesh>.zones.json` have the same name.",
+        "Give each group one entry.",
+    ),
+    Code(
         "E0140",
         "Invalid partition request",
         "A part count, rank, part index or cell weight is out of range, or an array has the wrong size.",
@@ -313,6 +341,21 @@ _CODES = [
         "Put the mesh at the path the case gives, relative to the case file.",
     ),
     Code(
+        "E0210",
+        "The MeshInfo's zone groups describe another groups file",
+        "The SHA-256 of the mesh's `<mesh>.zones.json` differs from the MeshInfo "
+        "`groups_source.sha256`, or the file exists and the MeshInfo has no groups: the groups "
+        "the case selects would not be the ones the MeshInfo lists.",
+        "Regenerate the MeshInfo with `autan-mesh-info` after changing the groups file.",
+    ),
+    Code(
+        "W0211",
+        "Zone groups file not found",
+        "The MeshInfo has zone groups but the `<mesh>.zones.json` next to the case's mesh does "
+        "not exist, so `plan` cannot check that they still describe it.",
+        "Put the groups file next to the mesh.",
+    ),
+    Code(
         "E0206",
         "Manufactured solution differs from its hash",
         "The SHA-256 of the manufactured-solution file named by `verification.manufactured` "
@@ -346,7 +389,7 @@ _CODES = [
         "Build the case gas from the solution's parameters, or export the solution the case needs.",
     ),
     Code(
-        "E0210",
+        "E0212",
         "MeshInfo prepared for another run",
         "The MeshInfo's derived counts are not for this run: its lines were computed at another "
         "scale than the case's `mesh_unit`, or a run on several ranks has no partition for that "
@@ -523,6 +566,13 @@ _CODES = [
         "host multigrid on one rank: `linear_solver` must be `multigrid`, on the CPU, on one "
         "rank. `autan plan` and the physics both refuse other runs; the message names the key.",
         "Use `linear_solver='multigrid'` and run on one CPU rank, or drop the option.",
+    ),
+    Code(
+        "E0428",
+        "Zone group pattern matches no group",
+        "A selection's `group` (a glob over the zone group names of the mesh's MeshInfo) "
+        "matches no group. Groups come from the mesh's `<mesh>.zones.json`.",
+        "Use one of the group names the message lists, or select zones by name.",
     ),
     Code(
         "W0426",

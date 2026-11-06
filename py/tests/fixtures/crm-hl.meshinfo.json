@@ -124,6 +124,8 @@
       ]
     }
   },
+  "groups": [],
+  "groups_source": null,
   "partition": {
     "ranks": 1,
     "groups": "none",

@@ -22,6 +22,7 @@ target_compile_definitions(
   PRIVATE
     AUTAN_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/tests/data"
     AUTAN_RUN_RELAXATION="$<TARGET_FILE:autan-run-relaxation>"
+    AUTAN_TEST_CMAKE="${CMAKE_COMMAND}"
 )
 add_dependencies(autan_runtime_tests autan-run-relaxation)
 if(AUTAN_ENABLE_CUDA)

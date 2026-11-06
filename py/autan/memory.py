@@ -153,7 +153,7 @@ def _shares(mesh: MeshInfo, ranks: int) -> list[tuple[int, int, int, int, int | 
         cells = counts.cells + counts.periodic_ghosts
         one = 0 if partition is not None and partition.ranks == 1 else None
         return [(cells, counts.faces + extra, interior + extra, counts.stencil_entries, one)]
-    # No partition for these ranks: the plan refuses the run (E0210), the estimate omits halos.
+    # No partition for these ranks: the plan refuses the run (E0212), the estimate omits halos.
     return [
         (
             -(-counts.cells // ranks),
@@ -278,7 +278,7 @@ def _rank(
         add("partition", kept, halo_device if device_kind != "cpu" else 0)
         add("partition setup", extraction, transient=True)
     elif ranks > 1:
-        # No partition for these ranks: the plan refuses the run (E0210).
+        # No partition for these ranks: the plan refuses the run (E0212).
         add("partition", (mesh_bytes + geometry) / ranks + 9 * f)
     # The solution gathered on rank 0 at the end and the writer's copy: the n + 1 primitive
     # fields and their means; the restart's n conserved, n + 1 average sums and their weight, the

@@ -335,7 +335,7 @@ def test_mesh_unit_scales_the_mesh_alone(
     status, refused = prepare(capsys, path, "crm-hl.meshinfo.json")
     assert (status == 0) == (unit == "m")
     if unit != "m":
-        assert "E0210" in refused
+        assert "E0212" in refused
     mesh_info = tmp_path / "scaled.meshinfo.json"
     mesh_info.write_text(json.dumps(prepared(mesh_document("crm-hl"), scale=metres)))
     status, document = prepare(capsys, path, mesh_info)

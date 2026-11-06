@@ -26,6 +26,8 @@ Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py
   "cell_zones": [{"name": "fluid", "type": null, "native_type": null, "cells": 48200000}],
   "interfaces": [],
   "periodic": [],
+  "groups": [{"name": "wing.main", "zones": ["wing.main"]}],
+  "groups_source": {"path": "crm-hl.cgns.zones.json", "sha256": "4b1a…", "provenance": {"url": "https://…"}},
   "quality": {
     "max_non_orthogonality_deg": 62.0, "max_faces_per_cell": 214,
     "lines": {"order": "rcm", "scale": 0.0254, "cells": 13014000, "long_cells": 13014000},
@@ -69,6 +71,10 @@ Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py
 | `periodic[].zones` | two distinct boundary-zone names | The pair `[a, b]`: the transform maps the faces of `a` onto those of `b`, face for face. |
 | `periodic[].transform` | `{"kind": "translation", "vector": [x, y, z]}` | `x_b = x_a + vector`, in mesh units. Other kinds (rotation) are reserved. |
 | `periodic[].faces` | integer ≥ 1 | Faces of each zone of the pair. |
+| `groups[]` | list, sorted by `name` | The zone groups of the mesh's sidecar ([Zone groups](#zone-groups)); `[]` without one. |
+| `groups[].name` | string matching `[A-Za-z0-9_.][A-Za-z0-9_.-]*` | Group name, unique. |
+| `groups[].zones` | non-empty list of `boundary_zones` names | The group's zones, in `boundary_zones` order; groups may share zones. |
+| `groups_source` | `null` or `{path, sha256, provenance}` | The sidecar read: its path, next to the mesh file with symlinks followed, the SHA-256 of its bytes, its `provenance` object. |
 | `quality.max_non_orthogonality_deg` | number in [0, 180] | Max over interior faces of the angle between the face normal and the vector joining the two cell centroids; over boundary faces, between the normal and the vector from the cell centroid to the face centroid. |
 | `quality.max_faces_per_cell` | integer ≥ 4 | Largest face count of any cell. |
 | `counts.stencil_entries` | integer ≥ 0 | Entries of the face2 gradient stencil (`kernels::cell_stencil`) on the local mesh of a single-rank run, periodic images included. |
@@ -77,7 +83,17 @@ Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py
 | `quality.multigrid` | `{cells_by_level, edges_by_level}` | The agglomeration multigrid's hierarchy (`solvers::agglomerate`, the run's options) on one rank, in the cell order and at the scale of `quality.lines`: per level, finest first, its nodes (≥ 1, the first `counts.cells`) and edges (≥ 0, the first the interior faces); two lists of the same length ≥ 1. |
 | `partition` | object | The run's partition on `ranks` ≥ 1 ranks, the same as the runtime forms: on one rank (`autan-mesh-info` without `--ranks`, or `--ranks 1`), the one part a run extracts with periodic pairs or reproducibility `"ranks"` (the mesh itself without periodic pairs: no ghost, no cell sent; with them, the image ghosts its own halo sends), `groups` `"none"`; with `--ranks N`, N parts: `groups` (`"none"`, or `"lines"`: the line smoother's lines kept whole, `--groups lines`), and per rank `cells_by_rank` (owned, summing to `counts.cells`), `ghosts_by_rank`, `faces_by_rank`, `interior_faces_by_rank`, `stencil_entries_by_rank`, `nodes_by_rank` (the nodes of its local mesh, owned and ghost cells'), `face_nodes_by_rank` (the face-node entries of its local mesh) and `sent_cells_by_rank` (the cells it sends each exchange, one per neighbour that holds the cell as a ghost), each a list of `ranks` integers. |
 
-Unknown fields are rejected. Readers fill every field; `autan-mesh-info` always fills `partition`; a hand-written document may omit it. The derived counts (`counts.stencil_entries`, `counts.periodic_ghosts`, `quality.lines`, `quality.multigrid`, `partition`) are for one run: `autan plan` refuses a MeshInfo whose lines were computed at another scale than the case's `mesh_unit`, a run on several ranks without a partition for that rank count and the groups its linear solver keeps whole, or a run on one rank with periodic pairs or reproducibility `"ranks"` without the one-part partition (`E0210`); the runtime writes the MeshInfo it was given as the run's `mesh-info.json` ([solver-input.md](solver-input.md)). A mesh must be self-contained: the mesh hash covers one file (or one polyMesh directory), so readers reject CGNS links to other files. Reader errors (malformed files, external links, invalid topology or geometry) use the codes `E0101`–`E0199` defined in [mesh.md](mesh.md).
+Unknown fields are rejected. Readers fill every field; `autan-mesh-info` always fills `partition`; a hand-written document may omit it. The derived counts (`counts.stencil_entries`, `counts.periodic_ghosts`, `quality.lines`, `quality.multigrid`, `partition`) are for one run: `autan plan` refuses a MeshInfo whose lines were computed at another scale than the case's `mesh_unit`, a run on several ranks without a partition for that rank count and the groups its linear solver keeps whole, or a run on one rank with periodic pairs or reproducibility `"ranks"` without the one-part partition (`E0212`); the runtime writes the MeshInfo it was given as the run's `mesh-info.json` ([solver-input.md](solver-input.md)). A mesh must be self-contained: the mesh hash covers one file (or one polyMesh directory), so readers reject CGNS links to other files. Reader errors (malformed files, external links, invalid topology or geometry) use the codes `E0101`–`E0199` defined in [mesh.md](mesh.md).
+
+## Zone groups
+
+A mesh whose file does not name its parts (the HLPW-5 CRM-HL grid has 668 zones `TRI_bdy N`) can carry a sidecar next to it, `<mesh file>.zones.json`, or `<directory>.zones.json` for a polyMesh directory (symlinks followed: next to the file itself), which `autan-mesh-info` reads into `groups` (a CGNS family is already one zone, [mesh.md](mesh.md#readers)). It is never inferred from the mesh and never modifies it:
+
+```json
+{"schema": "autan.zone-groups/1", "mesh_sha256": "9f2c…", "provenance": {"url": "https://…", "note": "from the mapbc"}, "groups": {"wing.main": ["TRI_bdy 12", "TRI_bdy 13"]}}
+```
+
+The four keys are required and no other is allowed; `provenance` maps keys to strings, shown as given. `E0136`: the file is larger than 1 MiB (checked before it is read: a hundred times a sidecar listing the 668 zones of the CRM-HL grid once), cannot be read, is not JSON, or breaks this schema (a key missing, unknown or given twice, a wrong type). `E0137`: `mesh_sha256` is not the mesh hash. `E0138`: a zone that is not a boundary zone name (exact, spaces included), a zone twice in one group, an empty group, or a name outside `[A-Za-z0-9_.][A-Za-z0-9_.-]*`. `E0139`: a group name given twice. The run records the sidecar's hash (solver-input `mesh.groups_sha256`) and archives the groups with its MeshInfo.
 
 ## Normalized boundary types
 

@@ -144,6 +144,8 @@ struct SolverInput {
   std::string case_name, case_sha256, case_toml;
   std::string mesh_path, mesh_sha256;
   double mesh_scale = 1.0;  ///< metres per mesh unit (solver-input.md, mesh.scale)
+  /// SHA-256 of the zone-groups sidecar the SDK resolved the case with; none without one.
+  std::optional<std::string> mesh_groups_sha256;
   /// The MeshInfo the input was planned with (solver-input.md, mesh_info), as JSON text, and
   /// the cell order and scale its quality.lines were counted in.
   std::string mesh_info, mesh_info_order;

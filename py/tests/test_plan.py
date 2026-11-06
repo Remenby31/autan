@@ -235,6 +235,8 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
                 "periodic_ghosts": 0,
             },
             "bounds": {"min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 1.0]},
+            "groups": [],
+            "groups_source": None,
             "boundary_zones": [
                 {
                     "name": "farfield",
@@ -291,7 +293,7 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     assert not names(unsteady) & {"jacobian", "multigrid"}
     # Every rank keeps the global mesh; its share of the rest shrinks with the ranks, from the
     # partition the MeshInfo gives for them (mesh-info.md), without which the plan is refused.
-    assert "E0210" in diagnostic_codes(autan.load(write_case(CRM_HL)).plan(crm_mesh, gpus=4))
+    assert "E0212" in diagnostic_codes(autan.load(write_case(CRM_HL)).plan(crm_mesh, gpus=4))
     on_four = autan.MeshInfo.from_document(
         prepared(mesh_document("crm-hl"), ranks=4), autan.Location()
     )
@@ -299,8 +301,8 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     # A steady CPU run with the lines solver keeps its lines whole: a partition without them is
     # not the run's.
     lines = autan.load(write_case(CRM_HL + "case.time = autan.Steady(linear_solver='lines')\n"))
-    assert "E0210" in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cpu"))
-    assert "E0210" not in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cuda"))
+    assert "E0212" in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cpu"))
+    assert "E0212" not in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cuda"))
     by_name = {c.name: c for c in four.components}
     assert by_name["mesh"] == {c.name: c for c in cuda.components}["mesh"]
     assert four.bytes_device < cuda.bytes_device / 3
@@ -425,13 +427,13 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     assert keyed["physics setup"].bytes_host - expected_setup == 12 * 60
     # One rank under "ranks" runs on its one-part partition (run.cpp make_part): the plan
     # charges it from the MeshInfo's partition of one part, and refuses the run without one.
-    assert "E0210" in diagnostic_codes(ranks)
+    assert "E0212" in diagnostic_codes(ranks)
     whole: dict[str, Any] = tiny_mesh(20).document()
     whole["partition"] = one_part(whole)
     parted = autan.load(
         write_case(TINY.replace("Inviscid())", 'Inviscid(), reproducibility="ranks")'))
     ).plan(autan.MeshInfo.from_document(whole, autan.Location()), device_kind="cpu")
-    assert "E0210" not in diagnostic_codes(parted)
+    assert "E0212" not in diagnostic_codes(parted)
     one = {c.name: c for c in parted.memory.components}
     kept_one = 24 * 30 + 4 * 160 + 20 * 40 + 8 * 20 + 20 * 10 + 56 * 40 + 32 * 10 + 9 * 40
     assert one["partition"].bytes_host == kept_one

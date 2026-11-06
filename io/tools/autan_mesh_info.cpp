@@ -162,11 +162,13 @@ int main(int argc, char* const* argv) {
                            "cannot write '" + std::string(surface) + "'");
       }
     } else if (json) {
+      const auto groups = autan::io::read_zone_groups(path, mesh, hash);
       const auto run = autan::io::run_counts(mesh, scale.value_or(1.0),
                                              order.value_or(autan::io::CellOrder::rcm), ranks);
-      std::printf("%s\n", autan::io::mesh_info_json(mesh, hash, autan::io::mesh_bytes(path),
-                                                    autan::io::mesh_logical_bytes(path), run)
-                              .c_str());
+      std::printf("%s\n",
+                  autan::io::mesh_info_json(mesh, hash, autan::io::mesh_bytes(path),
+                                            autan::io::mesh_logical_bytes(path), run, groups)
+                      .c_str());
     } else {
       print_text(mesh, hash);
     }
