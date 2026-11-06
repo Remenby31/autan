@@ -740,6 +740,7 @@ test("a run's iteration cost shows when run.json measured it", async ({ page }) 
       [
         source.case.sha256,
         source.mesh.sha256,
+        source.mesh.groups_sha256 ?? "",
         solver.commit,
         source.precision,
         solver.backend,
@@ -795,6 +796,7 @@ test("Compare lists where each run ran when that differs", async ({ page }) => {
       [
         source.case.sha256,
         source.mesh.sha256,
+        source.mesh.groups_sha256 ?? "",
         solver.commit,
         source.precision,
         solver.backend,
