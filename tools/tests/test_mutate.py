@@ -25,13 +25,14 @@ if(v MATCHES "broken")
   message(FATAL_ERROR "broken")
 endif()
 """
-# A test reading the built value: "bad" fails it, "hang" never ends.
+# A test reading the built value, printing Catch2's summaries: "bad" fails it, "hang" never ends
+# (the sleep's pid goes to $PIDS).
 TEST = """#!/usr/bin/env bash
 v=$(cat "$(dirname "$0")/value.txt")
 printf '%s\\n' "$1" >> "$SPECS"
-case "$v" in *hang*) sleep 600 ;; esac
-case "$v" in *bad*) echo "FAILED"; exit 1 ;; esac
-echo "All tests passed"
+case "$v" in *hang*) sleep 600 & echo $! >> "$PIDS"; wait ;; esac
+case "$v" in *bad*) echo "test cases: 1 | 1 failed"; exit 1 ;; esac
+echo "All tests passed (1 assertion in 1 test case)"
 """
 
 
@@ -67,7 +68,11 @@ def mutate(
     spec.write_text(json.dumps(mutants))
     args = [sys.executable, MUTATE, "--min-timeout", "2", src, build, spec]
     return subprocess.run(
-        args + ([results] if results else []), check=False, capture_output=True, text=True
+        args + ([results] if results else []),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
 
 
@@ -75,7 +80,16 @@ def mutate(
 def specs(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathlib.Path:
     log = tmp_path / "specs.log"
     monkeypatch.setenv("SPECS", str(log))
+    monkeypatch.setenv("PIDS", str(tmp_path / "pids.log"))
     return log
+
+
+def alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 def test_each_mutant_gets_its_verdict_and_the_source_comes_back(tmp_path: pathlib.Path) -> None:
@@ -101,9 +115,26 @@ def test_each_mutant_gets_its_verdict_and_the_source_comes_back(tmp_path: pathli
     }
     assert (src / "value.txt").read_text() == "alpha good\n"
     assert (build / "value.txt").read_text() == "alpha good\n"
-    # Started again, it repeats nothing.
-    assert mutate(src, build, mutants, results).returncode == 0
+    # The hanging test was killed with its process group.
+    pids = [int(p) for p in (tmp_path / "pids.log").read_text().split()]
+    assert pids
+    assert not any(alive(p) for p in pids)
+    # Started again, it repeats nothing and still reports the survivor.
+    assert mutate(src, build, mutants, results).returncode == 1
     assert len(results.read_text().splitlines()) == 4
+
+
+@pytest.mark.parametrize(
+    ("verdict", "old", "new", "status"),
+    [("caught by timeout", "good", "hang", 0), ("not built", "alpha", "broken", 1)],
+)
+def test_the_exit_status_counts_a_timeout_as_caught_and_a_stillborn_as_not(
+    tmp_path: pathlib.Path, verdict: str, old: str, new: str, status: int
+) -> None:
+    src, build = project(tmp_path, "alpha good\n")
+    r = mutate(src, build, [mutant(verdict, old, new)])
+    assert verdict in r.stdout
+    assert r.returncode == status
 
 
 def test_a_build_of_another_tree_is_refused(tmp_path: pathlib.Path) -> None:
