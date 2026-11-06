@@ -1,0 +1,111 @@
+{
+  "schema": "autan.su2-onera-m6/1",
+  "levels": [
+    {
+      "n": 48,
+      "cells": 2750091,
+      "h": 0.18263631924501073,
+      "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+      "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+      "case_sha256": "6259823ff107b60d218a533b6781bd0f5486842adeb3068dd628f53201d5bce8",
+      "mesh_sha256": "273310d5d962aa34f10deddd0181d48c4d738e6a96bc318d460f40237aab0d69",
+      "source_sha256": "bd06c03c6e60252f1730dae32d1b61aaf6478565ada7c77c2c32ddcb724084f5",
+      "last_iteration": 2558,
+      "cl": 0.2827998041,
+      "cd": 0.01035673786,
+      "converged": true,
+      "epsilon": 2.8155407332062814e-11,
+      "iterations": 837,
+      "sections": [
+        {
+          "eta": 0.2,
+          "shocks_experiment": [
+            0.6384358799072002
+          ],
+          "shocks_computed": [
+            0.6539448525472045
+          ],
+          "rear_shock_gap": 0.015508972640004282,
+          "cp_rms_off_shocks": 0.08917330301642945,
+          "shock_within_tolerance": true
+        },
+        {
+          "eta": 0.44,
+          "shocks_experiment": [
+            0.5699277131136504
+          ],
+          "shocks_computed": [
+            0.5714966102095989
+          ],
+          "rear_shock_gap": 0.0015688970959484294,
+          "cp_rms_off_shocks": 0.07158253551583994,
+          "shock_within_tolerance": true
+        },
+        {
+          "eta": 0.65,
+          "shocks_experiment": [
+            0.49707901908911833
+          ],
+          "shocks_computed": [
+            0.4959177931708431
+          ],
+          "rear_shock_gap": 0.0011612259182752216,
+          "cp_rms_off_shocks": 0.07679423034555709,
+          "shock_within_tolerance": true
+        },
+        {
+          "eta": 0.8,
+          "shocks_experiment": [
+            0.39647152571530453
+          ],
+          "shocks_computed": [
+            0.39275094775873387
+          ],
+          "rear_shock_gap": 0.0037205779565706587,
+          "cp_rms_off_shocks": 0.0854900533237804
+        },
+        {
+          "eta": 0.9,
+          "shocks_experiment": [
+            0.3033141625018903
+          ],
+          "shocks_computed": [
+            0.31573163881372734
+          ],
+          "rear_shock_gap": 0.012417476311837039,
+          "cp_rms_off_shocks": 0.0994306809723051
+        },
+        {
+          "eta": 0.96,
+          "shocks_experiment": [
+            0.25331701437525866
+          ],
+          "shocks_computed": [
+            0.24483187316597185
+          ],
+          "rear_shock_gap": 0.008485141209286812,
+          "cp_rms_off_shocks": 0.06938752843010723
+        },
+        {
+          "eta": 0.99,
+          "shocks_experiment": [
+            0.21371565696573686
+          ],
+          "shocks_computed": [
+            0.21537166872353017
+          ],
+          "rear_shock_gap": 0.0016560117577933131,
+          "cp_rms_off_shocks": 0.12694855708838154
+        }
+      ]
+    }
+  ],
+  "continuum": {
+    "cl": {
+      "error": "not converged"
+    },
+    "cd": {
+      "error": "not converged"
+    }
+  }
+}
