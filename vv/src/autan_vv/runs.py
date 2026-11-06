@@ -51,13 +51,13 @@ KINDS = {
 NORMALIZED = {"wall": "wall", "pressure-far-field": "farfield"}
 
 
-def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
+def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str, scale: float = 1.0) -> autan.MeshInfo:
     """The MeshInfo the core reader reports for `mesh` stored at `path` (docs/contracts/mesh-info.md).
 
     Gmsh files carry no boundary types (`type: null`); Fluent files carry theirs. The derived counts
     of a run's memory estimate need the core, so they are upper bounds: every cell in lines of every
-    length (RCM order, the mesh in metres) and a gradient stencil of each cell's face neighbours and
-    theirs. The multigrid hierarchy is the mesh alone (no coarsening declared). Fixture meshes have no
+    length (RCM order, at `scale` metres per mesh unit, the case's `mesh_unit`) and a gradient
+    stencil of each cell's face neighbours and theirs. The multigrid hierarchy is the mesh alone (no coarsening declared). Fixture meshes have no
     periodic pairs. Nothing reads these counts from a fixture run.
     """
     kinds = mesh.cell_kinds or ("polyhedron",) * mesh.n_cells
@@ -123,7 +123,7 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
             "max_faces_per_cell": int(faces_per_cell.max()),
             "lines": {
                 "order": "rcm",
-                "scale": 1.0,
+                "scale": scale,
                 "cells": mesh.n_cells,
                 "long_cells": mesh.n_cells,
             },
