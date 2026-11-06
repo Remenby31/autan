@@ -123,7 +123,7 @@ def cbrt(x: float) -> float:
     `x ** (1/3)` is libm's `pow`, whose last bit may differ between platforms, and a manifest records
     it (#495). From it, step by one ulp while the exact cube of a midpoint says the root lies beyond.
     """
-    y = x ** (1.0 / 3.0)
+    y: float = x ** (1.0 / 3.0)
     exact = Fraction(x)
     while True:
         up, down = math.nextafter(y, math.inf), math.nextafter(y, 0.0)
