@@ -25,12 +25,14 @@ def generate(
     backends: list[str],
     line_directives: bool = True,
     policies: list[str] | None = None,
+    source_root: Path | None = None,
 ) -> list[Path]:
     """Write `<module>.hpp` and the files of each backend into `out`; return the paths written.
 
     For the GPU backend, `<module>_gpu.cu` instantiates every loop for `policies` (default: all);
     the Metal backend instantiates the policies Metal has among them, and refuses an explicit
-    `fp64`, which Metal cannot run.
+    `fp64`, which Metal cannot run. With `source_root`, `#line` directives name the DSL sources
+    under it relative to it, so that two checkouts generate the same text.
     """
     for b in backends:
         if b not in BACKENDS:
@@ -47,7 +49,7 @@ def generate(
             )
     m = model.load(path.resolve())
     derive(m)
-    files = {f"{m.name}.hpp": emit_common_header(m, line_directives)}
+    files = {f"{m.name}.hpp": emit_common_header(m, line_directives, source_root)}
     if "cpu" in backends:
         files[f"{m.name}_cpu.hpp"] = emit_cpu_header(m)
     if "gpu" in backends:
@@ -55,7 +57,7 @@ def generate(
         files[f"{m.name}_gpu.cu"] = emit_gpu_instances(m, policies)
     if "metal" in backends:
         files[f"{m.name}_metal.hpp"] = emit_metal_header(
-            m, [p for p in policies if p in METAL_POLICIES], line_directives
+            m, [p for p in policies if p in METAL_POLICIES], line_directives, source_root
         )
     out.mkdir(parents=True, exist_ok=True)
     written = []

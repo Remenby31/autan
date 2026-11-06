@@ -13,6 +13,7 @@ const record = (iteration: number, monitors?: HistoryRecord["monitors"]): Histor
 const run = (
   start: Pick<RunStart, "residual_reference" | "woken">,
   floor?: Record<string, number>,
+  plateau: string[] = [],
 ): Pick<Run, "start" | "convergence"> => ({
   start: {
     run_id: "",
@@ -24,7 +25,7 @@ const run = (
     file: "solution",
     ...start,
   },
-  convergence: floor ? { floor } : null,
+  convergence: floor ? { floor, plateau } : null,
 });
 
 // Drops in orders of magnitude, to round-off of log10 on the platform.
@@ -118,14 +119,20 @@ test("an identically zero equation is exempt at its floor and woken above it, fo
   expect(drops([1e-30, 1e-33], ["my"])[1]).toBeCloseTo(3);
 });
 
-test("an equation at its round-off floor has converged; all of them, and the drop is infinite", () => {
+test("an equation converged on its round-off plateau no longer counts; at its floor alone it does", () => {
+  // case-schema.md#time: the floor alone ends nothing; a converged run lists its plateau.
   const rows = [
     { iteration: 1, time: null, residuals: { density: 1, energy: 1 } },
     { iteration: 2, time: null, residuals: { density: 1e-4, energy: 1e-6 } },
     { iteration: 3, time: null, residuals: { density: 1e-4, energy: 1e-8 } },
   ];
-  const floors = run({ residual_reference: null, woken: null }, { density: 1e-4, energy: 1e-8 });
-  expectOrders(appendHistory(empty(), rows, floors).orders, [0, 6, Number.POSITIVE_INFINITY]);
+  const start = { residual_reference: null, woken: null };
+  const floor = { density: 1e-4, energy: 1e-8 };
+  expectOrders(appendHistory(empty(), rows, run(start, floor)).orders, [0, 4, 4]);
+  expectOrders(appendHistory(empty(), rows, run(start, floor, ["density"])).orders, [0, 6, 8]);
+  const both = run(start, floor, ["density", "energy"]);
+  const infinite = Number.POSITIVE_INFINITY;
+  expectOrders(appendHistory(empty(), rows, both).orders, [infinite, infinite, infinite]);
 });
 
 test("an equation missing from a continued run's reference leaves the drop undefined", () => {
