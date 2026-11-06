@@ -1,3 +1,4 @@
+/** Bytes in SI units (powers of 1000), one decimal below 10 of a unit above bytes. */
 export function formatBytes(bytes: number): string {
   const units = ["B", "kB", "MB", "GB", "TB"];
   let value = bytes;

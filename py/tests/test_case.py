@@ -157,6 +157,29 @@ def test_document_errors_have_codes(
     assert sorted(codes(error)) == codes_expected
 
 
+@pytest.mark.parametrize(
+    "put",
+    [
+        lambda d, text: d.update(name=text),
+        lambda d, text: d["physics"]["gas"].update(name=text),
+        lambda d, text: d["boundaries"][0].update(zones=text),
+    ],
+)
+def test_free_texts_are_bounded(put: Callable[[dict[str, Any], str], None], tmp_path: Path) -> None:
+    # case-schema.md#free-texts: at most 4096 bytes in UTF-8, whatever the characters.
+    def load(text: str) -> autan.Case:
+        document = autan.load(EXAMPLES / "crm_hl.py").spec.document()
+        put(document, text)
+        path = tmp_path / "case.json"
+        path.write_text(json.dumps(document))
+        return autan.load(path)
+
+    load("é" * 2048)
+    with pytest.raises(autan.CaseError) as error:
+        load("é" * 2048 + "x")
+    assert codes(error) == ["E0003"]
+
+
 def test_incompressible_freestream_rules(write_case: Callable[[str], Path]) -> None:
     head = (
         "import autan\nfrom autan.units import K, Pa, kg, m, s\n"
@@ -199,6 +222,21 @@ def test_missing_physics_is_reported_at_the_case_constructor(
         autan.load(path)
     assert codes(error) == ["E0003", "E0003"]
     assert {d.location.line for d in error.value.diagnostics if d.location} == {3}
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        ("case.json", "[" * 100_000 + "]" * 100_000),
+        ("case.toml", "a = [[["),
+        ("case.toml", "a = " + "[" * 2_000 + "]" * 2_000),
+    ],
+)
+def test_an_unreadable_case_document_is_e0001(name: str, text: str, tmp_path: Path) -> None:
+    (tmp_path / name).write_text(text)
+    with pytest.raises(autan.CaseError) as error:
+        autan.load(tmp_path / name)
+    assert codes(error) == ["E0001"]
 
 
 def test_missing_case_file() -> None:

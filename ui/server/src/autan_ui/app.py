@@ -461,7 +461,13 @@ def create_app(
             try:
                 case = autan.load(root / "case.json")
                 info = autan.MeshInfo.load(root / "mesh.meshinfo")
-                plan = case.plan(info, gpus=run["devices"]["count"])
+                # The run's devices and start: a CPU run's estimate counts its host solve, a
+                # device run's its device state, a started run the state it starts from.
+                devices = run["devices"]
+                start = run["start"]["mode"] if run["start"] else None
+                plan = case.plan(
+                    info, gpus=devices["count"], device_kind=devices["kind"], start=start
+                )
             except CaseError as error:
                 detail = [d.model_dump(mode="json") for d in error.diagnostics]
                 raise HTTPException(422, detail) from error

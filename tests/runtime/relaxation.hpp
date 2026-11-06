@@ -147,6 +147,15 @@ struct RelaxationOptions {
   }
 };
 
+// Relaxation::restart_fields' names: the averaging sums, then the weight.
+inline std::vector<std::string> relaxation_restart_names(const autan::runtime::SolverInput& input,
+                                                         bool /*averaging*/) {
+  std::vector<std::string> out;
+  for (const auto& name : autan::runtime::field_names(input)) out.push_back("Sum" + name);
+  out.emplace_back("AverageWeight");
+  return out;
+}
+
 // An implementation of the runtime's Physics interface that solves nothing:
 // the state starts at each zone's `initial` (or the start's fields), grows by
 // `growth` per step, and every residual decays as r_k = factor^(k-1). It exists to exercise the
@@ -693,7 +702,7 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
             .path = "physics",
             .data_json = "{\"ranks\": " + std::to_string(ranks) + "}"};
       },
-      !options.one_rank, groups);
+      !options.one_rank, groups, relaxation_restart_names);
   return registry;
 }
 
