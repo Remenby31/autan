@@ -840,3 +840,145 @@ spectral_radius = cell_reduce(
     pref=p_ref,
     acc=Sum(lam),
 )
+
+
+# Study variants for #137 (H9): the band gradient g_b corrects only part of the boundary faces'
+# reconstruction over face2's gradient g_2. With r = x_f - x_c, n^ = n / |n|, r_n = (r . n^) n^
+# and r_t = r - r_n, the increment is g_2 r + (g_b - g_2) r_n (normal), g_2 r + (g_b - g_2) r_t
+# (tangential), or both corrections (full). Loops of their own, so the default loops are unchanged.
+grad_f2 = cells.field("grad_f2", Grad.Mat53)
+
+
+@pointwise
+def reconstruct_increment(w: State.Vec5, d: State.Vec5, lim: State.Vec5, pref: Param) -> State.Vec5:
+    # reconstruct's limited increment and positivity fallback, for a given increment d.
+    wf = w + Vec5(lim[0] * d[0], lim[1] * d[1], lim[2] * d[2], lim[3] * d[3], lim[4] * d[4])
+    return wf if wf[0] > 0.0 and wf[4] + pref > 0.0 else w
+
+
+@pointwise
+def normal_part(r: Geom.Vec3, n: Geom.Vec3) -> Geom.Vec3:
+    nh = n / sqrt(dot(n, n))
+    return dot(r, nh) * nh
+
+
+@pointwise
+def band_normal(gb: Grad.Mat53, g2: Grad.Mat53, r: Geom.Vec3, n: Geom.Vec3) -> State.Vec5:
+    rn = normal_part(r, n)
+    return g2 @ r + (gb @ rn - g2 @ rn)
+
+
+@pointwise
+def band_tangential(gb: Grad.Mat53, g2: Grad.Mat53, r: Geom.Vec3, n: Geom.Vec3) -> State.Vec5:
+    rt = r - normal_part(r, n)
+    return g2 @ r + (gb @ rt - g2 @ rt)
+
+
+@pointwise
+def band_full(gb: Grad.Mat53, g2: Grad.Mat53, r: Geom.Vec3, n: Geom.Vec3) -> State.Vec5:
+    rn = normal_part(r, n)
+    rt = r - rn
+    return g2 @ r + (gb @ rn - g2 @ rn) + (gb @ rt - g2 @ rt)
+
+
+@pointwise
+def roe_boundary_flux(
+    wf: State.Vec5,
+    gl: Grad.Mat53,
+    pl: State.Vec5,
+    kind: Geom,
+    data: State.Vec5,
+    n: Geom.Vec3,
+    area: Geom,
+    m: Geom.Mat3,
+    g: Param,
+    pref: Param,
+    rgas: Param,
+) -> Residual.Vec5:
+    # roe_boundary after its reconstruction; the wall term keeps the band gradient.
+    wb = boundary_value(wf, kind, data, n, g, rgas, pref)
+    if kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5:
+        f = area * wall_flux(wf, n) + wall_warp(gl, pl, m)
+    else:
+        f = area * roe(wf, wb, n, g, pref)
+    return f
+
+
+@pointwise
+def roe_boundary_split_n(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    g2: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    kind: Geom,
+    data: State.Vec5,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    m: Geom.Mat3,
+    g: Param,
+    pref: Param,
+    rgas: Param,
+) -> Residual.Vec5:
+    wf = reconstruct_increment(wl, band_normal(gl, g2, rel(xf, xl), n), pl, pref)
+    return roe_boundary_flux(wf, gl, pl, kind, data, n, area, m, g, pref, rgas)
+
+
+@pointwise
+def roe_boundary_split_t(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    g2: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    kind: Geom,
+    data: State.Vec5,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    m: Geom.Mat3,
+    g: Param,
+    pref: Param,
+    rgas: Param,
+) -> Residual.Vec5:
+    wf = reconstruct_increment(wl, band_tangential(gl, g2, rel(xf, xl), n), pl, pref)
+    return roe_boundary_flux(wf, gl, pl, kind, data, n, area, m, g, pref, rgas)
+
+
+@pointwise
+def roe_boundary_split_full(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    g2: Grad.Mat53,
+    pl: State.Vec5,
+    xl: Geom.Vec3,
+    kind: Geom,
+    data: State.Vec5,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    m: Geom.Mat3,
+    g: Param,
+    pref: Param,
+    rgas: Param,
+) -> Residual.Vec5:
+    wf = reconstruct_increment(wl, band_full(gl, g2, rel(xf, xl), n), pl, pref)
+    return roe_boundary_flux(wf, gl, pl, kind, data, n, area, m, g, pref, rgas)
+
+
+SPLIT_ARGS = {**BOUNDARY_ARGS, "g2": grad_f2.left}
+roe_boundaries_split_n = boundary_loop(roe_boundary_split_n, **SPLIT_ARGS, out=Inc(res, left=+1))
+roe_boundaries_split_t = boundary_loop(roe_boundary_split_t, **SPLIT_ARGS, out=Inc(res, left=+1))
+roe_boundaries_split_full = boundary_loop(
+    roe_boundary_split_full, **SPLIT_ARGS, out=Inc(res, left=+1)
+)
+roe_boundaries_split_n_jacobian = boundary_loop(
+    roe_boundary_split_n, **SPLIT_ARGS, out=BOUNDARY_JAC
+)
+roe_boundaries_split_t_jacobian = boundary_loop(
+    roe_boundary_split_t, **SPLIT_ARGS, out=BOUNDARY_JAC
+)
+roe_boundaries_split_full_jacobian = boundary_loop(
+    roe_boundary_split_full, **SPLIT_ARGS, out=BOUNDARY_JAC
+)

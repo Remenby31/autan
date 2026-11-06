@@ -11,6 +11,7 @@
 #include <random>
 #include <span>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <catch2/catch_template_test_macros.hpp>
@@ -706,4 +707,103 @@ TEMPLATE_TEST_CASE("the limited residual is that of the generated loops run one 
   ek::cpu::roe_faces(d);
   ek::cpu::roe_boundaries(d);
   CHECK(std::memcmp(r.data(), ref.data(), r.size() * sizeof(r[0])) == 0);
+}
+
+TEMPLATE_TEST_CASE("the band-split boundary loops are the Roe boundary loops when g_2 = g_b",
+                   "[euler]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // #137 H9: w_f = W_c + phi (g_2 r + (g_b - g_2) r_part). With g_2 = g_b every correction is an
+  // exact zero, so each variant is roe_boundaries bit for bit, residual and Jacobian. With
+  // g_2 != g_b, full is g_b r to round-off, and the normal and tangential parts differ.
+  namespace ek = autan::kernels::euler;
+  using P = TestType;
+  const char* file = GENERATE(from_range(meshes));
+  INFO(file);
+  const Case c(file);
+  const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
+  const auto nc = static_cast<std::size_t>(c.mesh.n_cells());
+  const auto nf = static_cast<std::size_t>(c.mesh.n_faces());
+  const Prim w{1.2, {100.0, 30.0, 10.0}, 1e5};
+  std::vector<BoundaryKind> kind(nb, BoundaryKind::farfield);
+  for (std::size_t b = 0; b < nb; b += 3) kind[b] = BoundaryKind::slip;
+  std::vector<double> data(5 * nb);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const std::array<double, 5> v = {w.rho, w.v[0], w.v[1], w.v[2], w.p};
+    for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = v[j];
+  }
+  std::vector<double> u(5 * nc);
+  for (std::size_t i = 0; i < nc; ++i) {
+    const double x = c.geometry.cell_centroid_x[i];
+    const auto q =
+        conserved({w.rho * (1.0 + 0.2 * x), {w.v[0], w.v[1] * x, w.v[2]}, w.p * (1.0 + 0.1 * x)});
+    for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = q[k];
+  }
+  Scheme s = second_order(Flux::roe, 0.3);
+  Euler<P> e(c.mesh, c.geometry, air, s);
+  e.set_boundary(kind, data);
+  auto d = e.data();
+  auto state = stored(e, u);
+  d.u = state.data();
+  ek::cpu::primitives(d);
+  ek::cpu::boundary_states(d);
+  ek::cpu::gradients(d);
+  ek::cpu::limiter(d);
+
+  using R = typename P::residual;
+  using J = typename P::jac;
+  struct Out {
+    std::vector<R> res;
+    std::vector<J> jac;
+  };
+  const auto apply = [&](auto loop, typename P::grad* g2) {
+    Out o{std::vector<R>(5 * nc, R(0)), std::vector<J>(25 * nf, J(0))};
+    auto dd = d;
+    dd.grad_f2 = g2;
+    dd.res = o.res.data();
+    dd.bnd_jac = o.jac.data();
+    loop(dd);
+    return o;
+  };
+  const auto same = [](const Out& a, const Out& b) {
+    return std::memcmp(a.res.data(), b.res.data(), a.res.size() * sizeof(R)) == 0 &&
+           std::memcmp(a.jac.data(), b.jac.data(), a.jac.size() * sizeof(J)) == 0;
+  };
+  const auto both = [&](auto residual, auto jacobian, typename P::grad* g2) {
+    Out r = apply(residual, g2);
+    const Out j = apply(jacobian, g2);
+    r.jac = j.jac;
+    return r;
+  };
+  const Out base = both([](auto& x) { ek::cpu::roe_boundaries(x); },
+                        [](auto& x) { ek::cpu::roe_boundaries_jacobian(x); }, d.grad);
+  const auto split = [&](int part, typename P::grad* g2) {
+    switch (part) {
+      case 0:
+        return both([](auto& x) { ek::cpu::roe_boundaries_split_n(x); },
+                    [](auto& x) { ek::cpu::roe_boundaries_split_n_jacobian(x); }, g2);
+      case 1:
+        return both([](auto& x) { ek::cpu::roe_boundaries_split_t(x); },
+                    [](auto& x) { ek::cpu::roe_boundaries_split_t_jacobian(x); }, g2);
+      default:
+        return both([](auto& x) { ek::cpu::roe_boundaries_split_full(x); },
+                    [](auto& x) { ek::cpu::roe_boundaries_split_full_jacobian(x); }, g2);
+    }
+  };
+  for (int part = 0; part < 3; ++part) {
+    INFO("part " << part);
+    CHECK(same(split(part, d.grad), base));
+  }
+
+  // g_2 = g_b / 2: the band corrects half the gradient.
+  std::vector<typename P::grad> half(15 * nc);
+  for (std::size_t i = 0; i < half.size(); ++i) half[i] = d.grad[i] / 2;
+  const Out full = split(2, half.data());
+  const double eps = std::is_same_v<P, autan::kernels::fp64> ? 0x1p-52 : 0x1p-23;
+  double scale = 0.0, worst = 0.0;
+  for (std::size_t i = 0; i < base.res.size(); ++i) {
+    scale = std::max(scale, std::abs(static_cast<double>(base.res[i])));
+    worst = std::max(worst, std::abs(static_cast<double>(full.res[i] - base.res[i])));
+  }
+  CAPTURE(worst / (eps * scale));
+  CHECK(worst <= 64 * eps * scale);
+  CHECK_FALSE(same(split(0, half.data()), split(1, half.data())));
 }
