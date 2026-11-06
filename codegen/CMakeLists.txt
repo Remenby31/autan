@@ -70,6 +70,7 @@ foreach(module IN LISTS AUTAN_KERNEL_MODULES AUTAN_TEST_KERNEL_MODULES)
     COMMAND
       ${CMAKE_COMMAND} -E env PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/src ${Python3_EXECUTABLE} -m
       autan_codegen ${module_source} --out ${AUTAN_GENERATED_DIR} --backends ${backends}
+      --source-root ${PROJECT_SOURCE_DIR}
     DEPENDS
       ${module_source}
       ${AUTAN_CODEGEN_SOURCES}
