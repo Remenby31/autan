@@ -1801,9 +1801,10 @@ class Run final : public Log {
   }
 
  private:
-  // case-schema.md#time: in fp32+acc64, a steady run counts an equation
-  // converged at floor_k = round_off_floor * Phi_k at the latest, Phi_k the
-  // physics' constant flux scale; run.json records the floors.
+  // case-schema.md#time: in fp32+acc64, a steady run also counts an equation converged on a
+  // round-off plateau at most round_off_band floors high, floor_k = round_off_floor * Phi_k,
+  // Phi_k the physics' constant flux scale; run.json records the floors and, once converged,
+  // the equations that converged on a plateau.
   void set_floor() {
     const auto& in = p_.input;
     const auto equations = residual_names(in);
@@ -1824,7 +1825,7 @@ class Run final : public Log {
       floor_.push_back(round_off_floor * scales[e]);
       floors[equations[e]] = floor_.back();
     }
-    info_["convergence"] = Json{{"floor", floors}};
+    info_["convergence"] = Json{{"floor", floors}, {"plateau", Json::array()}};
     if (comm_.rank() == 0) dir_->write_run_json(info_.dump(2));
   }
 
@@ -2074,6 +2075,7 @@ class Run final : public Log {
       }
       info_["iterations"] = done;
       info_["status"] = "failed";
+      if (info_["convergence"].is_object()) info_["convergence"]["plateau"] = Json::array();
       info_["finished"] = utc(std::chrono::system_clock::now(), "%Y-%m-%dT%H:%M:%SZ");
       dir_->write_run_json(info_.dump(2));
     } catch (const std::exception& e) {
@@ -2143,6 +2145,8 @@ class Run final : public Log {
       woken.insert(in.start->woken->begin(), in.start->woken->end());
     RoundOffExemption exempt(
         equations, continued() && in.start->woken ? *in.start->woken : std::vector<std::string>{});
+    // One round-off plateau per equation, counted from this run's first step.
+    std::vector<Plateau> plateaus(equations.size());
     double time = 0.0, average_start = 0.0;
     std::int64_t from = 1;
     if (continued()) {
@@ -2244,12 +2248,21 @@ class Run final : public Log {
         }
         const double drop = std::pow(10.0, -in.time.residual_orders);
         bool converged = true;
+        Json at_plateau = Json::array();
         for (std::size_t e = 0; e < equations.size(); ++e) {
           const double r = report.residuals[e];
-          converged = converged && (exempt.exempt(e) || r <= first[e] * drop ||
-                                    (!floor_.empty() && r <= floor_[e]));
+          // A provisional step's residuals start every plateau anew.
+          if (report.provisional) plateaus[e].reset();
+          const bool flat = !report.provisional && plateaus[e].add(r);
+          const bool met = exempt.exempt(e) || r <= first[e] * drop;
+          const bool plateau = !floor_.empty() && flat && r <= round_off_band * floor_[e];
+          if (!met && plateau) at_plateau.push_back(equations[e]);
+          converged = converged && (met || plateau);
         }
-        if (converged) return "converged";
+        if (converged) {
+          plateau_ = std::move(at_plateau);
+          return "converged";
+        }
       }
       if (it < budget && checkpoint_due(it)) {
         Json state = Json{{"iteration", it}, {"residual_reference", nullptr}, {"woken", nullptr}};
@@ -2619,6 +2632,9 @@ class Run final : public Log {
     // A failed run is not timed (results.md).
     info_["timing"] = status == "failed" ? Json(nullptr) : timing(done);
     if (status == "failed") info_["monitors"] = nullptr;
+    // The plateau belongs to a run that ends converged (results.md).
+    if (info_["convergence"].is_object())
+      info_["convergence"]["plateau"] = status == "converged" ? plateau_ : Json::array();
     info_["status"] = status;
     info_["finished"] = utc(std::chrono::system_clock::now(), "%Y-%m-%dT%H:%M:%SZ");
     note(status == "failed" ? "error" : "info", "solver", "run finished: " + status, "",
@@ -2674,8 +2690,9 @@ class Run final : public Log {
   std::int64_t device_after_setup_ = 0;  // the device's sample() then
   bool stopped_by_signal_ = false;
   std::int64_t iteration_ = 0;
-  std::vector<double> floor_;  // fp32+acc64 convergence floor per equation; empty: none  // the
-                               // iteration being computed, 0 before the first
+  Json plateau_ = Json::array();  // the equations the run converged on a plateau
+  std::vector<double> floor_;     // fp32+acc64 convergence floor per equation; empty: none  // the
+                                  // iteration being computed, 0 before the first
 };
 
 }  // namespace
