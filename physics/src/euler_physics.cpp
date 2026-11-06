@@ -741,6 +741,14 @@ class EulerPhysics final : public runtime::Physics {
       }
     }
     euler_.set_boundary(kind, data);
+    const auto band = euler_.band_gradient();
+    if (band.linear_cells > 0) {
+      ctx_.log.write(
+          "warning", "solver",
+          "cells of the boundary band keep the linear gradient: too few neighbours "
+          "for the quadratic fit",
+          {}, nlohmann::json{{"cells", band.linear_cells}, {"first", band.first_linear}}.dump());
+    }
     boundary_data_ = std::move(data);
   }
 

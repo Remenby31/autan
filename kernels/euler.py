@@ -17,12 +17,14 @@ faces.
 
 from autan_codegen.dsl import (
     STENCIL,
+    Dataset,
     Geom,
     Grad,
     Inc,
     Jac,
     Jacobian,
     Max,
+    MeshSet,
     Min,
     Param,
     Residual,
@@ -464,6 +466,31 @@ boundary_states = boundary_loop(
 )
 
 
+# Boundary band (face rings 1 and 2 of the boundary, `band` = 1: the cells whose face2 stencil
+# reaches a boundary face, where its linear fit is one-sided and first order): the gradient of a
+# quadratic least-squares fit over two vertex rings (docs/design/euler.md, Boundary band). Its
+# weights per entry of its own stencil (Topology::stencil of the band, empty outside it) make it a
+# weighted sum like the face2 one; `band_gradients` runs before `gradients`, which takes it there.
+band = cells.field("band", Geom)
+grad_band = cells.field("grad_band", Grad.Mat53)
+band_weight = Dataset("band_weight", MeshSet.STENCIL, Geom.Vec3, geometry=True)
+
+
+@pointwise
+def band_term(wc: State.Vec5, wn: State.Vec5, w: Geom.Vec3) -> Grad.Mat53:
+    return outer(wn - wc, w)
+
+
+band_gradients = cell_reduce(
+    band_term,
+    over=STENCIL,
+    wc=prim.self_,
+    wn=prim.other(boundary=prim_b),
+    w=band_weight,
+    acc=Sum(grad_band),
+)
+
+
 @pointwise
 def lsq_term(
     wc: State.Vec5, wn: State.Vec5, w: Geom.Vec3
@@ -473,9 +500,15 @@ def lsq_term(
 
 @pointwise
 def include_own_value(
-    gsum: Residual.Mat53, lo: Residual.Vec5, hi: Residual.Vec5, wc: State.Vec5
+    gsum: Residual.Mat53,
+    lo: Residual.Vec5,
+    hi: Residual.Vec5,
+    wc: State.Vec5,
+    gb: Grad.Mat53,
+    q: Geom,
 ) -> tuple[Grad.Mat53, State.Vec5, State.Vec5]:
-    return gsum, min(lo, wc), max(hi, wc)
+    g = gb if q > 0.5 else gsum
+    return g, min(lo, wc), max(hi, wc)
 
 
 # Least squares over the cell stencil (vertex or face2 neighbours, Topology::stencil): over face
@@ -489,7 +522,7 @@ gradients = cell_reduce(
     w=geometry.stencil_lsq_weight,
     acc=[Sum(grad), Min(wmin), Max(wmax)],
     finalise=include_own_value,
-    finalise_args={"wc": prim},
+    finalise_args={"wc": prim, "gb": grad_band, "q": band},
 )
 
 

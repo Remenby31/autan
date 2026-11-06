@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -42,9 +43,15 @@ struct Gas {
 /// every cell sharing a node.
 enum class GradientStencil : std::uint8_t { face2, vertex };
 
+/// Reconstruction gradient in face rings 1 and 2 of the boundary, where the face2 stencil is
+/// one-sided (docs/design/euler.md, Boundary band): the face2 least squares, or the quadratic fit
+/// of band_gradient. Chosen by the physics: the Euler physics keeps face2.
+enum class BoundaryGradient : std::uint8_t { face2, quadratic };
+
 struct Scheme {
   Flux flux = Flux::roe;
   GradientStencil gradient = GradientStencil::face2;
+  BoundaryGradient boundary_gradient = BoundaryGradient::face2;
   /// Linear reconstruction with least-squares gradients; first order otherwise.
   bool second_order = true;
   /// Venkatakrishnan limiter with threshold eps_k^2 = (K h / length)^3 scale_k^2, h^3 = V.
@@ -108,6 +115,26 @@ class Euler {
   /// where their condition gives the state there, and in the cells whose interior stencil alone
   /// cannot determine a gradient.
   [[nodiscard]] std::vector<double> gradient_weights() const;
+  /// With BoundaryGradient::quadratic, the boundary band's quadratic gradient (kernels/euler.py,
+  /// band_gradients), which replaces the face2 one in face rings 1 and 2 of the boundary (empty
+  /// band and stencil with face2): per cell 1 in the band, else 0; its
+  /// stencil (n_cells + 1 offsets, entries as kernels::Topology::stencil) and weights (3 x
+  /// entries, the layout of gradient_weights). They depend on set_boundary. A cell of the band
+  /// whose two vertex rings cannot determine the fit keeps the face2 gradient (band 0 there):
+  /// `linear_cells` counts them, `first_linear` is the first (-1 if none).
+  struct BandGradient {
+    std::vector<double> band;
+    std::vector<std::int64_t> offsets;
+    std::vector<index_t> entries;
+    std::vector<double> weights;
+    std::size_t linear_cells = 0;
+    index_t first_linear = -1;
+  };
+  [[nodiscard]] BandGradient band_gradient() const;
+  /// After a second-order residual: the face2 least-squares gradient of its primitives into
+  /// `out` (15 x n_cells, the reconstruction's layout), which is the reconstruction's own outside
+  /// the band and under BoundaryGradient::face2.
+  void face2_gradient(std::span<typename P::grad> out);
   /// Sets the volume source s (5 x n_cells), per unit volume; zero by default.
   void set_source(std::span<const double> source);
 
