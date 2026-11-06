@@ -538,7 +538,9 @@ class _Builder:
                     )
                 if rt is not None:
                     return self.select(c, rt, rf)  # type: ignore[arg-type]
-                for name in set(env_t) | set(env_f):
+                # In source order: a set of names would order the selects by string hashes,
+                # which differ between Python processes.
+                for name in dict.fromkeys([*env_t, *env_f]):
                     if name not in env_t or name not in env_f:
                         raise self.err(
                             Code.INVALID_CONTROL_FLOW, f"{name!r} is assigned in only one branch"
