@@ -92,7 +92,6 @@ GATES: dict[str, Gate] = {
             domain=((-10.0, 10.0), (-10.0, 10.0)),
         ),
         Gate("sod-order", ("sod",), "order", "L1", ("Density",), 0.6, 1.1, "M2"),
-        # Mesh families, levels and the perturbed meshes: docs/validation/acceptance.md (M3).
         Gate(
             "ns-mms-order",
             ("mms-navier-stokes",),
