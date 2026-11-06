@@ -3401,6 +3401,12 @@ TEST_CASE("A run archives the zone groups its case was resolved with", "[runtime
   bad = on(groups_hash);
   bad["mesh_info"]["groups_source"]["sha256"] = std::string(64, 'b');
   require_error(run(bad), "E0705");
+  bad = on(groups_hash);
+  bad["mesh_info"]["groups_source"]["provenance"] = {{"url", Json::array()}};
+  require_error(run(bad), "E0705");
+  bad = on(groups_hash);
+  bad["mesh_info"]["groups"][0]["zones"] = {"ymin", "nowhere"};
+  require_error(run(bad), "E0705");
   fs::remove(sidecar);
   require_error(run(on(groups_hash)), "E0137");  // the named sidecar is gone
 }

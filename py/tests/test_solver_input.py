@@ -416,9 +416,9 @@ def test_the_input_stays_within_the_size_its_plan_counts(
     # plan.md: the solver input as `autan prepare` writes it is at most the plan's "solver
     # input". Long: every free text at its 4096-byte bound in control characters, which JSON
     # escapes 6 times, on 256 walls and 64 cell zones whose names 8 monitors or a point vortex
-    # repeat. Short: 1024 walls of a few characters, which 1024 monitors repeat: each repeated
-    # name costs its list formatting more than its text, and the repeats outgrow the 1 KiB a
-    # zone's and a monitor's entry are counted.
+    # repeat. Short: 1024 walls of a few characters, which 1024 monitors or the point vortices
+    # of 1024 farfield zones repeat: each repeated name costs its list formatting more than its
+    # text, and the repeats outgrow the 1 KiB a zone's and a monitor's entry are counted.
     walls_n, monitors_n = (256, 8) if names == "long" else (1024, 1024)
 
     def long(tag: str) -> str:
@@ -439,6 +439,18 @@ def test_the_input_stays_within_the_size_its_plan_counts(
         ]
         split[0]["faces"] += faces % walls_n
         others = [z | {"name": long(f"{z['type']}-{z['name']}")} for z in zones if z not in walls]
+        if names == "short":  # as many farfield zones as walls, each repeating every wall
+            far = [z for z in others if z["type"] == "farfield"]
+            total = sum(z["faces"] for z in far)
+            others = [z for z in others if z["type"] != "farfield"] + [
+                {
+                    "name": f"farfield-{i}",
+                    "type": "farfield",
+                    "native_type": None,
+                    "faces": total // walls_n + (total % walls_n if i == 0 else 0),
+                }
+                for i in range(walls_n)
+            ]
         document["boundary_zones"] = split + others
         cells = document["counts"]["cells"]
         document["cell_zones"] = [

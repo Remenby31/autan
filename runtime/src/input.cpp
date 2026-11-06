@@ -1,10 +1,12 @@
 #include "autan/runtime/input.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <initializer_list>
 #include <map>
+#include <optional>
 #include <set>
 #include <span>
 #include <stdexcept>
@@ -195,33 +197,6 @@ void read_mesh_info(const Json& info, SolverInput& in) {
                    .data_json = Json{{"expected", in.mesh_sha256}, {"found", sha}}.dump()});
   }
 
-  // mesh-info.md, Zone groups: each group a name and its zones, from the sidecar the input
-  // names (mesh.groups_sha256), or none without one.
-  const Json& groups = list(root, "groups");
-  for (std::size_t i = 0; i < groups.size(); ++i) {
-    const Object group(groups[i], indexed(root.at("groups"), i), {"name", "zones"});
-    (void)name(group);
-    const Json& members = list(group, "zones");
-    if (members.empty()) invalid(group.at("zones"), "expected at least one zone");
-    for (std::size_t k = 0; k < members.size(); ++k) {
-      if (!members[k].is_string() || members[k].get<std::string>().empty())
-        invalid(indexed(group.at("zones"), k), "expected a zone name");
-    }
-  }
-  std::optional<std::string> groups_sha;
-  if (!root.is_null("groups_source")) {
-    const Object groups_source(root.get("groups_source"), root.at("groups_source"),
-                               {"path", "sha256", "provenance"});
-    (void)groups_source.string("path");
-    groups_sha = sha256(groups_source, "sha256");
-    if (!groups_source.get("provenance").is_object())
-      invalid(groups_source.at("provenance"), "expected an object");
-  } else if (!groups.empty()) {
-    invalid(root.at("groups"), "has groups without groups_source");
-  }
-  if (groups_sha != in.mesh_groups_sha256)
-    invalid(root.at("groups_source"), "is not the zone-groups file mesh.groups_sha256 names");
-
   const Object counts(root.get("counts"), root.at("counts"),
                       {"cells", "faces", "nodes", "source_nodes", "face_nodes", "cells_by_type",
                        "stencil_entries", "periodic_ghosts"});
@@ -245,6 +220,7 @@ void read_mesh_info(const Json& info, SolverInput& in) {
 
   std::set<std::string> boundary_names, periodic_zones;
   std::map<std::string, std::int64_t> zone_faces;
+  std::map<std::string, std::size_t> zone_order;
   std::int64_t boundary_faces = 0;
   const Json& boundary = list(root, "boundary_zones");
   for (std::size_t i = 0; i < boundary.size(); ++i) {
@@ -259,7 +235,55 @@ void read_mesh_info(const Json& info, SolverInput& in) {
     zone_faces[n] = count(z, "faces");
     boundary_faces += zone_faces[n];
     if (type == "periodic") periodic_zones.insert(n);
+    zone_order[n] = i;
   }
+  // mesh-info.md, Zone groups: distinct names in order, each of
+  // [A-Za-z0-9_.][A-Za-z0-9_.-]*, its boundary zones distinct and in MeshInfo order, from the
+  // sidecar the input names (mesh.groups_sha256); none without one. The SDK checks the same.
+  const Json& groups = list(root, "groups");
+  std::string previous;
+  for (std::size_t i = 0; i < groups.size(); ++i) {
+    const Object group(groups[i], indexed(root.at("groups"), i), {"name", "zones"});
+    const std::string group_name = name(group);
+    const auto allowed = [](char c, bool first) {
+      return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == '.' ||
+             (!first && c == '-');
+    };
+    bool valid = allowed(group_name.front(), true);
+    for (std::size_t k = 1; k < group_name.size(); ++k)
+      valid = valid && allowed(group_name[k], false);
+    if (!valid) invalid(group.at("name"), "is not a zone group name");
+    if (i > 0 && group_name <= previous) invalid(group.at("name"), "breaks the groups' name order");
+    previous = group_name;
+    const Json& members = list(group, "zones");
+    if (members.empty()) invalid(group.at("zones"), "expected at least one zone");
+    std::size_t last = 0;
+    for (std::size_t k = 0; k < members.size(); ++k) {
+      const std::string at = indexed(group.at("zones"), k);
+      if (!members[k].is_string()) invalid(at, "expected a zone name");
+      const auto found = zone_order.find(members[k].get<std::string>());
+      if (found == zone_order.end()) invalid(at, "is not a boundary zone");
+      if (k > 0 && found->second <= last) invalid(at, "breaks the zones' MeshInfo order");
+      last = found->second;
+    }
+  }
+  std::optional<std::string> groups_sha;
+  if (!root.is_null("groups_source")) {
+    const Object groups_source(root.get("groups_source"), root.at("groups_source"),
+                               {"path", "sha256", "provenance"});
+    (void)groups_source.string("path");
+    groups_sha = sha256(groups_source, "sha256");
+    const Json& provenance = groups_source.get("provenance");
+    if (!provenance.is_object()) invalid(groups_source.at("provenance"), "expected an object");
+    for (const auto& [key, value] : provenance.items()) {
+      if (!value.is_string())
+        invalid(groups_source.at("provenance") + "." + key, "expected a string");
+    }
+  } else if (!groups.empty()) {
+    invalid(root.at("groups"), "has groups without groups_source");
+  }
+  if (groups_sha != in.mesh_groups_sha256)
+    invalid(root.at("groups_source"), "is not the zone-groups file mesh.groups_sha256 names");
   if (boundary_faces > faces)
     invalid(root.at("boundary_zones"), "hold more faces than counts.faces");
 
