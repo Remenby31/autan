@@ -170,10 +170,32 @@ def _min_edge(points: FloatArray, cells: dict[str, IntArray]) -> FloatArray:
         k = conn.shape[1]
         for i in range(k):
             for j in range(i + 1, k):
-                d = np.linalg.norm(points[conn[:, i]] - points[conn[:, j]], axis=1)
+                e = points[conn[:, i]] - points[conn[:, j]]
+                # Written out, so that every CPU rounds it the same way (#495).
+                d = np.sqrt(e[:, 0] * e[:, 0] + e[:, 1] * e[:, 1] + e[:, 2] * e[:, 2])
                 np.minimum.at(h, conn[:, i], d)
                 np.minimum.at(h, conn[:, j], d)
     return h
+
+
+def _uniform_in_ball(rng: np.random.Generator, count: int) -> FloatArray:
+    """`count` points uniform in the unit ball, by rejection from the cube [-1, 1]^3.
+
+    Only exactly rounded operations: the generator's doubles (an integer times 2**-53), and
+    NumPy's element-wise `*`, `-`, `+` and comparison, each rounded once. So the same bits on
+    every IEEE-754 CPU. A power, a normal draw or `Generator.uniform` (whose `low + range * r` a
+    compiler may fuse) can end in a different last bit on another CPU (#495).
+    """
+    out = np.empty((count, 3))
+    filled = 0
+    while filled < count:
+        need = count - filled
+        cube = 2.0 * rng.random((2 * need + 8, 3)) - 1.0  # about 52 % of them fall in the ball
+        r2 = cube[:, 0] * cube[:, 0] + cube[:, 1] * cube[:, 1] + cube[:, 2] * cube[:, 2]
+        kept = cube[r2 <= 1.0][:need]
+        out[filled : filled + kept.shape[0]] = kept
+        filled += kept.shape[0]
+    return out
 
 
 def perturb(
@@ -187,13 +209,10 @@ def perturb(
 
     Coordinates on the faces of the unit cube stay on them, so the domain is unchanged. Nodes of a
     cell that would become inverted or non-star-shaped have their displacement halved until every
-    cell is valid, so the result is deterministic for a given seed.
+    cell is valid. The result depends on the seed alone: the same bits on every CPU (#495).
     """
     rng = np.random.default_rng(seed)
-    direction = rng.normal(size=points.shape)
-    direction /= np.linalg.norm(direction, axis=1, keepdims=True)
-    radius = amplitude * _min_edge(points, cells) * rng.uniform(size=points.shape[0]) ** (1.0 / 3.0)
-    step = direction * radius[:, None]
+    step = _uniform_in_ball(rng, points.shape[0]) * (amplitude * _min_edge(points, cells))[:, None]
     on_face = (np.abs(points) < 1e-12) | (np.abs(points - 1.0) < 1e-12)
     step[on_face] = 0.0
     width = max(c.shape[1] for c in cells.values())
