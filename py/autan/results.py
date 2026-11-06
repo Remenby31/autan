@@ -22,6 +22,7 @@ from autan import cgns
 from autan.errors import CaseError, Diagnostic, Location, diagnostic
 from autan.meshinfo import MeshInfo
 from autan.schema import DDES, SA, SST, CaseSpec, Compressible, Steady, Unsteady
+from autan.texts import load_json
 from autan.units import metres_per
 
 if TYPE_CHECKING:
@@ -545,7 +546,7 @@ class Results:
             raise CaseError([diagnostic("E0701", message, location=where)])
 
         try:
-            document = json.loads((path / "run.json").read_text())
+            document = load_json((path / "run.json").read_text())
         except (OSError, ValueError) as error:
             broken(f"cannot read run.json: {error}", "run.json")
         if not isinstance(document, dict) or document.get("schema") != SCHEMA_ID:
@@ -560,7 +561,7 @@ class Results:
             broken(f"run.json: {first['msg']} at {first['loc']}", "run.json")
         try:
             case_document = tomllib.loads((path / "case.toml").read_text())
-            mesh_document = json.loads((path / "mesh-info.json").read_text())
+            mesh_document = load_json((path / "mesh-info.json").read_text())
         except (OSError, ValueError) as error:
             broken(str(error))
         try:
@@ -852,7 +853,7 @@ def _read_history(path: Path, live: bool, broken: Any) -> list[dict[str, Any]]:
     records = []
     for number, raw in enumerate(complete.split(b"\n") if complete else [], start=1):
         try:
-            record = json.loads(raw.decode("utf-8"), parse_constant=_reject_constant)
+            record = load_json(raw.decode("utf-8"), parse_constant=_reject_constant)
         except ValueError as error:
             broken(f"line {number}: {error}", path.name)
         if not isinstance(record, dict):
