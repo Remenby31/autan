@@ -81,8 +81,13 @@ jobs:
           echo "${MAMBA_ROOT_PREFIX}/envs/cgns/bin" >> "${GITHUB_PATH}"
       - name: Show the compiler
         run: ${CXX} --version
+      # libstdc++'s assertions (all three compilers use it here): a bounds-checked operator[], an
+      # asserted *optional, a checked front() and back(). They catch undefined behaviour the tests
+      # reach but that neither the Release builds nor AddressSanitizer see (Noyau's mutation runs).
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="${MAMBA_ROOT_PREFIX}/envs/cgns" -DCMAKE_BUILD_TYPE=Debug -DAUTAN_WARNINGS_AS_ERRORS=ON
+        run: >-
+          cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="${MAMBA_ROOT_PREFIX}/envs/cgns"
+          -DCMAKE_BUILD_TYPE=Debug -DAUTAN_WARNINGS_AS_ERRORS=ON -DCMAKE_CXX_FLAGS=-D_GLIBCXX_ASSERTIONS
       - name: Build
         run: cmake --build build
       - name: Test
