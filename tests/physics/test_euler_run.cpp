@@ -188,10 +188,11 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   INFO(precision << (steady ? " steady" : " unsteady"));
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     inviscid_along_x(d, precision);
-    // fp32+acc64 starts at its convergence floor (round-off only) and stops at iteration 1.
+    // fp32+acc64 starts at round-off: it converges once its residuals are on a plateau
+    // (case-schema.md#time), after the first-order start's provisional steps and 100 more.
     d["monitors"][0]["every"] = 1;
     if (steady) {
-      d["time"]["max_iterations"] = 20;
+      d["time"]["max_iterations"] = 400;
     } else {
       d["time"] = {{"kind", "unsteady"}, {"steps", 20},
                    {"dt", nullptr},      {"cfl", 0.8},
@@ -209,7 +210,7 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   const double speed = f["speed"].get<double>();
   const double p = f["pressure"].get<double>();
   const double rho = f["density"].get<double>();
-  // Each step changes the state by round-off of the face fluxes: 20 steps stay within 64 eps.
+  // Each step changes the state by round-off of the face fluxes: the run stays within 64 eps.
   for (const double v : field(out.run, "Density")) CHECK(std::abs(v - rho) <= 64 * eps * rho);
   for (const double v : field(out.run, "Pressure")) CHECK(std::abs(v - p) <= 64 * eps * p);
   for (const double v : field(out.run, "VelocityX")) CHECK(std::abs(v - speed) <= 64 * eps * speed);
@@ -219,8 +220,9 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   const auto& forces = lines.back()["monitors"]["forces"];
   for (const char* k : {"fx", "fy", "fz"}) CHECK(std::abs(forces[k].get<double>()) <= 64 * eps * p);
   if (!steady) CHECK(info["time"].get<double>() > 0.0);
-  // case-schema.md#time: a steady fp32+acc64 run converges at 0.5 * 2^-23 * Phi_k at the
-  // latest, Phi_k = f_k sqrt(sum_i A_i^2 / N) from the freestream flux f_k and the cell surfaces.
+  // case-schema.md#time: a steady fp32+acc64 run converges on a round-off plateau near its floor
+  // 0.5 * 2^-23 * Phi_k, Phi_k = f_k sqrt(sum_i A_i^2 / N) from the freestream flux f_k and the
+  // cell surfaces.
   if (!steady || std::string(precision) == "fp64") {
     CHECK(info["convergence"].is_null());
     return;
@@ -277,6 +279,38 @@ void check_checkpoints_change_nothing(Json doc) {
   const Json info = Json::parse(read(every.run / "run.json"));
   CHECK(info["checkpoint"].is_object());
   CHECK(!fs::exists(every.run / "checkpoint.cgns"));
+}
+
+TEST_CASE("a continued steady run ends its first-order start where the uninterrupted one does",
+          "[euler]") {
+  // results.md: a `continue` run gives the uninterrupted run's history, bit for bit. A uniform
+  // flow's first-order drop is round-off, so its first-order start ends on the plateau rule of
+  // case-schema.md#time, about 100 steps in: a continuation from iteration 60 must carry that
+  // count over.
+  auto doc = input("hybrid.solver-input.json", [](Json& d) {
+    inviscid_along_x(d, "fp64");
+    d["time"]["max_iterations"] = 200;
+  });
+  const auto whole = run(doc);
+  INFO(whole.err);
+  REQUIRE(whole.status == ExitStatus::finished);
+  auto part = doc;
+  part["time"]["max_iterations"] = 60;
+  const auto first = run(part);
+  REQUIRE(first.status == ExitStatus::finished);
+  auto rest = doc;
+  rest["start"] = continue_from(first.run);
+  const auto second = run(rest);
+  INFO(second.err);
+  REQUIRE(second.status == ExitStatus::finished);
+  const auto expected = history(whole.run);
+  auto chain = history(first.run);
+  for (const auto& line : history(second.run)) chain.push_back(line);
+  REQUIRE(chain.size() == expected.size());
+  for (std::size_t i = 0; i < chain.size(); ++i) {
+    INFO("iteration " << i + 1);
+    CHECK(chain[i]["residuals"] == expected[i]["residuals"]);
+  }
 }
 
 TEST_CASE("checkpoints change no Euler result", "[euler]") {
@@ -1029,7 +1063,8 @@ TEST_CASE("a steady Gauss-Seidel or lines case on several ranks converges to the
     REQUIRE(residuals.size() == first.size());
     for (const auto& [name, r] : residuals.items()) {
       const double f = floor[name].get<double>();
-      const double bound = std::max(first[name].get<double>() * drop, f) + f;
+      const double bound =
+          std::max(first[name].get<double>() * drop, autan::runtime::round_off_band * f) + f;
       INFO(name << ": residual " << r.get<double>() << ", bound " << bound);
       CHECK(r.get<double>() <= bound);
     }

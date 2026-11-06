@@ -223,7 +223,7 @@ export function ruleKey(run: Rule): string {
  * every equation is, NaN when one cannot be compared. */
 function computeOrders(columns: HistoryColumns, run: Rule, from: number): void {
   const reference = run?.start?.residual_reference ?? null;
-  const floors = run?.convergence?.floor ?? {};
+  const plateau = new Set(run?.convergence?.plateau ?? []);
   if (from === 0) {
     columns.orders.length = 0;
     columns.woken = new Set(run?.start?.woken ?? []);
@@ -246,8 +246,7 @@ function computeOrders(columns: HistoryColumns, run: Rule, from: number): void {
         if (value >= 0 && value <= floor) continue;
         columns.woken.add(name);
       }
-      const limit = floors[name];
-      if (limit !== undefined && value >= 0 && value <= limit) continue;
+      if (plateau.has(name)) continue;
       if (value === 0 && first >= 0) continue;
       if (first > 0 && value > 0 && first < Infinity && value < Infinity)
         slowest = Math.min(slowest, Math.log10(first) - Math.log10(value));
