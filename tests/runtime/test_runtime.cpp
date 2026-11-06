@@ -602,10 +602,15 @@ std::string own_sha256() {
   REQUIRE(_NSGetExecutablePath(self.data(), &size) == 0);
   self.resize(std::char_traits<char>::length(self.c_str()));
 #else
-  const std::string self = fs::read_symlink("/proc/self/exe").string();
+  // Opens even if the file was replaced since; /proc/self would be cmake's own.
+  const std::string self = "/proc/" + std::to_string(getpid()) + "/exe";
 #endif
-  const std::string command =
-      std::string("\"") + AUTAN_TEST_CMAKE + "\" -E sha256sum \"" + self + "\"";
+  const auto quoted = [](const std::string& s) {
+    std::string q = "'";
+    for (const char c : s) q += c == '\'' ? std::string("'\\''") : std::string(1, c);
+    return q + "'";
+  };
+  const std::string command = quoted(AUTAN_TEST_CMAKE) + " -E sha256sum " + quoted(self);
   std::FILE* pipe = popen(command.c_str(), "r");
   REQUIRE(pipe != nullptr);
   std::array<char, 65> hex{};

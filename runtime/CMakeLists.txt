@@ -28,12 +28,9 @@ target_include_directories(
   PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 target_include_directories(autan_runtime SYSTEM PRIVATE ${picosha2_SOURCE_DIR})
-# Every run hashes its executable (run.json solver.binary_sha256): unoptimised, hashing a Debug
-# test executable took seconds per process.
-set_source_files_properties(
-  src/executable_hash.cpp
-  PROPERTIES COMPILE_OPTIONS "$<$<CONFIG:Debug>:-O2>"
-)
+# Every process hashes its executable (run.json solver.binary_sha256): unoptimised, hashing a
+# Debug test executable took seconds. Not per configuration, which Xcode refuses per source.
+set_source_files_properties(src/executable_hash.cpp PROPERTIES COMPILE_OPTIONS -O2)
 target_link_libraries(
   autan_runtime
   PUBLIC autan::io autan::core autan::partition
