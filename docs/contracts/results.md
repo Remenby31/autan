@@ -31,7 +31,7 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
   "status": "converged",
   "case": {"name": "crm-hl", "sha256": "…"},
   "mesh": {"path": "/data/crm-hl.cgns", "sha256": "…"},
-  "solver": {"version": "0.1.0", "commit": "d769576…", "backend": "fake"},
+  "solver": {"version": "0.1.0", "commit": "d769576…", "backend": "fake", "binary_sha256": null},
   "precision": "fp32+acc64",
   "devices": {"kind": "cpu", "count": 1},
   "cell_order": "rcm",
@@ -58,6 +58,7 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
 | `mesh.path`, `mesh.sha256` | Absolute path of the mesh read, and `source.sha256` of its MeshInfo. |
 | `solver.version`, `solver.commit` | Version and full 40-character git commit of the solver build. |
 | `solver.backend` | `cuda` · `hip` · `cpu` · `fake`. Results of the `fake` backend are synthetic and must never be used as reference data. |
+| `solver.binary_sha256` | SHA-256 of the `autan-run` executable that ran, into which the build links every library of the solver statically (it refuses `BUILD_SHARED_LIBS`), hashed at its start; `null` exactly for the `fake` backend. Outside the [identity](#identity). A `continue` whose executable is not the one of the state it starts from warns `W0715`. |
 | `precision` | Precision as run, from the case. |
 | `devices` | `kind` (`cuda` · `hip` · `cpu`) and `count`, the number of ranks ([solver-input.md](solver-input.md)). |
 | `cell_order` | The order the solver numbered the cells in: `rcm` (reverse Cuthill-McKee, the default) or `input` (the mesh's, on request; the runtime logs a warning). The order changes the bits of a run. The `fake` backend writes `input`. |
@@ -72,7 +73,7 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
 | `timing` | `{wall_seconds, solve_seconds, iterations, ns_per_cell_iteration}`: the time from the start of the runtime to the end of the run, the time of the physics' steps and averaging alone (no reading or partitioning, no history, log or solution writes; the slowest rank's), the iterations of this run (for a `continue`, those after `start.iterations`) and `solve_seconds` × 10⁹ / (cells of the mesh × `iterations`). `null` while `running`, for a run with no iteration, for a run that failed on several ranks, and for the `fake` backend. Information about one run, outside `identity` and the bitwise guarantee; performance is measured with `bench/` ([infra/bench.md](../infra/bench.md)). The key is always present. |
 | `diagnostics` | Diagnostics raised during the run, in the shape defined in [case-schema.md](case-schema.md#diagnostics); a `diverged` run carries its `D` code here. |
 
-Two runs of the solver (not the `fake` backend) with the same `identity` whose case has `physics.reproducibility` `"run"` or `"ranks"`, and that stop at the same iteration, produce bitwise-identical `history.jsonl` lines and `solution.cgns` data arrays (`log.jsonl` excepted: it carries wall-clock times). The identity covers the case, mesh, solver build, precision, backend, devices, cell order and, for a restarted run, the state it starts from. With `"ranks"`, two such runs whose identities differ only by `devices.count` or `cell_order` also produce the same lines and arrays. With `"none"`, nothing is guaranteed ([case-schema.md](case-schema.md#physics)).
+Two runs of the solver (not the `fake` backend) with the same `identity` and the same `solver.binary_sha256` whose case has `physics.reproducibility` `"run"` or `"ranks"`, and that stop at the same iteration, produce bitwise-identical `history.jsonl` lines and `solution.cgns` data arrays (`log.jsonl` excepted: it carries wall-clock times). The identity covers the case, mesh, solver commit, precision, backend, devices, cell order and, for a restarted run, the state it starts from. With `"ranks"`, two such runs whose identities differ only by `devices.count` or `cell_order` also produce the same lines and arrays. With `"none"`, nothing is guaranteed ([case-schema.md](case-schema.md#physics)).
 
 
 ### Identity
@@ -195,7 +196,7 @@ While a run runs, the writer saves the state it can be continued from in `checkp
 
 The writer writes it under the temporary name `.checkpoint.cgns.tmp`, then renames it over the previous one. A run killed at any moment therefore leaves a whole checkpoint or none; readers ignore the temporary name. Writing a checkpoint only reads the state, so a run's `history.jsonl` and `solution.cgns` are the same whatever its checkpoints.
 
-After each checkpoint, the writer rewrites `run.json` `checkpoint` and logs it (`info`, source `writer`, `data` `{iteration, seconds, bytes}`). A write that fails, or its records, leaves the previous checkpoint, and the run goes on with `W0714`. The log has a `W0714` line for each failed write it can take; `run.json` keeps one, the last such line's, whose `data` `{failures, first_iteration, first_time, last_iteration, last_time}` counts them and gives the first and last (times `null` when steady), so that it does not grow with the run's length. A failure to remove the checkpoint at the end adds one more `W0714`, its `data` `{}`.
+After each checkpoint, the writer rewrites `run.json` `checkpoint` and logs it (`info`, source `writer`, `data` `{iteration, write_seconds, bytes}`). A write that fails, or its records, leaves the previous checkpoint, and the run goes on with `W0714`. The log has a `W0714` line for each failed write it can take; `run.json` keeps one, the last such line's, whose `data` `{failures, first_iteration, first_time, last_iteration, last_time}` counts them and gives the first and last (times `null` when steady), so that it does not grow with the run's length. A failure to remove the checkpoint at the end adds one more `W0714`, its `data` `{}`.
 
 Once a run's final `run.json` says it is `converged`, `completed` or `stopped`, the writer removes `checkpoint.cgns`: until then it stays the run's resumable state. A `diverged` or `failed` run keeps it, so that it can be continued from its last checkpoint ([solver-input.md](solver-input.md), `start`).
 ## Results API
