@@ -164,7 +164,8 @@ def test_an_fp32_run_may_converge_on_a_round_off_plateau_within_ten_floors(
 
     verify([run(102, 5e-8, EQUATIONS)], "freestream")
     # Later: a first-order start of 49 iterations puts it there, and one of 201, the longest
-    # (euler.md#time-stepping), at 302 but no later: at 303 it should have stopped at 102.
+    # (euler.md#time-stepping), at 302 but no later: no prefix fits 303, and the refusal
+    # reports where the run stops without one, 102.
     verify([run(150, 5e-8, EQUATIONS)], "freestream")
     verify([run(302, 5e-8, EQUATIONS)], "freestream")
     assert refused(run(303, 5e-8, EQUATIONS)) == {"iteration": 102, "equation": None}
