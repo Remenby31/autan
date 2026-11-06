@@ -52,6 +52,7 @@ def _case(
     precision: str = "fp64",
     time: float | None = None,
     edit: Callable[[autan.Case], None] | None = None,
+    manufactured: autan.Manufactured | None = None,
 ) -> autan.Case:
     oracle = get_oracle(oracle_name)
     case = autan.Case(f"verify-{oracle_name}", mesh=path)
@@ -64,7 +65,11 @@ def _case(
     case.freestream(mach=mach, pressure=1e5 * Pa, temperature=300 * K)
     if time is not None:
         case.time = autan.Unsteady(steps=1, dt=time * s)
-    case.boundary("*").farfield()
+    if manufactured is not None:
+        # A verification case takes every boundary's data from its manufactured solution.
+        case.verification = manufactured
+    else:
+        case.boundary("*").farfield()
     if edit is not None:
         edit(case)
     return case
@@ -324,6 +329,18 @@ def test_runs_that_do_not_fit_the_oracle_or_each_other_are_rejected(tmp_path: Pa
         with pytest.raises(VVError) as err:
             call()
         assert err.value.code == code
+    # One manufactured solution, the same bytes, named by another path in each study directory:
+    # one family (#466). Another solution is another case.
+    same = autan.Manufactured(path="euler-one.mms.json", sha256="a" * 64)
+    moved = autan.Manufactured(path="euler-two.mms.json", sha256="a" * 64)
+    different = autan.Manufactured(path="euler-two.mms.json", sha256="b" * 64)
+    one = _runs(tmp_path / "one", meshes[:2], "mms-euler", 2.0, manufactured=same)
+    two = _runs(tmp_path / "two", meshes[2:], "mms-euler", 2.0, manufactured=moved)
+    assert verify([*one, *two], "mms-euler")["oracle"]["name"] == "mms-euler"
+    three = _runs(tmp_path / "three", meshes[2:], "mms-euler", 2.0, manufactured=different)
+    with pytest.raises(VVError) as err:
+        verify([*one, *three], "mms-euler")
+    assert err.value.code == "V0727"
 
 
 def test_viscous_oracles_check_the_material_law(tmp_path: Path) -> None:
