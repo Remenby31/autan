@@ -110,13 +110,12 @@ class CgioTree {
   }
   /// The first child of `node` with this label (and name, when given); the other children's ids
   /// are released at once. A name is looked up directly, siblings unread: names are unique among
-  /// a node's children (SIDS), so reading a BC among N costs no more than among one.
+  /// a node's children (SIDS), so reading a BC among N costs no more than among one. A failed
+  /// direct lookup falls back to the scan, which tells an absent child from an unreadable file.
   [[nodiscard]] std::optional<double> child(double node, std::string_view label_,
                                             std::string_view name_ = {}) const {
-    if (!name_.empty()) {
-      double id = 0;
-      if (cgio_get_node_id(cgio_, node, std::string(name_).c_str(), &id) != CG_OK)
-        return std::nullopt;
+    if (double id = 0;
+        !name_.empty() && cgio_get_node_id(cgio_, node, std::string(name_).c_str(), &id) == CG_OK) {
       opened_.insert(id);
       if (label(id) == label_) return id;
       release(id);
