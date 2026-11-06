@@ -1,5 +1,9 @@
 #include "self_contained.hpp"
 
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <cstring>
 #include <string>
 #include <utility>
 #include <vector>
@@ -11,6 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include "autan/core/error.hpp"
+#include "cgns_util.hpp"
 
 namespace autan::io {
 
@@ -31,16 +36,26 @@ namespace {
               "cannot read the structure of '" + file.string() + "' in full");
 }
 
-// The first node whose data lives in another file, as an absolute path in the file.
+// The first node whose data lives in another file, as an absolute path in the file; or that the
+// file holds more links, or deeper, than a CGNS tree within max_cgns_nodes and max_cgns_depth can:
+// a node is at most three links (its group, " data", " link"), one path component deeper than its
+// node at most for the latter two, so the scan stops there, its cost bounded like the tree's.
 struct Scan {
   bool found = false;
   std::string outside;
+  std::int64_t links = 0;
+  bool beyond = false;
 };
 
 // H5Lvisit2 visits every link once, by name, without following soft or
 // external links (HDF5 reference manual, H5Lvisit2).
 herr_t visit(hid_t group, const char* name, const H5L_info2_t* info, void* data) {
   auto& scan = *static_cast<Scan*>(data);
+  const auto components = 1 + std::count(name, name + std::strlen(name), '/');
+  if (++scan.links > 3 * (max_cgns_nodes + 1) + 64 || components > max_cgns_depth + 1) {
+    scan.beyond = true;
+    return 1;  // stops the iteration
+  }
   const auto found = [&] {
     // CGNS keeps a link as an HDF5 external link named " link" in the node's
     // group (CGNS ADFH): the node is that group.
@@ -85,6 +100,11 @@ void scan_hdf5(const std::filesystem::path& file) {
   H5E_END_TRY
   H5PLset_loading_state(plugins);
   if (scan.found) outside(file, scan.outside);
+  if (scan.beyond) {
+    throw Error(ErrorCode::io_unsupported, file.string() + ": more than " +
+                                               std::to_string(max_cgns_nodes) + " nodes or " +
+                                               std::to_string(max_cgns_depth) + " levels");
+  }
   if (status < 0) unreadable(file);
 }
 
@@ -94,15 +114,28 @@ void scan_cgns_links(const std::filesystem::path& file) {
   if (cgio_open_file(file.string().c_str(), CGIO_MODE_READ, CGIO_FILE_NONE, &cgio) != CG_OK) {
     throw Error(ErrorCode::io_cannot_open, "cannot open '" + file.string() + "' as CGNS");
   }
-  std::string found;
+  // Each node visited once, with the index of its parent: a path is built only for the
+  // diagnostic. The walk stops past max_cgns_nodes or max_cgns_depth, which the reader refuses
+  // (cgns_util.hpp).
+  struct Frame {
+    double id;
+    std::size_t parent;
+    int depth;
+  };
+  constexpr auto none = static_cast<std::size_t>(-1);
+  std::vector<Frame> visited;
+  std::size_t found = none;
   bool broken = false;
   double root = 0;
   cgio_get_root_id(cgio, &root);
-  std::vector<std::pair<double, std::string>> pending{{root, ""}};
+  std::vector<Frame> pending{{root, none, 0}};
   std::vector<double> children;
-  while (!pending.empty() && found.empty() && !broken) {
-    const auto [node, path] = pending.back();
+  while (!pending.empty() && found == none && !broken &&
+         static_cast<std::int64_t>(visited.size()) <= max_cgns_nodes) {
+    const Frame frame = pending.back();
     pending.pop_back();
+    const double node = frame.id;
+    visited.push_back(frame);
     int length = 0;
     if (cgio_is_link(cgio, node, &length) != CG_OK) {
       broken = true;
@@ -111,23 +144,32 @@ void scan_cgns_links(const std::filesystem::path& file) {
     if (length > 0) {
       int file_length = 0, name_length = 0;
       cgio_link_size(cgio, node, &file_length, &name_length);
-      if (file_length > 0) found = path.empty() ? "/" : path;
+      if (file_length > 0) found = visited.size() - 1;
       continue;
     }
     int count = 0;
     cgio_number_children(cgio, node, &count);
     if (count == 0) continue;
+    if (frame.depth == max_cgns_depth ||
+        static_cast<std::int64_t>(visited.size()) + count > max_cgns_nodes + 1) {
+      break;
+    }
     children.resize(static_cast<std::size_t>(count));
     int got = 0;
     cgio_children_ids(cgio, node, 1, count, &got, children.data());
     for (int i = 0; i < got; ++i) {
-      char name[CGIO_MAX_NAME_LENGTH + 1] = {};
-      cgio_get_name(cgio, children[static_cast<std::size_t>(i)], name);
-      pending.emplace_back(children[static_cast<std::size_t>(i)], path + "/" + name);
+      pending.push_back(
+          {children[static_cast<std::size_t>(i)], visited.size() - 1, frame.depth + 1});
     }
   }
+  std::string path;
+  for (std::size_t f = found; f != none && visited[f].parent != none; f = visited[f].parent) {
+    char name[CGIO_MAX_NAME_LENGTH + 1] = {};
+    cgio_get_name(cgio, visited[f].id, name);
+    path.insert(0, std::string("/") + name);
+  }
   cgio_close_file(cgio);
-  if (!found.empty()) outside(file, found);
+  if (found != none) outside(file, path.empty() ? "/" : path);
   if (broken) unreadable(file);
 }
 
@@ -136,6 +178,53 @@ void scan_cgns_links(const std::filesystem::path& file) {
 void reject_outside_data(const std::filesystem::path& file) {
   scan_hdf5(file);
   scan_cgns_links(file);
+}
+
+std::int64_t largest_filtered_bytes(const std::filesystem::path& file) {
+  struct Largest {
+    std::int64_t bytes = 0;
+    bool failed = false;
+  } largest;
+  const auto visit = [](hid_t object, const char* name, const H5O_info2_t* info, void* data) {
+    auto& out = *static_cast<Largest*>(data);
+    if (info->type != H5O_TYPE_DATASET) return 0;
+    const hid_t dataset = H5Dopen2(object, name, H5P_DEFAULT);
+    if (dataset < 0) {
+      out.failed = true;
+      return -1;
+    }
+    const hid_t properties = H5Dget_create_plist(dataset);
+    if (properties >= 0 && H5Pget_nfilters(properties) > 0) {
+      // A filter applies to whole chunks: a read inflates each chunk it touches into a buffer of
+      // the chunk's logical size, whatever part of it the dataset's extent covers.
+      const hid_t type = H5Dget_type(dataset);
+      std::array<hsize_t, H5S_MAX_RANK> chunk{};
+      const int rank = H5Pget_chunk(properties, H5S_MAX_RANK, chunk.data());
+      std::int64_t logical = rank > 0 ? static_cast<std::int64_t>(H5Tget_size(type)) : 0;
+      for (int d = 0; d < rank; ++d)
+        logical *= static_cast<std::int64_t>(chunk[static_cast<std::size_t>(d)]);
+      const auto stored = static_cast<std::int64_t>(H5Dget_storage_size(dataset));
+      out.bytes = std::max(out.bytes, 2 * logical + stored);
+      H5Tclose(type);
+    }
+    if (properties >= 0) H5Pclose(properties);
+    H5Dclose(dataset);
+    return 0;
+  };
+  unsigned int plugins = 0;
+  H5PLget_loading_state(&plugins);
+  H5PLset_loading_state(0);
+  herr_t status = 0;
+  H5E_BEGIN_TRY {
+    const hid_t f = H5Fopen(file.string().c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+    status =
+        f < 0 ? -1 : H5Ovisit3(f, H5_INDEX_NAME, H5_ITER_NATIVE, visit, &largest, H5O_INFO_BASIC);
+    if (f >= 0) H5Fclose(f);
+  }
+  H5E_END_TRY
+  H5PLset_loading_state(plugins);
+  if (status < 0 || largest.failed) unreadable(file);
+  return largest.bytes;
 }
 
 }  // namespace autan::io

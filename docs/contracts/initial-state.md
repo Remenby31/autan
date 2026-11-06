@@ -21,12 +21,14 @@ Producer: `autan.initial_state.write` in the SDK, called by the `autan-vv` expor
 | Key | Content |
 |---|---|
 | `schema` | `"autan.initial-state/1"` |
-| `oracle` | Name of the field, for display. |
+| `oracle` | Name of the field, for display: at most 4 096 bytes in UTF-8 ([case-schema.md](case-schema.md#free-texts)), like every member name. |
 | `mesh_sha256` | The mesh hash ([mesh-info.md](mesh-info.md), `source.sha256`) of the mesh the state was written for. |
 | `variables` | Exactly `["density", "velocity-x", "velocity-y", "velocity-z", "pressure"]`, in SI (kg/m³, m/s, Pa), velocity in mesh axes. |
 | `cells` | The number of rows: every fluid cell of the mesh, an integer ≥ 1. |
 | `centroids` | One `[x, y, z]` per row (m): the centroid of the row's cell. |
 | `values` | One row per cell in the order of `variables`, density and pressure > 0. Rows of `centroids` and `values` correspond; their order is free. |
+
+Every string is at most 4 096 bytes once decoded, so at most 6 × 4 096 as written (an escape takes at most 6 bytes a character); every number is written in at most 64 characters (a double needs 24); and the document nests no deeper than the structure above. A reader refuses a longer string or number, a deeper nesting before it holds it (`E0508`).
 
 A cell is identified by its centroid, not by its rank, so the file does not depend on the solver's cell order or partitioning. The centroid of a cell is `cell_centroid` of [mesh.md](mesh.md#geometry). The values are the cell's state as given, with no projection: a value at the centroid stands for the cell average, which a second-order scheme sees as an O(h²) difference. Solid cells have no row and keep their zone's state.
 

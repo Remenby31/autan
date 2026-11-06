@@ -12,6 +12,7 @@
 #include <ctime>
 #include <exception>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <map>
 #include <numeric>
@@ -19,7 +20,6 @@
 #include <random>
 #include <set>
 #include <span>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -42,6 +42,7 @@
 #include "comm.hpp"
 #include "device.hpp"
 #include "executable_hash.hpp"
+#include "host_memory.hpp"
 #include "run_directory.hpp"
 
 namespace autan::runtime {
@@ -291,17 +292,26 @@ std::string sha256_hex(const std::string& text) {
   return hash;
 }
 
+// The bytes of an open file in one string: its one copy in memory.
+std::string file_bytes(std::ifstream& in) {
+  in.seekg(0, std::ios::end);
+  const std::streamoff size = in.tellg();
+  in.seekg(0, std::ios::beg);
+  std::string bytes(static_cast<std::size_t>(std::max<std::streamoff>(size, 0)), '\0');
+  in.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+  if (!in) bytes.clear();
+  return bytes;
+}
+
 std::string read_text(const fs::path& path) {
-  const std::ifstream in(path, std::ios::binary);
+  std::ifstream in(path, std::ios::binary);
   if (!in) {
     throw InputError(Diagnostic{.code = "E0705",
                                 .message = "cannot read '" + path.string() + "'",
                                 .path = "",
                                 .data_json = "{}"});
   }
-  std::ostringstream text;
-  text << in.rdbuf();
-  return text.str();
+  return file_bytes(in);
 }
 
 [[noreturn]] void invalid(const std::string& path, const std::string& message) {
@@ -328,15 +338,17 @@ struct Prepared {
   SolverInput input;
   Mesh mesh;
   std::string mesh_hash;
+  std::int64_t mesh_bytes = 0;               // the size of what mesh_hash covers
   std::string mesh_info;                     // MeshInfo of the mesh as read, before mesh.scale
   std::map<std::string, index_t> face_zone;  // boundary zone name -> Mesh::face_zones() index
   std::vector<std::vector<index_t>> monitor_zones;
   const PhysicsFactory* factory = nullptr;
   std::string cell_order;                   // "rcm" (default) or "input", from AUTAN_CELL_ORDER
   const PartitionGroups* groups = nullptr;  // the physics' groups; null or empty: none
-  std::optional<StartState> start;          // input.start, read and checked
-  Json start_averaging;                     // `continue`: the previous run's averaging
-  Json start_binary;                        // `continue`: the previous run's binary_sha256
+  std::vector<Diagnostic> memory_warnings = {};  // W0712, W0713: the memory check's warnings
+  std::optional<StartState> start;               // input.start, read and checked
+  Json start_averaging;                          // `continue`: the previous run's averaging
+  Json start_binary;                             // `continue`: the previous run's binary_sha256
   // oracle-state: paired face states per face zone, and the files to archive (sha256, bytes).
   std::map<index_t, std::vector<double>> boundary_states;
   std::map<std::string, std::string> state_files;
@@ -433,8 +445,9 @@ const Geometry& geometry_of(Prepared& p) {
 }
 
 // solver-input.md, `start`: the runtime checks the previous solution's hash,
-// mesh, precision and fields, and reads its state, before any directory exists.
-void load_start(Prepared& p) {
+// mesh, precision and fields, and reads its state, before any directory exists. `entry` is the
+// physics that continues it, null when the build has none (E0706 follows).
+void load_start(Prepared& p, const PhysicsRegistry::Entry* entry) {
   const Start& start = *p.input.start;
   const bool from_checkpoint = start.file == "checkpoint";
   const fs::path file =
@@ -455,7 +468,42 @@ void load_start(Prepared& p) {
   }
   io::StoredSolution stored;
   try {
-    stored = io::read_solution(snapshot->path());
+    // A warm start takes the fields alone (solver-input.md, `start`).
+    // results.md, Sizes a reader accepts: what the writer wrote for this mesh, checked before
+    // the CGNS library loads the file.
+    if (const std::int64_t cells = io::solution_cells(snapshot->path());
+        cells != p.mesh.n_cells()) {
+      start_mismatch("E0203", "the previous run was computed on another mesh", "start.run",
+                     {{"expected_cells", p.mesh.n_cells()}, {"found_cells", cells}});
+    }
+    const io::MeshInfoZones zones = io::meshinfo_zones(p.mesh);
+    io::check_start_solution(
+        snapshot->path(),
+        {.zones = static_cast<std::int64_t>(zones.boundary.size() + zones.cell.size()),
+         .periodic_pairs = static_cast<std::int64_t>(p.mesh.periodic_pairs().size())});
+    // results.md, Sizes a reader accepts: the arrays the run writes, checked by name before
+    // any is read, cells doubles each.
+    const auto arrays = io::solution_field_names(snapshot->path());
+    const auto named = [&](const char* solution) {
+      const auto it = arrays.find(solution);
+      return it == arrays.end() ? std::vector<std::string>{} : it->second;
+    };
+    if (named("FlowSolution") != field_names(p.input)) {
+      start_mismatch("E0708", "the previous run solved other variables", "start.run");
+    }
+    if (start.mode == "continue") {
+      if (const auto mean = named("FlowSolutionMean");
+          !mean.empty() && mean != field_names(p.input)) {
+        unusable("FlowSolutionMean holds other fields than the run averages");
+      }
+      const bool averaged = !named("FlowSolutionMean").empty();
+      const auto restart = entry != nullptr && entry->restart ? entry->restart(p.input, averaged)
+                                                              : std::vector<std::string>{};
+      if (named("RestartState") != restart) {
+        unusable("RestartState holds other arrays than the physics writes");
+      }
+    }
+    stored = io::read_solution(snapshot->path(), start.mode == "continue");
   } catch (const Error& e) {
     if (e.code() == ErrorCode::io_external_reference) {
       throw InputError(Diagnostic{
@@ -533,13 +581,217 @@ struct ZoneStates {
   std::vector<double> centroids, values;
 };
 
+// The rows of a member "centroids" (3 numbers each) or "values" (5) of a state document, taken
+// out of the parse as they come: `numbers` row after row, and `ok` while every row is an array of
+// that many finite numbers.
+struct Rows {
+  std::vector<double> numbers;
+  std::size_t rows = 0;
+  bool ok = true;
+};
+// Rows by the ordinals of the members leading to them (each member's position in its object,
+// in file order): no key is copied, so a long name costs its text and its one document key.
+using RowMap = std::map<std::vector<std::size_t>, Rows>;
+using StateDocument = nlohmann::ordered_json;
+
+// The position of member `key` in `object`, in file order; npos when absent.
+std::size_t ordinal(const StateDocument& object, std::string_view key) {
+  std::size_t i = 0;
+  for (const auto& [k, v] : object.items()) {
+    if (k == key) return i;
+    ++i;
+  }
+  return std::string_view::npos;
+}
+
+// A free text of a state file, the oracle and every member name: at most 4096 bytes in UTF-8
+// (case-schema.md#free-texts, face-states.md, initial-state.md); a number, at most 64 characters.
+constexpr std::size_t max_text_bytes = 4096;
+constexpr std::size_t max_number_chars = 64;
+constexpr std::size_t max_state_zones = 16384;
+
+// What a scan of a state file's text finds before it is parsed: the longest run of characters a
+// JSON number is made of, outside strings, which bounds every number token before the lexer,
+// holding a token twice, accumulates one; and the deepest nesting of brackets, which bounds the
+// parser's stacks before it pushes a level.
+struct TextScan {
+  std::size_t number = 0;
+  std::size_t depth = 0;
+  std::size_t string = 0;  // the longest string's raw bytes, escapes included
+  std::size_t rows =
+      0;  // members "centroids" and "values" holding an array: what parse_rows streams
+};
+
+TextScan scan_text(std::string_view text) {
+  TextScan out;
+  std::size_t run = 0, depth = 0, start = 0;
+  bool in_string = false, escaped = false;
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    const char ch = text[i];
+    if (in_string) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch == '\\') {
+        escaped = true;
+      } else if (ch == '"') {
+        in_string = false;
+        const std::string_view s = text.substr(start, i - start);
+        out.string = std::max(out.string, s.size());
+        if (s == "centroids" || s == "values") {
+          // A member name followed by an array, past the white space JSON allows.
+          const auto next = [&](std::size_t from) {
+            return text.find_first_not_of(" \t\n\r", from);
+          };
+          const std::size_t colon = next(i + 1);
+          if (colon != std::string_view::npos && text[colon] == ':') {
+            const std::size_t value = next(colon + 1);
+            if (value != std::string_view::npos && text[value] == '[') ++out.rows;
+          }
+        }
+      }
+      continue;
+    }
+    start = i + 1;
+    const bool number =
+        (ch >= '0' && ch <= '9') || ch == '-' || ch == '+' || ch == '.' || ch == 'e' || ch == 'E';
+    run = number ? run + 1 : 0;
+    out.number = std::max(out.number, run);
+    if (ch == '[' || ch == '{') out.depth = std::max(out.depth, ++depth);
+    if ((ch == ']' || ch == '}') && depth > 0) --depth;
+    in_string = ch == '"';
+  }
+  return out;
+}
+
+// Why `text` exceeds a state file's bounds: numbers of 64 characters, `depth` levels of nesting.
+std::string beyond_bounds(std::string_view text, std::size_t depth) {
+  const TextScan scan = scan_text(text);
+  if (scan.number > max_number_chars) {
+    return "a number of " + std::to_string(scan.number) + " characters (at most 64)";
+  }
+  if (scan.depth > depth) return "nested deeper than its structure";
+  // A string is at most 4096 bytes, each written in at most 6 (\\uXXXX).
+  if (scan.string > 6 * max_text_bytes) {
+    return "a string of " + std::to_string(scan.string) + " bytes (at most 4096)";
+  }
+  // A zone's centroids and values each, of at most 16 384 zones (mesh.md, Readers).
+  if (scan.rows > 2 * max_state_zones) {
+    return "more than " + std::to_string(max_state_zones) + " zones";
+  }
+  return "";
+}
+
+// `text` parsed (discarded if not JSON), every "centroids" and "values" array member streamed into
+// `streamed` under the ordinals of the members leading to it and left empty in the document:
+// what a state file holds in memory is then its text, 8 bytes per number of its rows, and its
+// other members once. `duplicate` is set when an object has a member twice; `longest` is the
+// longest member name.
+StateDocument parse_rows(const std::string& text, RowMap& streamed, bool& duplicate,
+                         std::size_t& longest) {
+  enum class Kind : std::uint8_t { plain, rows, row };
+  enum class Member : std::uint8_t { other, centroids, values };
+  constexpr std::size_t none = std::string_view::npos;
+  struct Frame {
+    bool array;
+    std::size_t ordinal;  // its position in the object holding it; none in an array or at the top
+    Kind kind;
+    std::size_t count;    // a row's numbers so far
+    std::size_t members;  // an object's keys so far
+  };
+  std::vector<Frame> stack;
+  Member pending = Member::other;
+  Rows* current = nullptr;
+  std::size_t width = 0;
+  using Event = StateDocument::parse_event_t;
+  const auto callback = [&](int /*depth*/, Event event, StateDocument& parsed) {
+    switch (event) {
+      case Event::key: {
+        const auto& key = parsed.get_ref<const std::string&>();
+        longest = std::max(longest, key.size());
+        pending = key == "centroids" ? Member::centroids
+                  : key == "values"  ? Member::values
+                                     : Member::other;
+        if (!stack.empty()) ++stack.back().members;
+        return true;
+      }
+      case Event::object_start:
+      case Event::array_start: {
+        const bool member = !stack.empty() && !stack.back().array;
+        const Kind parent = stack.empty() ? Kind::plain : stack.back().kind;
+        Frame f{.array = event == Event::array_start,
+                .ordinal = member ? stack.back().members - 1 : none,
+                .kind = Kind::plain,
+                .count = 0,
+                .members = 0};
+        if (parent == Kind::rows && f.array) {
+          f.kind = Kind::row;
+        } else if (parent != Kind::plain) {
+          current->ok = false;  // an object in the rows, or anything nested in a row
+        } else if (f.array && member && current == nullptr && pending != Member::other) {
+          f.kind = Kind::rows;  // not inside another rows member, which this one would replace
+          width = pending == Member::centroids ? 3 : 5;
+        }
+        pending = Member::other;
+        stack.push_back(f);
+        if (f.kind == Kind::rows) {
+          std::vector<std::size_t> path;
+          for (const auto& g : stack) {
+            if (g.ordinal != none) path.push_back(g.ordinal);
+          }
+          current = &streamed[path];
+        }
+        return true;
+      }
+      case Event::value: {
+        if (stack.empty()) return true;
+        Frame& top = stack.back();
+        if (top.kind == Kind::row) {
+          const bool number = parsed.is_number() && std::isfinite(parsed.get<double>());
+          if (number) current->numbers.push_back(parsed.get<double>());
+          current->ok = current->ok && number;
+          ++top.count;
+          return false;
+        }
+        if (top.kind == Kind::rows) {
+          current->ok = false;
+          return false;
+        }
+        if (!top.array) pending = Member::other;
+        return true;
+      }
+      case Event::object_end:
+      case Event::array_end: {
+        const Frame f = stack.back();
+        stack.pop_back();
+        if (f.kind == Kind::row) {
+          current->ok = current->ok && f.count == width;
+          ++current->rows;
+          return false;
+        }
+        if (f.kind == Kind::rows) {
+          current = nullptr;
+          return true;
+        }
+        // A member given twice leaves the object with fewer members than keys were read.
+        if (!f.array && f.kind == Kind::plain && parsed.is_object() && parsed.size() < f.members)
+          duplicate = true;
+        return stack.empty() || stack.back().kind == Kind::plain;
+      }
+    }
+    return true;
+  };
+  return StateDocument::parse(text, callback, false);
+}
+
 // The zones of a face-state document, or why it is not one (face-states.md, Document): every
 // key, every zone and every row are checked, whatever the case uses.
-std::map<std::string, ZoneStates> face_state_zones(const nlohmann::json& doc, std::string& why) {
-  std::map<std::string, ZoneStates> zones;
+// The zones are views of the document's keys, which must outlive them.
+std::map<std::string_view, ZoneStates> face_state_zones(const StateDocument& doc, RowMap& rows,
+                                                        std::string& why) {
+  std::map<std::string_view, ZoneStates> zones;
   const auto fail = [&](std::string what) {
     why = std::move(what);
-    return std::map<std::string, ZoneStates>{};
+    return std::map<std::string_view, ZoneStates>{};
   };
   if (!doc.is_object()) return fail("not a JSON object");
   for (const auto& [key, value] : doc.items()) {
@@ -551,40 +803,42 @@ std::map<std::string, ZoneStates> face_state_zones(const nlohmann::json& doc, st
     return doc.contains(key) && doc[key].is_string() ? doc[key].get<std::string>() : std::string();
   };
   if (string_at("schema") != "autan.face-states/1") return fail("schema");
-  if (!doc.contains("oracle") || !doc["oracle"].is_string()) return fail("oracle");
+  if (!doc.contains("oracle") || !doc["oracle"].is_string() ||
+      doc["oracle"].get_ref<const std::string&>().size() > max_text_bytes)
+    return fail("oracle");
   const std::string mesh = string_at("mesh_sha256");
   if (mesh.size() != 64 || mesh.find_first_not_of("0123456789abcdef") != std::string::npos)
     return fail("mesh_sha256");
   if (!doc.contains("variables") ||
       doc["variables"] !=
-          nlohmann::json{"density", "velocity-x", "velocity-y", "velocity-z", "pressure"})
+          StateDocument{"density", "velocity-x", "velocity-y", "velocity-z", "pressure"})
     return fail("variables");
   if (!doc.contains("zones") || !doc["zones"].is_object()) return fail("zones");
-  for (const auto& [name, z] : doc["zones"].items()) {
-    const std::string at_zone = "zones." + name;
+  const std::size_t zones_at = ordinal(doc, "zones");
+  std::size_t index = 0;
+  for (const auto& item : doc["zones"].items()) {
+    const std::string& name = item.key();
+    const StateDocument& z = item.value();
+    const std::size_t zone_at = index++;
+    const auto at_zone = [&] { return "zones." + name; };
     if (!z.is_object() || z.size() != 3 || !z.contains("faces") ||
         !z["faces"].is_number_integer() || z["faces"].get<std::int64_t>() < 0)
-      return fail(at_zone + ".faces");
+      return fail(at_zone() + ".faces");
     ZoneStates out;
     out.faces = z["faces"].get<std::size_t>();
-    for (const auto& [array, width] : {std::pair{"centroids", 3}, std::pair{"values", 5}}) {
-      const auto& rows = z.contains(array) ? z[array] : nlohmann::json();
-      if (!rows.is_array() || rows.size() != out.faces) return fail(at_zone + "." + array);
-      auto& to = std::string(array) == "centroids" ? out.centroids : out.values;
-      for (const auto& row : rows) {
-        if (!row.is_array() || row.size() != static_cast<std::size_t>(width))
-          return fail(at_zone + "." + array);
-        for (const auto& v : row) {
-          if (!v.is_number() || !std::isfinite(v.get<double>())) return fail(at_zone + "." + array);
-          to.push_back(v.get<double>());
-        }
-      }
+    for (const char* array : {"centroids", "values"}) {
+      const auto it = rows.find({zones_at, zone_at, ordinal(z, array)});
+      if (!z.contains(array) || !z[array].is_array() || it == rows.end() || !it->second.ok ||
+          it->second.rows != out.faces)
+        return fail(at_zone() + "." + array);
+      (std::string(array) == "centroids" ? out.centroids : out.values) =
+          std::move(it->second.numbers);
     }
     for (std::size_t r = 0; r < out.faces; ++r) {
       if (!(out.values[5 * r] > 0.0) || !(out.values[5 * r + 4] > 0.0))
-        return fail(at_zone + ".values: density and pressure must be > 0");
+        return fail(at_zone() + ".values: density and pressure must be > 0");
     }
-    zones.emplace(name, std::move(out));
+    zones.emplace(std::string_view(name), std::move(out));
   }
   return zones;
 }
@@ -609,18 +863,25 @@ void load_states(Prepared& p) {
     }
     std::ifstream in(b.states->path, std::ios::binary);
     if (!in) fail("E0420", "cannot read '" + b.states->path + "'", ".path");
-    std::ostringstream text;
-    text << in.rdbuf();
-    const std::string bytes = text.str();
+    std::string bytes = file_bytes(in);
     const std::string found = sha256_hex(bytes);
     if (found != b.states->sha256) {
       fail("E0420", "the face-state file's SHA-256 differs from states.sha256", ".sha256",
            {{"expected", b.states->sha256}, {"found", found}});
     }
-    const nlohmann::json doc = nlohmann::json::parse(bytes, nullptr, false);
-    std::string why = doc.is_discarded() ? "not JSON" : "";
-    const auto zones =
-        why.empty() ? face_state_zones(doc, why) : std::map<std::string, ZoneStates>{};
+    RowMap rows;
+    bool duplicate = false;
+    std::size_t longest = 0;
+    // face-states.md: object, zones, zone, rows, row.
+    std::string why = beyond_bounds(bytes, 5);
+    StateDocument doc = why.empty() ? parse_rows(bytes, rows, duplicate, longest) : StateDocument{};
+    if (why.empty() && doc.is_discarded()) why = "not JSON";
+    if (why.empty() && duplicate) why = "an object has a member twice";
+    if (why.empty() && longest > max_text_bytes) {
+      why = "a member name of " + std::to_string(longest) + " bytes (at most 4096)";
+    }
+    auto zones =
+        why.empty() ? face_state_zones(doc, rows, why) : std::map<std::string_view, ZoneStates>{};
     if (!why.empty()) {
       fail("E0420", "'" + b.states->path + "' is not an autan.face-states/1 document: " + why,
            ".path", {{"problem", why}});
@@ -634,7 +895,9 @@ void load_states(Prepared& p) {
       fail("E0423", "the face states do not cover zone '" + b.zone + "'", ".path",
            {{"zone", b.zone}});
     }
-    const ZoneStates& z = it->second;
+    const ZoneStates z = std::move(it->second);
+    zones.clear();
+    doc = StateDocument();  // the zone's numbers are in z: the pairing needs no more
     const index_t zone = p.face_zone.at(b.zone);
     const auto first = static_cast<std::size_t>(offsets[at(zone)]);
     const auto n = static_cast<std::size_t>(offsets[at(zone) + 1]) - first;
@@ -691,7 +954,7 @@ void load_states(Prepared& p) {
       for (std::size_t k = 0; k < 5; ++k) paired[k * n + j] = z.values[5 * match + k];
     }
     p.boundary_states[zone] = std::move(paired);
-    p.state_files.emplace(found, bytes);
+    p.state_files.emplace(found, std::move(bytes));
   }
 }
 
@@ -709,20 +972,27 @@ void load_initial(Prepared& p) {
   if (!fs::is_regular_file(file.path, ec)) fail("E0508", "'" + file.path + "' is not a file");
   std::ifstream in(file.path, std::ios::binary);
   if (!in) fail("E0508", "cannot read '" + file.path + "'");
-  std::ostringstream text;
-  text << in.rdbuf();
-  const std::string bytes = text.str();
+  std::string bytes = file_bytes(in);
   const std::string found = sha256_hex(bytes);
   if (found != file.sha256) {
     fail("E0508", "the initial-state file's SHA-256 differs from initial_state.sha256",
          {{"expected", file.sha256}, {"found", found}});
   }
-  const nlohmann::json doc = nlohmann::json::parse(bytes, nullptr, false);
+  RowMap streamed;
+  bool duplicate = false;
+  std::size_t longest = 0;
   const auto invalid_document = [&](const std::string& why) {
     fail("E0508", "'" + file.path + "' is not an autan.initial-state/1 document: " + why,
          {{"problem", why}});
   };
+  // initial-state.md: object, rows, row.
+  if (const std::string why = beyond_bounds(bytes, 3); !why.empty()) invalid_document(why);
+  StateDocument doc = parse_rows(bytes, streamed, duplicate, longest);
   if (doc.is_discarded() || !doc.is_object()) invalid_document("not a JSON object");
+  if (duplicate) invalid_document("an object has a member twice");
+  if (longest > max_text_bytes) {
+    invalid_document("a member name of " + std::to_string(longest) + " bytes (at most 4096)");
+  }
   for (const auto& [key, value] : doc.items()) {
     if (key != "schema" && key != "oracle" && key != "mesh_sha256" && key != "variables" &&
         key != "cells" && key != "centroids" && key != "values")
@@ -730,7 +1000,9 @@ void load_initial(Prepared& p) {
   }
   if (!doc.contains("schema") || doc["schema"] != "autan.initial-state/1")
     invalid_document("schema");
-  if (!doc.contains("oracle") || !doc["oracle"].is_string()) invalid_document("oracle");
+  if (!doc.contains("oracle") || !doc["oracle"].is_string() ||
+      doc["oracle"].get_ref<const std::string&>().size() > max_text_bytes)
+    invalid_document("oracle");
   if (!doc.contains("mesh_sha256") || !doc["mesh_sha256"].is_string() ||
       doc["mesh_sha256"].get<std::string>().size() != 64 ||
       doc["mesh_sha256"].get<std::string>().find_first_not_of("0123456789abcdef") !=
@@ -738,25 +1010,19 @@ void load_initial(Prepared& p) {
     invalid_document("mesh_sha256");
   if (!doc.contains("variables") ||
       doc["variables"] !=
-          nlohmann::json{"density", "velocity-x", "velocity-y", "velocity-z", "pressure"})
+          StateDocument{"density", "velocity-x", "velocity-y", "velocity-z", "pressure"})
     invalid_document("variables");
   if (!doc.contains("cells") || !doc["cells"].is_number_integer() ||
       doc["cells"].get<std::int64_t>() < 1)
     invalid_document("cells");
   const auto rows = doc["cells"].get<std::size_t>();
   std::vector<double> centroids, values;
-  for (const auto& [array, width] : {std::pair{"centroids", 3}, std::pair{"values", 5}}) {
-    const auto& a = doc.contains(array) ? doc[array] : nlohmann::json();
-    if (!a.is_array() || a.size() != rows) invalid_document(array);
-    auto& to = std::string(array) == "centroids" ? centroids : values;
-    to.reserve(rows * static_cast<std::size_t>(width));
-    for (const auto& row : a) {
-      if (!row.is_array() || row.size() != static_cast<std::size_t>(width)) invalid_document(array);
-      for (const auto& v : row) {
-        if (!v.is_number() || !std::isfinite(v.get<double>())) invalid_document(array);
-        to.push_back(v.get<double>());
-      }
-    }
+  for (const char* array : {"centroids", "values"}) {
+    const auto it = streamed.find({ordinal(doc, array)});
+    if (!doc.contains(array) || !doc[array].is_array() || it == streamed.end() || !it->second.ok ||
+        it->second.rows != rows)
+      invalid_document(array);
+    (std::string(array) == "centroids" ? centroids : values) = std::move(it->second.numbers);
   }
   for (std::size_t r = 0; r < rows; ++r) {
     if (!(values[5 * r] > 0.0) || !(values[5 * r + 4] > 0.0))
@@ -766,6 +1032,7 @@ void load_initial(Prepared& p) {
     fail("E0509", "the initial state was written for another mesh",
          {{"expected", p.mesh_hash}, {"found", doc["mesh_sha256"]}});
   }
+  doc = StateDocument();  // its numbers are in centroids and values: the pairing needs no more
   // Fluid cells: those of zones whose initial state is a fluid's.
   std::map<std::string, bool> fluid_zone;
   for (const auto& z : p.input.cell_zones) fluid_zone[z.zone] = z.initial.kind == "fluid";
@@ -874,13 +1141,104 @@ void load_initial(Prepared& p) {
     for (std::size_t k = 0; k < 5; ++k) fields[k].values[at(c)] = values[5 * match + k];
   }
   p.initial = std::move(fields);
-  p.state_files.emplace(found, bytes);
+  p.state_files.emplace(found, std::move(bytes));
+}
+
+// solver-input.md, `memory`: the pools of this rank's host, measured before any rank reads the
+// mesh. A device whose memory is the host's (GB10) is one pool with it, and gets no context here.
+MemoryPools memory_pools(const SolverInput& in, const Comm& comm) {
+  HostMemory host = host_memory();
+  MemoryPools pools{.host_available = host.available,
+                    .device_free = {},
+                    .devices = 1,
+                    .unseen_cgroups = std::move(host.unseen_cgroups),
+                    .cgroup_scope = std::move(host.cgroup_scope)};
+  if (in.device_kind == "cuda" && visible_gpus() > 0 && !device_integrated(comm.local_rank())) {
+    pools.device_free = device_free_bytes(comm.local_rank());
+    pools.devices = visible_gpus();
+  }
+  return pools;
+}
+
+// The data of E0711 and W0712: what the check compared, and whether a cgroup limit above the
+// process could not be read (W0713) on this rank or, for W0712, on any (`unverifiable`), so that
+// "available" may overstate what the host gives.
+Diagnostic memory_diagnostic(const char* code, const SolverInput& in, std::int64_t required,
+                             std::int64_t available, std::int64_t margin,
+                             const std::vector<std::string>& unseen, bool unverifiable,
+                             const std::string& scope) {
+  // solver-input.md, memory: in a cgroup namespace, the limits above its root are not observable.
+  const std::string within = scope == "namespace_root"
+                                 ? " (within the limits visible from the cgroup namespace root)"
+                                 : "";
+  return Diagnostic{.code = code,
+                    .message = "the run needs " + std::to_string(required) + " bytes; " +
+                               std::to_string(available) + " are available" + within +
+                               ", less a margin of " + std::to_string(margin),
+                    .path = "memory",
+                    .data_json = Json{
+                        {"required_bytes", required},
+                        {"available_bytes", available},
+                        {"margin_bytes", margin},
+                        {"device_kind", in.device_kind},
+                        {"cgroup_limit", unverifiable ? "unknown" : "known"},
+                        {"cgroup_scope", scope},
+                        {"unseen_cgroups",
+                         unseen}}.dump()};
+}
+
+// W0713: a memory cgroup above the process that no mount shows, whose limit the check could not
+// read; the check rests on MemAvailable and the limits it could read.
+Diagnostic unverifiable_memory(const std::vector<std::string>& unseen, const std::string& scope) {
+  std::string names;
+  for (const auto& u : unseen) names += (names.empty() ? "" : ", ") + u;
+  return Diagnostic{.code = "W0713",
+                    .message = "the memory limit of cgroup " +
+                               (names.empty() ? std::string("(on another rank)") : names) +
+                               " cannot be read: the memory check rests on MemAvailable",
+                    .path = "memory",
+                    .data_json = Json{
+                        {"cgroup_limit", "unknown"},
+                        {"cgroup_scope", scope},
+                        {"unseen_cgroups",
+                         unseen}}.dump()};
+}
+
+// What a rank's memory check found: W0712 when it starts beyond its memory, and the cgroups whose
+// limits it could not read.
+struct MemoryCheck {
+  std::optional<Diagnostic> beyond;
+  std::vector<std::string> unseen_cgroups;
+  std::string cgroup_scope = "host";
+};
+
+// The memory check of every rank, before any reads the mesh: E0711 when the ranks of this host
+// need more than it can give less the margin, or with oversubscription allowed, W0712.
+MemoryCheck check_memory(const fs::path& input_file, const Comm& comm, const MemoryPolicy& memory) {
+  const SolverInput in = parse_solver_input(read_text(input_file));
+  const MemoryPools pools = memory_pools(in, comm);
+  const auto s = memory_shortfall(in.memory_bytes_host, in.memory_bytes_device, comm.local_size(),
+                                  pools, memory.margin_bytes);
+  if (!s) {
+    return {.beyond = std::nullopt,
+            .unseen_cgroups = pools.unseen_cgroups,
+            .cgroup_scope = pools.cgroup_scope};
+  }
+  const char* code = memory.allow_oversubscription ? "W0712" : "E0711";
+  Diagnostic d =
+      memory_diagnostic(code, in, s->required, s->available, memory.margin_bytes,
+                        pools.unseen_cgroups, !pools.unseen_cgroups.empty(), pools.cgroup_scope);
+  if (!memory.allow_oversubscription) throw InputError(std::move(d));
+  return {.beyond = std::move(d),
+          .unseen_cgroups = pools.unseen_cgroups,
+          .cgroup_scope = pools.cgroup_scope};
 }
 
 Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, int ranks) {
   Prepared p{.input = parse_solver_input(read_text(input_file)),
              .mesh = {},
              .mesh_hash = {},
+             .mesh_bytes = 0,
              .mesh_info = {},
              .face_zone = {},
              .monitor_zones = {},
@@ -899,6 +1257,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
   try {
     p.mesh = io::read_mesh(p.input.mesh_path);
     p.mesh_hash = io::mesh_hash(p.input.mesh_path);
+    p.mesh_bytes = io::mesh_bytes(p.input.mesh_path);
   } catch (const Error& e) {
     throw InputError(Diagnostic{.code = error_code_string(e.code()),
                                 .message = e.what(),
@@ -913,6 +1272,15 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
         .data_json =
             nlohmann::json{{"expected", p.input.mesh_sha256}, {"found", p.mesh_hash}}.dump()});
   }
+  // solver-input.md, mesh_info: its source.bytes is the size of the mesh read.
+  if (p.mesh_bytes != p.input.mesh_info_bytes) {
+    throw InputError(Diagnostic{
+        .code = "E0203",
+        .message = "mesh_info's source.bytes differs from the size of the mesh read",
+        .path = "mesh_info.source.bytes",
+        .data_json =
+            nlohmann::json{{"expected", p.input.mesh_info_bytes}, {"found", p.mesh_bytes}}.dump()});
+  }
   check_periodic(p);
   const char* order = std::getenv("AUTAN_CELL_ORDER");
   p.cell_order = order == nullptr ? "rcm" : order;
@@ -924,10 +1292,23 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
     invalid("devices.count", "is " + std::to_string(p.input.device_count) + ", but " +
                                  std::to_string(ranks) + " ranks run the case");
   }
-  // solver-input.md, mesh.scale: the coordinates and periodic translations in
-  // metres once checked against the file, before any geometry or pairing.
   // The run archives the zone groups the case was resolved with: the sidecar
   // must be the one the SDK hashed (solver-input.md, mesh.groups_sha256).
+  // A sidecar the input does not name is refused unread: its plan counted no
+  // memory for reading it (plan.md, zone groups).
+  if (!p.input.mesh_groups_sha256) {
+    const fs::path sidecar = io::zone_groups_path(p.input.mesh_path);
+    std::error_code ec;
+    if (fs::exists(fs::symlink_status(sidecar, ec)) ||
+        (ec && ec != std::errc::no_such_file_or_directory)) {
+      throw InputError(Diagnostic{
+          .code = "E0137",
+          .message = "the mesh has a zone-groups file '" + sidecar.string() +
+                     "' that mesh.groups_sha256 does not name",
+          .path = "mesh.groups_sha256",
+          .data_json = nlohmann::json{{"expected", nullptr}, {"path", sidecar.string()}}.dump()});
+    }
+  }
   std::optional<io::ZoneGroups> groups;
   try {
     groups = io::read_zone_groups(p.input.mesh_path, p.mesh, p.mesh_hash);
@@ -951,9 +1332,22 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
             nlohmann::json{{"expected", text(p.input.mesh_groups_sha256)}, {"found", text(found)}}
                 .dump()});
   }
-  p.mesh_info = io::mesh_info_json(p.mesh, p.mesh_hash, groups);
+  // solver-input.md, mesh_info: planned with the lines of the order this run computes in.
+  if (p.input.mesh_info_order != p.cell_order) {
+    invalid("mesh_info.quality.lines.order", "is '" + p.input.mesh_info_order +
+                                                 "', but the run computes in cell order '" +
+                                                 p.cell_order + "'");
+  }
+  if (p.input.mesh_info_scale != p.input.mesh_scale) {
+    invalid("mesh_info.quality.lines.scale",
+            "counted with " + std::to_string(p.input.mesh_info_scale) +
+                " metres per mesh unit, but mesh.scale is " + std::to_string(p.input.mesh_scale));
+  }
+  p.mesh_info = p.input.mesh_info;
+  // solver-input.md, mesh.scale: the coordinates and periodic translations in
+  // metres once checked against the file, before any geometry or pairing.
   if (p.input.mesh_scale != 1.0) p.mesh = scaled(p.mesh, p.input.mesh_scale);
-  if (p.input.start) load_start(p);
+  if (p.input.start) load_start(p, registry.find(p.input));
   if (p.input.verification) {
     // The manufactured solution is checked like the mesh: by its hash.
     auto& v = *p.input.verification;
@@ -1174,11 +1568,19 @@ class Run final : public Log {
     // The physics' cells and faces differ from the mesh's on a partition or
     // a renumbered mesh: their shares of the start, the initial state and
     // the face states, in its order.
+    // Each global copy goes once its share is taken.
     if (local_ || ordered_) {
-      if (p_.start) local_start_ = owned_start(*p_.start);
-      if (p_.initial) local_initial_ = owned_fields(*p_.initial);
+      if (p_.start) {
+        local_start_ = owned_start(*p_.start);
+        p_.start.reset();
+      }
+      if (p_.initial) {
+        local_initial_ = owned_fields(*p_.initial);
+        p_.initial.reset();
+      }
     }
     local_states_ = physics_boundary_states();
+    p_.boundary_states.clear();
     colour_cells_of_physics();
     face_keys();
     // Rank 0 names the run: its clock and its random suffix.
@@ -1259,6 +1661,8 @@ class Run final : public Log {
         {"monitors", nullptr},
         {"timing", nullptr},
         {"diagnostics", Json::array()}};
+    // W0712 and W0713 are in the run.json the directory is published with.
+    for (const auto& w : p_.memory_warnings) info_["diagnostics"].push_back(Json::parse(w.json()));
     if (continued()) {
       info_["iterations"] = in.start->iterations;
       if (in.time.kind == "unsteady") info_["time"] = *in.start->time;
@@ -1271,17 +1675,20 @@ class Run final : public Log {
     std::string path;
     if (comm_.rank() == 0) {
       try {
+        // The log is published with the diagnostics run.json names from the start.
+        std::string first_lines = log_line(
+            "info", "solver", "run " + info_["run_id"].get<std::string>() + " started", "",
+            Json{
+                {"cells", p_.mesh.n_cells()}, {"faces", p_.mesh.n_faces()}, {"ranks", comm_.size()}}
+                .dump());
+        for (const auto& w : p_.memory_warnings) {
+          first_lines += "\n" + log_line("warning", "solver", w.message, w.code,
+                                         Json::parse(w.data_json).dump());
+        }
         dir_ = std::make_unique<RunDirectory>(
             runs, info_["run_id"].get<std::string>(), info_.dump(2), p_.input.case_toml,
-            p_.mesh_info,
-            log_line("info", "solver", "run " + info_["run_id"].get<std::string>() + " started", "",
-                     Json{{"cells", p_.mesh.n_cells()},
-                          {"faces", p_.mesh.n_faces()},
-                          {"ranks", comm_.size()}}
-                         .dump()),
-            p_.input.verification ? std::optional<std::string>(p_.input.verification->text)
-                                  : std::nullopt,
-            p_.state_files);
+            p_.mesh_info, first_lines,
+            p_.input.verification ? &p_.input.verification->text : nullptr, p_.state_files);
         path = dir_->path().string();
       } catch (...) {
         (void)comm_.broadcast({});
@@ -1291,6 +1698,7 @@ class Run final : public Log {
     path = comm_.broadcast(path);
     if (path.empty()) throw std::runtime_error("rank 0 could not create the run directory");
     if (comm_.rank() != 0) dir_ = std::make_unique<RunDirectory>(fs::path(path));
+    p_.state_files.clear();  // archived in the run directory
     if (ordered_) {
       note("info", "solver", "cells renumbered in reverse Cuthill-McKee order", "",
            Json{{"order", "rcm"}, {"seconds", renumber_seconds_}}.dump());
@@ -1345,10 +1753,10 @@ class Run final : public Log {
   void stop_on(fs::path file) { stop_file_ = std::move(file); }
 
   ExitStatus execute() {
-    const StartState* start = nullptr;
-    if (p_.start) start = local_start_ ? &*local_start_ : &*p_.start;
-    const std::vector<io::Field>* initial = nullptr;
-    if (p_.initial) initial = local_initial_ ? &*local_initial_ : &*p_.initial;
+    const StartState* start = local_start_ ? &*local_start_ : p_.start ? &*p_.start : nullptr;
+    const std::vector<io::Field>* initial = local_initial_ ? &*local_initial_
+                                            : p_.initial   ? &*p_.initial
+                                                           : nullptr;
     const PhysicsContext context{.mesh = physics_mesh(),
                                  .geometry = physics_geometry(),
                                  .input = p_.input,
@@ -1372,6 +1780,11 @@ class Run final : public Log {
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
       physics_ = (*p_.factory)(context);
+      // The physics has read the start and the initial state (runtime.md, PhysicsContext).
+      local_start_.reset();
+      p_.start.reset();
+      local_initial_.reset();
+      p_.initial.reset();
       host_after_setup_ = host_peak_bytes();
       if (gpu_) device_after_setup_ = gpu_->sample();
       set_floor();
@@ -2263,9 +2676,9 @@ class Run final : public Log {
 }  // namespace
 
 void PhysicsRegistry::add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope,
-                          bool several_ranks, PartitionGroups groups) {
+                          bool several_ranks, PartitionGroups groups, RestartNames restart) {
   entries_.emplace_back(std::move(key), Entry{std::move(factory), std::move(scope), several_ranks,
-                                              std::move(groups)});
+                                              std::move(groups), std::move(restart)});
 }
 
 const PhysicsRegistry::Entry* PhysicsRegistry::find(const SolverInput& in) const {
@@ -2283,7 +2696,7 @@ const PhysicsRegistry::Entry* PhysicsRegistry::find(const SolverInput& in) const
 
 ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
                     const PhysicsRegistry& registry, const SolverBuild& build, std::FILE* out,
-                    std::FILE* err, const fs::path& stop_file) {
+                    std::FILE* err, const fs::path& stop_file, const MemoryPolicy& memory) {
   const auto launched = std::chrono::steady_clock::now();
   // Every rank reads and checks the same input, so all reach the same
   // verdict; rank 0 prints it.
@@ -2301,37 +2714,79 @@ ExitStatus run_case(const fs::path& input_file, const fs::path& runs,
   }
   // The ranks agree on whether the input can run before any collective
   // call; the first rank that cannot prints why: a refused input (exit 2)
-  // or any other failure (E0704, exit 1).
-  std::optional<Prepared> prepared;
-  std::optional<Diagnostic> refusal;
-  bool failed = false;  // a failure (exit 1) rather than a refused input (exit 2)
-  try {
-    prepared.emplace(prepare(input_file, registry, comm->size()));
-  } catch (const InputError& e) {
-    refusal = e.diagnostic();
-  } catch (const Error& e) {
-    // A coded error that is not the input's (invalid groups of the physics: E0140).
-    failed = true;
-    refusal = Diagnostic{.code = error_code_string(e.code()),
-                         .message = e.what(),
-                         .path = "",
-                         .data_json = Json{{"rank", comm->rank()}}.dump()};
-  } catch (const std::exception& e) {
-    failed = true;
-    refusal = Diagnostic{.code = "E0704", .message = e.what(), .path = "", .data_json = "{}"};
-  }
-  // The key of the first refusing rank: -(2 rank + 1 if it failed).
-  constexpr std::int64_t none = std::numeric_limits<std::int64_t>::min();
-  const std::int64_t key = refusal ? -(2 * std::int64_t{comm->rank()} + (failed ? 1 : 0)) : none;
-  const std::int64_t first = comm->max(key);
-  if (first != none) {
+  // or any other failure (E0704, exit 1). They agree twice: on the memory,
+  // measured on every rank before any reads the mesh, then on the input.
+  const auto refused = [&](const std::function<void()>& check) -> std::optional<ExitStatus> {
+    std::optional<Diagnostic> refusal;
+    bool failed = false;  // a failure (exit 1) rather than a refused input (exit 2)
+    try {
+      check();
+    } catch (const InputError& e) {
+      refusal = e.diagnostic();
+    } catch (const Error& e) {
+      // A coded error that is not the input's (invalid groups of the physics: E0140).
+      failed = true;
+      refusal = Diagnostic{.code = error_code_string(e.code()),
+                           .message = e.what(),
+                           .path = "",
+                           .data_json = Json{{"rank", comm->rank()}}.dump()};
+    } catch (const std::exception& e) {
+      failed = true;
+      refusal = Diagnostic{.code = "E0704", .message = e.what(), .path = "", .data_json = "{}"};
+    }
+    // The key of the first refusing rank: -(2 rank + 1 if it failed).
+    constexpr std::int64_t none = std::numeric_limits<std::int64_t>::min();
+    const std::int64_t key = refusal ? -(2 * std::int64_t{comm->rank()} + (failed ? 1 : 0)) : none;
+    const std::int64_t first = comm->max(key);
+    if (first == none) return std::nullopt;
     if (first == key) {
       const std::string line = refusal->json() + "\n";
       std::fwrite(line.data(), 1, line.size(), err);
       std::fflush(err);
     }
     return -first % 2 == 1 ? ExitStatus::failed : ExitStatus::invalid_input;
+  };
+  MemoryCheck checked;
+  if (const auto status = refused([&] { checked = check_memory(input_file, *comm, memory); }))
+    return *status;
+  // The memory check's warnings on every rank, written by rank 0 before any rank reads the mesh,
+  // which can be what exhausts the host: W0712 when any rank starts beyond its memory (the
+  // largest need and the least memory available of those ranks), W0713 when any rank could not
+  // read a cgroup limit above it (rank 0's unseen cgroups).
+  std::vector<Diagnostic> warnings;
+  {
+    const auto& warning = checked.beyond;
+    const Json data = warning ? Json::parse(warning->data_json) : Json::object();
+    const std::int64_t required =
+        comm->max(warning ? data["required_bytes"].get<std::int64_t>() : std::int64_t{-1});
+    const std::int64_t least = comm->max(warning ? -data["available_bytes"].get<std::int64_t>()
+                                                 : std::numeric_limits<std::int64_t>::min());
+    const bool unverifiable = comm->max(std::int64_t{checked.unseen_cgroups.empty() ? 0 : 1}) != 0;
+    const std::string scope =
+        comm->max(std::int64_t{checked.cgroup_scope == "namespace_root" ? 1 : 0}) != 0
+            ? "namespace_root"
+            : "host";
+    if (required >= 0) {
+      warnings.push_back(memory_diagnostic("W0712", parse_solver_input(read_text(input_file)),
+                                           required, -least, memory.margin_bytes,
+                                           checked.unseen_cgroups, unverifiable, scope));
+    }
+    if (unverifiable) warnings.push_back(unverifiable_memory(checked.unseen_cgroups, scope));
+    if (comm->rank() == 0) {
+      for (const auto& w : warnings) {
+        const std::string line = w.json() + "\n";
+        std::fwrite(line.data(), 1, line.size(), err);
+      }
+      std::fflush(err);
+    }
+    // No rank reads the mesh before rank 0 has written them: a collective it joins once flushed.
+    if (!warnings.empty()) (void)comm->max(std::int64_t{0});
   }
+  std::optional<Prepared> prepared;
+  if (const auto status =
+          refused([&] { prepared.emplace(prepare(input_file, registry, comm->size())); }))
+    return *status;
+  prepared->memory_warnings = std::move(warnings);
   stop_requested = 0;
   const SignalGuard signals;
   try {

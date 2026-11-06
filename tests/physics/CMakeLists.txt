@@ -50,6 +50,7 @@ if(AUTAN_ENABLE_CGNS)
     autan_euler_run_tests
     PRIVATE
       autan::physics_runtime
+      autan::mesh_counts
       autan_cgns
       nlohmann_json::nlohmann_json
       Catch2::Catch2WithMain
