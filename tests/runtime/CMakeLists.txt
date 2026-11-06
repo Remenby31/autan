@@ -39,14 +39,17 @@ if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
   )
 endif()
 # The multi-rank tests carry the label `mpi` (ctest -L mpi).
-catch_discover_tests(autan_runtime_tests TEST_SPEC "~[mpi]~[gpu]")
-catch_discover_tests(autan_runtime_tests TEST_SPEC "[gpu]~[mpi]" PROPERTIES LABELS gpu)
-catch_discover_tests(autan_runtime_tests TEST_SPEC "[mpi]~[gpu]" PROPERTIES LABELS mpi)
+# Processes started by these tests share their executables' hash (run.json
+# solver.binary_sha256) through a cache in the build tree.
+set(hash_cache "AUTAN_BINARY_HASH_CACHE=${PROJECT_BINARY_DIR}/binary-hash-cache")
+catch_discover_tests(autan_runtime_tests TEST_SPEC "~[mpi]~[gpu]" PROPERTIES ENVIRONMENT ${hash_cache})
+catch_discover_tests(autan_runtime_tests TEST_SPEC "[gpu]~[mpi]" PROPERTIES ENVIRONMENT ${hash_cache} LABELS gpu)
+catch_discover_tests(autan_runtime_tests TEST_SPEC "[mpi]~[gpu]" PROPERTIES ENVIRONMENT ${hash_cache} LABELS mpi)
 # [mpi][gpu]: on several ranks, and on the GPU too in a CUDA build (its tags as labels).
 if(AUTAN_ENABLE_CUDA)
-  catch_discover_tests(autan_runtime_tests TEST_SPEC "[mpi][gpu]" ADD_TAGS_AS_LABELS)
+  catch_discover_tests(autan_runtime_tests TEST_SPEC "[mpi][gpu]" ADD_TAGS_AS_LABELS PROPERTIES ENVIRONMENT ${hash_cache})
 else()
-  catch_discover_tests(autan_runtime_tests TEST_SPEC "[mpi][gpu]" PROPERTIES LABELS mpi)
+  catch_discover_tests(autan_runtime_tests TEST_SPEC "[mpi][gpu]" PROPERTIES ENVIRONMENT ${hash_cache} LABELS mpi)
 endif()
 
 # Ranks through the runtime's communicator: one rank here, 1 to 4 under MPI.
