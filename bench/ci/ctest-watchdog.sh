@@ -12,7 +12,8 @@
 # killed, with a warning naming the test; the test then judges on the markers, not on the
 # launcher's status. Without it, a launcher past LIMIT_S is a hang, as above.
 # Usage: bench/ci/ctest-watchdog.sh LIMIT_S DIR -- COMMAND...
-# AUTAN_WATCHDOG_GDB overrides the debugger command (default: sudo -n gdb, else gdb). The
+# AUTAN_WATCHDOG_GDB overrides the debugger command (default: sudo -n gdb, else gdb);
+# AUTAN_WATCHDOG_PTRACER, below, lets it attach without sudo on the self-hosted runners. The
 # debuggers run in parallel, each killed after AUTAN_WATCHDOG_GDB_TIMEOUT seconds (default 30), so
 # a hang costs at most LIMIT_S + that + 10 s: well inside CTest's per-test timeout.
 set -uo pipefail
@@ -181,7 +182,14 @@ dump_and_kill() {  # launcher PID
   kill -KILL $tree 2>/dev/null
 }
 
-"$@" &
+# AUTAN_WATCHDOG_PTRACER (set by the self-hosted runner's image) names a library preloaded into
+# the command, and nothing else: its processes then let gdb, their sibling, attach to them where
+# Yama's ptrace_scope 1 would refuse it (docker/runner/ptracer.c).
+if [[ -n ${AUTAN_WATCHDOG_PTRACER:-} && -r $AUTAN_WATCHDOG_PTRACER ]]; then
+  LD_PRELOAD="$AUTAN_WATCHDOG_PTRACER${LD_PRELOAD:+:$LD_PRELOAD}" "$@" &
+else
+  "$@" &
+fi
 cmd=$!
 caught=0
 declare -A seen=() quiet_since=()
