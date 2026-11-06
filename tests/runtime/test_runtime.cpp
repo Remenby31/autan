@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -31,6 +32,10 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 #include "../io/outside_data.hpp"
 #include "autan/core/geometry.hpp"
@@ -588,6 +593,33 @@ TEST_CASE("A checkpoint names its iteration, and a start checks it", "[runtime]"
   CHECK(off.err.find("E0707") != std::string::npos);
 }
 
+// The SHA-256 of this test executable by CMake's implementation, independent of the runtime's.
+std::string own_sha256() {
+#ifdef __APPLE__
+  std::uint32_t size = 0;
+  (void)_NSGetExecutablePath(nullptr, &size);
+  std::string self(size, '\0');
+  REQUIRE(_NSGetExecutablePath(self.data(), &size) == 0);
+  self.resize(std::char_traits<char>::length(self.c_str()));
+#else
+  // Opens even if the file was replaced since; /proc/self would be cmake's own.
+  const std::string self = "/proc/" + std::to_string(getpid()) + "/exe";
+#endif
+  const auto quoted = [](const std::string& s) {
+    std::string q = "'";
+    for (const char c : s) q += c == '\'' ? std::string("'\\''") : std::string(1, c);
+    return q + "'";
+  };
+  const std::string command = quoted(AUTAN_TEST_CMAKE) + " -E sha256sum " + quoted(self);
+  std::FILE* pipe = popen(command.c_str(), "r");
+  REQUIRE(pipe != nullptr);
+  std::array<char, 65> hex{};
+  const std::size_t got = std::fread(hex.data(), 1, 64, pipe);
+  REQUIRE(pclose(pipe) == 0);
+  REQUIRE(got == 64);
+  return std::string(hex.data(), 64);
+}
+
 TEST_CASE("A converging run writes the run directory of results.md", "[runtime]") {
   // Residuals 0.5^(k-1) drop 8 orders at k = 28 (0.5^27 < 1e-8 < 0.5^26).
   const Json doc = input();
@@ -629,8 +661,12 @@ TEST_CASE("A converging run writes the run directory of results.md", "[runtime]"
                                {"commit", build.commit},
                                {"backend", "cpu"},
                                {"binary_sha256", info["solver"]["binary_sha256"]}});
-  CHECK(std::regex_match(info["solver"]["binary_sha256"].get<std::string>(),
-                         std::regex("[0-9a-f]{64}")));
+  // The executable that ran, hashed once per process: a second run records the same.
+  CHECK(info["solver"]["binary_sha256"] == own_sha256());
+  const Outcome again = run(doc);
+  REQUIRE(again.status == ExitStatus::finished);
+  CHECK(Json::parse(read(again.run / "run.json"))["solver"]["binary_sha256"] ==
+        info["solver"]["binary_sha256"]);
   // identity: SHA-256 of the nine fields joined by "\n" (results.md), the zone groups' hash
   // empty without a sidecar; the cell order is RCM by default.
   CHECK(info["cell_order"] == "rcm");
