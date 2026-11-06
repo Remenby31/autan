@@ -944,6 +944,19 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(info["monitors"].is_null());
     CHECK(info["timing"].is_null());
   }
+  SECTION("failed writing the solution file: E0704, no solution") {
+    // A directory stands at the solution's staging path.
+    const fs::path dir = fresh_dir();
+    autan_test::RelaxationOptions options;
+    options.factor = 0.5;
+    options.block_solution_in = (dir / "runs").string();
+    const Outcome o = run_in(dir, input(), autan_test::relaxation_registry(options));
+    CHECK(o.status == ExitStatus::failed);
+    const Json info = Json::parse(read(o.run / "run.json"));
+    CHECK(info["status"] == "failed");
+    CHECK(info["diagnostics"][0]["code"] == "E0704");
+    CHECK_FALSE(fs::exists(o.run / "solution.cgns"));
+  }
   SECTION("diverged: D0107 with the iteration, cell and zone") {
     const Outcome o = run(input(), {.factor = 0.9, .diverge_at = 7, .diverge_cell = 3});
     CHECK(o.status == ExitStatus::finished);
@@ -1357,7 +1370,10 @@ TEST_CASE("Forces monitors report the loads and their coefficients", "[runtime]"
     d["freestream"]["sideslip"] = beta;
   });
   const Outcome o = run(doc, {.factor = 0.5, .pressure_offset = dp});
-  const Json f = history(o.run)[4]["monitors"]["forces"];
+  REQUIRE(o.status == ExitStatus::finished);
+  const auto lines = history(o.run);
+  REQUIRE(lines.size() > 4);
+  const Json f = lines[4]["monitors"]["forces"];
   const double q = 0.5 * doc["freestream"]["density"].get<double>() *
                    std::pow(doc["freestream"]["speed"].get<double>(), 2);
   const std::array<double, 3> force{0.0, -dp, 0.0};
@@ -1952,27 +1968,33 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
     require_error(run(doc), "E0203");
   }
   SECTION("the previous solution lacks run metadata the continuation needs") {
-    // A solution.cgns whose RunMetadata has no `averaging`, with its hash.
-    const autan::Mesh mesh = autan::io::read_mesh(mesh_path);
-    Json metadata = Json::parse(read(a.run / "run.json"));
-    metadata.erase("averaging");
-    autan::io::Solution solution;
-    solution.run_metadata = metadata.dump();
-    solution.boundary_bc_types.assign(autan::io::meshinfo_zones(mesh).boundary.size(),
-                                      "BCFarfield");
-    for (const auto& name :
-         autan::runtime::field_names(autan::runtime::parse_solver_input(input().dump()))) {
-      solution.fields.push_back(
-          {.name = name,
-           .values = solution_field(a.run / "solution.cgns", "FlowSolution", name.c_str())});
+    // results.md, RunMetadata: `averaging` is null or the four bounds of the interval. The
+    // previous run's own solution, its RunMetadata without `averaging` or with one bound only.
+    const bool absent = GENERATE(true, false);
+    CAPTURE(absent);
+    const fs::path solution = a.run / "solution.cgns";
+    int fn = 0;
+    REQUIRE(cg_open(solution.string().c_str(), CG_MODE_MODIFY, &fn) == CG_OK);
+    REQUIRE(cg_goto(fn, 1, "end") == CG_OK);
+    int count = 0;
+    REQUIRE(cg_ndescriptors(&count) == CG_OK);
+    Json metadata;
+    for (int d = 1; d <= count; ++d) {
+      char name[33];
+      char* text = nullptr;
+      REQUIRE(cg_descriptor_read(d, name, &text) == CG_OK);
+      if (std::string_view(name) == "RunMetadata") metadata = Json::parse(text);
+      cg_free(text);
     }
-    const fs::path previous = fresh_dir();
-    autan::io::write_solution(previous / "solution.cgns", mesh, solution);
-    require_error(from([&](Json& d) {
-                    d["start"]["run"] = previous.string();
-                    d["start"]["solution_sha256"] = file_sha256(previous / "solution.cgns");
-                  }),
-                  "E0707");
+    REQUIRE(metadata.contains("averaging"));
+    if (absent) {
+      metadata.erase("averaging");
+    } else {
+      metadata["averaging"] = Json{{"from_step", 1}};
+    }
+    REQUIRE(cg_descriptor_write("RunMetadata", metadata.dump().c_str()) == CG_OK);
+    REQUIRE(cg_close(fn) == CG_OK);
+    require_error(from([](Json&) {}), "E0707");
   }
   SECTION("the previous solution keeps data in another file") {
     // mesh.md, E0134, in each form (tests/io/outside_data.hpp), refused from the file's

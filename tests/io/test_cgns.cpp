@@ -210,6 +210,37 @@ TEST_CASE("CGNS files outside the supported layout are coded errors", "[cgns]") 
   }
 }
 
+TEST_CASE("CGNS BC types normalise as mesh-info.md says", "[cgns]") {
+  // A BC typed BCOutflow without a family, and a FamilySpecified BC whose
+  // family carries BCWallViscous.
+  const autan::Mesh mesh = autan::io::read_mesh(cgns_file("bc-types.cgns", [](int fn, int base) {
+    unstructured_tet(fn, base, "Zone");
+    const std::array<cgsize_t, 6> tris{1, 3, 2, 1, 2, 4};
+    int section = 0, family = 0, fambc = 0;
+    REQUIRE(cg_section_write(fn, base, 1, "Faces", CGNS_ENUMV(TRI_3), 2, 3, 0, tris.data(),
+                             &section) == CG_OK);
+    REQUIRE(cg_family_write(fn, base, "Walls", &family) == CG_OK);
+    REQUIRE(cg_fambc_write(fn, base, family, "FamilyBC", CGNS_ENUMV(BCWallViscous), &fambc) ==
+            CG_OK);
+    for (const auto& [name, type, face] :
+         {std::tuple{"outlet", CGNS_ENUMV(BCOutflow), cgsize_t{2}},
+          std::tuple{"wall", CGNS_ENUMV(FamilySpecified), cgsize_t{3}}}) {
+      int bc = 0;
+      REQUIRE(cg_boco_write(fn, base, 1, name, type, CGNS_ENUMV(PointList), 1, &face, &bc) ==
+              CG_OK);
+      REQUIRE(cg_boco_gridlocation_write(fn, base, 1, bc, CGNS_ENUMV(FaceCenter)) == CG_OK);
+      if (type == CGNS_ENUMV(FamilySpecified)) {
+        REQUIRE(cg_goto(fn, base, "Zone_t", 1, "ZoneBC_t", 1, "BC_t", bc, "end") == CG_OK);
+        REQUIRE(cg_famname_write("Walls") == CG_OK);
+      }
+    }
+  }));
+  CHECK(zone_named(mesh, "outlet").bc_type == "BCOutflow");
+  CHECK(zone_named(mesh, "outlet").kind == autan::BcKind::outlet);
+  CHECK(zone_named(mesh, "Walls").bc_type == "BCWallViscous");
+  CHECK(zone_named(mesh, "Walls").kind == autan::BcKind::wall);
+}
+
 TEST_CASE("A CGNS file whose data lives in another file is refused before any read", "[cgns]") {
   // mesh.md, E0134: a CGNS link, an HDF5 external link, a dataset with external storage or a
   // virtual dataset, in a mesh or a solution. HDF5 first reads the donor's values through the
@@ -379,9 +410,10 @@ namespace {
 // x = 1 quads 5-6, joined by a periodic connection and its reciprocal.
 // `reverse`: the reciprocal lists its pairs in the other order; `cross`:
 // both connections pair face 3 with 6 and 4 with 5; `rotate`: a non-zero
-// RotationAngle.
+// RotationAngle; `one_pair`: faces 3 and 5 alone are paired.
 fs::path periodic_slab(const std::string& name, bool reverse, bool cross, bool rotate,
-                       const std::string& descriptor = "", bool duplicate = false) {
+                       const std::string& descriptor = "", bool duplicate = false,
+                       bool one_pair = false) {
   return cgns_file(name, [=](int fn, int base) {
     cgsize_t size[3] = {12, 2, 0};
     int zone = 0, coord = 0, section = 0;
@@ -427,6 +459,10 @@ fs::path periodic_slab(const std::string& name, bool reverse, bool cross, bool r
       left.push_back(3);
       right.push_back(5);
     }
+    if (one_pair) {
+      left.pop_back();
+      right.pop_back();
+    }
     std::vector<cgsize_t> back_points = right, back_donor = left;
     if (reverse) {
       std::ranges::reverse(back_points);
@@ -466,6 +502,12 @@ TEST_CASE("Periodic connections from another writer read as pairs", "[cgns][peri
   CHECK(mesh.face_zones()[at(pair.zone_a)].name == "left");
   CHECK(mesh.face_zones()[at(pair.zone_b)].name == "right");
   CHECK(pair.translation == std::array<double, 3>{1.0, 0.0, 0.0});
+  if (!reverse) {
+    const autan::Mesh one =
+        autan::io::read_mesh(periodic_slab("slab-one.cgns", false, false, false, "", false, true));
+    REQUIRE(one.periodic_pairs().size() == 1);
+    CHECK(one.periodic_partners(0).size() == 1);
+  }
 }
 
 TEST_CASE("A connectivity CGNS cannot express as a periodic pair is a coded error",
