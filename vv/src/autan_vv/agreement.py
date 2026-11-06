@@ -33,10 +33,16 @@ class Pair(TypedDict):
 
 
 def _problem(results: autan.Results) -> dict[str, Any]:
-    """The case apart from its precision and, for a steady case, its stopping targets, which may
-    differ between precisions."""
+    """The case apart from its precision, the paths of its files and, for a steady case, its
+    stopping targets, which may differ between precisions. A study may keep its own copy of the mesh
+    and of the manufactured solution: the mesh is paired by its sha256, and the manufactured
+    solution is compared by the sha256 the case records with its path (#524)."""
     doc: dict[str, Any] = results.case.model_dump(mode="json")
     doc["physics"].pop("precision", None)
+    doc.pop("mesh", None)
+    manufactured = (doc.get("verification") or {}).get("manufactured")
+    if manufactured is not None:
+        manufactured.pop("path", None)
     if doc["time"]["kind"] == "steady":
         doc["time"].pop("residual_orders", None)
         doc["time"].pop("max_iterations", None)
