@@ -89,8 +89,12 @@ struct Euler<P>::Impl {
     fill_ghosts(prim, 5);
     ek::cpu::boundary_states(d);
     if (scheme.second_order) {
-      if (scheme.gradient_fit == GradientFit::quadratic) band_gradients();
-      ek::cpu::gradients(d);
+      if (scheme.gradient_fit == GradientFit::quadratic) {
+        band_gradients();
+        ek::cpu::quadratic_gradients(d);
+      } else {
+        ek::cpu::gradients(d);
+      }
       fill_ghosts(grad, 15);
       if (scheme.limiter) {
         ek::cpu::limiter(d);
@@ -134,7 +138,12 @@ struct Euler<P>::Impl {
     decltype(stencil.twin)().swap(stencil.twin);
     decltype(stencil.lsq_weight)().swap(stencil.lsq_weight);
     topo.stencil_twin = nullptr;
-    vertex = kernels::cell_stencil(mesh, packed, kernels::StencilKind::vertex);
+    if (s.gradient_fit == GradientFit::quadratic) {
+      // The quadratic fit's two rings: only the vertex neighbours' entries are kept.
+      vertex = kernels::cell_stencil(mesh, packed, kernels::StencilKind::vertex);
+      decltype(vertex.twin)().swap(vertex.twin);
+      decltype(vertex.lsq_weight)().swap(vertex.lsq_weight);
+    }
     fill(face_normal, packed.face_normal);
     fill(face_area_magnitude, packed.face_area_magnitude);
     fill(face_centroid, packed.face_centroid);
@@ -152,9 +161,11 @@ struct Euler<P>::Impl {
     phi.assign(5 * nc, State(scheme.second_order && !scheme.limiter ? 1 : 0));
     source.assign(5 * nc, State(0));
     grad.assign(15 * nc, Gr(0));
-    grad_band.assign(15 * nc, Gr(0));
-    band.assign(nc, typename decltype(band)::value_type(0));
-    band_offsets.assign(nc + 1, 0);
+    if (s.gradient_fit == GradientFit::quadratic) {
+      grad_band.assign(15 * nc, Gr(0));
+      band.assign(nc, typename decltype(band)::value_type(0));
+      band_offsets.assign(nc + 1, 0);
+    }
     band_topo = topo;
     band_topo.n_stencil = 0;
     band_topo.stencil_offsets = band_offsets.data();
@@ -285,7 +296,7 @@ struct Euler<P>::Impl {
   // the stencil's extent along its directions and the weights taken in those scaled coordinates;
   // directions where no entry extends (the span of a one-cell-thick slab) are left out. Solved by
   // Householder QR. A cell with fewer than 1.5 entries per unknown, or whose entries leave the fit
-  // undetermined, keeps the linear gradient: quadratic_gradient() reports how many
+  // undetermined, keeps the linear gradient: linear_cells() reports how many
   // (docs/design/euler.md, Quadratic gradient).
   void band_weights(std::span<const BoundaryKind> kind) {
     const auto nc = static_cast<std::size_t>(topo.n_cells);
@@ -613,15 +624,13 @@ void Euler<P>::linear_gradient(std::span<typename P::grad> out) {
     std::copy(m.grad.begin(), m.grad.end(), out.begin());
     return;
   }
-  // The gradients loop with no quadratic fit and its limiter bounds into scratch.
+  // The linear gradients loop, its limiter bounds into scratch.
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   std::vector<State> lo(5 * nc), hi(5 * nc);
-  std::vector<typename decltype(m.band)::value_type> none(nc, 0);
   auto d = m.d;
   d.grad = out.data();
   d.wmin = lo.data();
   d.wmax = hi.data();
-  d.band = none.data();
   ek::cpu::gradients(d);
 }
 
@@ -631,9 +640,12 @@ typename Euler<P>::QuadraticGradient Euler<P>::quadratic_gradient() const {
   return {{m.band.begin(), m.band.end()},
           {m.band_offsets.begin(), m.band_offsets.end()},
           m.band_entries,
-          {m.band_weight.begin(), m.band_weight.end()},
-          m.linear_cells,
-          m.first_linear};
+          {m.band_weight.begin(), m.band_weight.end()}};
+}
+
+template <class P>
+typename Euler<P>::LinearCells Euler<P>::linear_cells() const noexcept {
+  return {impl_->linear_cells, impl_->first_linear};
 }
 
 template <class P>

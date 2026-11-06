@@ -753,13 +753,11 @@ class EulerPhysics final : public runtime::Physics {
       }
     }
     euler_.set_boundary(kind, data);
-    const auto quadratic = euler_.quadratic_gradient();
-    if (quadratic.linear_cells > 0) {
-      ctx_.log.write(
-          "warning", "solver",
-          "cells keep the linear gradient: too few neighbours for the quadratic fit", {},
-          nlohmann::json{{"cells", quadratic.linear_cells}, {"first", quadratic.first_linear}}
-              .dump());
+    const auto linear = euler_.linear_cells();
+    if (linear.count > 0) {
+      ctx_.log.write("warning", "solver",
+                     "cells keep the linear gradient: too few neighbours for the quadratic fit", {},
+                     nlohmann::json{{"cells", linear.count}, {"first", linear.first}}.dump());
     }
     boundary_data_ = std::move(data);
   }
@@ -1605,12 +1603,15 @@ std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::Solver
       wall = true;
       continue;
     }
-    if (b.kind != "slip" && b.kind != "symmetry" && b.kind != "farfield" && b.kind != "inlet" &&
-        b.kind != "outlet" && b.kind != "manufactured") {
+    // case-schema.md: oracle-state faces for laminar flow only.
+    const bool oracle = b.kind == "oracle-state" && in.turbulence.model == "laminar";
+    if (!oracle && b.kind != "slip" && b.kind != "symmetry" && b.kind != "farfield" &&
+        b.kind != "inlet" && b.kind != "outlet" && b.kind != "manufactured") {
       return runtime::PhysicsRefusal{
           .message = "the Navier-Stokes physics has no '" + b.kind +
-                     "' condition; boundary zone '" + b.zone +
-                     "' needs wall, slip, symmetry, farfield, inlet or outlet",
+                     "' condition here; boundary zone '" + b.zone +
+                     "' needs wall, slip, symmetry, farfield, inlet, outlet, or oracle-state for "
+                     "laminar flow",
           .path = "boundaries[" + std::to_string(i) + "].kind",
           .data_json = nlohmann::json{{"zone", b.zone}, {"condition", b.kind}}.dump()};
     }

@@ -470,7 +470,7 @@ boundary_states = boundary_loop(
 # it): the gradient of a quadratic least-squares fit over two vertex rings (docs/design/euler.md,
 # Quadratic gradient). Its weights per entry of its own stencil (Topology::stencil of the fit, empty
 # where it does not apply) make it a weighted sum like the linear one; `band_gradients` runs before
-# `gradients`, which takes it where `band` = 1.
+# `quadratic_gradients`, which takes it where `band` = 1.
 band = cells.field("band", Geom)
 grad_band = cells.field("grad_band", Grad.Mat53)
 band_weight = Dataset("band_weight", MeshSet.STENCIL, Geom.Vec3, geometry=True)
@@ -500,6 +500,13 @@ def lsq_term(
 
 @pointwise
 def include_own_value(
+    gsum: Residual.Mat53, lo: Residual.Vec5, hi: Residual.Vec5, wc: State.Vec5
+) -> tuple[Grad.Mat53, State.Vec5, State.Vec5]:
+    return gsum, min(lo, wc), max(hi, wc)
+
+
+@pointwise
+def include_own_value_quadratic(
     gsum: Residual.Mat53,
     lo: Residual.Vec5,
     hi: Residual.Vec5,
@@ -522,6 +529,17 @@ gradients = cell_reduce(
     w=geometry.stencil_lsq_weight,
     acc=[Sum(grad), Min(wmin), Max(wmax)],
     finalise=include_own_value,
+    finalise_args={"wc": prim},
+)
+# The same pass under the quadratic gradient, which replaces the linear one where `band` = 1.
+quadratic_gradients = cell_reduce(
+    lsq_term,
+    over=STENCIL,
+    wc=prim.self_,
+    wn=prim.other(boundary=prim_b),
+    w=geometry.stencil_lsq_weight,
+    acc=[Sum(grad), Min(wmin), Max(wmax)],
+    finalise=include_own_value_quadratic,
     finalise_args={"wc": prim, "gb": grad_band, "q": band},
 )
 

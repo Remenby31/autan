@@ -1445,9 +1445,10 @@ TEST_CASE("oracle-state faces take their paired states, whatever the row order",
 
 TEST_CASE("oracle-state faces impose their states component by component", "[euler]") {
   // Every side of the hybrid mesh takes one uniform state with all five components distinct and
-  // non-zero; started there, the flow stays there in both precisions.
+  // non-zero; started there, the flow stays there in both precisions, inviscid or laminar.
   const char* precision = GENERATE("fp64", "fp32+acc64");
-  INFO(precision);
+  const bool laminar = GENERATE(false, true);
+  INFO(precision << (laminar ? " laminar" : ""));
   const autan::Mesh mesh = autan::io::read_mesh(mesh_path);
   const autan::Geometry g = autan::compute_geometry(mesh);
   const std::array<double, 5> w{1.2, 80.0, -30.0, 20.0, 1.1e5};
@@ -1479,7 +1480,11 @@ TEST_CASE("oracle-state faces impose their states component by component", "[eul
   std::string sha;
   picosha2::hash256_hex_string(bytes, sha);
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
-    inviscid_along_x(d, precision);
+    if (laminar) {
+      laminar_along_x(d, precision);
+    } else {
+      inviscid_along_x(d, precision);
+    }
     for (auto& z : d["cell_zones"]) {
       z["initial"]["density"] = w[0];
       z["initial"]["velocity"] = {w[1], w[2], w[3]};

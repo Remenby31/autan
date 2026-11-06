@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -633,11 +634,12 @@ TEMPLATE_TEST_CASE("the viscous spectral radius bounds momentum diffusion at any
 }
 
 // An inlet gives SA the ratio nt / nu of the case, nu the laminar viscosity of the inlet's own
-// state (case-schema.md#turbulence), not a fixed nt. A uniform flow enters the slab through xmin
-// at its own total pressure and temperature, so that the inlet's state is the cell's, and leaves
-// through the outlet xmax at its static pressure, with nt = 3 nu uniform: nothing varies, and
-// every cell's residual is zero to round-off, the wall distance (1e10 m) leaving production and
-// destruction negligible.
+// state at each evaluation (case-schema.md#turbulence), not a fixed nt. A uniform flow enters the
+// slab through xmin at its own total pressure and temperature, so that the inlet's state is the
+// cell's, and leaves through the outlet xmax at its static pressure, with nt = 3 nu uniform:
+// nothing varies, and every cell's residual is zero to round-off, the wall distance (1e10 m)
+// leaving production and destruction negligible. The same SA model then sees the flow at a second
+// temperature, where Sutherland's law gives another nu: no fixed inlet value serves both.
 TEMPLATE_TEST_CASE("an inlet gives nt the case's ratio to its own viscosity", "[spalart-allmaras]",
                    autan::kernels::fp64, autan::kernels::fp32_acc64) {
   using P = TestType;
@@ -648,63 +650,75 @@ TEMPLATE_TEST_CASE("an inlet gives nt the case's ratio to its own viscosity", "[
   const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
   constexpr double p = 1.0e5;
   constexpr double speed = 50.0;
-  constexpr double mu_air = 1.8e-5;
   constexpr double ratio = 3.0;
-  const double temperature = p / (rho * air.gas_constant);
-  const double cp = air.gamma * air.gas_constant / (air.gamma - 1.0);
-  const double t0 = temperature + 0.5 * speed * speed / cp;
-  const double p0 = p * std::pow(t0 / temperature, air.gamma / (air.gamma - 1.0));
   Scheme scheme;
   scheme.limiter = false;
-  scheme.reference = {rho, rho * speed, 0.0, 0.0,
-                      p / (air.gamma - 1.0) + 0.5 * rho * speed * speed};
-  Transport t;
-  t.sutherland = false;
-  t.mu_ref = mu_air;
+  scheme.reference = {1.2, 1.2 * speed, 0.0, 0.0, p / (air.gamma - 1.0) + 0.6 * speed * speed};
+  Transport t;  // Sutherland's law for air
   t.prandtl = prandtl;
+  auto sutherland = [&](double temperature) {
+    return t.mu_ref * std::pow(temperature / t.t_ref, 1.5) * (t.t_ref + t.s) / (temperature + t.s);
+  };
   NavierStokes<P> ns(mesh, g, air, scheme, t);
   std::vector<BoundaryKind> kind(nb, BoundaryKind::slip);
-  std::vector<double> data(5 * nb, 0.0), nt_b(nb, 0.0);
+  std::vector<double> nt_b(nb, 0.0);
   for (std::size_t b = 0; b < nb; ++b) {
     const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[ni + b])].name;
     if (zone == "xmin") {
       kind[b] = BoundaryKind::inlet;
-      data[b] = p0;
-      data[nb + b] = t0;
       nt_b[b] = ratio;
     } else if (zone == "xmax") {
       kind[b] = BoundaryKind::outlet;
-      data[4 * nb + b] = p;
     }
   }
-  ns.set_boundary(kind, data);
-  std::vector<double> u(5 * n, 0.0);
-  for (std::size_t c = 0; c < n; ++c) {
-    u[c] = rho;
-    u[n + c] = rho * speed;
-    u[4 * n + c] = p / (air.gamma - 1.0) + 0.5 * rho * speed * speed;
-  }
-  std::vector<typename P::state> s(5 * n);
-  std::vector<typename P::residual> r(5 * n);
-  ns.state(u, s);
-  ns.residual(s, r);
-  SpalartAllmaras<P> sa(mesh, g, ns, t);
-  sa.set_boundary(nt_b);
-  sa.set_wall_distance(std::vector<double>(n, 1.0e10));
-  const double nt = ratio * mu_air / rho;
-  const std::vector<typename P::state> rn(n, static_cast<typename P::state>(rho * nt));
-  std::vector<typename P::residual> res(n);
-  sa.residual(rn, res);
   std::vector<double> surface(n, 0.0);
   for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
     surface[static_cast<std::size_t>(mesh.owner()[f])] += g.face_area[f];
     if (f < ni) surface[static_cast<std::size_t>(mesh.neighbour()[f])] += g.face_area[f];
   }
-  double worst = 0.0;
-  for (std::size_t c = 0; c < n; ++c) {
-    worst = worse(worst, std::abs(static_cast<double>(res[c])) / (rho * speed * nt * surface[c]));
+  std::unique_ptr<SpalartAllmaras<P>> sa;
+  for (const double temperature : {300.0, 400.0}) {
+    CAPTURE(temperature);
+    const double density = p / (air.gas_constant * temperature);
+    const double cp = air.gamma * air.gas_constant / (air.gamma - 1.0);
+    const double t0 = temperature + 0.5 * speed * speed / cp;
+    const double p0 = p * std::pow(t0 / temperature, air.gamma / (air.gamma - 1.0));
+    std::vector<double> data(5 * nb, 0.0);
+    for (std::size_t b = 0; b < nb; ++b) {
+      if (kind[b] == BoundaryKind::inlet) {
+        data[b] = p0;
+        data[nb + b] = t0;
+      } else if (kind[b] == BoundaryKind::outlet) {
+        data[4 * nb + b] = p;
+      }
+    }
+    ns.set_boundary(kind, data);
+    std::vector<double> u(5 * n, 0.0);
+    for (std::size_t c = 0; c < n; ++c) {
+      u[c] = density;
+      u[n + c] = density * speed;
+      u[4 * n + c] = p / (air.gamma - 1.0) + 0.5 * density * speed * speed;
+    }
+    std::vector<typename P::state> s(5 * n);
+    std::vector<typename P::residual> r(5 * n);
+    ns.state(u, s);
+    ns.residual(s, r);
+    if (!sa) {
+      sa = std::make_unique<SpalartAllmaras<P>>(mesh, g, ns, t);
+      sa->set_boundary(nt_b);
+      sa->set_wall_distance(std::vector<double>(n, 1.0e10));
+    }
+    const double nt = ratio * sutherland(temperature) / density;
+    const std::vector<typename P::state> rn(n, static_cast<typename P::state>(density * nt));
+    std::vector<typename P::residual> res(n);
+    sa->residual(rn, res);
+    double worst = 0.0;
+    for (std::size_t c = 0; c < n; ++c) {
+      worst =
+          worse(worst, std::abs(static_cast<double>(res[c])) / (density * speed * nt * surface[c]));
+    }
+    CHECK(worst <= 4096 * eps<P>());
   }
-  CHECK(worst <= 4096 * eps<P>());
 }
 
 // SA-neg (Allmaras et al. 2012; TMR SA page) for nt < 0: production cb1 (1 - ct3) Omega nt,

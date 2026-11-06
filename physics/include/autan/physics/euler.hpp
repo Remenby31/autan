@@ -119,17 +119,21 @@ class Euler {
   /// every cell (empty with linear): per cell 1 where it replaces the linear one, else 0; its
   /// stencil (n_cells + 1 offsets, entries as kernels::Topology::stencil) and weights (3 x
   /// entries, the layout of gradient_weights). They depend on set_boundary. A cell whose two
-  /// vertex rings cannot determine the fit keeps the linear gradient (0 there): `linear_cells`
-  /// counts them, `first_linear` is the first (-1 if none).
+  /// vertex rings cannot determine the fit keeps the linear gradient (0 there).
   struct QuadraticGradient {
     std::vector<double> fitted;
     std::vector<std::int64_t> offsets;
     std::vector<index_t> entries;
     std::vector<double> weights;
-    std::size_t linear_cells = 0;
-    index_t first_linear = -1;
   };
   [[nodiscard]] QuadraticGradient quadratic_gradient() const;
+  /// With GradientFit::quadratic, the cells that keep the linear gradient: how many, and the
+  /// first (-1 if none). They depend on set_boundary.
+  struct LinearCells {
+    std::size_t count = 0;
+    index_t first = -1;
+  };
+  [[nodiscard]] LinearCells linear_cells() const noexcept;
   /// After a second-order residual: the linear least-squares gradient of its primitives into
   /// `out` (15 x n_cells, the reconstruction's layout), the reconstruction's own under
   /// GradientFit::linear.

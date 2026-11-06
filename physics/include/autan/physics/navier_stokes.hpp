@@ -69,6 +69,8 @@ class NavierStokes {
   [[nodiscard]] std::pair<double, double> fit_jacobian_norms() const;
   /// The convective reconstruction's quadratic gradient (Euler<P>::quadratic_gradient).
   [[nodiscard]] typename Euler<P>::QuadraticGradient quadratic_gradient() const;
+  /// The cells that keep the linear gradient (Euler<P>::linear_cells).
+  [[nodiscard]] typename Euler<P>::LinearCells linear_cells() const noexcept;
   /// After residual(s): per cell, the convective spectral radius plus 4 times the viscous one
   /// (Blazek 2015, eq. 6.20), so that CFL V / lambda is the cell's time step.
   void spectral_radius(std::span<State> lambda);

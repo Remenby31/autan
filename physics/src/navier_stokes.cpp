@@ -862,6 +862,11 @@ typename Euler<P>::QuadraticGradient NavierStokes<P>::quadratic_gradient() const
   return impl_->euler.quadratic_gradient();
 }
 
+template <class P>
+typename Euler<P>::LinearCells NavierStokes<P>::linear_cells() const noexcept {
+  return impl_->euler.linear_cells();
+}
+
 template class NavierStokes<kernels::fp64>;
 template class NavierStokes<kernels::fp32_acc64>;
 
