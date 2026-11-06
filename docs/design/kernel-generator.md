@@ -9,7 +9,7 @@ The kernel generator turns pointwise kernels written in a restricted Python subs
 3. `autan_codegen.derive` adds, for every loop, `<loop>_tangent` and `<loop>_adjoint`, built by `autan_codegen.ad` on the IR.
 4. Emitters write, per module `m`: `m.hpp` (the `Data<P>` struct and every body), `m_cpu.hpp` (serial loops), `m_gpu.cuh` (CUDA/HIP kernels and launchers, one text for both), `m_gpu.cu` (explicit instantiations for the build's policies), and `m_metal.hpp` (Metal Shading Language source and host launchers, [metal-backend.md](metal-backend.md)).
 
-The build runs the generator as a CMake custom command (`codegen/CMakeLists.txt`); it needs Python ≥ 3.12 and nothing outside the standard library. By hand: `PYTHONPATH=codegen/src python3 -m autan_codegen kernels/roe.py --out DIR --backends cpu,gpu,metal [--policies fp64,fp32+acc64,fp32] [--no-line]`.
+The build runs the generator as a CMake custom command (`codegen/CMakeLists.txt`); it needs Python ≥ 3.12 and nothing outside the standard library. By hand: `PYTHONPATH=codegen/src python3 -m autan_codegen kernels/roe.py --out DIR --backends cpu,gpu,metal [--policies fp64,fp32+acc64,fp32] [--no-line] [--source-root .]`. The generated code maps each statement to its DSL line with `#line`. With `--source-root DIR`, as the build passes the repository root, a DSL source under DIR is named relative to it, so two checkouts generate the same text; a source outside DIR, or no option, keeps its absolute path. A debugger stepping into DSL lines from an out-of-tree build needs the repository as a source directory (`directory <repository>` in gdb).
 
 | CMake option | Effect |
 |---|---|
