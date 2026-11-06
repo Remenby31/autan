@@ -170,7 +170,8 @@ jobs:
     # autan-bench and the runner hook, without a GPU (the GPU tests skip here and run in gpu-bench).
     name: Bench harness
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # The suite takes most of 10 minutes on a hosted runner: 20 leaves room for the next tests.
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
