@@ -6,6 +6,10 @@ The criterion is the one case-schema.md (Time) gives a steady Autan run: every r
 whose first residual is below 1e-12 times the largest one being exempt while it stays there. Both
 codes define a residual the same way, the RMS over the control volumes of the integrated flux
 balance (results.md, History; SU2's rms[...] columns), so a drop is compared with a drop.
+
+Pre-registrations from #493 on use an absolute criterion instead, independent of the initial state:
+every residual at or below epsilon times its freestream flux scale, epsilon taken from a baseline
+run where its outputs settle, and the outputs stationary over a window.
 """
 
 from __future__ import annotations
@@ -181,6 +185,101 @@ def convergence(history: History, orders: float) -> Convergence:
         cmy=float(history.cmy[i]),
         drop={eq: float(np.log10(r[0] / r[i])) for eq, r in history.residuals.items()},
     )
+
+
+# The absolute criterion (#493): every residual at or below EPSILON times its freestream flux scale
+# and the case's outputs stationary to RTOL over WINDOW iterations, whatever the initial state.
+WINDOW = 500
+RTOL = 1e-7
+SU2_FREESTREAM = {"Static Pressure": "pressure", "Density": "density", "Total Energy": "energy",
+                  "Velocity Magnitude": "speed", "Viscosity": "viscosity"}  # fmt: skip
+
+
+def su2_freestream(log: str) -> dict[str, float]:
+    """The freestream SU2 prints in its log ("Initial and free-stream conditions", dimensional
+    values, SI units): pressure, density, total energy per unit mass, speed and dynamic viscosity.
+    V0904 if one is missing."""
+    found: dict[str, float] = {}
+    section = log.split("-- Initial and free-stream conditions:", 1)[-1]
+    for line in section.splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) >= 2 and cells[0] in SU2_FREESTREAM and SU2_FREESTREAM[cells[0]] not in found:
+            found[SU2_FREESTREAM[cells[0]]] = float(cells[1])
+    missing = set(SU2_FREESTREAM.values()) - set(found)
+    if missing:
+        msg = f"SU2 log: no freestream {sorted(missing)}"
+        raise VVError(msg, code="V0904")
+    return found
+
+
+def flux_scales(
+    freestream: dict[str, float], length: float, nu_factor: float = 3.0
+) -> dict[str, float]:
+    """Scale of each equation's integrated flux balance per unit span: its freestream flux times
+    `length` (rho U, rho U^2, rho U H, nu_tilde U, with H = E + p / rho and nu_tilde = `nu_factor`
+    times the kinematic viscosity, SU2's FREESTREAM_NU_FACTOR)."""
+    rho, u = freestream["density"], freestream["speed"]
+    enthalpy = freestream["energy"] + freestream["pressure"] / rho
+    nu_tilde = nu_factor * freestream["viscosity"] / rho
+    momentum = rho * u * u * length
+    return {
+        "density": rho * u * length, "momentum-x": momentum, "momentum-y": momentum,
+        "momentum-z": momentum, "energy": rho * u * enthalpy * length,
+        "nu-tilde": nu_tilde * u * length,
+    }  # fmt: skip
+
+
+def stationary(
+    values: FloatArray, window: int = WINDOW, rtol: float = RTOL
+) -> npt.NDArray[np.bool_]:
+    """Per iteration, whether `values` stayed within `rtol` of its current value, relative, over
+    the `window` iterations before it (False until there are that many)."""
+    out = np.zeros(len(values), dtype=bool)
+    for i in range(window, len(values)):
+        out[i] = np.max(np.abs(values[i - window : i] - values[i])) <= rtol * abs(values[i])
+    return out
+
+
+def epsilon(
+    history: History, scales: dict[str, float], outputs: Sequence[str], rtol: float = RTOL
+) -> float:
+    """The baseline's level of #493: the largest scaled residual at the first iteration from which
+    every output in `outputs` (History field names, e.g. "cd") stays within `rtol` of its final
+    value. V0904 if the history never settles."""
+    settled = np.ones(len(history.iterations), dtype=bool)
+    for name in outputs:
+        f = getattr(history, name)
+        within = np.abs(f - f[-1]) <= rtol * abs(f[-1])
+        # Within from that iteration to the end: a suffix of True.
+        settled &= np.flip(np.logical_and.accumulate(np.flip(within)))
+    hits = np.flatnonzero(settled)
+    if hits.size == 0:
+        msg = "the baseline history never settles"
+        raise VVError(msg, code="V0904")
+    k = int(hits[0])
+    return max(float(r[k]) / scales[eq] for eq, r in history.residuals.items())
+
+
+def absolute_converged_at(
+    history: History,
+    thresholds: dict[str, float],
+    outputs: Sequence[str],
+    window: int = WINDOW,
+    rtol: float = RTOL,
+) -> int | None:
+    """Index of the first iteration where every residual is at or below its threshold (epsilon
+    times its flux scale) and every output has been stationary over `window` iterations, or None.
+    V0904 if an equation has no threshold."""
+    if set(history.residuals) - set(thresholds):
+        msg = f"no threshold for {sorted(set(history.residuals) - set(thresholds))}"
+        raise VVError(msg, code="V0904")
+    met = np.ones(len(history.iterations), dtype=bool)
+    for eq, r in history.residuals.items():
+        met &= r <= thresholds[eq]
+    for name in outputs:
+        met &= stationary(getattr(history, name), window, rtol)
+    hits = np.flatnonzero(met)
+    return int(hits[0]) if hits.size else None
 
 
 # Configuration keys that set the scheme, recorded with a run's convergence.

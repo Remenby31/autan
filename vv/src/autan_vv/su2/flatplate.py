@@ -299,11 +299,14 @@ def prepare(
     out: Path,
     su2_mesh: Path | None = None,
     max_iterations: int = 50000,
+    absolute: Path | None = None,
 ) -> list[Path]:
     """Fetch and verify the five TMR grids into `cache`, convert them to OUT/meshes/, and write
     OUT/<model>/<idim>x<jdim>/{case.cfg, level.json} for each model of MODELS; returns the case
     directories, coarsest first. With `su2_mesh` (SU2's own 137x97 mesh), OUT/meshes/crosscheck.json
-    records `same_grid` against our 137x97."""
+    records `same_grid` against our 137x97. With `absolute`, the root of the published runs, each
+    case also gets the stop.csv of #493 by which the runner stops it (`stop_rule`), recorded in
+    level.json."""
     from autan_vv.cases import fetch, get_case  # noqa: PLC0415
 
     grids = fetch(get_case(CASE), cache, roles=("grid",))
@@ -336,9 +339,52 @@ def prepare(
                 "cells": (record.idim - 1) * (record.jdim - 1),
                 "mesh": asdict(record),
             }
+            if absolute is not None:
+                rule = stop_rule(absolute / MODEL_REFERENCE / run.name)
+                (run / "stop.csv").write_text(_stop_csv(rule))
+                level["stop"] = {**rule, "stop_csv_sha256": _sha256(_stop_csv(rule).encode())}
             (run / "level.json").write_text(json.dumps(level, indent=2) + "\n")
             dirs.append(run)
     return dirs
+
+
+# The outputs the flat plate's absolute criterion keeps stationary: cf is only in the final
+# surface file, so CD.
+OUTPUTS = ("cd",)
+SU2_COLUMNS = {eq: col for col, eq in {**history.SU2_2D, **history.SU2_TURBULENCE}.items()}
+
+
+def stop_rule(baseline: Path) -> dict[str, Any]:
+    """The absolute criterion of #493 for one grid, from the published configuration's run on it
+    (`baseline`): flux scales from the freestream in SU2's log and the configuration's reference
+    length and FREESTREAM_NU_FACTOR (SU2's default 3), epsilon from its history (OUTPUTS, RTOL),
+    and each equation's threshold epsilon times its scale. V0904 if the run is not usable."""
+    meta, runs = _history(baseline, MODEL_REFERENCE)
+    cfg = options((baseline / "case.cfg").read_text())
+    freestream = history.su2_freestream((baseline / "log.txt").read_text())
+    scales = history.flux_scales(
+        freestream, float(cfg.get("REF_LENGTH", "1.0")),
+        float(cfg.get("FREESTREAM_NU_FACTOR", "3.0")),
+    )  # fmt: skip
+    scales = {eq: scales[eq] for eq in runs.residuals}
+    eps = history.epsilon(runs, scales, OUTPUTS)
+    return {
+        "epsilon": eps, "scales": scales,
+        "thresholds": {eq: eps * scale for eq, scale in scales.items()},
+        "outputs": list(OUTPUTS), "window": history.WINDOW, "rtol": history.RTOL,
+        "baseline": {"case_sha256": meta["level"]["case_sha256"],
+                     "history_sha256": _sha256((baseline / "history.csv").read_bytes())},
+    }  # fmt: skip
+
+
+def _stop_csv(rule: dict[str, Any]) -> str:
+    lines = [
+        f"threshold,{SU2_COLUMNS[eq]},{float(np.log10(t))!r}"
+        for eq, t in rule["thresholds"].items()
+    ]
+    lines += [f"output,{name.upper()}" for name in rule["outputs"]]
+    lines += [f"window,{rule['window']}", f"rtol,{rule['rtol']!r}"]
+    return "\n".join(lines) + "\n"
 
 
 def _richardson(h: list[float], values: list[float]) -> dict[str, Any]:
@@ -392,7 +438,9 @@ def _history(run: Path, model: str) -> tuple[dict[str, Any], history.History]:
     return {"level": level, "provenance": prov}, runs
 
 
-def _run(run: Path, model: str, reference: Path | None) -> dict[str, Any]:
+def _run(
+    run: Path, model: str, reference: Path | None, absolute: Path | None = None
+) -> dict[str, Any]:
     meta, runs = _history(run, model)
     level, prov = meta["level"], meta["provenance"]
     conv = history.convergence(runs, ORDERS)
@@ -406,6 +454,21 @@ def _run(run: Path, model: str, reference: Path | None) -> dict[str, Any]:
         "case_sha256": level["case_sha256"], "mesh_sha256": level["mesh"]["file_sha256"],
         "source_sha256": level["mesh"]["source_sha256"],
     }  # fmt: skip
+    if absolute is not None:
+        rule = stop_rule(absolute / MODEL_REFERENCE / run.name)
+        stop = level.get("stop")
+        if stop is not None and (
+            stop["thresholds"] != rule["thresholds"]
+            or prov.get("stop", {}).get("stop_csv_sha256") != stop["stop_csv_sha256"]
+        ):
+            msg = f"{run}: its stop.csv is not the one {absolute} gives"
+            raise VVError(msg, code="V0905")
+        at = history.absolute_converged_at(runs, rule["thresholds"], OUTPUTS)
+        row["absolute"] = {
+            "converged": at is not None,
+            "iterations": None if at is None else int(runs.iterations[at] - runs.iterations[0]) + 1,
+            "epsilon": rule["epsilon"],
+        }
     if reference is not None:
         meta, theirs = _history(reference, MODEL_REFERENCE)
         published = meta["level"]
@@ -459,7 +522,11 @@ def _assess(
 
 
 def results(
-    root: Path, cache: Path, models: tuple[str, ...] = tuple(MODELS), reference: Path | None = None
+    root: Path,
+    cache: Path,
+    models: tuple[str, ...] = tuple(MODELS),
+    reference: Path | None = None,
+    absolute: Path | None = None,
 ) -> dict[str, Any]:
     """The report (autan.su2-flatplate/1) on the runs `prepare` wrote under `root`, for `models`:
     per model and grid, convergence by the protocol's criterion (ORDERS), cf at CF_STATION and CD
@@ -469,11 +536,14 @@ def results(
     `reference`, the root of the published configuration's runs, each run is also judged by the
     amended criterion of #195 (`amended`): converged once every residual is at or below the one
     the published SA-noft2 run on the same grid had when it met the protocol's criterion; the
-    continuum and gate are then given under both readings. V0904 if a run's model, configuration
+    continuum and gate are then given under both readings. With `absolute`, the same root, each run
+    is also judged by the absolute criterion of #493 (`absolute`, `stop_rule`), and the continuum
+    and gate are given under it too; a run prepared with a stop.csv must have run with the one
+    that root gives. V0904 if a run's model, configuration
     or mesh, as prepared, as run and as on disk, differ, if SU2 failed, if the SA residual is
     missing or a reference run did not converge; V0905 if a model does not have the five grids or
-    mixes SU2 builds, or if a reference run is not SU2's published configuration (PUBLISHED_SHA256)
-    on the same mesh with the same equations.
+    mixes SU2 builds, if a reference run is not SU2's published configuration (PUBLISHED_SHA256)
+    on the same mesh with the same equations, or if a run's stop.csv is not `absolute`'s.
     """
     refs = references(cache)
     report: dict[str, Any] = {"schema": REPORT_SCHEMA, "orders": ORDERS, "models": {}}
@@ -484,7 +554,8 @@ def results(
     }  # fmt: skip
     for model in models:
         levels = sorted(
-            (_run(run, model, None if reference is None else reference / MODEL_REFERENCE / run.name)
+            (_run(run, model,
+                  None if reference is None else reference / MODEL_REFERENCE / run.name, absolute)
              for run in (root / model).iterdir() if run.is_dir()),
             key=lambda lv: lv["cells"],
         )  # fmt: skip
@@ -501,5 +572,9 @@ def results(
         if reference is not None:
             report["models"][model]["amended"] = _assess(
                 levels, lambda lv: lv["amended"]["converged"]
+            )
+        if absolute is not None:
+            report["models"][model]["absolute"] = _assess(
+                levels, lambda lv: lv["absolute"]["converged"]
             )
     return report
