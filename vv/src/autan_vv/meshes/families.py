@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict, dataclass
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -96,7 +98,9 @@ class Family:
 
 def level_record(n: int, path: Path, mesh: FaceMesh) -> Level:
     """The manifest entry of level `n`, written to `path` from `mesh`."""
-    volume = float(mesh.geometry.cell_volume.sum())
+    # fsum: the exactly rounded sum. NumPy's sum splits it differently on NEON and AVX, and the
+    # manifest records it (#495).
+    volume = math.fsum(mesh.geometry.cell_volume.tolist())
     counts: dict[str, int] = {}
     for k in mesh.cell_kinds or ("polyhedron",) * mesh.n_cells:
         counts[k] = counts.get(k, 0) + 1
@@ -111,8 +115,26 @@ def level_record(n: int, path: Path, mesh: FaceMesh) -> Level:
         cell_counts=counts,
         min_subvolume_ratio=mesh.min_subvolume_ratio(),
         volume=volume,
-        h=(volume / mesh.n_cells) ** (1.0 / 3.0),
+        h=cbrt(volume / mesh.n_cells),
     )
+
+
+def cbrt(x: float) -> float:
+    """The cube root of `x` > 0, correctly rounded: the same double on every platform.
+
+    `x ** (1/3)` is libm's `pow`, whose last bit may differ between platforms, and a manifest records
+    it (#495). From it, step by one ulp while the exact cube of a midpoint says the root lies beyond.
+    """
+    y: float = x ** (1.0 / 3.0)
+    exact = Fraction(x)
+    while True:
+        up, down = math.nextafter(y, math.inf), math.nextafter(y, 0.0)
+        if ((Fraction(y) + Fraction(up)) / 2) ** 3 < exact:
+            y = up
+        elif ((Fraction(down) + Fraction(y)) / 2) ** 3 > exact:
+            y = down
+        else:
+            return y
 
 
 def write_manifest(family: Family, out_dir: Path) -> None:
@@ -151,6 +173,31 @@ def _nodes(gmsh: ModuleType) -> tuple[IntArray, FloatArray]:
     return np.asarray(tags)[order].astype(np.int64), np.asarray(coords).reshape(-1, 3)[order]
 
 
+# The even permutations of a tetrahedron's four nodes: those that keep its orientation.
+_TET_EVEN = np.array(
+    [
+        (0, 1, 2, 3), (0, 2, 3, 1), (0, 3, 1, 2), (1, 0, 3, 2), (1, 2, 0, 3), (1, 3, 2, 0),
+        (2, 0, 1, 3), (2, 1, 3, 0), (2, 3, 0, 1), (3, 0, 2, 1), (3, 1, 0, 2), (3, 2, 1, 0),
+    ]
+)  # fmt: skip
+
+
+def canonical_tets(tets: IntArray) -> IntArray:
+    """The tetrahedra in an order of our own: each as the smallest of its even permutations (it
+    starts from its smallest node and keeps its orientation), the rows sorted.
+
+    Gmsh enumerates the same mesh in an order that differs between its builds (libc++ on macOS,
+    libstdc++ on Linux): without this, the same mesh would be written as other bytes (#495).
+    """
+    cand = tets[:, _TET_EVEN]
+    alive = np.ones(cand.shape[:2], dtype=bool)
+    for col in range(4):
+        value = np.where(alive, cand[:, :, col], np.iinfo(np.int64).max)
+        alive &= value == value.min(axis=1, keepdims=True)
+    rows = cand[np.arange(tets.shape[0]), alive.argmax(axis=1)]
+    return rows[np.lexsort(rows.T[::-1])]
+
+
 def _cells(gmsh: ModuleType, index: dict[int, int] | IntArray) -> dict[str, IntArray]:
     out: dict[str, IntArray] = {}
     types, _, node_tags = gmsh.model.mesh.getElements(3)
@@ -160,6 +207,8 @@ def _cells(gmsh: ModuleType, index: dict[int, int] | IntArray) -> dict[str, IntA
             msg = f"unexpected Gmsh element type {t}"
             raise VVError(msg, code="V0305")
         out[kind] = np.asarray(index)[np.asarray(nodes, dtype=np.int64)].reshape(-1, _NODES[kind])
+        if kind == "tet":
+            out[kind] = canonical_tets(out[kind])
     return out
 
 
@@ -170,10 +219,32 @@ def _min_edge(points: FloatArray, cells: dict[str, IntArray]) -> FloatArray:
         k = conn.shape[1]
         for i in range(k):
             for j in range(i + 1, k):
-                d = np.linalg.norm(points[conn[:, i]] - points[conn[:, j]], axis=1)
+                e = points[conn[:, i]] - points[conn[:, j]]
+                # Written out, so that every CPU rounds it the same way (#495).
+                d = np.sqrt(e[:, 0] * e[:, 0] + e[:, 1] * e[:, 1] + e[:, 2] * e[:, 2])
                 np.minimum.at(h, conn[:, i], d)
                 np.minimum.at(h, conn[:, j], d)
     return h
+
+
+def _uniform_in_ball(rng: np.random.Generator, count: int) -> FloatArray:
+    """`count` points uniform in the unit ball, by rejection from the cube [-1, 1]^3.
+
+    Only exactly rounded operations: the generator's doubles (an integer times 2**-53), and
+    NumPy's element-wise `*`, `-`, `+` and comparison, each rounded once. So the same bits on
+    every IEEE-754 CPU. A power, a normal draw or `Generator.uniform` (whose `low + range * r` a
+    compiler may fuse) can end in a different last bit on another CPU (#495).
+    """
+    out = np.empty((count, 3))
+    filled = 0
+    while filled < count:
+        need = count - filled
+        cube = 2.0 * rng.random((2 * need + 8, 3)) - 1.0  # about 52 % of them fall in the ball
+        r2 = cube[:, 0] * cube[:, 0] + cube[:, 1] * cube[:, 1] + cube[:, 2] * cube[:, 2]
+        kept = cube[r2 <= 1.0][:need]
+        out[filled : filled + kept.shape[0]] = kept
+        filled += kept.shape[0]
+    return out
 
 
 def perturb(
@@ -187,13 +258,10 @@ def perturb(
 
     Coordinates on the faces of the unit cube stay on them, so the domain is unchanged. Nodes of a
     cell that would become inverted or non-star-shaped have their displacement halved until every
-    cell is valid, so the result is deterministic for a given seed.
+    cell is valid. The result depends on the seed alone: the same bits on every CPU (#495).
     """
     rng = np.random.default_rng(seed)
-    direction = rng.normal(size=points.shape)
-    direction /= np.linalg.norm(direction, axis=1, keepdims=True)
-    radius = amplitude * _min_edge(points, cells) * rng.uniform(size=points.shape[0]) ** (1.0 / 3.0)
-    step = direction * radius[:, None]
+    step = _uniform_in_ball(rng, points.shape[0]) * (amplitude * _min_edge(points, cells))[:, None]
     on_face = (np.abs(points) < 1e-12) | (np.abs(points - 1.0) < 1e-12)
     step[on_face] = 0.0
     width = max(c.shape[1] for c in cells.values())
