@@ -245,6 +245,9 @@ def _names(data: bytes) -> int:
 # A zone's or a monitor's entry in the solver input besides its texts: keys, a kind, at most
 # 20 numbers of at most 24 characters each (Python's repr of a double) and a SHA-256.
 _ENTRY = 1024
+# A zone name's list formatting around its text as `autan prepare` indents the input: at most 10
+# spaces (a point vortex's zones), a comma and a newline.
+_ITEM = 16
 
 
 def _input_bytes(
@@ -277,9 +280,9 @@ def _input_bytes(
             and rule.condition.point_vortex
         ):
             walls, _ = vortex_zones(rule.condition.point_vortex, mesh, boundaries)
-            zones += sum(text(n) for n in walls)
+            zones += sum(text(n) + _ITEM for n in walls)
     monitors = sum(
-        text(m.name) + sum(text(n) for n in selected(m.surfaces, m.group, mesh)) + _ENTRY
+        text(m.name) + sum(text(n) + _ITEM for n in selected(m.surfaces, m.group, mesh)) + _ENTRY
         for m in spec.monitors
     )
     files = 6 * _PATH_MAX * 3  # the mesh, a start's run and a verification solution

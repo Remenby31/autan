@@ -1293,6 +1293,21 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
   }
   // The run archives the zone groups the case was resolved with: the sidecar
   // must be the one the SDK hashed (solver-input.md, mesh.groups_sha256).
+  // A sidecar the input does not name is refused unread: its plan counted no
+  // memory for reading it (plan.md, zone groups).
+  if (!p.input.mesh_groups_sha256) {
+    const fs::path sidecar = io::zone_groups_path(p.input.mesh_path);
+    std::error_code ec;
+    if (fs::exists(fs::symlink_status(sidecar, ec)) ||
+        (ec && ec != std::errc::no_such_file_or_directory)) {
+      throw InputError(Diagnostic{
+          .code = "E0137",
+          .message = "the mesh has a zone-groups file '" + sidecar.string() +
+                     "' that mesh.groups_sha256 does not name",
+          .path = "mesh.groups_sha256",
+          .data_json = nlohmann::json{{"expected", nullptr}, {"path", sidecar.string()}}.dump()});
+    }
+  }
   std::optional<io::ZoneGroups> groups;
   try {
     groups = io::read_zone_groups(p.input.mesh_path, p.mesh, p.mesh_hash);

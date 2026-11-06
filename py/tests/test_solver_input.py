@@ -408,26 +408,36 @@ def test_the_linear_solver_is_a_steady_choice(
         validator.validate(document | {"time": unsteady | {"linear_solver": "multigrid"}})
 
 
+@pytest.mark.parametrize("names", ["long", "short"])
 @pytest.mark.parametrize("repeats", ["monitors", "point vortex"])
 def test_the_input_stays_within_the_size_its_plan_counts(
-    repeats: str, tmp_path: Path, mesh_variant: Callable[..., autan.MeshInfo]
+    repeats: str, names: str, tmp_path: Path, mesh_variant: Callable[..., autan.MeshInfo]
 ) -> None:
     # plan.md: the solver input as `autan prepare` writes it is at most the plan's "solver
-    # input". Every free text at its 4096-byte bound in control characters, which JSON
-    # escapes 6 times, on 256 walls and 64 cell zones whose names the monitors or a point
-    # vortex repeat.
+    # input". Long: every free text at its 4096-byte bound in control characters, which JSON
+    # escapes 6 times, on 256 walls and 64 cell zones whose names 8 monitors or a point vortex
+    # repeat. Short: 1024 walls of a few characters, which 1024 monitors repeat: each repeated
+    # name costs its list formatting more than its text, and the repeats outgrow the 1 KiB a
+    # zone's and a monitor's entry are counted.
+    walls_n, monitors_n = (256, 8) if names == "long" else (1024, 1024)
+
     def long(tag: str) -> str:
-        return "\x01" * (4096 - len(tag)) + tag
+        return "\x01" * (4096 - len(tag)) + tag if names == "long" else tag
 
     def rename(document: dict[str, Any]) -> None:
         zones = document["boundary_zones"]
         walls = [z for z in zones if z["type"] == "wall"]
         faces = sum(z["faces"] for z in walls)
         split = [
-            {"name": long(f"wall-{i}"), "type": "wall", "native_type": None, "faces": faces // 256}
-            for i in range(256)
+            {
+                "name": long(f"wall-{i}"),
+                "type": "wall",
+                "native_type": None,
+                "faces": faces // walls_n,
+            }
+            for i in range(walls_n)
         ]
-        split[0]["faces"] += faces % 256
+        split[0]["faces"] += faces % walls_n
         others = [z | {"name": long(f"{z['type']}-{z['name']}")} for z in zones if z not in walls]
         document["boundary_zones"] = split + others
         cells = document["counts"]["cells"]
@@ -448,7 +458,8 @@ def test_the_input_stays_within_the_size_its_plan_counts(
         case["monitors"] = []
     else:
         case["monitors"] = [
-            {**case["monitors"][0], "name": long(f"forces-{i}"), "surfaces": "*"} for i in range(8)
+            {**case["monitors"][0], "name": long(f"forces-{i}"), "surfaces": "*"}
+            for i in range(monitors_n)
         ]
     case["boundaries"] = [
         {"zones": "*wall-*", "condition": {"kind": "wall"}},

@@ -195,6 +195,33 @@ void read_mesh_info(const Json& info, SolverInput& in) {
                    .data_json = Json{{"expected", in.mesh_sha256}, {"found", sha}}.dump()});
   }
 
+  // mesh-info.md, Zone groups: each group a name and its zones, from the sidecar the input
+  // names (mesh.groups_sha256), or none without one.
+  const Json& groups = list(root, "groups");
+  for (std::size_t i = 0; i < groups.size(); ++i) {
+    const Object group(groups[i], indexed(root.at("groups"), i), {"name", "zones"});
+    (void)name(group);
+    const Json& members = list(group, "zones");
+    if (members.empty()) invalid(group.at("zones"), "expected at least one zone");
+    for (std::size_t k = 0; k < members.size(); ++k) {
+      if (!members[k].is_string() || members[k].get<std::string>().empty())
+        invalid(indexed(group.at("zones"), k), "expected a zone name");
+    }
+  }
+  std::optional<std::string> groups_sha;
+  if (!root.is_null("groups_source")) {
+    const Object groups_source(root.get("groups_source"), root.at("groups_source"),
+                               {"path", "sha256", "provenance"});
+    (void)groups_source.string("path");
+    groups_sha = sha256(groups_source, "sha256");
+    if (!groups_source.get("provenance").is_object())
+      invalid(groups_source.at("provenance"), "expected an object");
+  } else if (!groups.empty()) {
+    invalid(root.at("groups"), "has groups without groups_source");
+  }
+  if (groups_sha != in.mesh_groups_sha256)
+    invalid(root.at("groups_source"), "is not the zone-groups file mesh.groups_sha256 names");
+
   const Object counts(root.get("counts"), root.at("counts"),
                       {"cells", "faces", "nodes", "source_nodes", "face_nodes", "cells_by_type",
                        "stencil_entries", "periodic_ghosts"});

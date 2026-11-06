@@ -193,8 +193,7 @@ std::string mesh_hash(const fs::path& path) {
   return picosha2::get_hash_hex_string(hasher);
 }
 
-std::optional<ZoneGroups> read_zone_groups(const fs::path& mesh_path, const Mesh& mesh,
-                                           const std::string& sha256) {
+fs::path zone_groups_path(const fs::path& mesh_path) {
   // Next to the mesh file itself, symlinks followed (case-schema.md), so the
   // SDK and the runtime read the same sidecar; for an OpenFOAM case
   // directory, next to its polyMesh directory.
@@ -202,7 +201,13 @@ std::optional<ZoneGroups> read_zone_groups(const fs::path& mesh_path, const Mesh
   const fs::path given =
       fs::is_directory(mesh_path, ec) ? polymesh_directory(mesh_path) : mesh_path;
   const fs::path resolved = fs::canonical(given, ec);
-  const fs::path path = (ec ? given.lexically_normal() : resolved).string() + ".zones.json";
+  return (ec ? given.lexically_normal() : resolved).string() + ".zones.json";
+}
+
+std::optional<ZoneGroups> read_zone_groups(const fs::path& mesh_path, const Mesh& mesh,
+                                           const std::string& sha256) {
+  const fs::path path = zone_groups_path(mesh_path);
+  std::error_code ec;
   // Absent only when nothing is there: a link to nothing or an error is unreadable.
   const auto entry = fs::symlink_status(path, ec);
   if (ec && ec != std::errc::no_such_file_or_directory) {

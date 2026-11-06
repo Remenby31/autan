@@ -3354,12 +3354,23 @@ TEST_CASE("A run archives the zone groups its case was resolved with", "[runtime
                                  {"groups", {{"walls", {"ymin", "zmax"}}}}}
                                 .dump();
   const std::string groups_hash = autan::io::mesh_hash(sidecar);
+  // An input as the SDK writes it for a case planned with the sidecar `groups_sha256` names, or
+  // with none: its MeshInfo's groups agree with it.
   const auto on = [&](const Json& groups_sha256) {
-    return input([&](Json& d) {
-      d["mesh"]["path"] = mesh.string();
-      d["mesh"]["sha256"] = hash;
-      d["mesh"]["groups_sha256"] = groups_sha256;
+    Json d = input([&](Json& e) {
+      e["mesh"]["path"] = mesh.string();
+      e["mesh"]["sha256"] = hash;
     });
+    d["mesh"]["groups_sha256"] = groups_sha256;
+    if (groups_sha256.is_null()) {
+      d["mesh_info"]["groups"] = Json::array();
+      d["mesh_info"]["groups_source"] = nullptr;
+    } else {
+      d["mesh_info"]["groups"] = Json::parse(R"([{"name": "walls", "zones": ["ymin", "zmax"]}])");
+      d["mesh_info"]["groups_source"] = {
+          {"path", sidecar.string()}, {"sha256", groups_sha256}, {"provenance", Json::object()}};
+    }
+    return d;
   };
   const Outcome o = run(on(groups_hash), {.factor = 0.5});
   REQUIRE(o.status == ExitStatus::finished);
@@ -3378,6 +3389,18 @@ TEST_CASE("A run archives the zone groups its case was resolved with", "[runtime
 
   require_error(run(on(nullptr)), "E0137");               // a sidecar the input does not name
   require_error(run(on(std::string(64, 'a'))), "E0137");  // another sidecar
+  // One the input does not name is refused unread, whatever it holds: its plan counted no
+  // memory for reading it (plan.md, zone groups), and reading this one would be E0136.
+  std::ofstream(sidecar) << "{not json";
+  require_error(run(on(nullptr)), "E0137");
+  // A MeshInfo whose groups the runtime cannot take, or from another sidecar than the input
+  // names, is refused as the input's (solver-input.md, mesh_info).
+  Json bad = on(groups_hash);
+  bad["mesh_info"]["groups"] = 42;
+  require_error(run(bad), "E0705");
+  bad = on(groups_hash);
+  bad["mesh_info"]["groups_source"]["sha256"] = std::string(64, 'b');
+  require_error(run(bad), "E0705");
   fs::remove(sidecar);
   require_error(run(on(groups_hash)), "E0137");  // the named sidecar is gone
 }

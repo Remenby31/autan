@@ -43,6 +43,10 @@ struct ZoneGroups {
   std::vector<std::pair<std::string, std::vector<std::string>>> groups;
 };
 
+/// Where the zone-groups sidecar of the mesh at `mesh_path` is, whether it exists or not:
+/// `<mesh file>.zones.json`, for a polyMesh directory `<directory>.zones.json`, symlinks followed.
+std::filesystem::path zone_groups_path(const std::filesystem::path& mesh_path);
+
 /// The sidecar of the mesh at `mesh_path` (`<mesh file>.zones.json`, for a
 /// polyMesh directory `<directory>.zones.json`, symlinks followed), checked against `mesh` and
 /// its hash `sha256`; nullopt when there is none. Throws E0136 for a sidecar
