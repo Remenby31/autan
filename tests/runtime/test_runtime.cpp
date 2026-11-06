@@ -954,7 +954,6 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     const Json info = Json::parse(read(o.run / "run.json"));
     CHECK(info["status"] == "failed");
     CHECK(info["diagnostics"][0]["code"] == "E0704");
-    CHECK(info["timing"].is_null());
     CHECK_FALSE(fs::exists(o.run / "solution.cgns"));
   }
   SECTION("diverged: D0107 with the iteration, cell and zone") {

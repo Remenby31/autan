@@ -213,7 +213,6 @@ TEST_CASE("Invalid meshes are rejected with their documented code", "[mesh]") {
     auto in = two_cubes();
     in.face_nodes[5] = 12;
     require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)autan::assemble(in); });
-    // A cell, face zone or cell zone index one past the last.
     auto cell = two_cubes();
     cell.face_cell0[1] = 2;
     require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)autan::assemble(cell); });

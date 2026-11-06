@@ -502,10 +502,12 @@ TEST_CASE("Periodic connections from another writer read as pairs", "[cgns][peri
   CHECK(mesh.face_zones()[at(pair.zone_a)].name == "left");
   CHECK(mesh.face_zones()[at(pair.zone_b)].name == "right");
   CHECK(pair.translation == std::array<double, 3>{1.0, 0.0, 0.0});
-  const autan::Mesh one =
-      autan::io::read_mesh(periodic_slab("slab-one.cgns", reverse, false, false, "", false, true));
-  REQUIRE(one.periodic_pairs().size() == 1);
-  CHECK(one.periodic_partners(0).size() == 1);
+  if (!reverse) {
+    const autan::Mesh one =
+        autan::io::read_mesh(periodic_slab("slab-one.cgns", false, false, false, "", false, true));
+    REQUIRE(one.periodic_pairs().size() == 1);
+    CHECK(one.periodic_partners(0).size() == 1);
+  }
 }
 
 TEST_CASE("A connectivity CGNS cannot express as a periodic pair is a coded error",

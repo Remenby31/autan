@@ -689,13 +689,14 @@ TEST_CASE("Groups of cells stay in one part", "[partition][graph]") {
   std::iota(all.begin(), all.end(), index_t{0});
   refused({0, 0, static_cast<autan::offset_t>(all.size())}, all);
   refused({}, {0, 1});
-  // Two groups holding every cell are as many nodes as parts: one group a part.
   const std::vector<autan::offset_t> halves{0, static_cast<autan::offset_t>(all.size() / 2),
                                             static_cast<autan::offset_t>(all.size())};
   for (const auto method : methods) {
     const auto parts = autan::partition_cells(
         mesh, 2,
         {.method = method, .cell_weights = {}, .group_offsets = halves, .group_cells = all});
+    REQUIRE(parts.size() == all.size());
+    CHECK(std::ranges::all_of(parts, [](std::int32_t p) { return p == 0 || p == 1; }));
     for (std::size_t c = 0; c < parts.size(); ++c)
       CHECK((parts[c] == parts.front()) == (c < at(halves[1])));
   }
@@ -835,7 +836,6 @@ TEST_CASE("Greedy colouring visits nodes by increasing global id", "[partition][
     (void)autan::colour_greedy(std::vector<offset_t>{0, 3, 2}, std::vector<index_t>{1, 0},
                                std::vector<std::int64_t>{0, 1});
   });
-  // A neighbour equal to the node count is no node.
   require_error(autan::ErrorCode::partition_invalid_request, [&] {
     (void)autan::colour_greedy(triangle_offsets, std::vector<index_t>{1, 2, 0, 2, 0, 3},
                                std::vector<std::int64_t>{0, 1, 2});

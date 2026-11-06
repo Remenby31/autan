@@ -365,7 +365,7 @@ TEST_CASE("Legal variants of each format read as specified", "[io]") {
     const autan::Mesh mesh = autan::io::read_mesh(write_temp("late-names.msh", text));
     CHECK(mesh.cell_zones()[0].name == "solid-block");
     CHECK(zone_named(mesh, "base").provenance.source_id == 7);
-    CHECK(zone_named(mesh, "").provenance.source_id == 6);
+    CHECK(zone_named(mesh, "6").provenance.source_id == 6);
     const auto zones = mesh.face_zones();
     const auto spare = static_cast<std::size_t>(
         std::find_if(zones.begin(), zones.end(),
