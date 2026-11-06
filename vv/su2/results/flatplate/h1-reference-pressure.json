@@ -27,7 +27,21 @@
           "source_sha256": "41c409f49afca8affaafd4a0a49c6ba934eca9007da502fe0c20afbd091500b0",
           "amended": {
             "converged": true,
-            "iterations": 645
+            "iterations": 645,
+            "reference": {
+              "case_sha256": "e98dbcffc739c51e9ed3d6337b13555146e7446ec311c118c1649a2649033037",
+              "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+              "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+              "history_sha256": "262afc90082035784e9b2d83636100a2118e1e86ca47c87baff793222dc72852",
+              "iteration": 702,
+              "thresholds": {
+                "density": 7.416711570443466e-14,
+                "momentum-x": 5.446889814628706e-11,
+                "momentum-z": 1.2436790253145433e-11,
+                "energy": 2.051707740862462e-08,
+                "nu-tilde": 2.496898393911647e-15
+              }
+            }
           },
           "gap": {
             "CFL3D": {
@@ -63,7 +77,21 @@
           "source_sha256": "18c1d1c82cf91bdad89b2c2963129fc992fcd8b98fda4b3e79b7397ee52ba223",
           "amended": {
             "converged": true,
-            "iterations": 726
+            "iterations": 726,
+            "reference": {
+              "case_sha256": "f01815cfae4cc9b9e78dc18d9035e6c42f31316a669d8c8647fa3dedcc1bce82",
+              "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+              "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+              "history_sha256": "b604cb0fd193b8925049d8f74782f9b511473d6109b8dee94fd2e9f1df6f23e1",
+              "iteration": 807,
+              "thresholds": {
+                "density": 9.31692672717113e-14,
+                "momentum-x": 3.920345111170585e-11,
+                "momentum-z": 1.2840413513340886e-11,
+                "energy": 1.478186382129558e-08,
+                "nu-tilde": 1.7586405389917328e-15
+              }
+            }
           },
           "gap": {
             "CFL3D": {
@@ -99,7 +127,21 @@
           "source_sha256": "55ae965f2151e5644e3c7c1b6fecea7ce0a16cf4c34eae6997f27683a4e2ac44",
           "amended": {
             "converged": true,
-            "iterations": 885
+            "iterations": 885,
+            "reference": {
+              "case_sha256": "0cd835ff5c7e16f894c6838e977aed66884c48eeacec49bdb31c1225cdf46a35",
+              "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+              "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+              "history_sha256": "a9dd1df7ab78a68d9cdf7efdc7b32c16872cf1088859f6269c24b1544bd9930e",
+              "iteration": 948,
+              "thresholds": {
+                "density": 3.68637175624593e-14,
+                "momentum-x": 6.540769731239895e-11,
+                "momentum-z": 9.14391625713941e-12,
+                "energy": 1.0819689607007673e-08,
+                "nu-tilde": 1.2424565787790404e-15
+              }
+            }
           },
           "gap": {
             "CFL3D": {
@@ -135,7 +177,21 @@
           "source_sha256": "40be4c0a92b75892189263a5c3efb63fa112030912480427e1e0787c6cb97955",
           "amended": {
             "converged": true,
-            "iterations": 1592
+            "iterations": 1592,
+            "reference": {
+              "case_sha256": "77d534ac3f215303e387153a13f021b1a937cfa91b7bb5873f4841902b484bcd",
+              "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+              "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+              "history_sha256": "cfe9ba7938a8232d4c6ee42ec404f9518fb137952b56e894c52d0359b6cde7a8",
+              "iteration": 1693,
+              "thresholds": {
+                "density": 2.0349554690738073e-14,
+                "momentum-x": 4.5083589838034196e-11,
+                "momentum-z": 4.739083273107957e-12,
+                "energy": 5.933341467843732e-09,
+                "nu-tilde": 6.127833407941397e-16
+              }
+            }
           },
           "gap": {
             "CFL3D": {
@@ -171,7 +227,21 @@
           "source_sha256": "a2b2075ac51944ca2c845b9dfe12129337cee7abe15ec0cd77fc3576640ee889",
           "amended": {
             "converged": true,
-            "iterations": 3356
+            "iterations": 3356,
+            "reference": {
+              "case_sha256": "372d5ead15a5522c56984766a6fa31eec39ad0915fb7f60bd1db284c44d6420a",
+              "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+              "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+              "history_sha256": "8a2d4c93119cbdc7f07bf0b1a3611d03dcc6b6f59ddaf7e393aa4a300ae9ec01",
+              "iteration": 3457,
+              "thresholds": {
+                "density": 5.220535580049017e-15,
+                "momentum-x": 1.607698771857269e-11,
+                "momentum-z": 1.2628588730242067e-12,
+                "energy": 1.8388807267600511e-09,
+                "nu-tilde": 1.6563475513226838e-16
+              }
+            }
           },
           "gap": {
             "CFL3D": {

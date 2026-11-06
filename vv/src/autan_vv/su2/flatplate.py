@@ -44,6 +44,8 @@ ORDERS = 10.0
 # Primary: SU2's published configuration (SA-noft2 in v8.6.0); secondary: standard SA, TMR's model.
 MODELS: dict[str, str | None] = {"sa-noft2": None, "sa": "WITHFT2"}
 MODEL_REFERENCE = "sa-noft2"
+# SU2 v8.6.0, TestCases/rans/flatplate/turb_SA_flatplate.cfg.
+PUBLISHED_SHA256 = "8d5f6f7cca2606f87453858a190c0561e7aa36220c9913c18effa20da892e917"
 # What `configure` changes in SU2's published configuration; nothing that sets the model, the
 # scheme or the solver.
 ADOPTED_KEYS = ("MESH_FILENAME", "MESH_FORMAT", "ITER", "CONV_FIELD", "CONV_RESIDUAL_MINVAL",
@@ -405,19 +407,34 @@ def _run(run: Path, model: str, reference: Path | None) -> dict[str, Any]:
         "source_sha256": level["mesh"]["source_sha256"],
     }  # fmt: skip
     if reference is not None:
-        _, theirs = _history(reference, MODEL_REFERENCE)
+        meta, theirs = _history(reference, MODEL_REFERENCE)
+        published = meta["level"]
+        if (
+            published.get("published_sha256") != PUBLISHED_SHA256
+            or published["mesh"]["file_sha256"] != level["mesh"]["file_sha256"]
+            or set(theirs.residuals) != set(runs.residuals)
+        ):
+            msg = f"{reference}: not SU2's published configuration on the mesh of {run}"
+            raise VVError(msg, code="V0905")
         at = history.converged_at(theirs, ORDERS)
         if at is None:
             msg = f"{reference}: the reference run did not meet the criterion"
             raise VVError(msg, code="V0904")
+        thresholds = {eq: float(r[at]) for eq, r in theirs.residuals.items()}
         met = np.ones(len(runs.iterations), dtype=bool)
         for eq, r in runs.residuals.items():
-            met &= r <= theirs.residuals[eq][at]
+            met &= r <= thresholds[eq]
         hits = np.flatnonzero(met)
         row["amended"] = {
             "converged": bool(hits.size),
             "iterations": int(runs.iterations[hits[0]] - runs.iterations[0]) + 1
             if hits.size else None,
+            "reference": {
+                "case_sha256": published["case_sha256"], "su2": meta["provenance"]["su2"],
+                "image_id": meta["provenance"]["image_id"],
+                "history_sha256": _sha256((reference / "history.csv").read_bytes()),
+                "iteration": int(theirs.iterations[at]), "thresholds": thresholds,
+            },
         }  # fmt: skip
     return row
 
@@ -455,7 +472,8 @@ def results(
     continuum and gate are then given under both readings. V0904 if a run's model, configuration
     or mesh, as prepared, as run and as on disk, differ, if SU2 failed, if the SA residual is
     missing or a reference run did not converge; V0905 if a model does not have the five grids or
-    mixes SU2 builds.
+    mixes SU2 builds, or if a reference run is not SU2's published configuration (PUBLISHED_SHA256)
+    on the same mesh with the same equations.
     """
     refs = references(cache)
     report: dict[str, Any] = {"schema": REPORT_SCHEMA, "orders": ORDERS, "models": {}}

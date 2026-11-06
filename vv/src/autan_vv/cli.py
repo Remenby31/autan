@@ -295,7 +295,8 @@ def _cmd_su2_flatplate(args: argparse.Namespace) -> None:
                 value = f"{est['estimate']:.6e}" if "estimate" in est else est["error"]
                 _say(f"{model} amended continuum {key}: {value}")
             _say(f"{model} amended gate M3: {'PASS' if amended['pass'] else 'FAIL'}")
-    if not all(data["pass"] for data in report["models"].values()):
+    readings = [r for data in report["models"].values() for r in (data, data.get("amended", data))]
+    if not all(r["pass"] for r in readings):
         raise SystemExit(1)
 
 

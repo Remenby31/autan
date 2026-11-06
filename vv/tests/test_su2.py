@@ -816,7 +816,9 @@ CFL3D_CD = {816: 0.295438152e-2, 3264: 0.288437885e-2, 13056: 0.286620917e-2,
             52224: 0.286130951e-2, 208896: 0.285985288e-2}  # fmt: skip
 
 
-def _flat_plate_run(run: Path, model: str, cells: int, drop: float, first: float = -2.0) -> None:
+def _flat_plate_run(
+    run: Path, model: str, cells: int, drop: float, first: float = -2.0, nu: float = 0.0
+) -> None:
     from autan_vv.su2 import flatplate  # noqa: PLC0415
 
     run.mkdir(parents=True)
@@ -825,6 +827,7 @@ def _flat_plate_run(run: Path, model: str, cells: int, drop: float, first: float
     sha = {f: hashlib.sha256((run / f).read_bytes()).hexdigest() for f in ("m.su2", "case.cfg")}
     (run / "level.json").write_text(json.dumps({
         "model": model, "cells": cells, "case_sha256": sha["case.cfg"],
+        "published_sha256": flatplate.PUBLISHED_SHA256,
         "mesh": {"file_sha256": sha["m.su2"], "source_sha256": "s"},
     }))  # fmt: skip
     (run / "provenance.json").write_text(json.dumps({
@@ -838,7 +841,8 @@ def _flat_plate_run(run: Path, model: str, cells: int, drop: float, first: float
         rms = first - drop * i / 29
         row = {"Inner_Iter": i, "Time(sec)": 0.01, "CD": CFL3D_CD[cells]}
         lines.append(",".join(
-            str(row.get(n, rms if n.startswith("rms[") else 0.0)) for n in names
+            str(row.get(n, rms + nu * (n == "rms[nu]") if n.startswith("rms[") else 0.0))
+            for n in names
         ))  # fmt: skip
     (run / "history.csv").write_text("\n".join(lines) + "\n")
     rows = ['"PointID","x","y","Skin_Friction_Coefficient_x"']
@@ -869,7 +873,9 @@ def test_flat_plate_report_against_tmr(tmp_path: Path) -> None:
     assert model["pass"]
     # A variant whose first residuals are three orders lower stops 8.5 orders down, at or below the
     # levels the published runs had at the criterion: not converged by the protocol's rule, so no
-    # estimate, but converged by the amended one (#195), with CFL3D's continuum again.
+    # estimate, but converged by the amended one (#195), with CFL3D's continuum again. The
+    # published runs meet the criterion at row 27 (-2 - 11 * 27/29 <= -12), at -12.24; the variant
+    # reaches that at row 25 (-5 - 8.5 * 25/29), its 26th iteration.
     variant = tmp_path / "variant"
     for cells in CFL3D_CF:
         _flat_plate_run(variant / "sa-noft2" / f"n{cells}", "sa-noft2", cells, drop=8.5, first=-5.0)
@@ -878,9 +884,17 @@ def test_flat_plate_report_against_tmr(tmp_path: Path) -> None:
               "sa-noft2", "--reference", str(root), "--out", str(out)])  # fmt: skip
     model = json.loads(out.read_text())["models"]["sa-noft2"]
     assert model["continuum"]["cf"] == {"error": "not converged"}
-    assert all(lv["amended"]["converged"] for lv in model["levels"])
+    assert [lv["amended"]["iterations"] for lv in model["levels"]] == [26] * 5
     assert model["amended"]["continuum"]["cf"]["estimate"] == pytest.approx(2.70524e-3, abs=5e-9)
     assert model["amended"]["pass"]
+    # On the finest grid the SA residual alone stays above its threshold: not converged, no estimate.
+    shutil.rmtree(variant / "sa-noft2" / "n208896")
+    _flat_plate_run(
+        variant / "sa-noft2" / "n208896", "sa-noft2", 208896, drop=8.5, first=-5.0, nu=2.0
+    )
+    report = flatplate.results(variant, cache, ("sa-noft2",), reference=root)["models"]["sa-noft2"]
+    assert not report["levels"][-1]["amended"]["converged"]
+    assert report["amended"]["continuum"]["cf"] == {"error": "not converged"}
     # A finest run that did not converge gives no estimate, not one from coarser grids.
     shutil.rmtree(root / "sa" / "n208896")
     _flat_plate_run(root / "sa" / "n208896", "sa", 208896, drop=5.0)
