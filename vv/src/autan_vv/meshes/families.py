@@ -151,6 +151,31 @@ def _nodes(gmsh: ModuleType) -> tuple[IntArray, FloatArray]:
     return np.asarray(tags)[order].astype(np.int64), np.asarray(coords).reshape(-1, 3)[order]
 
 
+# The even permutations of a tetrahedron's four nodes: those that keep its orientation.
+_TET_EVEN = np.array(
+    [
+        (0, 1, 2, 3), (0, 2, 3, 1), (0, 3, 1, 2), (1, 0, 3, 2), (1, 2, 0, 3), (1, 3, 2, 0),
+        (2, 0, 1, 3), (2, 1, 3, 0), (2, 3, 0, 1), (3, 0, 2, 1), (3, 1, 0, 2), (3, 2, 1, 0),
+    ]
+)  # fmt: skip
+
+
+def canonical_tets(tets: IntArray) -> IntArray:
+    """The tetrahedra in an order of our own: each as the smallest of its even permutations (it
+    starts from its smallest node and keeps its orientation), the rows sorted.
+
+    Gmsh enumerates the same mesh in an order that differs between its builds (libc++ on macOS,
+    libstdc++ on Linux): without this, the same mesh would be written as other bytes (#495).
+    """
+    cand = tets[:, _TET_EVEN]
+    alive = np.ones(cand.shape[:2], dtype=bool)
+    for col in range(4):
+        value = np.where(alive, cand[:, :, col], np.iinfo(np.int64).max)
+        alive &= value == value.min(axis=1, keepdims=True)
+    rows = cand[np.arange(tets.shape[0]), alive.argmax(axis=1)]
+    return rows[np.lexsort(rows.T[::-1])]
+
+
 def _cells(gmsh: ModuleType, index: dict[int, int] | IntArray) -> dict[str, IntArray]:
     out: dict[str, IntArray] = {}
     types, _, node_tags = gmsh.model.mesh.getElements(3)
@@ -160,6 +185,8 @@ def _cells(gmsh: ModuleType, index: dict[int, int] | IntArray) -> dict[str, IntA
             msg = f"unexpected Gmsh element type {t}"
             raise VVError(msg, code="V0305")
         out[kind] = np.asarray(index)[np.asarray(nodes, dtype=np.int64)].reshape(-1, _NODES[kind])
+        if kind == "tet":
+            out[kind] = canonical_tets(out[kind])
     return out
 
 

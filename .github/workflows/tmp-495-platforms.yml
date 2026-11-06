@@ -43,8 +43,8 @@ jobs:
           print("GOLDEN hybrid-n6", hashlib.sha256(m.astype("<f8").tobytes()).hexdigest())
           if importlib.util.find_spec("gmsh"):
               d = pathlib.Path("tet-files"); d.mkdir(exist_ok=True)
-              for kind in ("tet", "hex", "hybrid", "poly"):
-                  path = d / f"{kind}.{'msh' if kind != 'poly' else 'msh'}"
+              for kind in ("tet", "hex", "prism", "hybrid", "poly", "agglomerated"):
+                  path = d / f"{kind}.msh"
                   F.generate_level(kind, 6, perturbation=0.3, seed=2026, path=path)
                   print(f"GOLDEN {kind}-file-n6", hashlib.sha256(path.read_bytes()).hexdigest())
           else:

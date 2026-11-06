@@ -1,4 +1,4 @@
-"""A perturbed mesh is the same bits on every CPU: its seed decides it, not the hardware (#495)."""
+"""A mesh is the same bits on every CPU: its seed decides it, not the hardware or Gmsh's build (#495)."""
 
 import hashlib
 
@@ -25,3 +25,30 @@ def test_a_perturbed_mesh_is_the_same_bits_on_every_cpu() -> None:
     boundary = families._box_boundary(points, cells)
     moved = families.perturb(points, cells, boundary, 0.3, seed=2026)
     assert hashlib.sha256(moved.astype("<f8").tobytes()).hexdigest() == HYBRID_N6_SHA256
+
+
+def test_canonical_tets_keep_each_tetrahedron_and_its_orientation_whatever_the_input_order() -> (
+    None
+):
+    # Gmsh enumerates the same tetrahedra in another order on another build: any order, and any
+    # orientation-keeping rotation of each, must give the same rows.
+    rng = np.random.default_rng(7)
+    points = rng.random((40, 3))
+    tets = np.array([rng.choice(40, 4, replace=False) for _ in range(200)])
+
+    def signed_volume(t: np.ndarray) -> np.ndarray:
+        a, b, c, d = (points[t[:, i]] for i in range(4))
+        return np.einsum("ij,ij->i", np.cross(b - a, c - a), d - a)
+
+    canonical = families.canonical_tets(tets)
+    by_nodes = {
+        tuple(sorted(t)): np.sign(v) for t, v in zip(tets, signed_volume(tets), strict=True)
+    }
+    for t, v in zip(canonical, signed_volume(canonical), strict=True):
+        assert by_nodes[tuple(sorted(t))] == np.sign(
+            v
+        )  # the same tetrahedron, the same orientation
+    assert len(canonical) == len(tets)
+    shuffled = tets[rng.permutation(len(tets))]
+    rotated = shuffled[:, [1, 2, 0, 3]]  # a 3-cycle: an even permutation
+    assert np.array_equal(families.canonical_tets(rotated), canonical)
