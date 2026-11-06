@@ -13,8 +13,17 @@ RUN test "$(dpkg --print-architecture)" = arm64 \
       https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-arm64-${RUNNER_VERSION}.tar.gz \
  && echo "${RUNNER_SHA256_ARM64}  runner.tgz" | sha256sum -c - \
  && tar -xzf runner.tgz && rm runner.tgz \
- && apt-get update && ./bin/installdependencies.sh && rm -rf /var/lib/apt/lists/* \
+ && apt-get update && ./bin/installdependencies.sh \
+ && apt-get install -y -q --no-install-recommends gdb && rm -rf /var/lib/apt/lists/* \
  && chown -R runner:runner /opt/actions-runner
+
+# gdb for the hang watchdog (bench/ci/ctest-watchdog.sh), and the library it preloads into the
+# tests it runs so that gdb may attach to them under the hosts' Yama ptrace_scope 1 (ptracer.c).
+COPY ptracer.c /tmp/ptracer.c
+RUN install -d /opt/autan-runner/lib \
+ && cc -shared -fPIC -O2 -o /opt/autan-runner/lib/libautan_ptracer.so /tmp/ptracer.c \
+ && chmod 0555 /opt/autan-runner/lib/libautan_ptracer.so && rm /tmp/ptracer.c
+ENV AUTAN_WATCHDOG_PTRACER=/opt/autan-runner/lib/libautan_ptracer.so
 
 COPY --chmod=0555 job-started.sh entrypoint.sh /opt/autan-runner/
 ARG REPOSITORY=Remenby31/autan
