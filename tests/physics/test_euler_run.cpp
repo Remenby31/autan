@@ -1504,19 +1504,21 @@ TEST_CASE("a continued Spalart-Allmaras run repeats the uninterrupted one bit fo
     REQUIRE(r.status == ExitStatus::finished);
     return r.run;
   };
-  constexpr int budget = 230;
+  // A few steps past the switch to second order (step 35 in fp64, 155 in fp32+acc64); the
+  // checks below fail if it moves past the budget.
+  const int budget = std::string(precision) == "fp64" ? 40 : 160;
   const auto whole = finished(doc(budget));
   const auto steps = static_cast<int>(history(whole).size());
+  REQUIRE(field(whole, "SolverSecondOrder", "RestartState").front() == 1.0);
   auto second_order = [&](int n) {
     return field(finished(doc(n)), "SolverSecondOrder", "RestartState").front() == 1.0;
   };
-  REQUIRE(second_order(steps));
-  int lo = 0, s = steps;  // after s steps the run is at second order, after lo it is not
-  while (s - lo > 1) {
-    const int mid = (lo + s) / 2;
-    (second_order(mid) ? s : lo) = mid;
-  }
+  // The start counts its first-order steps, the one that switches excluded: the switch comes
+  // after s steps, which the runs of s - 1 and s steps confirm.
+  const int s = static_cast<int>(field(whole, "SolverFirstOrderSteps", "RestartState").front()) + 1;
   INFO("switch at step " << s);
+  REQUIRE(!second_order(s - 1));
+  REQUIRE(second_order(s));
   REQUIRE(s >= 2);
   REQUIRE(steps >= s + 2);
   const auto all = read(whole / "history.jsonl");
