@@ -157,6 +157,7 @@ class Reader {
     char name[33];
     int cell_dim = 0, phys_dim = 0;
     ok(cg_base_read(fn_, 1, name, &cell_dim, &phys_dim), "read base");
+    base_name_ = name;
     if (cell_dim != 3) unsupported(path_, "a base of cell dimension " + std::to_string(cell_dim));
     int zones = 0;
     ok(cg_nzones(fn_, 1, &zones), "count zones");
@@ -166,6 +167,7 @@ class Reader {
     if (zone_type != CGNS_ENUMV(Unstructured)) unsupported(path_, "a structured zone");
     cgsize_t size[3] = {0, 0, 0};
     ok(cg_zone_read(fn_, 1, 1, name, size), "read zone");
+    zone_name_ = name;
     n_nodes_ = size[0];
     n_cells_ = size[1];
 
@@ -257,8 +259,8 @@ class Reader {
     ok(cg_nsections(fn_, 1, 1, &n), "count sections");
     const CgioTree tree(fn_);
     std::map<std::string, double> section_nodes;
-    if (const auto base = tree.child(tree.root(), "CGNSBase_t")) {
-      if (const auto zone = tree.child(*base, "Zone_t")) {
+    if (const auto base = tree.child(tree.root(), "CGNSBase_t", base_name_)) {
+      if (const auto zone = tree.child(*base, "Zone_t", zone_name_)) {
         for (const double id : tree.children(*zone)) {
           if (tree.label(id) == "Elements_t") section_nodes.emplace(tree.name(id), id);
         }
@@ -497,8 +499,8 @@ class Reader {
       return any;
     };
     const CgioTree tree(fn_);
-    const auto base = tree.child(tree.root(), "CGNSBase_t");
-    const auto zone = base ? tree.child(*base, "Zone_t") : std::nullopt;
+    const auto base = tree.child(tree.root(), "CGNSBase_t", base_name_);
+    const auto zone = base ? tree.child(*base, "Zone_t", zone_name_) : std::nullopt;
     if (!zone) return;
     // The point sets' containers, walked twice: their lists' entries counted, then read. `visit`
     // gets each IndexArray_t and IndexRange_t under them, descriptors aside.
@@ -591,8 +593,8 @@ class Reader {
   template <typename Visit>
   void each_listed(const char* container, const char* owner, Visit&& visit) {
     const CgioTree tree(fn_);
-    const auto base = tree.child(tree.root(), "CGNSBase_t");
-    auto parent = base ? tree.child(*base, "Zone_t") : std::nullopt;
+    const auto base = tree.child(tree.root(), "CGNSBase_t", base_name_);
+    auto parent = base ? tree.child(*base, "Zone_t", zone_name_) : std::nullopt;
     if (parent && *container != '\0') parent = tree.child(*parent, container);
     const auto node =
         parent ? tree.child(*parent, *container != '\0' ? "BC_t" : "ZoneSubRegion_t", owner)
@@ -775,7 +777,7 @@ class Reader {
   // sized from its node first; the others are never read.
   void restore_zone_names() {
     const CgioTree tree(fn_);
-    const auto base = tree.child(tree.root(), "CGNSBase_t");
+    const auto base = tree.child(tree.root(), "CGNSBase_t", base_name_);
     const auto descriptor = base ? tree.child(*base, "Descriptor_t", "ZoneNames") : std::nullopt;
     if (descriptor) {
       // Each entry: a node name of at most 32 bytes and a zone name of at most 4096, both escaped
@@ -945,7 +947,7 @@ class Reader {
       // it must round to the R4 one.
       // Only that descriptor is read, sized from its node first.
       const CgioTree tree(fn_);
-      std::optional<double> node = tree.child(tree.root(), "CGNSBase_t");
+      std::optional<double> node = tree.child(tree.root(), "CGNSBase_t", base_name_);
       for (const auto& [label, child] : {std::pair<const char*, std::string>{"Zone_t", ""},
                                          {"ZoneGridConnectivity_t", ""},
                                          {"GridConnectivity_t", name},
@@ -1206,6 +1208,7 @@ class Reader {
   }
 
   std::string path_;
+  std::string base_name_, zone_name_;  // read(): looked up by name, siblings unread
   CgnsFile file_;
   int fn_ = 0;
   cgsize_t n_nodes_ = 0;

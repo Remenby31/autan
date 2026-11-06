@@ -31,22 +31,22 @@ Checks (`vv/tests/test_reference_fv.py`): a linear solution is reproduced to a f
 
 ### Measured orders
 
-`autan-vv reference <kind> --levels … [--perturbation 0.3] --seed 2026`, FP64, macOS arm64, Gmsh 4.15.2. Fitted order over four levels / order on the finest pair.
+`autan-vv reference <kind> --levels … [--perturbation 0.3] --seed 2026`, FP64, macOS arm64, Gmsh 4.15.2. Fitted order over four levels / order on the finest pair. The perturbed rows were measured again after #495 made the perturbation the same bits on every CPU (`macos-15`, 2026-11-06): same law, other meshes.
 
 | Kind | Perturbation | Levels n | Finest cells | L2 | L∞ |
 |---|---|---|---|---|---|
 | tet | 0 | 8, 16, 24, 32 | 149,401 | 2.14 / 2.03 | 1.85 / 1.23 |
-| tet | 0.3 | 8, 16, 24, 32 | 149,401 | 2.07 / 1.95 | 1.70 / 0.74 |
+| tet | 0.3 | 8, 16, 24, 32 | 149,401 | 2.11 / 1.99 | 2.00 / 1.85 |
 | hex | 0 | 8, 16, 32, 48 | 110,592 | 2.13 / 2.09 | 2.18 / 2.11 |
-| hex | 0.3 | 8, 16, 32, 48 | 110,592 | 2.12 / 2.02 | 1.92 / 1.78 |
+| hex | 0.3 | 8, 16, 32, 48 | 110,592 | 2.15 / 2.09 | 1.98 / 1.97 |
 | prism | 0 | 8, 16, 24, 32 | 76,672 | 2.31 / 2.35 | 2.02 / 0.56 |
-| prism | 0.3 | 8, 16, 24, 32 | 76,672 | 2.23 / 2.22 | 1.90 / 1.54 |
+| prism | 0.3 | 8, 16, 24, 32 | 76,672 | 2.26 / 2.34 | 1.93 / 1.45 |
 | hybrid | 0 | 6, 12, 24, 36 | 146,448 | 2.07 / 2.06 | 1.97 / 1.98 |
-| hybrid | 0.3 | 6, 12, 24, 36 | 146,448 | 2.04 / 2.11 | 1.88 / 1.85 |
+| hybrid | 0.3 | 6, 12, 24, 36 | 146,448 | 2.09 / 2.03 | 1.82 / 1.90 |
 | poly | 0 | 8, 16, 24, 32 | 27,543 | 2.40 / 2.04 | 2.42 / 2.01 |
-| poly | 0.3 | 8, 16, 24, 32 | 27,543 | 2.41 / 2.05 | 2.41 / 2.36 |
+| poly | 0.3 | 8, 16, 24, 32 | 27,543 | 2.36 / 2.03 | 2.31 / 1.85 |
 | agglomerated | 0 | 8, 16, 24, 32 | 13,985 | 2.56 / 2.33 | 1.92 / 2.13 |
-| agglomerated | 0.3 | 8, 16, 24, 32 | 14,055 | 2.48 / 2.55 | 1.73 / 1.89 |
+| agglomerated | 0.3 | 8, 16, 24, 32 | 13,951 | 2.54 / 2.38 | 1.83 / 2.25 |
 
 L∞ fluctuates on unstructured families: the meshes are not nested and the worst cell changes from level to level. Use L1 or L2 as the acceptance norm and report L∞.
 

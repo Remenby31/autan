@@ -24,6 +24,10 @@ struct PackedGeometry {
   /// 9 x n_faces: sum over the face's fan triangles t of (c_t - x_f) (x) S_t. Zero on a planar
   /// face; with it the flux of a linear field u through any face is u(x_f) S_f + M_f^T grad(u).
   std::vector<double> face_moment;
+  /// Every face_moment is an exact zero (the face proven planar): the warped-face terms
+  /// vanish, and a solver may run loops that do not read face_moment (kernels/euler.py,
+  /// `*_planar`).
+  bool all_planar = true;
   std::vector<double> cell_centroid;  ///< 3 x n_cells
   std::vector<double> cell_volume;    ///< n_cells
   /// 3 x n_incidences: weighted least-squares gradient weights w_k = M^-1 d_k / |d_k|^2 with
