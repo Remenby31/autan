@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <limits>
 #include <span>
 #include <string>
 #include <utility>
@@ -52,6 +53,47 @@ class RoundOffExemption {
   std::vector<std::string> names_, woken_;
   std::vector<bool> exempt_;
   double floor_ = 0.0;
+};
+
+/// case-schema.md#time: the reference of a sequence is its first value, then each value below
+/// plateau_ratio times the reference before it; the sequence is on a plateau once plateau_steps
+/// values have passed without a new reference. Converging fp64 NACA 0012 runs (#473) go at most
+/// 49 steps without one, so 100 does not take a converging run for a stationary one.
+inline constexpr std::size_t plateau_steps = 100;
+inline constexpr double plateau_ratio = 0.9;
+
+/// The plateau rule over one sequence (a residual, or a physics' relative drop), fed one value
+/// per step.
+class Plateau {
+ public:
+  /// Adds this step's value; true once the sequence is on a plateau.
+  bool add(double value) {
+    ++count_;
+    if (value < plateau_ratio * reference_) {
+      reference_ = value;
+      since_ = count_;
+    }
+    return count_ - since_ >= plateau_steps;
+  }
+
+  /// Forgets every value: the next add() starts a new sequence.
+  void reset() { *this = Plateau{}; }
+
+  /// What add() has accumulated, so that a continued run goes on as the uninterrupted one.
+  struct State {
+    double reference = std::numeric_limits<double>::infinity();
+    std::size_t count = 0, since = 0;
+  };
+  [[nodiscard]] State state() const { return {reference_, count_, since_}; }
+  void restore(const State& s) {
+    reference_ = s.reference;
+    count_ = s.count;
+    since_ = s.since;
+  }
+
+ private:
+  double reference_ = std::numeric_limits<double>::infinity();
+  std::size_t count_ = 0, since_ = 0;
 };
 
 }  // namespace autan::runtime
