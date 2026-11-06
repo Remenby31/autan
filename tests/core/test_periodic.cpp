@@ -173,6 +173,23 @@ TEST_CASE("Periodic nodes matched within the tolerance become exact translates",
   check_partners(moved);
   CHECK_THAT(snap.max_volume_change, Catch::Matchers::WithinRel(change, 1e-12));
   CHECK(exact.periodic_snap().max_volume_change == 0.0);
+
+  // The x pair declared the other way round, xmin moved outward: zone b is xmin, zone 0, whose
+  // faces come first among the boundary faces, so the first boundary face holds moved nodes.
+  const auto xmin_outward = [&](autan::CellwiseMesh& m) {
+    m.face_zones[0].kind = autan::BcKind::periodic;
+    m.face_zones[1].kind = autan::BcKind::periodic;
+    m.periodic.push_back({.zone_a = 1, .zone_b = 0, .translation = {-1.0, 0.0, 0.0}});
+    for (double& coordinate : m.x) {
+      if (coordinate == 0.0) coordinate -= delta;
+    }
+  };
+  const autan::Mesh first = autan::assemble(periodic_box(3, BoxFill::hexa, {}, xmin_outward));
+  CHECK(first.periodic_snap().nodes == 16);
+  CHECK_THAT(first.periodic_snap().max_distance, WithinAbs(delta, 1e-15));
+  REQUIRE(first.face_zone()[at(first.n_interior_faces())] == 0);
+  for (const index_t p : first.face_nodes(first.n_interior_faces())) CHECK(first.x()[at(p)] == 0.0);
+  check_partners(first);
 }
 
 TEST_CASE("Moving periodic nodes that would make a valid cell degenerate is a coded error",

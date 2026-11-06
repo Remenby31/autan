@@ -232,7 +232,11 @@ class GmshReader {
       if (name.size() < 2 || name.front() != '"' || name.back() != '"')
         c.fail("unquoted physical name");
       check_text(c.path(), "physical name", name.size() - 2);
-      visit(dim, tag, name.substr(1, name.size() - 2));
+      // An empty name is no name: the group is named by its tag (mesh-info.md, names are
+      // non-empty).
+      const std::string tag_name = std::to_string(tag);
+      visit(dim, tag,
+            name.size() > 2 ? name.substr(1, name.size() - 2) : std::string_view(tag_name));
     }
   }
 
