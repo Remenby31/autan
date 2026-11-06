@@ -364,7 +364,7 @@ def test_runner_stops_su2_where_the_criterion_is_met(tmp_path: Path) -> None:
     assert program == _watcher("campaign.sh")
     (tmp_path / "watch.awk").write_text(program)
 
-    def stops(residuals: dict[str, np.ndarray]) -> bool:
+    def stops(residuals: dict[str, np.ndarray], skip_zero: int = 0) -> bool:
         _history_csv(tmp_path / "history.csv", residuals)
         cmd = [
             "awk",
@@ -373,6 +373,8 @@ def test_runner_stops_su2_where_the_criterion_is_met(tmp_path: Path) -> None:
             "orders=10",
             "-v",
             "stall=2000",
+            "-v",
+            f"skipzero={skip_zero}",
             "-f",
             "watch.awk",
             "history.csv",
@@ -395,6 +397,15 @@ def test_runner_stops_su2_where_the_criterion_is_met(tmp_path: Path) -> None:
     # A residual that stops falling is a stall.
     flat = np.maximum(1e-2 * 0.99 ** np.arange(4000.0), 1e-6)
     assert stops({"d": flat, "u": flat, "w": flat, "e": flat})
+    # An exempt equation that wakes to 1e-11 and stays there: by default its drop never improves
+    # and stops the run; with skipzero=1 the stall is judged on the others, still falling, and the
+    # woken equation still has to meet the criterion, so a run whose other equations have met it
+    # goes on.
+    woken = np.full(4000, 1e-11)
+    woken[0] = 1e-15
+    assert stops({"d": slow, "u": slow, "w": woken, "e": slow})
+    assert not stops({"d": slow, "u": slow, "w": woken, "e": slow}, skip_zero=1)
+    assert not stops({**met, "w": woken[:600]}, skip_zero=1)
 
 
 def _geometric_like(residuals: dict[str, np.ndarray]) -> history.History:
