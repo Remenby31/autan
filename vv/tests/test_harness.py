@@ -648,3 +648,45 @@ def test_fp32_agreement_compares_the_manufactured_solution_by_its_sha256(
         with pytest.raises(VVError) as refused:
             agreement(double, single)
         assert refused.value.code == "V0727"
+
+
+@pytest.mark.parametrize("same_state", [True, False])
+def test_fp32_agreement_compares_the_initial_state_by_its_sha256(
+    tmp_path: Path, same_state: bool
+) -> None:
+    # Each study writes its own copy of every level's initial state: the same state at another path
+    # pairs, a state at another time has another sha256 and is refused.
+    from autan_vv.agreement import agreement  # noqa: PLC0415
+
+    meshes = _family(tmp_path, "vortex-hex", (8, 16))
+
+    def runs(out: Path, precision: str, start: float) -> list[Path]:
+        levels = iter(meshes)
+
+        def own_state(case: autan.Case) -> None:
+            mesh, path, _ = next(levels)
+            state = out / "states" / f"{path.stem}.initial.json"
+            state.parent.mkdir(parents=True, exist_ok=True)
+            vortex = get_oracle("isentropic-vortex")
+            digest = write_initial_state(vortex, mesh, path, state, start)
+            case.initial_state = autan.StateFile(path=str(state), sha256=digest)
+
+        return _runs(
+            out,
+            meshes,
+            "isentropic-vortex",
+            2.0,
+            amplitude=0.005,
+            time=40.0,
+            precision=precision,
+            edit=own_state,
+        )
+
+    double = runs(tmp_path / "fp64", "fp64", 0.0)
+    single = runs(tmp_path / "fp32", "fp32+acc64", 0.0 if same_state else 1.0)
+    if same_state:
+        assert agreement(double, single)["pass"]
+    else:
+        with pytest.raises(VVError) as refused:
+            agreement(double, single)
+        assert refused.value.code == "V0727"
