@@ -296,7 +296,7 @@ Fix: Give each group one entry.
 
 **Invalid partition request** (error)
 
-A part count, rank, part index or cell weight is out of range, or an array has the wrong size.
+A part count, rank, part index or cell weight is out of range, a group of cells weighs more than 2^31 - 1 in total, or an array has the wrong size.
 
 Fix: Ask for 1 to N parts (N = number of cells), one rank per part, and a weight of at least 1 per cell.
 
