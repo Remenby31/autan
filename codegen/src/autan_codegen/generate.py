@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import re
+from pathlib import Path
 
 from autan_codegen import model
 from autan_codegen.derive import derive
@@ -13,9 +14,6 @@ from autan_codegen.emit_metal import POLICIES as METAL_POLICIES
 from autan_codegen.emit_metal import emit_metal_header
 from autan_codegen.errors import Code, CodegenError
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
 BACKENDS = ("cpu", "gpu", "metal")
 
 
@@ -25,12 +23,14 @@ def generate(
     backends: list[str],
     line_directives: bool = True,
     policies: list[str] | None = None,
+    source_root: Path | None = None,
 ) -> list[Path]:
     """Write `<module>.hpp` and the files of each backend into `out`; return the paths written.
 
     For the GPU backend, `<module>_gpu.cu` instantiates every loop for `policies` (default: all);
     the Metal backend instantiates the policies Metal has among them, and refuses an explicit
-    `fp64`, which Metal cannot run.
+    `fp64`, which Metal cannot run. With `source_root`, `#line` directives name the DSL sources
+    under it relative to it, so that two checkouts generate the same text.
     """
     for b in backends:
         if b not in BACKENDS:
@@ -57,6 +57,8 @@ def generate(
         files[f"{m.name}_metal.hpp"] = emit_metal_header(
             m, [p for p in policies if p in METAL_POLICIES], line_directives
         )
+    if source_root is not None:
+        files = {name: relative_lines(text, source_root) for name, text in files.items()}
     out.mkdir(parents=True, exist_ok=True)
     written = []
     for name, text in files.items():
@@ -66,3 +68,19 @@ def generate(
             p.write_text(text)
         written.append(p)
     return written
+
+
+LINE = re.compile(r'^#line (\d+) "([^"]+)"$', re.MULTILINE)
+
+
+def relative_lines(text: str, root: Path) -> str:
+    """`#line N "<path>"` with <path> relative to `root` when it lies under it."""
+    base = root.resolve()
+
+    def rewrite(m: re.Match[str]) -> str:
+        path = Path(m.group(2))
+        if path.is_absolute() and path.is_relative_to(base):
+            return f'#line {m.group(1)} "{path.relative_to(base).as_posix()}"'
+        return m.group(0)
+
+    return LINE.sub(rewrite, text)

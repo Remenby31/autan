@@ -189,3 +189,26 @@ def test_generated_sources_do_not_depend_on_string_hashing(tmp_path: Path) -> No
         generated.append({f.name: f.read_bytes() for f in sorted(out.iterdir())})
     assert generated[0]
     assert all(g == generated[0] for g in generated[1:])
+
+
+def test_two_checkouts_generate_the_same_text_relative_to_their_source_root(
+    tmp_path: Path,
+) -> None:
+    # #line directives name the DSL source relative to --source-root, not by an absolute path.
+    generated = []
+    for checkout in ("one", "a/longer/second"):
+        root = tmp_path / checkout
+        src = root / "kernels" / "branches.py"
+        src.parent.mkdir(parents=True)
+        src.write_text(BRANCHES)
+        out = root / "generated"
+        subprocess.run(
+            [sys.executable, "-m", "autan_codegen", str(src), "--out", str(out),
+             "--backends", "cpu,gpu,metal", "--source-root", str(root)],
+            check=True,
+        )  # fmt: skip
+        generated.append({f.name: f.read_text() for f in sorted(out.iterdir())})
+    assert generated[0] == generated[1]
+    common = generated[0]["branches.hpp"]
+    assert '"kernels/branches.py"' in common
+    assert str(tmp_path) not in "".join(generated[0].values())
