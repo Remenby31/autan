@@ -130,6 +130,23 @@ TEST_CASE("Wall distance sees the nearest wall across a periodic boundary", "[wa
     }
     CHECK_THAT(d[c], WithinAbs(expected, 1e-14));
   }
+  // Periodic in x, y and z by unit translations, three independent directions, wall xmin: its
+  // copies cover the planes x = k, so d = min(x, 1 - x).
+  autan::CellwiseMesh cube = autan::test::box(2, autan::test::BoxFill::hexa);
+  for (const int k : {0, 1, 2}) {
+    for (const int side : {2 * k, 2 * k + 1})
+      cube.face_zones[at(side)].kind = autan::BcKind::periodic;
+    Vec t{};
+    t[at(k)] = 1.0;
+    cube.periodic.push_back({.zone_a = 2 * k, .zone_b = 2 * k + 1, .translation = t});
+  }
+  const autan::Mesh torus = autan::assemble(autan::to_face_based(std::move(cube)));
+  const autan::Geometry gt = autan::compute_geometry(torus);
+  const auto dt = autan::wall_distance(torus, gt, std::array<index_t, 1>{zone(torus, "xmin")});
+  for (std::size_t c = 0; c < dt.size(); ++c) {
+    CHECK_THAT(dt[c],
+               WithinAbs(std::min(gt.cell_centroid_x[c], 1.0 - gt.cell_centroid_x[c]), 1e-14));
+  }
 }
 
 TEST_CASE("The nearest wall point may be a vertex, an edge or a face", "[wall]") {
@@ -143,6 +160,16 @@ TEST_CASE("The nearest wall point may be a vertex, an edge or a face", "[wall]")
   CHECK(std::isnan(surface.distance({std::nan(""), 0.0, 0.0})));
   CHECK(autan::WallSurface(mesh, std::array<index_t, 0>{}).distance({0.5, 0.5, 0.5}) ==
         std::numeric_limits<double>::infinity());
+  // A wall face collapsed to one point is at distance 0 from it.
+  autan::CellwiseMesh collapsed = autan::test::box(1, autan::test::BoxFill::hexa);
+  for (std::size_t i = 0; i < collapsed.y.size(); ++i) {
+    if (collapsed.y[i] != 0.0) continue;
+    collapsed.x[i] = 0.5;
+    collapsed.z[i] = 0.5;
+  }
+  const autan::Mesh point = autan::assemble(autan::to_face_based(std::move(collapsed)));
+  CHECK(autan::WallSurface(point, std::array<index_t, 1>{zone(point, "ymin")})
+            .distance({0.5, 0.0, 0.5}) == 0.0);
   for (const index_t bad : {index_t{-1}, static_cast<index_t>(mesh.face_zones().size())}) {
     try {
       (void)autan::WallSurface(mesh, std::array<index_t, 1>{bad});
@@ -242,33 +269,52 @@ TEST_CASE("Wall faces with hanging nodes have degenerate fan triangles", "[wall]
 }
 
 TEST_CASE("A periodic wall is found however far the domain shears", "[wall][periodic]") {
-  // The unit box sheared by x -> x + 10 y, periodic in x by (1, 0, 0), wall
-  // ymin: the nearest wall point lies straight below, up to 10 periods away.
-  autan::CellwiseMesh cells = autan::test::box(3, autan::test::BoxFill::hexa);
-  cells.face_zones[0].kind = autan::BcKind::periodic;
-  cells.face_zones[1].kind = autan::BcKind::periodic;
-  cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
-  const autan::Mesh mesh =
-      mapped(std::move(cells), [](const Vec& q) { return Vec{q[0] + 10 * q[1], q[1], q[2]}; });
-  const autan::Geometry g = autan::compute_geometry(mesh);
-  const auto d = autan::wall_distance(mesh, g, std::array<index_t, 1>{zone(mesh, "ymin")});
-  for (std::size_t i = 0; i < d.size(); ++i)
-    CHECK_THAT(d[i], WithinAbs(g.cell_centroid_y[i], 1e-14));
+  // The unit box sheared by x -> x + s y, periodic in x by (1, 0, 0), wall
+  // ymin: the nearest wall point lies straight below, up to s periods away.
+  // At s = 99998 the box is 99999 long, a reach of exactly 1e5 periods; at
+  // 99999 the reach is 1e5 + 1, over the limit.
+  const auto sheared = [](double s) {
+    autan::CellwiseMesh cells = autan::test::box(3, autan::test::BoxFill::hexa);
+    cells.face_zones[0].kind = autan::BcKind::periodic;
+    cells.face_zones[1].kind = autan::BcKind::periodic;
+    cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
+    return mapped(std::move(cells), [=](const Vec& q) { return Vec{q[0] + s * q[1], q[1], q[2]}; });
+  };
+  for (const double s : {10.0, 99998.0}) {
+    CAPTURE(s);
+    const autan::Mesh mesh = sheared(s);
+    const autan::Geometry g = autan::compute_geometry(mesh);
+    const auto d = autan::wall_distance(mesh, g, std::array<index_t, 1>{zone(mesh, "ymin")});
+    for (std::size_t i = 0; i < d.size(); ++i)
+      CHECK_THAT(d[i], WithinAbs(g.cell_centroid_y[i], 1e-14));
+  }
+  const autan::Mesh far = sheared(99999.0);
+  try {
+    (void)autan::WallSurface(far, std::array<index_t, 1>{zone(far, "ymin")});
+    FAIL("expected E0118");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == autan::ErrorCode::mesh_periodic_invalid);
+  }
 }
 
 TEST_CASE("A periodic wall is found along oblique periodic directions", "[wall][periodic]") {
-  // One hexahedron mapped by (x + y, 0.01 y + z, z): periodic by (1, 0, 0)
-  // and (1, 0.01, 0), whose copies of the zmin wall tile the plane z = 0.
-  // Reaching it from the centroid takes about 50 of each period.
-  autan::CellwiseMesh cells = autan::test::box(1, autan::test::BoxFill::hexa);
-  for (const int z : {0, 1, 2, 3}) cells.face_zones[at(z)].kind = autan::BcKind::periodic;
-  cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
-  cells.periodic.push_back({.zone_a = 2, .zone_b = 3, .translation = {1.0, 0.01, 0.0}});
-  const autan::Mesh mesh = mapped(
-      std::move(cells), [](const Vec& q) { return Vec{q[0] + q[1], 0.01 * q[1] + q[2], q[2]}; });
-  const autan::Geometry g = autan::compute_geometry(mesh);
-  const auto d = autan::wall_distance(mesh, g, std::array<index_t, 1>{zone(mesh, "zmin")});
-  CHECK_THAT(d[0], WithinAbs(g.cell_centroid_z[0], 1e-14));
+  // One hexahedron mapped by (x + y, a y + z, z): periodic by (1, 0, 0)
+  // and (1, a, 0), whose copies of the zmin wall tile the plane z = 0.
+  // Reaching it from the centroid takes about 1 / (2 a) of each period. At
+  // a = 0.003 the copies reach 338 and 336 periods: 677 x 673 copies, under
+  // the limit of 10^6.
+  for (const double a : {0.01, 0.003}) {
+    CAPTURE(a);
+    autan::CellwiseMesh cells = autan::test::box(1, autan::test::BoxFill::hexa);
+    for (const int z : {0, 1, 2, 3}) cells.face_zones[at(z)].kind = autan::BcKind::periodic;
+    cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
+    cells.periodic.push_back({.zone_a = 2, .zone_b = 3, .translation = {1.0, a, 0.0}});
+    const autan::Mesh mesh = mapped(
+        std::move(cells), [=](const Vec& q) { return Vec{q[0] + q[1], a * q[1] + q[2], q[2]}; });
+    const autan::Geometry g = autan::compute_geometry(mesh);
+    const auto d = autan::wall_distance(mesh, g, std::array<index_t, 1>{zone(mesh, "zmin")});
+    CHECK_THAT(d[0], WithinAbs(g.cell_centroid_z[0], 1e-14));
+  }
 }
 
 TEST_CASE("Wall inputs the surface cannot use are coded errors", "[wall]") {
