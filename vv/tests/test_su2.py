@@ -514,9 +514,9 @@ def test_compare_autan_with_an_su2_study(tmp_path: Path) -> None:
         _write_run(run, cl, cd, converged=True)
     (tmp_path / "su2.json").write_text(json.dumps(su2.study(su2_runs)))
 
-    def autan_run(case: autan.Case, level: int) -> Path:
+    def autan_run(case: autan.Case, level: int, scale: float = 1.0) -> Path:
         path = tmp_path / "family" / family.levels[level].file
-        info = mesh_info(meshes[level], path, "gmsh")
+        info = mesh_info(meshes[level], path, "gmsh", scale)
         return case.run(info, backend=autan.FakeBackend(), runs=tmp_path / "autan").path
 
     def mesh(level: int) -> str:
@@ -587,7 +587,7 @@ def test_compare_autan_with_an_su2_study(tmp_path: Path) -> None:
     millimetres.monitor(
         autan.forces("airfoil", ref_area=1.0 * m * m, moment_center=(0.25 * m, 0 * m, 0 * m))
     )
-    scaled = autan_run(millimetres, 0)
+    scaled = autan_run(millimetres, 0, 1e-3)
     odd_runs = (autan_run(plain, 0), autan_run(cases.case("m050-a125", mesh(0)), 0), loose, scaled)
     for odd in odd_runs:
         with pytest.raises(VVError) as err:
