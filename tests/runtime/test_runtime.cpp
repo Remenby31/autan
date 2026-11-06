@@ -338,13 +338,13 @@ struct Spawned {
 };
 
 Spawned spawn_until(const Json& doc, const std::vector<std::string>& env,
-                    const std::function<bool(const fs::path&)>& ready, int poll_us = 2000) {
+                    const std::function<bool(const fs::path&)>& ready, int poll_us = 2000,
+                    const std::string& executable = AUTAN_RUN_RELAXATION) {
   const fs::path dir = fresh_dir();
   const fs::path input_file = dir / "solver-input.json";
   std::ofstream(input_file) << doc.dump();
   const std::string runs = (dir / "runs").string();
-  std::vector<std::string> args{AUTAN_RUN_RELAXATION, "--input", input_file.string(), "--runs",
-                                runs};
+  std::vector<std::string> args{executable, "--input", input_file.string(), "--runs", runs};
   std::vector<char*> argv;
   for (auto& a : args) argv.push_back(a.data());
   argv.push_back(nullptr);
@@ -354,8 +354,7 @@ Spawned spawn_until(const Json& doc, const std::vector<std::string>& env,
   for (auto& e : all) envp.push_back(e.data());
   envp.push_back(nullptr);
   Spawned s;
-  REQUIRE(posix_spawn(&s.pid, AUTAN_RUN_RELAXATION, nullptr, nullptr, argv.data(), envp.data()) ==
-          0);
+  REQUIRE(posix_spawn(&s.pid, executable.c_str(), nullptr, nullptr, argv.data(), envp.data()) == 0);
   for (int attempt = 0; attempt < 10'000'000 / poll_us; ++attempt) {
     if (fs::exists(runs)) {
       for (const auto& entry : fs::directory_iterator(runs)) {
@@ -593,24 +592,14 @@ TEST_CASE("A checkpoint names its iteration, and a start checks it", "[runtime]"
   CHECK(off.err.find("E0707") != std::string::npos);
 }
 
-// The SHA-256 of this test executable by CMake's implementation, independent of the runtime's.
-std::string own_sha256() {
-#ifdef __APPLE__
-  std::uint32_t size = 0;
-  (void)_NSGetExecutablePath(nullptr, &size);
-  std::string self(size, '\0');
-  REQUIRE(_NSGetExecutablePath(self.data(), &size) == 0);
-  self.resize(std::char_traits<char>::length(self.c_str()));
-#else
-  // Opens even if the file was replaced since; /proc/self would be cmake's own.
-  const std::string self = "/proc/" + std::to_string(getpid()) + "/exe";
-#endif
+// The SHA-256 of `file` by CMake's implementation, independent of the runtime's.
+std::string sha256_of(const std::string& file) {
   const auto quoted = [](const std::string& s) {
     std::string q = "'";
     for (const char c : s) q += c == '\'' ? std::string("'\\''") : std::string(1, c);
     return q + "'";
   };
-  const std::string command = quoted(AUTAN_TEST_CMAKE) + " -E sha256sum " + quoted(self);
+  const std::string command = quoted(AUTAN_TEST_CMAKE) + " -E sha256sum " + quoted(file);
   std::FILE* pipe = popen(command.c_str(), "r");
   REQUIRE(pipe != nullptr);
   std::array<char, 65> hex{};
@@ -618,6 +607,67 @@ std::string own_sha256() {
   REQUIRE(pclose(pipe) == 0);
   REQUIRE(got == 64);
   return std::string(hex.data(), 64);
+}
+
+// This test executable's.
+std::string own_sha256() {
+#ifdef __APPLE__
+  std::uint32_t size = 0;
+  (void)_NSGetExecutablePath(nullptr, &size);
+  std::string self(size, '\0');
+  REQUIRE(_NSGetExecutablePath(self.data(), &size) == 0);
+  self.resize(std::char_traits<char>::length(self.c_str()));
+  return sha256_of(self);
+#else
+  // Opens even if the file was replaced since; /proc/self would be cmake's own.
+  return sha256_of("/proc/" + std::to_string(getpid()) + "/exe");
+#endif
+}
+
+TEST_CASE("An executable's cached hash serves only that unchanged file", "[runtime]") {
+  // AUTAN_BINARY_HASH_CACHE keeps run.json's solver.binary_sha256 across processes, keyed by the
+  // file's device, inode, size, mtime and ctime. A file changed less than 2 s ago is not stored:
+  // a coarse timestamp could miss a second change within the same tick.
+  const fs::path dir = fresh_dir();
+  const fs::path exe = dir / "autan-run";
+  fs::copy_file(AUTAN_RUN_RELAXATION, exe);
+  fs::permissions(exe, fs::status(AUTAN_RUN_RELAXATION).permissions());
+  const fs::path cache = dir / "cache";
+  const auto recorded = [&] {
+    const Spawned s = spawn_until(
+        input(), {"AUTAN_BINARY_HASH_CACHE=" + cache.string()},
+        [](const fs::path&) { return true; }, 2000, exe.string());
+    int status = 0;
+    REQUIRE(waitpid(s.pid, &status, 0) == s.pid);
+    REQUIRE(WIFEXITED(status));
+    REQUIRE(WEXITSTATUS(status) == 0);
+    return Json::parse(read(s.run / "run.json"))["solver"]["binary_sha256"].get<std::string>();
+  };
+  const auto entries = [&] {
+    std::vector<fs::path> files;
+    if (fs::exists(cache)) {
+      for (const auto& e : fs::directory_iterator(cache)) files.push_back(e.path());
+    }
+    return files;
+  };
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(2100));
+  const std::string hash = sha256_of(exe.string());
+  CHECK(recorded() == hash);
+  REQUIRE(entries().size() == 1);
+  CHECK(read(entries()[0]) == hash + "\n");
+
+  // The entry is what a later process reads: a forged one is believed.
+  const std::string forged(64, 'f');
+  std::ofstream(entries()[0], std::ios::trunc) << forged << '\n';
+  CHECK(recorded() == forged);
+
+  // A changed file has another key, and is too recent to be stored.
+  std::ofstream(exe, std::ios::binary | std::ios::app) << "autan";
+  const std::string changed = sha256_of(exe.string());
+  CHECK(changed != hash);
+  CHECK(recorded() == changed);
+  CHECK(entries().size() == 1);
 }
 
 TEST_CASE("A converging run writes the run directory of results.md", "[runtime]") {
