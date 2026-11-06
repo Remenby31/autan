@@ -317,6 +317,8 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     by_name = {c.name: c for c in tiny.components}
     assert by_name["mesh"].bytes_host == 720 + 640 + 640 + 240 + 80 + 200 + 2240 + 320 + 120
     assert by_name["runtime"].bytes_host == 26 * 2**20  # measured, plan.md
+    assert by_name["binary hash"].bytes_host == 2**20
+    assert by_name["binary hash"].transient
     # The solver input at most: the case's TOML escaped (6 B a byte), the MeshInfo indented
     # one level deeper (4 B a line), each zone's name and resolved condition or medium as JSON
     # with 1 KiB of entry, three paths at PATH_MAX escaped, and 64 KiB; kept once, read and

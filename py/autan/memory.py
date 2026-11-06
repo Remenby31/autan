@@ -260,6 +260,8 @@ def _rank(
     mesh_bytes += 20 * cells
     geometry = 56 * faces + 32 * cells
     add("runtime", _RUNTIME)
+    # Rank 0 reads its executable in 1 MiB chunks to hash it (results.md, solver.binary_sha256).
+    add("binary hash", 2**20, transient=True)
     # The solver input (at most input_bytes): the runtime keeps the case's name and text, and
     # reads and parses the document once.
     add("solver input", input_bytes)

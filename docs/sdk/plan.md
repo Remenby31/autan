@@ -17,6 +17,7 @@ Each component counts what the code allocates, listed by the lane that owns it a
 | Component | Where | Bytes |
 |---|---|---|
 | `runtime` | host | the process itself on every rank (binary, libraries, MPI, the hashing buffer): 26 MiB, the largest `VmHWM` of `autan-run` on the 27-cell `tests/data/mesh/hex/polyMesh` case on 1 and 2 ranks (26 431 488 B, Release, spark-5359), rounded up to the next MiB |
+| `binary hash` | host | the 1 MiB chunk in which rank 0 reads its executable to hash it (`solver.binary_sha256`), freed once hashed |
 | `solver input`, `solver input setup` | host | the solver input as `autan prepare` writes it, at most: 6 bytes per byte of the case's TOML (escaped in JSON, its mesh path counted at 4 096 bytes however the case names it); the MeshInfo, indented, plus 4 bytes a line; each zone's name and resolved condition or medium as JSON plus 1 KiB (and 6 × 4 096 bytes for an `oracle-state` file's path); each monitor's name and the names of the zones it matches plus 1 KiB; a point vortex's wall names; three paths at 6 × 4 096 bytes; and 64 KiB. The runtime keeps the case's name and text, and reads and parses the document once, at most 40 bytes of document per byte |
 | `mesh` | host | the global mesh 24N + 16F + 4P + 12F_i + 4F_b + 20C, its FP64 geometry 56F + 32C, colourings 12C, all *global*: every rank keeps them |
 | `mesh setup` | host | the reader's form and the MeshInfo pass, about the mesh and its geometry again, which the allocator keeps resident |
