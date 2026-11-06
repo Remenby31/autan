@@ -104,10 +104,11 @@ std::int64_t solution_cells(const std::filesystem::path& file);
 
 /// Writes `solution` and `mesh` (unpartitioned) as solution.cgns with the
 /// layout of docs/contracts/results.md. Throws E0101 when the mesh has ghost
-/// cells, an array's size does not match the mesh, or a BC type is unknown or
-/// set on a periodic zone; E0102 when `wall_faces` is not ascending and
-/// distinct or holds an index outside the boundary faces [n_interior_faces,
-/// n_faces); E0130 when the file cannot be written.
+/// cells, an array's size does not match the mesh, a BC type is unknown or set
+/// on a periodic zone, or a non-periodic boundary zone with faces has an empty
+/// BC type; E0102 when `wall_faces` is not ascending and distinct or holds an
+/// index outside the boundary faces [n_interior_faces, n_faces); E0130 when
+/// the file cannot be written.
 void write_solution(const std::filesystem::path& file, const Mesh& mesh, const Solution& solution);
 
 /// Node names of the MeshInfo boundary and cell zones by the rule of
