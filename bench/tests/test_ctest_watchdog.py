@@ -280,7 +280,8 @@ def test_only_the_watched_command_gets_the_ptracer_library(tmp_path, given):
     # it. Without it (a hosted runner), nothing is preloaded.
     library = tmp_path / "libautan_ptracer.so"
     library.write_bytes(b"")  # the loader ignores an unloadable preload, with a warning
-    env = {k: v for k, v in os.environ.items() if k != "LD_PRELOAD"}
+    # Neither inherited: the runner's image itself names the library.
+    env = {k: v for k, v in os.environ.items() if k not in ("LD_PRELOAD", "AUTAN_WATCHDOG_PTRACER")}
     if given:
         env["AUTAN_WATCHDOG_PTRACER"] = str(library)
     seen = tmp_path / "seen"

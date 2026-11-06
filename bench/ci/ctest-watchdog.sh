@@ -186,7 +186,8 @@ dump_and_kill() {  # launcher PID
 # the command, and nothing else: its processes then let gdb, their sibling, attach to them where
 # Yama's ptrace_scope 1 would refuse it (docker/runner/ptracer.c).
 if [[ -n ${AUTAN_WATCHDOG_PTRACER:-} && -r $AUTAN_WATCHDOG_PTRACER ]]; then
-  LD_PRELOAD="$AUTAN_WATCHDOG_PTRACER${LD_PRELOAD:+:$LD_PRELOAD}" "$@" &
+  # Appended: a sanitizer's runtime must stay first.
+  LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}$AUTAN_WATCHDOG_PTRACER" "$@" &
 else
   "$@" &
 fi
