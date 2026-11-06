@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       kind:
-        description: "Family: all (tet, hex, poly, hybrid) or one kind of `autan-vv meshes`"
+        description: "Family: all (tet, hex, poly, hybrid) or one of the unit cube's families"
         type: choice
         default: all
         options: [all, tet, hex, poly, hybrid, prism, agglomerated]
@@ -51,6 +51,10 @@ jobs:
           [[ $PERTURBATION =~ ^[0-9]+(\.[0-9]+)?$ ]] || fail "perturbation: a number, not '$PERTURBATION'"
           [[ $SEED =~ ^[0-9]+$ ]] || fail "seed: an integer, not '$SEED'"
           [[ -z $LEVELS || $LEVELS =~ ^[0-9]+(,[0-9]+)*$ ]] || fail "levels: comma-separated integers, not '$LEVELS'"
+          # The bounds autan-vv meshes enforces, checked before four runners install anything.
+          awk -v p="$PERTURBATION" 'BEGIN { exit !(p >= 0 && p < 1) }' || fail "perturbation: from 0 up to, not including, 1"
+          IFS=, read -ra given <<< "$LEVELS"
+          for n in "${given[@]}"; do ((10#$n >= 1)) || fail "levels: positive integers, not '$LEVELS'"; done
           # The ns-mms-order gate's levels (docs/validation/acceptance.md).
           declare -A gate=([tet]=16,24,32,48 [hex]=32,48,64,96,128 [poly]=16,24,32,48,64 [hybrid]=16,24,32,48)
           if [[ $KIND == all ]]; then
@@ -110,9 +114,12 @@ jobs:
       - name: Resources used
         if: always()
         run: |
-          peak=$(awk -F': ' '/Maximum resident/ {printf "%.2f GiB", $2 / 1048576}' "$RUNNER_TEMP/time.txt" 2>/dev/null)
-          wall=$(awk -F': ' '/Elapsed \(wall clock\)/ {print $2}' "$RUNNER_TEMP/time.txt" 2>/dev/null)
-          size=$(du -sh "${OUT:-/nonexistent}" 2>/dev/null | cut -f1)
+          peak="" wall=""
+          if [[ -f $RUNNER_TEMP/time.txt ]]; then
+            peak=$(awk -F': ' '/Maximum resident/ {printf "%.2f GiB", $2 / 1048576}' "$RUNNER_TEMP/time.txt")
+            wall=$(awk -F': ' '/Elapsed \(wall clock\)/ {print $2}' "$RUNNER_TEMP/time.txt")
+          fi
+          size=$( { du -sh "${OUT:-/nonexistent}" 2>/dev/null || true; } | cut -f1)
           {
             echo "### $KIND, levels $LEVELS, perturbation $PERTURBATION, seed $SEED"
             echo "Peak memory ${peak:-unknown} of $(free -g | awk '/^Mem:/ {print $2}') GiB, wall ${wall:-unknown}, output ${size:-none}, disk left $(df -h "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')."
