@@ -70,8 +70,6 @@ def test_face_writes_store_each_face_once_in_its_global_orientation(
         return {int(faces[x]): k[x].tobytes() + j[x].tobytes() for x in f}
 
     check(full)
-    if backend == "metal":
-        return  # the global order is a DeviceMesh option (CUDA/HIP)
     # Ordered by the global numbering, a partition evaluates each face in its global orientation:
     # 2 ranks write the bits 1 rank writes.
     one = s.partition(full, np.zeros(full.n_cells, np.int32), 1, 0, layers=2)

@@ -48,12 +48,14 @@ from autan.schema import (
     _caller_location,
     diagnostics_from,
 )
+from autan.texts import load_json
 from autan.units import UnitOfLength
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from autan.fake import FakeBackend
+    from autan.memory import DeviceKind, StartMode
 
     # A quantity, or its text "<number> <unit>" as the case document writes it.
     type QuantityLike = pint.Quantity | str
@@ -359,9 +361,17 @@ class Case:
         checked = resolve_start(self.spec, mesh_info, start, mode)
         return backend.run(self, mesh_info, Path(runs), checked)
 
-    def plan(self, mesh_info: MeshInfo, *, gpus: int = 1) -> Plan:
-        """Resolve boundaries and cell zones against the mesh and estimate memory."""
-        return plan(self, mesh_info, gpus=gpus)
+    def plan(
+        self,
+        mesh_info: MeshInfo,
+        *,
+        gpus: int = 1,
+        device_kind: DeviceKind = "cuda",
+        start: StartMode | None = None,
+    ) -> Plan:
+        """Resolve boundaries and cell zones against the mesh and estimate memory, for a run
+        that starts from a previous one in mode ``start`` (``continue`` or ``warm``) if given."""
+        return plan(self, mesh_info, gpus=gpus, device_kind=device_kind, start=start)
 
 
 class BoundarySelector:
@@ -467,9 +477,12 @@ def load(path: str | Path) -> Case:
     if path.suffix in (".toml", ".json"):
         try:
             text = path.read_text()
-            document = tomllib.loads(text) if path.suffix == ".toml" else json.loads(text)
-        except (tomllib.TOMLDecodeError, json.JSONDecodeError, UnicodeDecodeError) as error:
+            document = tomllib.loads(text) if path.suffix == ".toml" else load_json(text)
+        except ValueError as error:  # TOML, JSON, UTF-8 and nesting errors alike
             raise CaseError([diagnostic("E0001", f"{path}: {error}", location=where)]) from None
+        except RecursionError:  # tomllib on a document nested too deeply
+            message = f"{path}: nested too deeply"
+            raise CaseError([diagnostic("E0001", message, location=where)]) from None
         if not isinstance(document, dict):
             raise CaseError([diagnostic("E0003", f"{path}: not a table", location=where)])
         return Case.from_spec(CaseSpec.from_document(document, where), file=str(path))

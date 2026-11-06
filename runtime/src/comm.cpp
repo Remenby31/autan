@@ -63,6 +63,7 @@ class Single final : public Comm {
   [[nodiscard]] int rank() const noexcept override { return 0; }
   [[nodiscard]] int size() const noexcept override { return 1; }
   [[nodiscard]] int local_rank() const noexcept override { return 0; }
+  [[nodiscard]] int local_size() const noexcept override { return 1; }
   void sum(std::span<ExactSum> /*sums*/) override {}
   [[nodiscard]] double min(double value) override { return value; }
   [[nodiscard]] std::int64_t max(std::int64_t value) override { return value; }
@@ -126,9 +127,11 @@ class World final : public Comm {
     check(MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, rank_, MPI_INFO_NULL, &host),
           "MPI_Comm_split_type");
     check(MPI_Comm_rank(host, &local_rank_), "MPI_Comm_rank");
+    check(MPI_Comm_size(host, &local_size_), "MPI_Comm_size");
     MPI_Comm_free(&host);
   }
   [[nodiscard]] int local_rank() const noexcept override { return local_rank_; }
+  [[nodiscard]] int local_size() const noexcept override { return local_size_; }
   [[nodiscard]] int rank() const noexcept override { return rank_; }
   [[nodiscard]] int size() const noexcept override { return size_; }
 
@@ -211,7 +214,7 @@ class World final : public Comm {
   }
 
  private:
-  int rank_ = 0, size_ = 1, local_rank_ = 0;
+  int rank_ = 0, size_ = 1, local_rank_ = 0, local_size_ = 1;
 };
 
 #endif

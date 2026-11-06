@@ -9,9 +9,18 @@ from typing import Annotated, Any, Literal, Self
 
 import pint
 import rfc8785
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_validator,
+)
 
 from autan.errors import CaseError, Diagnostic, Location, diagnostic
+from autan.texts import bounded
 from autan.units import K, UnitOfLength, deg, fail, m, quantity, s, si, validate_number
 
 SCHEMA_ID = "autan.case/1"
@@ -42,8 +51,8 @@ PositiveNumber = Annotated[
 Gamma = Annotated[float, Field(gt=1), BeforeValidator(lambda v: validate_number(v, positive=True))]
 Count = Annotated[int, Field(strict=True, ge=1, le=MAX_INTEGER)]
 Index = Annotated[int, Field(strict=True, ge=0, le=MAX_INTEGER)]
-Pattern = Annotated[str, Field(min_length=1)]
-Name = Annotated[str, Field(min_length=1)]
+Pattern = Annotated[str, Field(min_length=1), AfterValidator(bounded)]
+Name = Annotated[str, Field(min_length=1), AfterValidator(bounded)]
 
 _RANGE_ERRORS = frozenset({"greater_than", "greater_than_equal", "less_than", "less_than_equal"})
 _TAGS = ("kind", "model", "law")

@@ -63,7 +63,7 @@ std::string to_string(BoxFill fill) {
 
 CellwiseMesh box(int n, BoxFill fill, double perturbation, bool label_sides) {
   CellwiseMesh mesh;
-  mesh.source = MeshSource{.format = "memory", .path = ""};
+  mesh.source = MeshSource{.format = "memory", .path = "", .nodes = 0};
   mesh.cell_zones.push_back(
       CellZone{.name = "fluid",
                .type = "fluid",
@@ -187,7 +187,7 @@ CellwiseMesh box(int n, BoxFill fill, double perturbation, bool label_sides) {
 
 CellwiseMesh hanging_node_box() {
   CellwiseMesh mesh;
-  mesh.source = MeshSource{.format = "memory", .path = ""};
+  mesh.source = MeshSource{.format = "memory", .path = "", .nodes = 0};
   for (const char* name : {"coarse", "fine"}) {
     mesh.cell_zones.push_back(
         CellZone{.name = name,
@@ -294,7 +294,7 @@ ReferenceCell affine_cell(CellShape shape, const std::array<std::array<double, 3
                      a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) +
                      a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
   ReferenceCell cell{.mesh = {}, .volume = det * volume, .centroid = map(centroid)};
-  cell.mesh.source = MeshSource{.format = "memory", .path = ""};
+  cell.mesh.source = MeshSource{.format = "memory", .path = "", .nodes = 0};
   cell.mesh.cell_zones.push_back(
       CellZone{.name = "fluid", .type = "", .kind = CellKind::unspecified, .provenance = {}});
   std::vector<index_t> nodes;

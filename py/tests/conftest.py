@@ -1,3 +1,4 @@
+import contextlib
 import copy
 import hashlib
 import json
@@ -43,6 +44,56 @@ def mesh_document(name: str) -> dict[str, Any]:
     return document
 
 
+def one_part(document: dict[str, Any]) -> dict[str, Any]:
+    """The one-part partition autan-mesh-info writes without --ranks (mesh-info.md): the mesh
+    itself, its periodic ghosts the part's ghosts and the cells its self-exchange sends."""
+    counts = document["counts"]
+    interior = counts["faces"] - sum(z["faces"] for z in document["boundary_zones"])
+    ghosts = counts["periodic_ghosts"]
+    return {
+        "ranks": 1,
+        "groups": "none",
+        "cells_by_rank": [counts["cells"]],
+        "ghosts_by_rank": [ghosts],
+        "faces_by_rank": [counts["faces"]],
+        "interior_faces_by_rank": [interior],
+        "stencil_entries_by_rank": [counts["stencil_entries"]],
+        "nodes_by_rank": [counts["nodes"]],
+        "face_nodes_by_rank": [counts["face_nodes"]],
+        "sent_cells_by_rank": [ghosts],
+    }
+
+
+def prepared(document: dict[str, Any], *, scale: float = 1.0, ranks: int = 1) -> dict[str, Any]:
+    """``document`` as autan-mesh-info writes it for a run at ``scale`` metres per mesh unit on
+    ``ranks`` ranks (mesh-info.md): its lines' scale and, on several ranks, a partition. The
+    partition is an even split without ghosts or groups: these tests plan something else."""
+    document = copy.deepcopy(document)
+    document["quality"]["lines"]["scale"] = scale
+    if ranks == 1:
+        document["partition"] = one_part(document)
+    if ranks > 1:
+        counts = document["counts"]
+        interior = counts["faces"] - sum(z["faces"] for z in document["boundary_zones"])
+
+        def split(total: int) -> list[int]:
+            return [total // ranks + (r < total % ranks) for r in range(ranks)]
+
+        document["partition"] = {
+            "ranks": ranks,
+            "groups": "none",
+            "cells_by_rank": split(counts["cells"]),
+            "ghosts_by_rank": [0] * ranks,
+            "faces_by_rank": split(counts["faces"]),
+            "interior_faces_by_rank": split(interior),
+            "stencil_entries_by_rank": split(counts["stencil_entries"]),
+            "nodes_by_rank": split(counts["nodes"]),
+            "face_nodes_by_rank": split(counts["face_nodes"]),
+            "sent_cells_by_rank": [0] * ranks,
+        }
+    return document
+
+
 def place_meshes(directory: Path) -> None:
     for name, content in MESH_FILES.items():
         (directory / name).write_bytes(content)
@@ -60,6 +111,15 @@ def mesh_variant() -> Callable[..., autan.MeshInfo]:
     def build(name: str, edit: Callable[[dict[str, Any]], None]) -> autan.MeshInfo:
         document = copy.deepcopy(mesh_document(name))
         edit(document)
+        if (document.get("partition") or {}).get("ranks") == 1:
+            document["partition"] = one_part(document)
+        # The finest multigrid level's edges are the interior faces the edit leaves, when the
+        # edit keeps what they depend on (some edits break the document on purpose).
+        with contextlib.suppress(KeyError, TypeError, IndexError):
+            boundary = sum(zone["faces"] for zone in document["boundary_zones"])
+            document["quality"]["multigrid"]["edges_by_level"][0] = (
+                document["counts"]["faces"] - boundary
+            )
         return autan.MeshInfo.from_document(document, autan.Location(file=name))
 
     return build

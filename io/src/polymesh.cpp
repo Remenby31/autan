@@ -18,6 +18,7 @@
 
 #include "autan/io/read_mesh.hpp"
 #include "cursor.hpp"
+#include "text_limit.hpp"
 
 namespace autan::io {
 namespace {
@@ -57,6 +58,7 @@ std::string entry_value(Cursor& c, std::string_view data) {
       while (!c.at_end() && c.peek_raw() != '"') {
         value += c.peek_raw();
         c.advance();
+        if (value.size() > max_name_bytes) check_text(c.path(), "dictionary entry", value.size());
       }
       c.expect('"');
       continue;
@@ -69,6 +71,7 @@ std::string entry_value(Cursor& c, std::string_view data) {
       }
       value += t;
       c.advance();
+      if (value.size() > max_name_bytes) check_text(c.path(), "dictionary entry", value.size());
     }
   }
 }
@@ -109,6 +112,10 @@ class FoamFile {
 
   Cursor& cursor() { return cursor_; }
   [[nodiscard]] const Header& header() const { return header_; }
+  // The most labels a uniform list `N{v}` of this file may expand to: N labels from a few bytes
+  // of text, so only a count the mesh fixes (faces for owner and neighbour, cells for a cell
+  // zone); 0, any uniform list but an empty one is refused.
+  void allow_uniform(std::uint64_t most) { uniform_most_ = most; }
   [[nodiscard]] std::string_view data() const { return data_; }
 
   void require_class(std::initializer_list<std::string_view> classes) {
@@ -137,53 +144,72 @@ class FoamFile {
 
   // `N(v ...)`, `(v ...)`, `N{v}`; in binary files `N(<raw>)`, or a bare `0`.
   std::vector<std::int64_t> labels() {
+    std::vector<std::int64_t> out;
+    read_labels(&out);
+    return out;
+  }
+
+  // The same list read past, checked but not kept.
+  void skip_labels() { read_labels(nullptr); }
+
+ private:
+  void read_labels(std::vector<std::int64_t>* out) {
     skip_blank(cursor_);
     if (cursor_.accept("List<label>")) skip_blank(cursor_);
     const auto n = list_size();
-    std::vector<std::int64_t> out;
     if (!n) {
       cursor_.expect('(');
-      while (skip_blank(cursor_), cursor_.peek() != ')') out.push_back(label());
+      while (skip_blank(cursor_), cursor_.peek() != ')') {
+        const std::int64_t v = label();
+        if (out != nullptr) out->push_back(v);
+      }
       cursor_.expect(')');
-      return out;
+      return;
     }
     if (cursor_.accept('{')) {
       skip_blank(cursor_);
-      if (*n == 0 && cursor_.accept('}')) return out;
+      if (*n == 0 && cursor_.accept('}')) return;
+      if (*n > uniform_most_) cursor_.fail("a uniform list of more labels than the mesh has");
       const std::int64_t v = label();
       skip_blank(cursor_);
       cursor_.expect('}');
-      out.assign(*n, v);
-      return out;
+      if (out != nullptr) out->assign(*n, v);
+      return;
     }
     if (header_.binary) {
       if (*n == 0) {
         if (cursor_.accept('(')) cursor_.expect(')');
-        return out;
+        return;
       }
       cursor_.expect('(');
       cursor_.check_fits(*n, static_cast<std::uint64_t>(header_.label_bytes));
-      out.resize(*n);
-      if (header_.label_bytes == 4) {
+      if (out == nullptr) {
+        cursor_.advance(*n * static_cast<std::size_t>(header_.label_bytes));
+      } else if (header_.label_bytes == 4) {
+        out->resize(*n);
         std::vector<std::int32_t> raw(*n);
         cursor_.binary(raw.data(), *n);
-        std::ranges::copy(raw, out.begin());
+        std::ranges::copy(raw, out->begin());
       } else {
-        cursor_.binary(out.data(), *n);
+        out->resize(*n);
+        cursor_.binary(out->data(), *n);
       }
       skip_blank(cursor_);
       cursor_.expect(')');
-      return out;
+      return;
     }
     cursor_.expect('(');
     cursor_.check_fits(*n, 2);
-    out.resize(*n);
-    for (auto& v : out) v = label();
+    if (out != nullptr) out->resize(*n);
+    for (std::size_t i = 0; i < *n; ++i) {
+      const std::int64_t v = label();
+      if (out != nullptr) (*out)[i] = v;
+    }
     skip_blank(cursor_);
     cursor_.expect(')');
-    return out;
   }
 
+ public:
   std::vector<double> points() {
     const auto n = list_size();
     if (!n) cursor_.fail("points list without a size");
@@ -231,7 +257,9 @@ class FoamFile {
     for (;;) {
       skip_blank(cursor_);
       if (cursor_.accept('}')) break;
-      const std::string key(cursor_.token("{};/"));
+      const std::string_view key_text = cursor_.token("{};/");
+      check_text(cursor_.path(), "header key", key_text.size());
+      const std::string key(key_text);
       skip_blank(cursor_);
       if (cursor_.peek() == '{') {
         skip_sub_dict();
@@ -252,6 +280,7 @@ class FoamFile {
   }
 
   std::string data_;
+  std::uint64_t uniform_most_ = 0;
   Cursor cursor_;
   Header header_;
 };
@@ -310,37 +339,55 @@ struct NamedDict {
   std::vector<std::int64_t> labels;
 };
 
-std::vector<NamedDict> read_dict_list(FoamFile& file, std::string_view label_key) {
+// Each entry of a dictionary list given to `visit` as it is read, none kept.
+template <class Visit>
+void read_dict_list(FoamFile& file, std::string_view label_key, const Visit& visit) {
   Cursor& c = file.cursor();
   const auto n = file.list_size();
   c.expect('(');
-  std::vector<NamedDict> out;
+  std::size_t entries = 0;
   for (;;) {
     skip_blank(c);
     if (c.accept(')')) break;
     NamedDict d;
-    d.name = std::string(c.token("{/"));
+    // The labels' last occurrence, which wins as in OpenFOAM: each read past, the last parsed
+    // once the dictionary closes, so that a list another replaces is never held.
+    std::optional<Cursor> labels_at;
+    const std::string_view name = c.token("{/");
+    check_text(c.path(), "patch or zone name", name.size());
+    d.name = std::string(name);
     skip_blank(c);
     c.expect('{');
     for (;;) {
       skip_blank(c);
       if (c.accept('}')) break;
-      const std::string key(c.token("{};/"));
+      const std::string_view key_text = c.token("{};/");
+      check_text(c.path(), "dictionary key", key_text.size());
+      const std::string key(key_text);
       skip_blank(c);
       if (!label_key.empty() && key == label_key) {
-        d.labels = file.labels();
+        labels_at = c;
+        file.skip_labels();
         skip_blank(c);
         c.expect(';');
       } else if (c.peek() == '{') {
         file.skip_sub_dict();
-      } else {
+      } else if (key == "type" || key == "startFace" || key == "nFaces") {
         d.values[key] = file.value();
+      } else {
+        (void)file.value();  // read past, not kept: the reader uses no other entry
       }
     }
-    out.push_back(std::move(d));
+    if (labels_at) {
+      const Cursor after = c;
+      c = *labels_at;
+      d.labels = file.labels();
+      c = after;
+    }
+    ++entries;
+    visit(std::move(d));
   }
-  if (n && *n != out.size()) c.fail("list size does not match its entries");
-  return out;
+  if (n && *n != entries) c.fail("list size does not match its entries");
 }
 
 BcKind patch_kind(std::string_view type) {
@@ -377,7 +424,7 @@ Mesh read_polymesh(const fs::path& directory) {
   }
 
   MeshInput in;
-  in.source = MeshSource{.format = "polymesh", .path = directory.string()};
+  in.source = MeshSource{.format = "polymesh", .path = directory.string(), .nodes = 0};
   {
     FoamFile file(dir / "points");
     file.require_class({"vectorField"});
@@ -397,9 +444,11 @@ Mesh read_polymesh(const fs::path& directory) {
 
   FoamFile owner_file(dir / "owner");
   owner_file.require_class({"labelList"});
+  owner_file.allow_uniform(n_faces);
   const auto owner = owner_file.labels();
   FoamFile neighbour_file(dir / "neighbour");
   neighbour_file.require_class({"labelList"});
+  neighbour_file.allow_uniform(n_faces);
   const auto neighbour = neighbour_file.labels();
   if (owner.size() != n_faces || neighbour.size() > n_faces) {
     owner_file.cursor().fail("owner and neighbour sizes do not match the faces");
@@ -427,7 +476,7 @@ Mesh read_polymesh(const fs::path& directory) {
   boundary_file.require_class({"polyBoundaryMesh"});
   Cursor& bc = boundary_file.cursor();
   std::size_t expected_start = neighbour.size();
-  for (const auto& patch : read_dict_list(boundary_file, "")) {
+  read_dict_list(boundary_file, "", [&](const NamedDict& patch) {
     const auto value = [&](const char* key) {
       const auto it = patch.values.find(key);
       if (it == patch.values.end()) bc.fail("patch '" + patch.name + "' has no '" + key + "'");
@@ -457,7 +506,7 @@ Mesh read_polymesh(const fs::path& directory) {
             Provenance{.source_id = zone, .detail = "polyMesh patch " + std::to_string(zone)}});
     std::fill(in.face_zone.begin() + static_cast<std::ptrdiff_t>(start),
               in.face_zone.begin() + static_cast<std::ptrdiff_t>(start + count), zone);
-  }
+  });
   if (expected_start != n_faces) bc.fail("patches do not cover every boundary face");
   if (!neighbour.empty()) {
     const auto interior = static_cast<index_t>(in.face_zones.size());
@@ -480,14 +529,19 @@ Mesh read_polymesh(const fs::path& directory) {
   if (fs::exists(dir / "cellZones", ec)) {
     FoamFile zones_file(dir / "cellZones");
     zones_file.require_class({"regIOobject", "cellZoneList"});
-    for (const auto& zone : read_dict_list(zones_file, "cellLabels")) {
+    zones_file.allow_uniform(static_cast<std::uint64_t>(n_cells));
+    // A cell zone without cells labels nothing (MeshInfo omits it): dropped as it is read.
+    index_t in_file = 0;
+    read_dict_list(zones_file, "cellLabels", [&](const NamedDict& zone) {
+      const index_t f = in_file++;
+      if (zone.labels.empty()) return;
       const auto z = static_cast<index_t>(in.cell_zones.size());
       in.cell_zones.push_back(CellZone{
           .name = zone.name,
           .type = "",
           .kind = CellKind::unspecified,
           .provenance =
-              Provenance{.source_id = z, .detail = "polyMesh cellZone " + std::to_string(z)}});
+              Provenance{.source_id = f, .detail = "polyMesh cellZone " + std::to_string(f)}});
       for (const auto cell : zone.labels) {
         const index_t c = to_index(zones_file.cursor(), cell, n_cells, "cell label");
         if (in.cell_zone[static_cast<std::size_t>(c)] != -1) {
@@ -497,7 +551,7 @@ Mesh read_polymesh(const fs::path& directory) {
         }
         in.cell_zone[static_cast<std::size_t>(c)] = z;
       }
-    }
+    });
   }
   if (std::ranges::find(in.cell_zone, -1) != in.cell_zone.end()) {
     const auto fluid = static_cast<index_t>(in.cell_zones.size());
