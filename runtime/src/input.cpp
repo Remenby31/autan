@@ -151,8 +151,9 @@ std::string indexed(const std::string& path, std::size_t i) {
 // its mesh-info.json, so the whole of mesh-info.md: its members, and the rules that tie them
 // (the SDK's MeshInfo checks the same). Sets the mesh_info members of `in`.
 void read_mesh_info(const Json& info, SolverInput& in) {
-  std::vector<std::string> keys{"schema",     "source",     "counts",   "bounds", "boundary_zones",
-                                "cell_zones", "interfaces", "periodic", "quality"};
+  std::vector<std::string> keys{"schema",         "source",        "counts",     "bounds",
+                                "boundary_zones", "cell_zones",    "interfaces", "periodic",
+                                "groups",         "groups_source", "quality"};
   if (info.is_object() && info.contains("partition")) keys.emplace_back("partition");
   const Object root(info, "mesh_info", keys);
   if (root.string("schema") != "autan.mesh-info/1")

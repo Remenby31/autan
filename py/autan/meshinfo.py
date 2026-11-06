@@ -199,6 +199,9 @@ class Partition(_Strict):
 class MeshInfo(_Strict):
     """Summary of a mesh: counts, typed boundary and cell zones, interfaces, quality, hash."""
 
+    # Read back from a dump without aliases too: the solver input nests a MeshInfo.
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
     schema_: Literal["autan.mesh-info/1"] = Field(alias="schema")
     source: Source
     counts: Counts

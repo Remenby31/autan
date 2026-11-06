@@ -2,10 +2,12 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 #include <nlohmann/json.hpp>
 
+#include "autan/core/error.hpp"
 #include "autan/io/mesh_counts.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
@@ -31,9 +33,16 @@ inline nlohmann::json planned(nlohmann::json doc, const std::filesystem::path& r
   const double scale = given.is_number() && given.get<double>() > 0.0 ? given.get<double>() : 1.0;
   const auto counts = autan::io::run_counts(
       m, scale, order == "input" ? autan::io::CellOrder::input : autan::io::CellOrder::rcm);
-  doc["mesh_info"] = nlohmann::json::parse(
-      autan::io::mesh_info_json(m, autan::io::mesh_hash(mesh), autan::io::mesh_bytes(mesh),
-                                autan::io::mesh_logical_bytes(mesh), counts));
+  const std::string hash = autan::io::mesh_hash(mesh);
+  // The sidecar's groups as autan-mesh-info gives them; a sidecar the reader refuses is left to
+  // the run, which refuses it in turn.
+  std::optional<autan::io::ZoneGroups> groups;
+  try {
+    groups = autan::io::read_zone_groups(mesh, m, hash);
+  } catch (const autan::Error&) {
+  }
+  doc["mesh_info"] = nlohmann::json::parse(autan::io::mesh_info_json(
+      m, hash, autan::io::mesh_bytes(mesh), autan::io::mesh_logical_bytes(mesh), counts, groups));
   return doc;
 }
 

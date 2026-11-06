@@ -276,11 +276,10 @@ def _input_bytes(
             and isinstance(rule.condition, Farfield)
             and rule.condition.point_vortex
         ):
-            walls, _ = vortex_zones(rule.condition.point_vortex.surfaces, mesh, boundaries)
+            walls, _ = vortex_zones(rule.condition.point_vortex, mesh, boundaries)
             zones += sum(text(n) for n in walls)
-    names = [b.zone for b in boundaries]
     monitors = sum(
-        text(m.name) + sum(text(n) for n in _matches(m.surfaces, names)) + _ENTRY
+        text(m.name) + sum(text(n) for n in selected(m.surfaces, m.group, mesh)) + _ENTRY
         for m in spec.monitors
     )
     files = 6 * _PATH_MAX * 3  # the mesh, a start's run and a verification solution
