@@ -22,6 +22,7 @@ from autan import cgns
 from autan.errors import CaseError, Diagnostic, Location, diagnostic
 from autan.meshinfo import MeshInfo
 from autan.schema import DDES, SA, SST, CaseSpec, Compressible, Steady, Unsteady
+from autan.texts import load_json
 from autan.units import metres_per
 
 if TYPE_CHECKING:
@@ -152,9 +153,11 @@ class CheckpointRecord(_Strict):
 
 
 class Convergence(_Strict):
-    """The round-off floor of each equation of an fp32+acc64 steady run (case-schema.md#time)."""
+    """The round-off floor of each equation of an fp32+acc64 steady run, and the equations a
+    converged run counted converged on a round-off plateau (case-schema.md#time)."""
 
     floor: dict[str, Annotated[float, Field(ge=0, allow_inf_nan=False)]]
+    plateau: list[str]
 
 
 class FinalMonitor(BaseModel):
@@ -543,7 +546,7 @@ class Results:
             raise CaseError([diagnostic("E0701", message, location=where)])
 
         try:
-            document = json.loads((path / "run.json").read_text())
+            document = load_json((path / "run.json").read_text())
         except (OSError, ValueError) as error:
             broken(f"cannot read run.json: {error}", "run.json")
         if not isinstance(document, dict) or document.get("schema") != SCHEMA_ID:
@@ -558,7 +561,7 @@ class Results:
             broken(f"run.json: {first['msg']} at {first['loc']}", "run.json")
         try:
             case_document = tomllib.loads((path / "case.toml").read_text())
-            mesh_document = json.loads((path / "mesh-info.json").read_text())
+            mesh_document = load_json((path / "mesh-info.json").read_text())
         except (OSError, ValueError) as error:
             broken(str(error))
         try:
@@ -850,7 +853,7 @@ def _read_history(path: Path, live: bool, broken: Any) -> list[dict[str, Any]]:
     records = []
     for number, raw in enumerate(complete.split(b"\n") if complete else [], start=1):
         try:
-            record = json.loads(raw.decode("utf-8"), parse_constant=_reject_constant)
+            record = load_json(raw.decode("utf-8"), parse_constant=_reject_constant)
         except ValueError as error:
             broken(f"line {number}: {error}", path.name)
         if not isinstance(record, dict):
@@ -989,13 +992,20 @@ def final_monitor_history_problems(records: list[dict[str, Any]], run: RunInfo) 
 
 
 def convergence_problems(run: RunInfo, case: CaseSpec) -> list[str]:
-    """run.json ``convergence``: the floors of a steady fp32+acc64 run, one per equation."""
-    if run.convergence is not None and (
+    """run.json ``convergence``: the floors of a steady fp32+acc64 run, one per equation, and
+    the equations of a converged run that converged on a plateau, in history order."""
+    if run.convergence is None:
+        return []
+    names = residual_names(case)
+    if (
         run.precision != "fp32+acc64"
         or not isinstance(case.time, Steady)
-        or set(run.convergence.floor) != set(residual_names(case))
+        or set(run.convergence.floor) != set(names)
     ):
         return ["convergence floors exist only for a steady fp32+acc64 run, one per equation"]
+    plateau = run.convergence.plateau
+    if plateau != [n for n in names if n in plateau] or (plateau and run.status != "converged"):
+        return ["convergence plateau lists equations of the run, in history order, once converged"]
     return []
 
 

@@ -26,6 +26,8 @@ VALUES = [[1.2, 30.0, 0.0, 0.0, 1e5] for _ in range(CELLS)]
 def small(document: dict[str, Any]) -> None:
     """The CRM-HL MeshInfo with four fluid cells."""
     document["counts"]["cells"] = CELLS
+    document["quality"]["lines"].update(cells=0, long_cells=0)
+    document["quality"]["multigrid"] = {"cells_by_level": [CELLS], "edges_by_level": [3]}
     document["counts"]["cells_by_type"] = dict.fromkeys(document["counts"]["cells_by_type"], 0)
     document["counts"]["cells_by_type"]["hexa"] = CELLS
     document["cell_zones"] = [{"name": "fluid", "type": None, "native_type": None, "cells": CELLS}]
@@ -93,7 +95,17 @@ def test_the_state_reaches_the_solver_input_and_the_run(
 ) -> None:
     case = with_state(write_case)
     loaded = autan.load(case)
-    assert loaded.plan(autan.MeshInfo.load(mesh)).ok
+    planned = loaded.plan(autan.MeshInfo.load(mesh))
+    assert planned.ok
+    # docs/sdk/plan.md: the text and its strings (2S), a string at its 4 096-byte bound four
+    # times, the document's member names once more (initial-state.md's seven keys), 1 KiB of
+    # members, 128 B a row streamed and 138 B a row paired, then 160 B per cell of the mesh
+    # paired with them.
+    size = (case.parent / "state.json").stat().st_size
+    keys = ("schema", "oracle", "mesh_sha256", "variables", "cells", "centroids", "values")
+    files = {c.name: c for c in planned.memory.components}["state files"]
+    expected = 2 * size + 4 * 4096 + sum(map(len, keys)) + 1024 + (128 + 138) * CELLS
+    assert files.bytes_host == expected + 160 * CELLS
     assert main(["prepare", str(case), "--mesh-info", str(mesh)]) == 0
     document = json.loads(capsys.readouterr().out)
     jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
@@ -133,6 +145,17 @@ def _raw(case: Path, text: str) -> None:
     )
 
 
+def _number(case: Path, characters: int) -> None:
+    """The file with its first pressure spelt in ``characters`` characters, the same value."""
+    text = (case.parent / "state.json").read_text()
+    _raw(case, text.replace("100000.0", "100000." + "0" * (characters - 7), 1))
+
+
+def _oracle(case: Path, oracle: str) -> None:
+    document = json.loads((case.parent / "state.json").read_text())
+    _raw(case, json.dumps(document | {"oracle": oracle}))
+
+
 @pytest.mark.parametrize(
     ("damage", "code"),
     [
@@ -144,17 +167,31 @@ def _raw(case: Path, text: str) -> None:
             ),
             "E0508",
         ),
+        (  # a member twice, which the runtime's streaming reader refuses too
+            lambda case: _raw(
+                case,
+                (case.parent / "state.json")
+                .read_text()
+                .replace('"cells":', '"cells": 4, "cells":', 1),
+            ),
+            "E0508",
+        ),
         (lambda case: (case.parent / "state.json").unlink(), "E0508"),
         (_fifo, "E0508"),  # a FIFO with no writer: never a blocking read
+        (lambda case: _oracle(case, "é" * 2048), None),  # case-schema.md#free-texts
+        (lambda case: _oracle(case, "é" * 2048 + "x"), "E0508"),
+        (lambda case: _number(case, 64), None),  # initial-state.md: numbers of 64 characters
+        (lambda case: _number(case, 65), "E0508"),
+        (lambda case: _raw(case, "[" * 100_000 + "]" * 100_000), "E0508"),  # nested too deep
     ],
 )
 def test_the_file_is_checked(
-    damage: Callable[[Path], object], code: str, write_case: Callable[..., Path], mesh: Path
+    damage: Callable[[Path], object], code: str | None, write_case: Callable[..., Path], mesh: Path
 ) -> None:
     case = with_state(write_case)
     damage(case)
     codes = [d.code for d in autan.load(case).plan(autan.MeshInfo.load(mesh)).diagnostics]
-    assert codes == [code]
+    assert codes == ([code] if code else [])
 
 
 @pytest.mark.parametrize(
@@ -298,6 +335,7 @@ def test_an_unresolved_zone_does_not_count_as_fluid(
         small(document)
         document["counts"]["cells"] = CELLS + 1
         document["counts"]["cells_by_type"]["hexa"] = CELLS + 1
+        document["quality"]["multigrid"]["cells_by_level"] = [CELLS + 1]
         document["cell_zones"].append(
             {"name": "block", "type": "solid", "native_type": None, "cells": 1}
         )

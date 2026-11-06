@@ -105,6 +105,10 @@ struct RelaxationOptions {
   std::int64_t wake_at = 0;
   std::int64_t sleep_at = 0;     ///< 0: never; from then on, back at 1e-15
   std::vector<double> scales{};  ///< residual_scales(); empty: none
+  /// Equation e's residual stops decreasing at (e + 1) times this value; 0: never.
+  double plateau = 0.0;
+  /// Steps before this iteration report a provisional discretisation; 0: none.
+  std::int64_t provisional_until = 0;
   /// Groups of cells the partition keeps whole: cell c in group c mod (2 groups) when below
   /// `groups`, so each group spans the mesh, its cells in decreasing order. The physics throws
   /// unless the runtime asked for them, every group it holds a cell of is wholly owned, and
@@ -146,6 +150,15 @@ struct RelaxationOptions {
     return o;
   }
 };
+
+// Relaxation::restart_fields' names: the averaging sums, then the weight.
+inline std::vector<std::string> relaxation_restart_names(const autan::runtime::SolverInput& input,
+                                                         bool /*averaging*/) {
+  std::vector<std::string> out;
+  for (const auto& name : autan::runtime::field_names(input)) out.push_back("Sum" + name);
+  out.emplace_back("AverageWeight");
+  return out;
+}
 
 // An implementation of the runtime's Physics interface that solves nothing:
 // the state starts at each zone's `initial` (or the start's fields), grows by
@@ -255,8 +268,11 @@ class Relaxation final : public autan::runtime::Physics {
     const double r = std::pow(options_.factor, static_cast<double>(iteration - 1));
     const auto equations = autan::runtime::residual_names(context_.input).size();
     const double smoothed = options_.colour_sweeps > 0 ? 1.0 + 1e-3 * sweep() : 1.0;
-    for (std::size_t e = 0; e < equations; ++e)
-      report.residuals.push_back(static_cast<double>(e + 1) * r * rms_ * smoothed);
+    for (std::size_t e = 0; e < equations; ++e) {
+      report.residuals.push_back(static_cast<double>(e + 1) *
+                                 std::max(r * rms_ * smoothed, options_.plateau));
+    }
+    report.provisional = iteration < options_.provisional_until;
     if (options_.silent_equation >= 0) {
       const bool awake = options_.wake_at > 0 && iteration >= options_.wake_at &&
                          (options_.sleep_at == 0 || iteration < options_.sleep_at);
@@ -693,7 +709,7 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
             .path = "physics",
             .data_json = "{\"ranks\": " + std::to_string(ranks) + "}"};
       },
-      !options.one_rank, groups);
+      !options.one_rank, groups, relaxation_restart_names);
   return registry;
 }
 

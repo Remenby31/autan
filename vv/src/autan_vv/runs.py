@@ -32,12 +32,16 @@ from autan.results import (
     run_metadata,
     utc_now,
 )
+from autan.schema import Steady
 from autan.version import COMMIT, __version__
 
 from autan_vv.errors import VVError
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from autan.errors import Diagnostic
+    from autan.results import Convergence, StartInfo
 
     from autan_vv.meshes.facemesh import FaceMesh, FloatArray
 
@@ -51,10 +55,14 @@ KINDS = {
 NORMALIZED = {"wall": "wall", "pressure-far-field": "farfield"}
 
 
-def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
+def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str, scale: float = 1.0) -> autan.MeshInfo:
     """The MeshInfo the core reader reports for `mesh` stored at `path` (docs/contracts/mesh-info.md).
 
-    Gmsh files carry no boundary types (`type: null`); Fluent files carry theirs.
+    Gmsh files carry no boundary types (`type: null`); Fluent files carry theirs. The derived counts
+    of a run's memory estimate need the core, so they are upper bounds: every cell in lines of every
+    length (RCM order, at `scale` metres per mesh unit, the case's `mesh_unit`) and a gradient
+    stencil of each cell's face neighbours and theirs. The multigrid hierarchy is the mesh alone (no coarsening declared). Fixture meshes have no
+    periodic pairs. Nothing reads these counts from a fixture run.
     """
     kinds = mesh.cell_kinds or ("polyhedron",) * mesh.n_cells
     by_type = dict.fromkeys(KINDS.values(), 0)
@@ -78,6 +86,13 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
             "path": str(path),
             "format": mesh_format,
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "bytes": path.stat().st_size,
+            "logical_bytes": path.stat().st_size,
+            "descriptor_bytes": 0,
+            "zone_names_bytes": 0,
+            "filtered_bytes": 0,
+            "cgns_nodes": 0,
+            "point_list_ids": 0,
         },
         "groups": [],
         "groups_source": None,
@@ -89,7 +104,11 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
             "cells": mesh.n_cells,
             "faces": mesh.n_faces,
             "nodes": int(mesh.points.shape[0]),
+            "source_nodes": int(mesh.points.shape[0]),
+            "face_nodes": len(mesh.face_nodes),
             "cells_by_type": by_type,
+            "stencil_entries": int(np.sum(1 + faces_per_cell * int(faces_per_cell.max()))),
+            "periodic_ghosts": 0,
         },
         "boundary_zones": [
             {
@@ -108,6 +127,13 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
                 np.degrees(np.arccos(np.clip(cos.min(), -1.0, 1.0)))
             ),
             "max_faces_per_cell": int(faces_per_cell.max()),
+            "lines": {
+                "order": "rcm",
+                "scale": scale,
+                "cells": mesh.n_cells,
+                "long_cells": mesh.n_cells,
+            },
+            "multigrid": {"cells_by_level": [mesh.n_cells], "edges_by_level": [mesh.n_interior]},
         },
     }
     return autan.MeshInfo.from_document(document, autan.Location(file=str(path)))
@@ -229,11 +255,18 @@ def write_run(
     *,
     time: float | None = None,
     status: str = "converged",
+    residuals: list[dict[str, float]] | None = None,
+    start: StartInfo | None = None,
+    convergence: Convergence | None = None,
+    diagnostics: tuple[Diagnostic, ...] = (),
 ) -> autan.Results:
     """Write one finished run of `case` on `mesh` with the given cell fields; return it opened.
 
     `fields` must hold exactly the fields results.md requires for the case's physics, one value per
-    cell in mesh order. The history holds one line with unit residuals. Cases with monitors or time
+    cell in mesh order. `residuals` gives the history, one line per iteration (after
+    `start.iterations` for a continuation); without it a steady `converged` run holds unit
+    residuals then the same dropped `residual_orders`, any other run one line of unit residuals.
+    `start`, `convergence` and `diagnostics` go to run.json as given. Cases with monitors or time
     averaging are refused (V0731).
     """
     spec = case.spec
@@ -273,6 +306,7 @@ def write_run(
         iterations=0,
         time=None,
         averaging=None,
+        start=start,
         diagnostics=(),
     )
     run = run.model_copy(update={"identity": run_identity(run)})
@@ -286,17 +320,24 @@ def write_run(
     if spec.initial_state is not None:
         states[spec.initial_state.sha256] = case.resolve(spec.initial_state.path).read_bytes()
     writer = RunWriter(runs, run, spec, info, states=states)
-    writer.append(
-        {
-            "iteration": 1,
-            "time": time,
-            "residuals": dict.fromkeys(residual_names(spec), 1.0),
-            "monitors": {},
-        }
-    )
-    final = writer.info.model_copy(update={"status": status, "iterations": 1, "time": time})
+    if residuals is None:
+        ones = dict.fromkeys(residual_names(spec), 1.0)
+        residuals = [ones]
+        if isinstance(spec.time, Steady) and status == "converged":
+            residuals.append(dict.fromkeys(ones, 10.0**-spec.time.residual_orders))
+    first = start.iterations if start is not None and start.mode == "continue" else 0
+    for k, line in enumerate(residuals):
+        writer.append({"iteration": first + k + 1, "time": time, "residuals": line, "monitors": {}})
+    changes = {
+        "status": status,
+        "iterations": first + len(residuals),
+        "time": time,
+        "convergence": convergence,
+        "diagnostics": diagnostics,
+    }
+    final = writer.info.model_copy(update=changes)
     staging = writer.path / ".solution.cgns.tmp"
     _write_solution(staging, mesh, plan, final, {k: fields[k] for k in field_names(spec)})
     staging.rename(writer.path / "solution.cgns")
-    writer.finish(status=status, iterations=1, time=time)
+    writer.finish(**changes)
     return autan.Results.open(writer.path)

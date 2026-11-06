@@ -172,10 +172,14 @@ class EulerPhysics final : public runtime::Physics {
       if (keys_) matrix_->order_rows(*keys_);
       if (in.time.linear_solver == "multigrid") {
         multigrid_.emplace(mesh, ctx.geometry);
-        nlohmann::json nodes = nlohmann::json::array();
-        for (const auto& l : multigrid_->levels()) nodes.push_back(l.n_nodes);
+        nlohmann::json nodes = nlohmann::json::array(), edges = nlohmann::json::array();
+        for (const auto& l : multigrid_->levels()) {
+          nodes.push_back(l.n_nodes);
+          edges.push_back(l.owner.size());
+        }
         ctx.log.write("info", "linear", "agglomeration multigrid", {},
                       nlohmann::json{{"nodes", nodes},
+                                     {"edges", edges},
                                      {"coarsest", multigrid_->direct_coarsest() ? "lu" : "sweeps"}}
                           .dump());
       } else if (in.time.linear_solver == "lines") {
@@ -266,7 +270,14 @@ class EulerPhysics final : public runtime::Physics {
 
   StepReport step(std::int64_t /*iteration*/) override {
     pressure_valid_ = false;
-    if (device_) return device_step();
+    // A steady step that solves the first-order start is provisional (case-schema.md#time).
+    const bool provisional = ctx_.input.time.kind == "steady" && !second_order_;
+    StepReport report = device_ ? device_step() : host_step();
+    report.provisional = provisional;
+    return report;
+  }
+
+  StepReport host_step() {
     StepReport report;
     // A state the kernels cannot evaluate (as stored, see first_invalid_cell) diverges here,
     // before a solve turns it into an exception; on every rank, also those that own no such cell.
@@ -552,6 +563,12 @@ class EulerPhysics final : public runtime::Physics {
                      first_norms_.empty() ? -1.0 : first_norms_[k]);
     }
     v.emplace_back("SolverCflCap", cfl_cap_);
+    // The first-order start's plateau (-1: no reference yet), which decides when it ends.
+    const auto plateau = first_order_plateau_.state();
+    v.emplace_back("SolverFirstOrderPlateauReference",
+                   std::isinf(plateau.reference) ? -1.0 : plateau.reference);
+    v.emplace_back("SolverFirstOrderPlateauCount", static_cast<double>(plateau.count));
+    v.emplace_back("SolverFirstOrderPlateauSince", static_cast<double>(plateau.since));
     return v;
   }
 
@@ -566,6 +583,10 @@ class EulerPhysics final : public runtime::Physics {
       for (std::size_t k = 0; k < 5; ++k) first_norms_.push_back(v[4 + k].second);
     }
     cfl_cap_ = v[9].second;
+    first_order_plateau_.restore(
+        {.reference = v[10].second < 0.0 ? std::numeric_limits<double>::infinity() : v[10].second,
+         .count = static_cast<std::size_t>(v[11].second),
+         .since = static_cast<std::size_t>(v[12].second)});
   }
 
   // SA-neg: rho nt from the zones' initial nt, nt at the boundary faces that give it, the wall
@@ -1248,8 +1269,10 @@ class EulerPhysics final : public runtime::Physics {
   // solution; second order from the step after the first-order residual has dropped. The device
   // starts the same way, so that both solve the same sequence of problems.
   void switch_order(double drop) {
-    if (!second_order_ &&
-        (drop < first_order_drop || ++first_order_steps_ > first_order_max_steps)) {
+    if (second_order_) return;
+    // Also once the drop is on a round-off plateau: in fp32+acc64 three orders can lie below it.
+    const bool flat = first_order_plateau_.add(drop);
+    if (drop < first_order_drop || flat || ++first_order_steps_ > first_order_max_steps) {
       second_order_ = true;
       euler_.set_second_order(true);
       if (device_) device_->set_second_order(true);
@@ -1366,6 +1389,7 @@ class EulerPhysics final : public runtime::Physics {
   std::unique_ptr<SaState<P>> sa_;   // SA-neg runs only
   std::array<double, 5> reference_;  // the state the cells store differences from
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
+  runtime::Plateau first_order_plateau_;
   std::optional<BlockMatrix> matrix_;            // steady runs only
   std::optional<solvers::Multigrid> multigrid_;  // linear_solver = "multigrid"
   std::optional<solvers::LineSmoother> lines_;   // linear_solver = "lines"
@@ -1613,6 +1637,31 @@ std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverI
 }
 #endif
 
+// EulerPhysics::restart_fields' names: the conserved variables, the averaging sums and weight,
+// the steady solver's state, one circulation per point vortex.
+std::vector<std::string> euler_restart_names(const runtime::SolverInput& in, bool averaging) {
+  std::vector<std::string> out(conserved_names.begin(), conserved_names.end());
+  if (averaging) {
+    for (const char* name : field_names) out.push_back(std::string("AverageSum") + name);
+    out.emplace_back("AverageWeight");
+  }
+  if (in.time.kind == "steady") {
+    out.insert(out.end(),
+               {"SolverPenalty", "SolverShortened", "SolverSecondOrder", "SolverFirstOrderSteps"});
+    for (std::size_t k = 0; k < 5; ++k) {
+      out.push_back("SolverReferenceResidual" + std::to_string(k));
+    }
+    out.emplace_back("SolverCflCap");
+    out.insert(out.end(), {"SolverFirstOrderPlateauReference", "SolverFirstOrderPlateauCount",
+                           "SolverFirstOrderPlateauSince"});
+  }
+  std::size_t vortices = 0;
+  for (const auto& bc : in.boundaries) {
+    if (bc.point_vortex) out.push_back("VortexCirculation" + std::to_string(vortices++));
+  }
+  return out;
+}
+
 }  // namespace
 
 // linear_solver = "lines": the multigrid's fine lines, computed on the global mesh, which the
@@ -1628,15 +1677,17 @@ runtime::CellGroups euler_groups(const runtime::SolverInput& in, const Mesh& mes
 void register_euler(runtime::PhysicsRegistry& registry) {
   registry.add({"compressible", "inviscid", "fp64", "cpu"},
                factory<kernels::fp64, Euler<kernels::fp64>>(), euler_scope,
-               /*several_ranks=*/true, euler_groups);
+               /*several_ranks=*/true, euler_groups, euler_restart_names);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"},
                factory<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>(), euler_scope,
-               /*several_ranks=*/true, euler_groups);
+               /*several_ranks=*/true, euler_groups, euler_restart_names);
 #ifdef AUTAN_PHYSICS_CUDA
   registry.add({"compressible", "inviscid", "fp64", "cuda"},
-               factory<kernels::fp64, Euler<kernels::fp64>>(), euler_device_scope);
+               factory<kernels::fp64, Euler<kernels::fp64>>(), euler_device_scope,
+               /*several_ranks=*/false, {}, euler_restart_names);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cuda"},
-               factory<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>(), euler_device_scope);
+               factory<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>(), euler_device_scope,
+               /*several_ranks=*/false, {}, euler_restart_names);
 #endif
 }
 
