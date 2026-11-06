@@ -57,15 +57,15 @@ OPS = {
 }
 
 
-def run(fn: Function, *args: float | tuple[float, ...]) -> list[float]:
+def run(fn: Function, *args: float | tuple[float, ...], dtype: type = np.float64) -> list[float]:
     flat = [list(a) if isinstance(a, tuple) else [a] for a in args]
     v: list[object] = []
     for ins in fn.instrs:
         if ins.op == "input":
             k, c = ins.attr  # type: ignore[misc]
-            v.append(np.float64(flat[k][c]))
+            v.append(dtype(flat[k][c]))
         elif ins.op == "const":
-            v.append(np.float64(ins.attr))  # type: ignore[arg-type]
+            v.append(dtype(ins.attr))  # type: ignore[arg-type]
         else:
             v.append(OPS[ins.op](*(v[a] for a in ins.args)))
     return [v[o] for o in fn.outputs]  # type: ignore[misc]
@@ -113,6 +113,13 @@ def signed_zeros(x: State) -> tuple[State, State, State]:
     return (1.0 if 1.0 / b > 0.0 else -1.0) + a, x + 0.0, x - (-0.0)
 
 
+@pointwise
+def zero_products(
+    v: State.Vec3, g: Grad.Mat53, w: Geom.Vec3, m: Geom.Mat3
+) -> tuple[State, State.Vec5, Grad.Mat53]:
+    return dot(v, w), g @ w, g @ m
+
+
 def test_branches_see_the_value_their_predicate_was_computed_from() -> None:
     fn, _ = parse(reassigned_before_predicate)
     assert run(fn, 0.75) == [0.5]
@@ -142,6 +149,16 @@ def test_constants_and_identities_keep_the_sign_of_zero() -> None:
     assert not np.signbit(plus)
     assert minus == 0.0
     assert not np.signbit(minus)
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_products_of_negative_zeros_are_negative_zero(dtype: type) -> None:
+    # A sum of -0.0 terms is -0.0; starting dot and @ from a literal 0.0 would make it +0.0.
+    fn, _ = parse(zero_products)
+    out = run(fn, (-0.0,) * 3, (-0.0,) * 15, (1.0,) * 3, (1.0,) * 9, dtype=dtype)
+    assert len(out) == 1 + 5 + 15
+    assert all(x == 0.0 for x in out)
+    assert all(np.signbit(x) for x in out)
 
 
 def test_min_and_max_select_the_first_argument_on_ties() -> None:
