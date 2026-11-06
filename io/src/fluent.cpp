@@ -9,12 +9,14 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "autan/io/read_mesh.hpp"
 #include "cursor.hpp"
+#include "text_limit.hpp"
 
 namespace autan::io {
 namespace {
@@ -167,8 +169,13 @@ class FluentReader {
 
   std::vector<std::int64_t> header() {
     c_.expect('(');
+    // Node, cell and face headers hold five fields (zone, first, last, type and a dimension or
+    // element type, Ansys Fluent legacy file formats); more than eight is refused as read.
     std::vector<std::int64_t> values;
-    while (c_.peek() != ')') values.push_back(c_.integer<std::int64_t>(16, "()"));
+    while (c_.peek() != ')') {
+      if (values.size() == 8) c_.fail("section header has more than 8 fields");
+      values.push_back(c_.integer<std::int64_t>(16, "()"));
+    }
     c_.expect(')');
     if (values.size() < 4) c_.fail("section header has fewer than 4 fields");
     return values;
@@ -302,6 +309,7 @@ class FluentReader {
     face_blocks_.push_back(FaceBlock{.zone = zone, .bc_code = bc_code});
     c_.expect('(');
     std::vector<std::int64_t> nodes;
+    bool interior = false;
     for (std::size_t f = 0; f < n; ++f) {
       const std::int64_t count = face_type == 0 || face_type == 5 ? next() : face_type;
       if (count < 3) c_.fail("face with fewer than 3 nodes");
@@ -314,6 +322,7 @@ class FluentReader {
         if (v < 1) c_.fail("node index must be at least 1");
       }
       if (c0 < 0 || c1 < 0 || (c0 == 0 && c1 == 0)) c_.fail("face without a cell");
+      interior = interior || (c0 != 0 && c1 != 0);
       // Normal points toward c0: c1 is the cell it leaves. On the boundary
       // (c1 = 0) the face is reversed so that it leaves c0.
       const bool reverse = c1 == 0;
@@ -324,6 +333,12 @@ class FluentReader {
       face_cell1_.push_back(reverse ? 0 : c0);
       face_block_.push_back(block);
     }
+    // A section of interior faces is its own zone, which MeshInfo does not show: real meshes have
+    // a few, at most 16 384 of them, as zone records (mesh.md, Readers).
+    if (interior && ++interior_sections_ > max_cell_zone_records) {
+      c_.unsupported("more than " + std::to_string(max_cell_zone_records) +
+                     " sections of interior faces");
+    }
     if (binary) {
       end_binary(id);
     } else {
@@ -332,16 +347,50 @@ class FluentReader {
     c_.expect(')');
   }
 
-  void zone() {
-    c_.expect('(');
-    const auto id = c_.integer<std::int64_t>(10, "()");
+  // A section 39/45 zone record, its header from `c` on: its id, type and name.
+  static std::pair<std::int64_t, ZoneInfo> zone_record(Cursor& c) {
+    c.expect('(');
+    const auto id = c.integer<std::int64_t>(10, "()");
     ZoneInfo info;
-    info.type = std::string(c_.token("()"));
-    info.name = std::string(c_.token("()"));
-    while (c_.peek() != ')') (void)c_.token("()");
-    c_.expect(')');
+    const std::string_view type = c.token("()");
+    check_text(c.path(), "zone type", type.size());
+    info.type = std::string(type);
+    const std::string_view name = c.token("()");
+    check_text(c.path(), "zone name", name.size());
+    info.name = std::string(name);
+    while (c.peek() != ')') (void)c.token("()");
+    c.expect(')');
+    return {id, std::move(info)};
+  }
+
+  // A zone record is kept as its offset, the last given for an id winning, and read again for the
+  // zones the cells and faces use and the boundary zones declared without faces: a name is copied
+  // only for a zone MeshInfo shows (mesh.md, Readers).
+  void zone() {
+    const std::size_t at = c_.position();
+    auto [id, info] = zone_record(c_);
     skip_rest();
-    zones_[id] = std::move(info);
+    // Real meshes have a few fluid, solid or interior records: at most 16 384 of them.
+    if ((info.type == "fluid" || info.type == "solid" || info.type == "interior") &&
+        ++cell_zone_records_ > max_cell_zone_records) {
+      c_.unsupported("more than " + std::to_string(max_cell_zone_records) +
+                     " fluid, solid or interior zone records");
+    }
+    records_[id] = at;
+  }
+
+  // The zone record of zone `id`, the last one given winning.
+  [[nodiscard]] std::optional<ZoneInfo> zone_info(std::int64_t id) const {
+    const auto it = records_.find(id);
+    if (it == records_.end()) return std::nullopt;
+    return record_at(it->second);
+  }
+
+  // The zone record at `offset` in the file.
+  [[nodiscard]] ZoneInfo record_at(std::size_t offset) const {
+    Cursor c(data_, c_.path());
+    c.advance(offset);
+    return zone_record(c).second;
   }
 
   index_t cell_index(std::int64_t cell) {
@@ -351,7 +400,7 @@ class FluentReader {
 
   MeshInput build() {
     MeshInput in;
-    in.source = MeshSource{.format = "fluent", .path = c_.path()};
+    in.source = MeshSource{.format = "fluent", .path = c_.path(), .nodes = 0};
     if (n_nodes_ == 0 || face_blocks_.empty()) c_.fail("no nodes or no faces");
     for (std::int64_t p = 0; p < n_nodes_; ++p) {
       if (static_cast<std::size_t>(p) >= node_seen_.size() ||
@@ -375,14 +424,27 @@ class FluentReader {
       if (v > n_nodes_) c_.fail("face node index out of range");
       in.face_nodes.push_back(static_cast<index_t>(v - 1));
     }
+    // A zone's role is that of its faces (assemble() rejects a zone that mixes them): a zone of
+    // interior faces, whatever its type, is named by its id, which no Fluent name can be (a name
+    // holds no parenthesis or space). Nothing exposes it (mesh.md, Readers), so its record's name
+    // is never copied.
+    std::vector<char> interior_block(face_blocks_.size(), 0);
+    for (std::size_t f = 0; f < face_cell1_.size(); ++f) {
+      if (face_cell1_[f] != 0) interior_block[static_cast<std::size_t>(face_block_[f])] = 1;
+    }
+    std::map<std::int64_t, bool> interior_zone;
+    for (std::size_t b = 0; b < face_blocks_.size(); ++b) {
+      interior_zone[face_blocks_[b].zone] |= interior_block[b] != 0;
+    }
     std::map<std::int64_t, index_t> face_zone_index;
     for (const FaceBlock& block : face_blocks_) {
       if (face_zone_index.contains(block.zone)) continue;
-      const auto it = zones_.find(block.zone);
-      const std::string type =
-          it != zones_.end() ? it->second.type : std::string(bc_type_from_code(block.bc_code));
-      const std::string name =
-          it != zones_.end() ? it->second.name : "zone-" + std::to_string(block.zone);
+      const auto info = zone_info(block.zone);
+      const std::string type = info ? info->type : std::string(bc_type_from_code(block.bc_code));
+      const std::string name = interior_zone.at(block.zone)
+                                   ? "(interior " + std::to_string(block.zone) + ")"
+                               : info ? info->name
+                                      : "zone-" + std::to_string(block.zone);
       face_zone_index[block.zone] = static_cast<index_t>(in.face_zones.size());
       in.face_zones.push_back(FaceZone{
           .name = name,
@@ -392,18 +454,18 @@ class FluentReader {
           .provenance = Provenance{.source_id = block.zone,
                                    .detail = "Fluent zone " + std::to_string(block.zone)}});
     }
-    // Zones declared without faces stay visible; cell-zone types excluded.
-    for (const auto& [id, info] : zones_) {
+    // Boundary zones declared without faces stay visible; cell-zone and interior types excluded.
+    for (const auto& [id, offset] : records_) {
       const bool cells = std::ranges::find(cell_zone_order_, id) != cell_zone_order_.end();
-      if (cells || face_zone_index.contains(id) || info.type == "fluid" || info.type == "solid") {
-        continue;
-      }
+      if (cells || face_zone_index.contains(id)) continue;
+      const ZoneInfo info = record_at(offset);
+      if (info.type == "fluid" || info.type == "solid" || info.type == "interior") continue;
       face_zone_index[id] = static_cast<index_t>(in.face_zones.size());
       in.face_zones.push_back(FaceZone{
           .name = info.name,
           .bc_type = info.type,
           .kind = bc_kind(info.type),
-          .boundary = info.type != "interior",
+          .boundary = true,
           .provenance = Provenance{.source_id = id,
                                    .detail = "Fluent zone " + std::to_string(id) + " (no faces)"}});
     }
@@ -427,11 +489,11 @@ class FluentReader {
     in.cell_zone.assign(n_cells, -1);
     std::map<std::int64_t, index_t> cell_zone_index;
     for (const std::int64_t zone : cell_zone_order_) {
-      const auto it = zones_.find(zone);
-      const std::string type = it != zones_.end() ? it->second.type : "";
+      const auto info = zone_info(zone);
+      const std::string type = info ? info->type : "";
       cell_zone_index[zone] = static_cast<index_t>(in.cell_zones.size());
       in.cell_zones.push_back(CellZone{
-          .name = it != zones_.end() ? it->second.name : "zone-" + std::to_string(zone),
+          .name = info ? info->name : "zone-" + std::to_string(zone),
           .type = type,
           .kind = type == "fluid"   ? CellKind::fluid
                   : type == "solid" ? CellKind::solid
@@ -506,7 +568,10 @@ class FluentReader {
   std::vector<std::int64_t> face_cell1_;
   std::vector<index_t> face_block_;
   std::vector<FaceBlock> face_blocks_;
-  std::map<std::int64_t, ZoneInfo> zones_;
+  std::map<std::int64_t, std::size_t> records_;  // zone id -> offset of its last record
+  static constexpr std::size_t max_cell_zone_records = 16384;
+  std::size_t cell_zone_records_ = 0;  // fluid, solid and interior records among them
+  std::size_t interior_sections_ = 0;  // face sections holding an interior face
 };
 
 }  // namespace
