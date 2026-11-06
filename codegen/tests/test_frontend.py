@@ -104,6 +104,15 @@ def minmax_ties(a: State, b: State) -> tuple[State, State]:
     return min(a, b), max(a, b)
 
 
+@pointwise
+def signed_zeros(x: State) -> tuple[State, State, State]:
+    if x > 1.0:
+        a, b = 0.0, -0.0
+    else:
+        a, b = 2.0, 3.0
+    return (1.0 if 1.0 / b > 0.0 else -1.0) + a, x + 0.0, x - (-0.0)
+
+
 def test_branches_see_the_value_their_predicate_was_computed_from() -> None:
     fn, _ = parse(reassigned_before_predicate)
     assert run(fn, 0.75) == [0.5]
@@ -121,6 +130,18 @@ def test_calls_are_inlined_and_vectors_scalarised() -> None:
     assert sig.names == ["u", "x", "y", "k"]
     # d = (1, 1, -1); u . d = 2 > k = -3 -> 2 * -3; abs(-3) u - d
     assert run(fn, (1.0, 2.0, 1.0), (2.0, 3.0, 0.0), (1.0, 2.0, 1.0), -3.0) == [-6.0, 2.0, 5.0, 4.0]
+
+
+def test_constants_and_identities_keep_the_sign_of_zero() -> None:
+    # IEEE 754: 1 / -0 = -inf, and -0 + 0 = -0 - (-0) = +0; 0.0 == -0.0 must not merge them.
+    fn, _ = parse(signed_zeros)
+    with np.errstate(divide="ignore"):
+        assert run(fn, 4.0)[0] == -1.0
+    _, plus, minus = run(fn, -0.0)
+    assert plus == 0.0
+    assert not np.signbit(plus)
+    assert minus == 0.0
+    assert not np.signbit(minus)
 
 
 def test_min_and_max_select_the_first_argument_on_ties() -> None:
