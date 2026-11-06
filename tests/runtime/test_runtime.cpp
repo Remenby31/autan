@@ -11,6 +11,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <map>
+#include <optional>
 #include <random>
 #include <regex>
 #include <set>
@@ -240,6 +241,14 @@ std::vector<std::string> field_list(const fs::path& file) {
 std::vector<cgsize_t> wall_point_list(const fs::path& file) {
   int fn = 0;
   REQUIRE(cg_open(file.string().c_str(), CG_MODE_READ, &fn) == CG_OK);
+  struct Closer {
+    explicit Closer(int f) : fn(f) {}
+    Closer(const Closer&) = delete;
+    Closer& operator=(const Closer&) = delete;
+    ~Closer() { cg_close(fn); }
+    int fn;
+  };
+  const Closer closer(fn);
   int regions = 0;
   REQUIRE(cg_nsubregs(fn, 1, 1, &regions) == CG_OK);
   std::vector<cgsize_t> points;
@@ -255,7 +264,6 @@ std::vector<cgsize_t> wall_point_list(const fs::path& file) {
     points.resize(static_cast<std::size_t>(npnts));
     REQUIRE(cg_subreg_ptset_read(fn, 1, 1, r, points.data()) == CG_OK);
   }
-  cg_close(fn);
   return points;
 }
 
@@ -1020,14 +1028,20 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(info["timing"].is_null());  // a failed run is not timed
   }
   SECTION("failed creating the run directory: E0704 on stderr, exit 1") {
-    // A file stands where the runs directory goes.
     const fs::path dir = fresh_dir();
     std::ofstream(dir / "runs") << "x";
     const Outcome o = run_in(dir, input(), autan_test::relaxation_registry({}));
     CHECK(o.status == ExitStatus::failed);
     CHECK(o.run.empty());
-    REQUIRE(!o.err.empty());
-    CHECK(Json::parse(o.err.substr(0, o.err.find('\n')))["code"] == "E0704");
+    // Warnings (W0713) may come first; the last diagnostic is the failure.
+    std::vector<Json> diagnostics;
+    std::istringstream err_lines(o.err);
+    for (std::string line; std::getline(err_lines, line);)
+      if (line.starts_with("{")) diagnostics.push_back(Json::parse(line));
+    REQUIRE(!diagnostics.empty());
+    for (std::size_t k = 0; k + 1 < diagnostics.size(); ++k)
+      CHECK(diagnostics[k]["severity"] == "warning");
+    CHECK(diagnostics.back()["code"] == "E0704");
   }
   SECTION("unsteady with averaging: time, averaging and FlowSolutionMean") {
     // Written by `autan prepare` with time = Unsteady(steps=6, dt=0.01 s,
@@ -2610,9 +2624,13 @@ TEST_CASE("An equation at round-off from iteration 1 does not hold back converge
 TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]") {
   // momentum-x leaves its floor at iterations 10-14, then falls back: it is
   // no longer exempt, so the run cannot converge (budget 40). A run
-  // continued from iteration 20 must do the same, through start.woken.
+  // continued from iteration 20 must do the same, through start.woken. At round-off or
+  // identically zero, which its reference then holds (results.md, `start`).
+  const double silent = GENERATE(1e-15, 0.0);
+  CAPTURE(silent);
   autan_test::RelaxationOptions options;
   options.silent_equation = 1;
+  options.silent_residual = silent;
   options.wake_at = 10;
   options.sleep_at = 15;
   const auto doc = [](std::int64_t n) {
@@ -2626,10 +2644,15 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
   Json next = doc(40);
   next["start"] = start_from(a.run, "continue");
   CHECK(next["start"]["woken"] == Json::array({"momentum-x"}));
+  CHECK(next["start"]["residual_reference"]["momentum-x"] == silent);
   const Outcome b = run(next, options);
+  INFO(b.err);
   REQUIRE(b.status == ExitStatus::finished);
   const Json info = Json::parse(read(b.run / "run.json"));
-  CHECK(info["status"] == "completed");
+  // The continuation ends as the uninterrupted run does; at round-off, that run cannot converge.
+  const Json full = Json::parse(read(whole.run / "run.json"));
+  CHECK(info["status"] == full["status"]);
+  if (silent > 0.0) CHECK(full["status"] == "completed");
   CHECK(info["start"]["woken"] == Json::array({"momentum-x"}));
   // The equation woke in the first run: no new W0710 in the continuation.
   CHECK(info["diagnostics"].empty());
@@ -2637,12 +2660,6 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
   const auto rest = lines_of(b.run / "history.jsonl");
   chain.insert(chain.end(), rest.begin(), rest.end());
   CHECK(chain == lines_of(whole.run / "history.jsonl"));
-  // results.md, `start`: a reference may hold an equation identically zero at iteration 1.
-  Json zero = next;
-  zero["start"]["residual_reference"]["momentum-z"] = 0.0;
-  const Outcome z = run(zero, options);
-  INFO(z.err);
-  CHECK(z.status == ExitStatus::finished);
 }
 
 TEST_CASE("In fp32+acc64 an equation converges at its floor at the latest", "[runtime]") {
@@ -2758,11 +2775,29 @@ TEST_CASE("A physics' groups reach it whole on one rank", "[runtime][groups]") {
   // number of ranks. The relaxation physics checks that it was asked for them once and was given
   // each group whole, in its order (check_groups). In the mesh's own order, cell 0, the least of
   // group 0, is the physics' cell 0.
+  struct InputOrder {
+    InputOrder() {
+      if (const char* given = std::getenv("AUTAN_CELL_ORDER")) saved = given;
+      REQUIRE(setenv("AUTAN_CELL_ORDER", "input", 1) == 0);
+    }
+    ~InputOrder() {
+      if (saved) {
+        setenv("AUTAN_CELL_ORDER", saved->c_str(), 1);
+      } else {
+        unsetenv("AUTAN_CELL_ORDER");
+      }
+    }
+    InputOrder(const InputOrder&) = delete;
+    InputOrder& operator=(const InputOrder&) = delete;
+    std::optional<std::string> saved;
+  };
   autan_test::RelaxationOptions lining;
   lining.groups = 2;
-  REQUIRE(setenv("AUTAN_CELL_ORDER", "input", 1) == 0);
-  const Outcome o = run(input(), lining);
-  unsetenv("AUTAN_CELL_ORDER");
+  Outcome o;
+  {
+    const InputOrder input_order;
+    o = run(input(), lining);
+  }
   INFO(o.err);
   CHECK(o.status == ExitStatus::finished);
 }

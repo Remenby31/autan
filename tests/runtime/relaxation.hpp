@@ -100,12 +100,13 @@ struct RelaxationOptions {
   int hold_rank = -1;  ///< the rank that holds them; -1: every rank
   /// Bytes of device memory the physics holds from its construction on, on a CUDA run.
   std::int64_t hold_device_bytes = 0;
-  /// An equation the flow does not excite: its residual stays at round-off
-  /// (1e-15), except from iteration `wake_at` (0: never) to `sleep_at`
-  /// (excluded; 0: never), where it is 1e-3.
+  /// An equation the flow does not excite: its residual stays at `silent_residual`, round-off
+  /// or exactly 0, except from iteration `wake_at` (0: never) to `sleep_at` (excluded; 0:
+  /// never), where it is 1e-3.
   std::int64_t silent_equation = -1;
+  double silent_residual = 1e-15;
   std::int64_t wake_at = 0;
-  std::int64_t sleep_at = 0;     ///< 0: never; from then on, back at 1e-15
+  std::int64_t sleep_at = 0;     ///< 0: never; from then on, back at silent_residual
   std::vector<double> scales{};  ///< residual_scales(); empty: none
   /// Groups of cells the partition keeps whole: cell c in group c mod (2 groups) when below
   /// `groups`, so each group spans the mesh, its cells in decreasing order. The physics throws
@@ -275,7 +276,8 @@ class Relaxation final : public autan::runtime::Physics {
     if (options_.silent_equation >= 0) {
       const bool awake = options_.wake_at > 0 && iteration >= options_.wake_at &&
                          (options_.sleep_at == 0 || iteration < options_.sleep_at);
-      report.residuals[static_cast<std::size_t>(options_.silent_equation)] = awake ? 1e-3 : 1e-15;
+      report.residuals[static_cast<std::size_t>(options_.silent_equation)] =
+          awake ? 1e-3 : options_.silent_residual;
     }
     for (auto& f : state_) {
       for (auto& v : f.values) v *= 1.0 + options_.growth;
