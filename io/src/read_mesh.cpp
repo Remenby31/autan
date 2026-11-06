@@ -1,7 +1,6 @@
 #include "autan/io/read_mesh.hpp"
 
 #include <fstream>
-#include <iterator>
 #include <string>
 #include <string_view>
 
@@ -11,10 +10,16 @@
 namespace autan::io {
 
 std::string read_file(const std::string& path) {
-  std::ifstream in(path, std::ios::binary);
+  std::ifstream in(path, std::ios::binary | std::ios::ate);
   if (!in) throw Error(ErrorCode::io_cannot_open, "cannot open '" + path + "'");
-  std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  if (in.bad()) throw Error(ErrorCode::io_cannot_open, "cannot read '" + path + "'");
+  const std::streamoff size = in.tellg();
+  if (size < 0) throw Error(ErrorCode::io_cannot_open, "cannot read '" + path + "'");
+  in.seekg(0, std::ios::beg);
+  // Allocated at the file's size and read once: no copy while growing (#358).
+  std::string data(static_cast<std::size_t>(size), '\0');
+  in.read(data.data(), static_cast<std::streamsize>(size));
+  if (in.gcount() != static_cast<std::streamsize>(size))
+    throw Error(ErrorCode::io_cannot_open, "cannot read '" + path + "'");
   return data;
 }
 

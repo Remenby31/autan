@@ -89,10 +89,15 @@ struct TimeInput {
   double residual_orders = 0.0;
   std::string linear_solver;  ///< steady: "multigrid" or "gauss-seidel" (global colours)
   bool coupled_turbulence =
-      false;  ///< steady: the flow and SA solved together (case-schema.md#time)
+      false;                 ///< steady: the flow and SA solved together (case-schema.md#time)
+  bool matrix_free = false;  ///< steady laminar: the matrix-free step (case-schema.md#time)
   std::int64_t steps = 0;
   std::optional<double> dt, cfl;
   std::optional<std::int64_t> average_from;
+  /// Checkpoint cadence (case-schema.md#time): wall-clock seconds between two checkpoints, or
+  /// every that many iterations; exactly one is set.
+  std::optional<double> checkpoint_seconds;
+  std::optional<std::int64_t> checkpoint_iterations;
 };
 
 struct ForcesMonitor {
@@ -118,6 +123,8 @@ struct Start {
   std::int64_t iterations = 0;
   std::optional<double> time;
   std::string solution_sha256;
+  /// The file of `run` to read: "solution" (solution.cgns) or "checkpoint" (checkpoint.cgns).
+  std::string file;
   /// Residuals at iteration 1 of the original run, in residual_names order;
   /// set exactly for a steady `continue`.
   std::optional<std::vector<double>> residual_reference;
@@ -137,11 +144,20 @@ struct SolverInput {
   std::string case_name, case_sha256, case_toml;
   std::string mesh_path, mesh_sha256;
   double mesh_scale = 1.0;  ///< metres per mesh unit (solver-input.md, mesh.scale)
-  std::string precision;    ///< "fp32+acc64" or "fp64"
+  /// SHA-256 of the zone-groups sidecar the SDK resolved the case with; none without one.
+  std::optional<std::string> mesh_groups_sha256;
+  /// The MeshInfo the input was planned with (solver-input.md, mesh_info), as JSON text, and
+  /// the cell order and scale its quality.lines were counted in.
+  std::string mesh_info, mesh_info_order;
+  double mesh_info_scale = 1.0;
+  std::int64_t mesh_info_bytes = 0;  ///< its source.bytes: the size of what the mesh hash covers
+  std::string precision;             ///< "fp32+acc64" or "fp64"
   /// "none", "run" or "ranks" (solver-input.md): which runs repeat the same bits.
   std::string reproducibility = "run";
   std::string device_kind;  ///< cpu, cuda, hip
   std::int64_t device_count = 1;
+  /// `memory`: what one rank allocates at its peak, on the host and on its device.
+  std::int64_t memory_bytes_host = 0, memory_bytes_device = 0;
   std::string physics_kind;  ///< compressible, incompressible
   Turbulence turbulence;
   Freestream freestream;

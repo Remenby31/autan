@@ -3,13 +3,15 @@ FetchContent_GetProperties(picosha2)
 add_executable(autan-run-relaxation relaxation_main.cpp)
 target_link_libraries(autan-run-relaxation PRIVATE autan::runtime autan_compile_options)
 
-add_executable(autan_runtime_tests test_runtime.cpp)
+add_executable(autan_runtime_tests test_runtime.cpp test_host_memory.cpp)
 target_include_directories(autan_runtime_tests SYSTEM PRIVATE ${picosha2_SOURCE_DIR})
+target_include_directories(autan_runtime_tests PRIVATE ${PROJECT_SOURCE_DIR}/runtime/src)
 target_link_libraries(
   autan_runtime_tests
   PRIVATE
     autan::runtime
     autan::physics_runtime
+    autan::mesh_counts
     autan_cgns
     nlohmann_json::nlohmann_json
     Catch2::Catch2WithMain
@@ -20,6 +22,7 @@ target_compile_definitions(
   PRIVATE
     AUTAN_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/tests/data"
     AUTAN_RUN_RELAXATION="$<TARGET_FILE:autan-run-relaxation>"
+    AUTAN_TEST_CMAKE="${CMAKE_COMMAND}"
 )
 add_dependencies(autan_runtime_tests autan-run-relaxation)
 if(AUTAN_ENABLE_CUDA)
@@ -38,14 +41,17 @@ if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
   )
 endif()
 # The multi-rank tests carry the label `mpi` (ctest -L mpi).
-catch_discover_tests(autan_runtime_tests TEST_SPEC "~[mpi]~[gpu]")
-catch_discover_tests(autan_runtime_tests TEST_SPEC "[gpu]~[mpi]" PROPERTIES LABELS gpu)
-catch_discover_tests(autan_runtime_tests TEST_SPEC "[mpi]~[gpu]" PROPERTIES LABELS mpi)
+# Processes started by these tests share their executables' hash (run.json
+# solver.binary_sha256) through a cache in the build tree.
+set(hash_cache "AUTAN_BINARY_HASH_CACHE=${PROJECT_BINARY_DIR}/binary-hash-cache")
+catch_discover_tests(autan_runtime_tests TEST_SPEC "~[mpi]~[gpu]" PROPERTIES ENVIRONMENT ${hash_cache})
+catch_discover_tests(autan_runtime_tests TEST_SPEC "[gpu]~[mpi]" PROPERTIES ENVIRONMENT ${hash_cache} LABELS gpu)
+catch_discover_tests(autan_runtime_tests TEST_SPEC "[mpi]~[gpu]" PROPERTIES ENVIRONMENT ${hash_cache} LABELS mpi)
 # [mpi][gpu]: on several ranks, and on the GPU too in a CUDA build (its tags as labels).
 if(AUTAN_ENABLE_CUDA)
-  catch_discover_tests(autan_runtime_tests TEST_SPEC "[mpi][gpu]" ADD_TAGS_AS_LABELS)
+  catch_discover_tests(autan_runtime_tests TEST_SPEC "[mpi][gpu]" ADD_TAGS_AS_LABELS PROPERTIES ENVIRONMENT ${hash_cache})
 else()
-  catch_discover_tests(autan_runtime_tests TEST_SPEC "[mpi][gpu]" PROPERTIES LABELS mpi)
+  catch_discover_tests(autan_runtime_tests TEST_SPEC "[mpi][gpu]" PROPERTIES ENVIRONMENT ${hash_cache} LABELS mpi)
 endif()
 
 # Ranks through the runtime's communicator: one rank here, 1 to 4 under MPI.
@@ -97,7 +103,33 @@ if(AUTAN_ENABLE_CUDA)
     PRIVATE autan::runtime CUDA::cudart Catch2::Catch2WithMain autan_compile_options
   )
   catch_discover_tests(autan_exact_sum_device_tests PROPERTIES LABELS gpu)
+  # The device memory counter through the code base's DeviceArray (#411).
+  add_library(autan_device_memory_device OBJECT device_memory_device.cu)
+  set_target_properties(
+    autan_device_memory_device
+    PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON
+  )
+  target_link_libraries(autan_device_memory_device PRIVATE autan::kernels CUDA::cudart)
+  add_executable(
+    autan_device_memory_tests
+    test_device_memory.cpp
+    $<TARGET_OBJECTS:autan_device_memory_device>
+  )
+  target_include_directories(autan_device_memory_tests PRIVATE ${PROJECT_SOURCE_DIR}/runtime/src)
+  target_link_libraries(
+    autan_device_memory_tests
+    PRIVATE autan::runtime CUDA::cudart Catch2::Catch2WithMain autan_compile_options
+  )
+  catch_discover_tests(autan_device_memory_tests PROPERTIES LABELS gpu)
 endif()
+
+# Every device allocation of the shipped code is counted (#411), in any build.
+add_test(
+  NAME device-allocations-counted
+  COMMAND
+    ${CMAKE_COMMAND} -DROOT=${PROJECT_SOURCE_DIR} -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/device_allocations.cmake
+)
 
 # autan-run as shipped, through its output and exit status: no physics yet.
 set_property(

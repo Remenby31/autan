@@ -88,6 +88,10 @@ Every table rejects unknown keys. Discriminated unions are tagged by `kind` (or 
 | `verification` | [Verification](#verification) | absent |
 | `initial_state` | [Initial state file](#initial-state-file) | absent |
 
+### Free texts
+
+Every text of the case that is not a quantity, a unit or a keyword (the case `name`, material names, zone patterns, monitor names, file paths) is at most 4 096 bytes in UTF-8 (`E0003`). The solver allocates a text before it can check it, and the memory estimate bounds what it holds ([plan.md](../sdk/plan.md)); 4 096 bytes is a path's limit on Linux (`PATH_MAX`). The files the case names bound their texts the same way: the strings and member names of an initial-state or face-state file (`E0508`, `E0420`), whose numbers are also at most 64 characters.
+
 ### Physics
 
 `kind = "compressible"`: density-based solver.
@@ -150,8 +154,14 @@ The flow direction in mesh axes is (cos α cos β, −sin β, sin α cos β) wit
 
 | `kind` | Keys |
 |---|---|
-| `"steady"` | `max_iterations` integer ≥ 1, default 10000; `residual_orders` number > 0, default 8.0; `linear_solver` `"multigrid"` · `"gauss-seidel"` · `"lines"`, default `"multigrid"`; `coupled_turbulence` boolean, default `false`: solves the flow and the SA variable together in each step, for compressible SA physics only (`E0426`), with `linear_solver = "multigrid"` on one CPU rank (`E0427`, from `autan plan` and the runtime); validated on the TMR flat plate only, which `W0426` reports whenever it is on |
+| `"steady"` | `max_iterations` integer ≥ 1, default 10000; `residual_orders` number > 0, default 8.0; `linear_solver` `"multigrid"` · `"gauss-seidel"` · `"lines"`, default `"multigrid"`; `coupled_turbulence` boolean, default `false`: solves the flow and the SA variable together in each step, for compressible SA physics only (`E0426`), with `linear_solver = "multigrid"` on one CPU rank (`E0427`, from `autan plan` and the runtime); validated on the TMR flat plate only, which `W0426` reports whenever it is on; `matrix_free` boolean, default `false`: applies the laminar step's Jacobian without assembling it, for compressible laminar physics only (`E0429`), with `linear_solver = "multigrid"` on one CPU rank (`E0427`); validated on the TMR laminar flat plate only, which `W0429` reports whenever it is on |
 | `"unsteady"` | `steps` integer ≥ 1; exactly one of `dt` (time > 0) or `cfl` (number > 0); `average_from` integer in [0, `steps`), optional |
+
+Both kinds take `checkpoint`: how often a running run saves the state it can be continued from ([results.md](results.md#checkpointcgns)). It is a table with exactly one of:
+- `seconds`, a time in [60 s, 86400 s]: the wall-clock time since the previous checkpoint;
+- `iterations`, an integer ≥ 1: every that many iterations or steps.
+
+The default is `{seconds = "1800 s"}`. Giving both or neither is `E0003`, and a value outside its range is `E0304`. A run killed between two checkpoints loses at most the iterations since the last one. A checkpoint never changes the results, only how much of them survives a kill: with `iterations` the checkpoints fall at the same iterations on every run, with `seconds` wherever the interval ends.
 
 A steady run uses local time stepping and has converged when every residual of [results.md](results.md#history) has dropped `residual_orders` orders of magnitude below its value at iteration 1 (of the original run, for a continued one); it stops after `max_iterations` otherwise.
 
@@ -165,7 +175,7 @@ Other numerical settings (flux scheme, limiter, CFL ramp) are not part of `autan
 
 ### Boundaries
 
-A rule applies a condition to every boundary zone whose name matches `zones`, a glob pattern (`*`, `?`, `[…]`, case-sensitive, matched against the whole name).
+A rule applies a condition to every boundary zone whose name matches `zones`, a glob pattern (`*`, `?`, `[…]`, case-sensitive, matched against the whole name), or to the zones of the mesh's **zone groups** whose name matches `group`, a glob of the same kind: the union of their zones, each zone once. A rule gives exactly one of `zones` and `group` (`E0003`); a `group` that matches no group is `E0428`. Groups come from the `<mesh>.zones.json` next to the mesh file (symlinks followed), through its MeshInfo ([mesh-info.md](mesh-info.md)); they may overlap. `autan plan` checks that file against the MeshInfo like the mesh: `E0210` when its hash differs or it cannot be read, `W0211` when it is absent. Every other selection of boundary zones (`point_vortex.surfaces`, a monitor's `surfaces`) takes `group` instead in the same way. In Python: `case.boundary(group="wing.*").wall()`.
 
 | `condition.kind` | Keys | Physics |
 |---|---|---|
@@ -211,7 +221,7 @@ Coefficients are reported only when `ref_area` is set; moment coefficients also 
 
 ### Verification
 
-`verification = { manufactured = { path, sha256 } }` makes the case a verification case against a manufactured solution: `path` names an `autan.mms/1` file written by `autan-vv` (relative to the case file, like `mesh`), `sha256` is the SHA-256 of its bytes. The solver adds the solution's source term and every boundary zone takes the solution's exact data, so the case has no boundary rules (`E0416`). `autan plan` checks the file: missing `E0207`, different hash `E0206`, not an `autan.mms/1` document `E0208` ([mms.md](../validation/mms.md)); and checks it against the case (`E0209`): the solution's declared `parameters` (`gamma`, `gas_constant`, `viscosity`, `prandtl`) must equal the case gas (constant viscosity), its declared `model` must be compressible flow with the case's turbulence model (`inviscid`, `laminar` or `sa`; `sa-noft2` has no case counterpart), and the case has no cell zone rules (one fluid medium). Manufactured solutions are steady, so a verification case is steady (`E0417`). In Python: `case.verification = autan.Manufactured(path="euler.mms.json", sha256="…")`.
+`verification = { manufactured = { path, sha256 } }` makes the case a verification case against a manufactured solution: `path` names an `autan.mms/1` file written by `autan-vv` (relative to the case file, like `mesh`), `sha256` is the SHA-256 of its bytes. The solver adds the solution's source term and every boundary zone takes the solution's exact data, so the case has no boundary rules (`E0416`). `autan plan` checks the file: missing `E0207`, different hash `E0206`, not an `autan.mms/1` document `E0208` ([mms.md](../validation/mms.md)); and checks it against the case (`E0209`): the solution's declared `parameters` (`gamma`, `gas_constant`, `viscosity`, `prandtl`) must equal the case gas (constant viscosity), its declared `model` must be compressible flow with the case's turbulence model (`inviscid`, `laminar` or `sa`; `sa-noft2` has no case counterpart), and the case has no cell zone rules (one fluid medium). The file is at most 1 MiB (1 048 576 bytes) and each of its expressions at most 1 024 levels deep, both `E0208`: the depth of a number or a name is 1, and a parenthesis, a unary minus, a binary operator (left-associative, so `a + b + c` is 3 deep) or a function adds one level above its deepest operand. The solver checks both before it reads the file and before it builds an expression, so its parser and evaluation stay within fixed memory and stack; the autan-vv catalogue reaches 18 387 bytes and 44 levels (`rans_sa`). `autan plan` also refuses an expression the grammar does not parse (`E0208`); `autan-run` given such a document directly fails the run (`E0704`). Manufactured solutions are steady, so a verification case is steady (`E0417`). In Python: `case.verification = autan.Manufactured(path="euler.mms.json", sha256="…")`.
 
 ### Initial state file
 

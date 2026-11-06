@@ -3,13 +3,23 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    ValidationError,
+    model_serializer,
+    model_validator,
+)
+from pydantic.json_schema import SkipJsonSchema  # noqa: TC002 -- pydantic reads it at runtime
 
 from autan.errors import CaseError, Location, diagnostic
+from autan.texts import load_json
 from autan.units import fail
 
 if TYPE_CHECKING:
@@ -34,6 +44,13 @@ class Source(_Strict):
     path: Name
     format: Literal["cgns", "gmsh", "fluent", "polymesh"]
     sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
+    bytes: Positive
+    logical_bytes: Count
+    descriptor_bytes: Count
+    zone_names_bytes: Count
+    filtered_bytes: Count
+    cgns_nodes: Count
+    point_list_ids: Count
 
 
 class CellsByType(_Strict):
@@ -48,7 +65,11 @@ class Counts(_Strict):
     cells: Positive
     faces: Positive
     nodes: Positive
+    source_nodes: Positive
+    face_nodes: Positive
     cells_by_type: CellsByType
+    stencil_entries: Count
+    periodic_ghosts: Count
 
 
 Point = tuple[
@@ -61,6 +82,20 @@ Point = tuple[
 class Bounds(_Strict):
     min: Point
     max: Point
+
+
+GROUP_NAME = r"^[A-Za-z0-9_.][A-Za-z0-9_.-]*$"
+
+
+class Group(_Strict):
+    name: Annotated[str, Field(pattern=GROUP_NAME)]
+    zones: Annotated[tuple[Name, ...], Field(min_length=1)]
+
+
+class GroupsSource(_Strict):
+    path: Name
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    provenance: dict[str, str]
 
 
 class BoundaryZone(_Strict):
@@ -126,13 +161,46 @@ def shared_zones(pairs: Iterable[tuple[str, str]]) -> set[str]:
     return {name for name in names if names.count(name) > 1}
 
 
+class Lines(_Strict):
+    order: Literal["rcm", "input"]
+    scale: Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
+    cells: Annotated[int, Field(strict=True, ge=0)]
+    long_cells: Annotated[int, Field(strict=True, ge=0)]
+
+
+class Multigrid(_Strict):
+    cells_by_level: Annotated[tuple[Positive, ...], Field(min_length=1)]
+    edges_by_level: Annotated[tuple[Count, ...], Field(min_length=1)]
+
+
 class Quality(_Strict):
     max_non_orthogonality_deg: Annotated[float, Field(strict=True, ge=0, le=180)]
     max_faces_per_cell: Annotated[int, Field(strict=True, ge=4)]
+    lines: Lines
+    multigrid: Multigrid
+
+
+ByRank = Annotated[tuple[Count, ...], Field(min_length=1)]
+
+
+class Partition(_Strict):
+    ranks: Annotated[int, Field(strict=True, ge=1)]
+    groups: Literal["none", "lines"]
+    cells_by_rank: ByRank
+    ghosts_by_rank: ByRank
+    faces_by_rank: ByRank
+    interior_faces_by_rank: ByRank
+    stencil_entries_by_rank: ByRank
+    nodes_by_rank: ByRank
+    face_nodes_by_rank: ByRank
+    sent_cells_by_rank: ByRank
 
 
 class MeshInfo(_Strict):
     """Summary of a mesh: counts, typed boundary and cell zones, interfaces, quality, hash."""
+
+    # Read back from a dump without aliases too: the solver input nests a MeshInfo.
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
     schema_: Literal["autan.mesh-info/1"] = Field(alias="schema")
     source: Source
@@ -143,10 +211,36 @@ class MeshInfo(_Strict):
     interfaces: tuple[Interface, ...]
     periodic: tuple[PeriodicPair, ...]
     quality: Quality
+    groups: tuple[Group, ...]
+    groups_source: GroupsSource | None
+    partition: Partition | SkipJsonSchema[None] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _partition_absent_or_given(cls, document: object) -> object:
+        if isinstance(document, dict) and "partition" in document and document["partition"] is None:
+            message = "partition is absent or an object, never null"
+            raise ValueError(message)
+        return document
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
         problems = []
+        lines = self.quality.lines
+        if not lines.long_cells <= lines.cells <= self.counts.cells:
+            problems.append("quality.lines must hold long_cells <= cells <= counts.cells")
+        hierarchy = self.quality.multigrid
+        if len(hierarchy.cells_by_level) != len(hierarchy.edges_by_level):
+            problems.append("quality.multigrid gives cells and edges for the same levels")
+        if hierarchy.cells_by_level[0] != self.counts.cells:
+            problems.append("quality.multigrid's finest level is the mesh's cells")
+        interior = self.counts.faces - sum(zone.faces for zone in self.boundary_zones)
+        if hierarchy.edges_by_level[0] != interior:
+            problems.append("quality.multigrid's finest level has the mesh's interior faces")
+        if self.counts.source_nodes < self.counts.nodes:
+            problems.append("counts.source_nodes is below counts.nodes")
+        if self.counts.face_nodes < 3 * self.counts.faces:
+            problems.append("counts.face_nodes is below 3 nodes per face")
         if any(low > high for low, high in zip(self.bounds.min, self.bounds.max, strict=True)):
             problems.append("bounds.min exceeds bounds.max")
         if sum(self.counts.cells_by_type.model_dump().values()) != self.counts.cells:
@@ -175,9 +269,31 @@ class MeshInfo(_Strict):
         if len(set(pairs)) != len(pairs):
             problems.append("interfaces lists a pair twice")
         problems += self._periodic_problems()
+        if self.partition is not None:
+            problems += self._partition_problems(self.partition)
+        problems += self._group_problems()
         if problems:
             fail("E0202", "{problems}", problems="; ".join(problems))
         return self
+
+    def _group_problems(self) -> list[str]:
+        order = {zone.name: i for i, zone in enumerate(self.boundary_zones)}
+        names = [group.name for group in self.groups]
+        problems = []
+        if names != sorted(set(names)):
+            problems.append("groups are not sorted by distinct names")
+        if self.groups and self.groups_source is None:
+            problems.append("groups without groups_source")
+        for group in self.groups:
+            if not set(group.zones) <= order.keys():
+                problems.append(f"group {group.name!r} names an unknown boundary zone")
+            elif [order[z] for z in group.zones] != sorted({order[z] for z in group.zones}):
+                problems.append(f"group {group.name!r} does not list distinct zones in order")
+        return problems
+
+    def groups_of(self, zone: str) -> tuple[str, ...]:
+        """Names of the groups holding boundary zone ``zone``, in name order."""
+        return tuple(group.name for group in self.groups if zone in group.zones)
 
     def _periodic_problems(self) -> list[str]:
         faces = {zone.name: zone.faces for zone in self.boundary_zones}
@@ -194,12 +310,21 @@ class MeshInfo(_Strict):
             problems.append("each periodic zone must be in exactly one periodic pair")
         return problems
 
+    def _partition_problems(self, partition: Partition) -> list[str]:
+        problems = []
+        by_rank = partition.model_dump(exclude={"ranks", "groups"})
+        if any(len(values) != partition.ranks for values in by_rank.values()):
+            problems.append("partition lists one value per rank")
+        if sum(partition.cells_by_rank) != self.counts.cells:
+            problems.append("partition.cells_by_rank does not sum to counts.cells")
+        return problems
+
     @classmethod
     def load(cls, path: str | Path) -> MeshInfo:
         """Read a MeshInfo JSON file; any defect raises ``CaseError`` with ``E0202``."""
         location = Location(file=str(path))
         try:
-            document = json.loads(Path(path).read_text())
+            document = load_json(Path(path).read_text())
         except (OSError, ValueError) as error:
             raise CaseError(
                 [diagnostic("E0202", f"cannot read {path}: {error}", location=location)]
@@ -230,13 +355,29 @@ class MeshInfo(_Strict):
                 for e in error.errors(include_url=False)
             ) from None
 
+    @model_serializer(mode="wrap")
+    def _without_absent_partition(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        document: dict[str, Any] = handler(self)
+        if self.partition is None:
+            document.pop("partition")
+        return document
+
     def document(self) -> dict[str, object]:
         return self.model_dump(mode="json", by_alias=True)
 
 
+def mesh_location(path: Path) -> Path:
+    """The mesh a path names (mesh.md, Readers): a file, a polyMesh directory, or the
+    ``constant/polyMesh`` of an OpenFOAM case directory."""
+    case = path / "constant" / "polyMesh"
+    return case if path.is_dir() and case.is_dir() else path
+
+
 def mesh_sha256(path: Path) -> str:
-    """The mesh hash of a mesh file, or of a polyMesh directory (mesh-info.md, ``source.sha256``)."""
+    """The mesh hash of a mesh file, a polyMesh directory or an OpenFOAM case directory
+    (mesh-info.md, ``source.sha256``)."""
     digest = hashlib.sha256()
+    path = mesh_location(path)
     if path.is_dir():
         for name in POLYMESH_FILES:
             member = path / name

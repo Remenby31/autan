@@ -13,6 +13,14 @@ target_compile_definitions(
 target_include_directories(autan_physics_tests PRIVATE ${PROJECT_BINARY_DIR}/physics/generated)
 catch_discover_tests(autan_physics_tests)
 
+# The manufactured-solution study's C ABI, through the shared library euler_mms.py loads.
+add_executable(autan_physics_mms_tests test_block_ilu.cpp)
+target_link_libraries(
+  autan_physics_mms_tests
+  PRIVATE autan_physics_mms Catch2::Catch2WithMain autan_compile_options
+)
+catch_discover_tests(autan_physics_mms_tests)
+
 # The Euler residual on the generated Metal loops against the CPU physics (macOS).
 if(AUTAN_ENABLE_METAL)
   enable_language(OBJCXX)
@@ -42,6 +50,7 @@ if(AUTAN_ENABLE_CGNS)
     autan_euler_run_tests
     PRIVATE
       autan::physics_runtime
+      autan::mesh_counts
       autan_cgns
       nlohmann_json::nlohmann_json
       Catch2::Catch2WithMain
@@ -63,11 +72,14 @@ if(AUTAN_ENABLE_CGNS)
     add_dependencies(autan_euler_run_tests autan-run)
   endif()
   # [mpi] cases carry the CTest label mpi: CI's hosted MPI ranks job selects them by it.
-  catch_discover_tests(autan_euler_run_tests TEST_SPEC "~[gpu]~[mpi]")
-  catch_discover_tests(autan_euler_run_tests TEST_SPEC "[mpi]~[gpu]" PROPERTIES LABELS mpi)
+  # Processes started by these tests share their executables' hash (run.json
+  # solver.binary_sha256) through a cache in the build tree.
+  set(hash_cache "AUTAN_BINARY_HASH_CACHE=${PROJECT_BINARY_DIR}/binary-hash-cache")
+  catch_discover_tests(autan_euler_run_tests TEST_SPEC "~[gpu]~[mpi]" PROPERTIES ENVIRONMENT ${hash_cache})
+  catch_discover_tests(autan_euler_run_tests TEST_SPEC "[mpi]~[gpu]" PROPERTIES ENVIRONMENT ${hash_cache} LABELS mpi)
   if(AUTAN_ENABLE_CUDA)
     target_link_libraries(autan_euler_run_tests PRIVATE autan::physics)
-    catch_discover_tests(autan_euler_run_tests TEST_SPEC "[gpu]" PROPERTIES LABELS gpu)
+    catch_discover_tests(autan_euler_run_tests TEST_SPEC "[gpu]" PROPERTIES ENVIRONMENT ${hash_cache} LABELS gpu)
   endif()
 endif()
 

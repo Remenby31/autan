@@ -27,10 +27,17 @@ export interface Run {
   identity: string;
   status: RunStatus;
   case: { name: string; sha256: string };
-  mesh: { path: string; sha256: string };
-  solver: { version: string; commit: string; backend: "cuda" | "hip" | "cpu" | "fake" };
+  mesh: { path: string; sha256: string; groups_sha256: string | null };
+  solver: {
+    version: string;
+    commit: string;
+    backend: "cuda" | "hip" | "cpu" | "fake";
+    binary_sha256: string | null;
+  };
   precision: "fp32+acc64" | "fp64";
   devices: { kind: "cuda" | "hip" | "cpu"; count: number };
+  /** The order the solver numbered the cells in (results.md#runjson). */
+  cell_order: "rcm" | "input";
   started: string;
   finished: string | null;
   iterations: number;
@@ -41,6 +48,8 @@ export interface Run {
   start: RunStart | null;
   /** Round-off floor of every equation of a steady fp32+acc64 run (case-schema.md#time). */
   convergence: { floor: Record<string, number> } | null;
+  /** The last checkpoint written while running, null before the first (results.md#runjson). */
+  checkpoint: { iteration: number; time: number | null; write_seconds: number } | null;
   /** Timing of this run alone, null while running, without iterations and for the fake backend
    * (results.md#runjson); bench/ measures performance. */
   timing: {
@@ -61,6 +70,8 @@ export interface RunStart {
   iterations: number;
   time: number | null;
   solution_sha256: string;
+  /** The file of that run it read: its final solution or its checkpoint. */
+  file: "solution" | "checkpoint";
   residual_reference: Record<string, number> | null;
   woken: string[] | null;
 }

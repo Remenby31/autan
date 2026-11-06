@@ -206,6 +206,36 @@ def first_order_jacobian(
     )
 
 
+class BlockIlu0:
+    """Block ILU(0) of a matrix of 5x5 blocks, with no fill outside its block pattern."""
+
+    def __init__(self, a: sp.csr_matrix) -> None:
+        b = sp.bsr_matrix(a, blocksize=(5, 5))
+        b.sort_indices()
+        self.n = b.shape[0] // 5
+        self.indptr = np.ascontiguousarray(b.indptr, dtype=np.int64)
+        self.indices = np.ascontiguousarray(b.indices, dtype=np.int32)
+        self.blocks = np.ascontiguousarray(b.data, dtype=np.float64)
+        self.inverse = np.zeros((self.n, 5, 5))
+        err = ctypes.create_string_buffer(512)
+        _check(
+            lib().autan_mms_block_ilu0(
+                ctypes.c_int64(self.n), _p(self.indptr), _p(self.indices), _p(self.blocks),
+                _p(self.inverse), err, ctypes.c_size_t(len(err)),
+            ),
+            err,
+        )  # fmt: skip
+
+    def solve(self, b: F64) -> F64:
+        b = np.ascontiguousarray(b, dtype=np.float64)
+        x = np.empty_like(b)
+        lib().autan_mms_block_ilu0_solve(
+            ctypes.c_int64(self.n), _p(self.indptr), _p(self.indices), _p(self.blocks),
+            _p(self.inverse), _p(b), _p(x),
+        )  # fmt: skip
+        return x
+
+
 @dataclass
 class Solution:
     u: F64
@@ -224,7 +254,7 @@ def solve(
     venkat_k: float = 5.0,
 ) -> Solution:
     """Newton-Krylov for R_P(u) = 0 from the exact solution; Jacobian-vector products by FD on
-    the FP64 residual, preconditioned by ILU of the first-order Jacobian, so that the converged u
+    the FP64 residual, preconditioned by the block ILU(0) of the first-order Jacobian, so that the converged u
     is the discrete solution of policy P."""
     ms = euler()
     ex_f = ms.evaluator("fields")
@@ -251,8 +281,10 @@ def solve(
         if policy == "fp64"
         else Euler(m, "fp64", flux, limiter, mach, reference, stencil, venkat_k)
     )
-    # The preconditioner is the first-order Roe Jacobian whatever the flux: its ILU stays stable
-    # where HLLC's switches between wave branches make pivots vanish.
+    # The preconditioner is the first-order Roe Jacobian whatever the flux: its factorisation stays
+    # stable where HLLC's switches between wave branches make pivots vanish. Its block ILU(0) keeps
+    # each cell's 5x5 block whole: scalar ILUT (drop 1e-4, fill 8) broke down on the hybrid families
+    # with well-conditioned blocks (#440).
     pre = Euler(m, "fp64", "roe", limiter, mach, reference, stencil, venkat_k)
     for e in {id(ep): ep, id(e64): e64, id(pre): pre}.values():
         e.set_boundary(kind, data)
@@ -273,7 +305,7 @@ def solve(
     jac = first_order_jacobian(pre, m, u, colours)
     d = np.repeat(scale[:, 0][None, :], m.n_cells, axis=0).ravel()
     js = sp.diags(1.0 / d) @ jac @ sp.diags(d)
-    ilu = spla.spilu(js.tocsc(), drop_tol=1e-4, fill_factor=8)
+    ilu = BlockIlu0(js.tocsr())
     for newton in range(1, 31):  # noqa: B007 (reported after the loop)
         rx = to_x(r)
         r64 = e64.residual(u)
@@ -370,7 +402,7 @@ def main() -> None:
                         "solver_commit": commit, "case_sha256": case_sha,
                         "precision": policy, "flux": flux,
                         "limiter": a.limiter, "venkat_k": a.venkat_k, "stencil": a.stencil, "relative_residual": s.relative_residual,
-                        "newton": s.newton, "gmres": s.gmres,
+                        "newton": s.newton, "gmres": s.gmres, "preconditioner": "block-ilu0",
                         "seconds": time.perf_counter() - t0,
                     })  # fmt: skip
                 label = f"{fam.name} {policy} {flux} {a.stencil}" + (

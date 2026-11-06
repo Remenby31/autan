@@ -20,9 +20,11 @@
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
 #include "autan/io/read_mesh.hpp"
+#include "autan/kernels/colouring.hpp"
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/partition/partition.hpp"
+#include "face_flags_cpu.hpp"
 #include "face_weighted_cpu.hpp"
 #include "gradients_cpu.hpp"
 #include "roe_cpu.hpp"
@@ -390,6 +392,37 @@ void face_weighted(const SpikeMesh& m, int mode, const double* q, const double* 
   }
 }
 
+/// Test kernel codegen/tests/kernels/face_flags.py: keep (2 x n_faces, component-major, 255 where
+/// no loop writes) and jump (n_faces) from the face writes; res from the face loop reading keep
+/// (gather-recompute, so a rank-independent topology runs too), when `res` is given.
+template <class P>
+void face_flags(const SpikeMesh& m, const double* q, std::uint8_t* keep, double* jump,
+                double* res) {
+  namespace ff = autan::kernels::face_flags;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  GeomCopy<P> g(m.packed);
+  auto qs = copy_in<typename P::state>(q, nc);
+  std::vector<std::uint8_t> ks(2 * nf, 255);
+  std::vector<typename P::state> js(nf);
+  std::vector<typename P::residual> rs(nc);
+  ff::Data<P> d{};
+  d.topo = m.topo;
+  d.q = qs.data();
+  d.keep = ks.data();
+  d.jump = js.data();
+  d.res = rs.data();
+  autan::spike::bind(d.face_normal, g.face_normal);
+  ff::cpu::interior_flags(d);
+  ff::cpu::boundary_flags_loop(d);
+  std::copy(ks.begin(), ks.end(), keep);
+  copy_out(js, jump);
+  if (res != nullptr) {
+    ff::cpu::picked(d, autan::kernels::Strategy::gather_recompute);
+    copy_out(rs, res);
+  }
+}
+
 template <class P>
 void gradients(const SpikeMesh& m, const char* method, const double* q, const double* q_b,
                int iterations, double* grad, double* qmin, double* qmax) {
@@ -684,6 +717,20 @@ void autan_spike_stencil_arrays(const void* mesh, std::int64_t* offsets, std::in
   std::copy(st.entries.begin(), st.entries.end(), entries);
 }
 
+/// The colour of each owned interior face (interior != 0) or owned boundary face, in face order,
+/// as kernels::colour_faces gives it to the coloured strategy.
+void autan_spike_face_colours(const void* mesh, int interior, std::int32_t* colours) {
+  const auto& t = static_cast<const SpikeMesh*>(mesh)->topo;
+  const index_t first = interior != 0 ? 0 : t.n_interior_faces;
+  const index_t last = interior != 0 ? t.n_owned_interior_faces : t.n_owned_faces;
+  const auto c = autan::kernels::colour_faces(t, first, last);
+  for (std::size_t k = 0; k + 1 < c.offsets.size(); ++k) {
+    for (auto i = c.offsets[k]; i < c.offsets[k + 1]; ++i) {
+      colours[c.faces[static_cast<std::size_t>(i)] - first] = static_cast<std::int32_t>(k);
+    }
+  }
+}
+
 void autan_spike_mesh_free(void* mesh) { delete static_cast<SpikeMesh*>(mesh); }
 
 /// PackedGeometry::all_planar of the mesh as it is packed now.
@@ -794,6 +841,14 @@ int autan_spike_face_weighted(const void* mesh, const char* policy, int mode, co
   return dispatch(policy, err, err_len, [&](auto p) {
     autan::spike::face_weighted<decltype(p)>(*m, mode, q, q_b, seed, out);
   });
+}
+
+int autan_spike_face_flags(const void* mesh, const char* policy, const double* q,
+                           std::uint8_t* keep, double* jump, double* res, char* err,
+                           std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return dispatch(policy, err, err_len,
+                  [&](auto p) { autan::spike::face_flags<decltype(p)>(*m, q, keep, jump, res); });
 }
 
 int autan_spike_lsq_bounds_derivative(const void* mesh, const char* policy, int mode,

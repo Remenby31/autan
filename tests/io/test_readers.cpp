@@ -2,11 +2,13 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <map>
 #include <numeric>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
@@ -65,7 +67,7 @@ TEST_CASE("Every format of a test mesh reads to the same mesh", "[io]") {
     CHECK(zone_named(fluent, "ymin").bc_type == "wall");
     CHECK(zone_named(fluent, "ymin").kind == autan::BcKind::wall);
     CHECK(zone_named(fluent, "zmax").kind == autan::BcKind::symmetry);
-    CHECK_FALSE(zone_named(fluent, "interior-1").boundary);
+    CHECK_FALSE(zone_named(fluent, "(interior 2)").boundary);  // named by its id (mesh.md, Readers)
     REQUIRE(fluent.cell_zones().size() == 1);
     CHECK(fluent.cell_zones()[0].kind == autan::CellKind::fluid);
   }
@@ -366,9 +368,9 @@ TEST_CASE("Hostile or contradictory sizes are coded errors, not crashes", "[io]"
         ErrorCode::io_malformed,
         write_temp("elements.msh", replace(gmsh_tet, "3 3 1 3\n", "3 18446744073709551615 1 3\n")));
   }
-  SECTION("Gmsh non-positive physical name tag") {
+  SECTION("Gmsh physical name tag 0") {
     require_error(ErrorCode::io_malformed,
-                  write_temp("name.msh", replace(gmsh_tet, "2 7 \"base\"", "2 -7 \"base\"")));
+                  write_temp("name.msh", replace(gmsh_tet, "2 7 \"base\"", "2 0 \"base\"")));
   }
   SECTION("Gmsh non-positive physical tag") {
     require_error(ErrorCode::io_malformed,
@@ -434,3 +436,371 @@ TEST_CASE("Gmsh $Periodic surface links become periodic pairs", "[io][periodic]"
   // A link of a dimension the format does not have.
   require_error(autan::ErrorCode::io_malformed, edited("2 2 1\n16 1 0 0 1", "4 2 1\n16 1 0 0 1"));
 }
+
+TEST_CASE("A Gmsh section name longer than 4096 bytes is E0122 before it is copied", "[io]") {
+  // mesh.md, E0122: an unknown section is skipped, its name read whole first.
+  for (const std::size_t bytes : {std::size_t{4096}, std::size_t{4097}}) {
+    CAPTURE(bytes);
+    const std::string name(bytes, 'S');
+    const fs::path file = write_temp("section-" + std::to_string(bytes) + ".msh",
+                                     gmsh_tet + "$" + name + "\nignored\n$End" + name + "\n");
+    if (bytes == 4096) {
+      CHECK(autan::io::read_mesh(file).n_cells() == 1);
+    } else {
+      require_error(autan::ErrorCode::mesh_text_too_long, file);
+    }
+  }
+}
+
+TEST_CASE("A zone name longer than 4096 bytes is E0122 in the text readers", "[io]") {
+  // mesh.md, E0122: tests/data/mesh/hex with its zone xmin renamed to 4096 bytes (read) and to
+  // 4097 (refused), in each format whose names are text: the Gmsh physical name, the Fluent
+  // zone name, the polyMesh patch name.
+  const std::string format = GENERATE("gmsh", "fluent", "polymesh");
+  CAPTURE(format);
+  const auto slurp = [](const fs::path& file) {
+    std::ifstream in(file, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  };
+  for (const std::size_t bytes : {std::size_t{4096}, std::size_t{4097}}) {
+    CAPTURE(bytes);
+    const std::string name(bytes, 'x');
+    const std::string tag = format + "-" + std::to_string(bytes);
+    fs::path path;
+    if (format == "polymesh") {
+      path = temp_dir() / tag / "polyMesh";
+      fs::create_directories(path);
+      for (const auto& entry : fs::directory_iterator(data_dir / "hex" / "polyMesh"))
+        fs::copy_file(entry.path(), path / entry.path().filename());
+      std::string boundary = slurp(path / "boundary");
+      const auto at = boundary.find("    xmin\n");
+      REQUIRE(at != std::string::npos);
+      boundary.replace(at + 4, 4, name);
+      std::ofstream(path / "boundary", std::ios::binary) << boundary;
+    } else {
+      const bool gmsh = format == "gmsh";
+      std::string text = slurp(data_dir / "hex" / (gmsh ? "hex.ascii.msh" : "hex.fluent.msh"));
+      const std::string old = gmsh ? "\"xmin\"" : " xmin)";
+      const auto at = text.find(old);
+      REQUIRE(at != std::string::npos);
+      text.replace(at, old.size(), gmsh ? "\"" + name + "\"" : " " + name + ")");
+      path = write_temp(tag + ".msh", text);
+    }
+    if (bytes == 4096) {
+      CHECK(zone_named(autan::io::read_mesh(path), name).boundary);
+    } else {
+      require_error(autan::ErrorCode::mesh_text_too_long, path);
+    }
+  }
+}
+
+#if defined(__linux__)
+TEST_CASE("Records a reader does not use cost their text, not a copy each", "[io]") {
+  // mesh.md, Readers: Gmsh physical names no zone takes, element blocks that label nothing and
+  // polyMesh dictionary entries the reader does not use are read past, so 2^19 of them cost the
+  // file's text, held once, and the mesh reads the same.
+  constexpr int n = 1 << 19;
+  SECTION("Gmsh physical names of points and of volumes no element uses") {
+    std::string names;
+    for (int i = 0; i < n; ++i) {
+      names += "0 " + std::to_string(i + 1) + " \"p\"\n3 " + std::to_string(i + 100) + " \"v\"\n";
+    }
+    const fs::path plain = write_temp("names-plain.msh", gmsh_tet);
+    const std::string text = replace(gmsh_tet, "$PhysicalNames\n2\n",
+                                     "$PhysicalNames\n" + std::to_string(2 + 2 * n) + "\n" + names);
+    const fs::path padded = write_temp("names-padded.msh", text);
+    const auto added = static_cast<std::int64_t>(text.size() - gmsh_tet.size());
+    (void)autan::io::read_mesh(plain);
+    const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+    std::optional<autan::Mesh> mesh;
+    const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(padded); });
+    CAPTURE(before, after, added);
+    CHECK(after - before <= added + (std::int64_t{1} << 20));
+    CHECK(std::ranges::any_of(mesh->face_zones(), [](const auto& z) { return z.name == "base"; }));
+    CHECK(std::ranges::any_of(mesh->cell_zones(),
+                              [](const auto& z) { return z.name == "solid-block"; }));
+  }
+  SECTION("polyMesh boundary entries the reader does not use") {
+    const fs::path dir = single_hex_polymesh();
+    (void)autan::io::read_mesh(dir);
+    const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(dir); });
+    std::string entries;
+    for (int i = 0; i < n; ++i) entries += "        k" + std::to_string(i) + " 0;\n";
+    const std::string boundary = foam_header("ascii", "polyBoundaryMesh", "boundary") +
+                                 "1\n(\n    walls\n    {\n        type wall;\n" + entries +
+                                 "        nFaces 6;\n        startFace 0;\n    }\n)\n";
+    write_temp("single-hex/boundary", boundary);
+    const auto added = static_cast<std::int64_t>(entries.size());
+    std::optional<autan::Mesh> mesh;
+    const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(dir); });
+    CAPTURE(before, after, added);
+    CHECK(after - before <= added + (std::int64_t{1} << 20));
+    CHECK(std::ranges::any_of(mesh->face_zones(), [](const auto& z) { return z.name == "walls"; }));
+  }
+  SECTION("Gmsh volume entities in no physical group") {
+    std::string entities;
+    for (int i = 0; i < n; ++i) entities += std::to_string(i + 2) + " 0 0 0 1 1 1 0 0\n";
+    const fs::path plain = write_temp("entities-plain.msh", gmsh_tet);
+    const std::string text = replace(replace(gmsh_tet, "$Entities\n1 0 2 1\n",
+                                             "$Entities\n1 0 2 " + std::to_string(1 + n) + "\n"),
+                                     "$EndEntities", entities + "$EndEntities");
+    const fs::path padded = write_temp("entities-padded.msh", text);
+    const auto added = static_cast<std::int64_t>(text.size() - gmsh_tet.size());
+    (void)autan::io::read_mesh(plain);
+    const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+    std::optional<autan::Mesh> mesh;
+    const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(padded); });
+    CAPTURE(before, after, added);
+    CHECK(after - before <= added + (std::int64_t{1} << 20));
+    CHECK(std::ranges::any_of(mesh->cell_zones(),
+                              [](const auto& z) { return z.name == "solid-block"; }));
+  }
+  SECTION("Gmsh curve blocks and surface blocks of entities in no group") {
+    // Each block one element: a curve, or a triangle of its own entity, which no group holds.
+    std::string blocks;
+    for (int i = 0; i < n / 2; ++i) {
+      blocks += "1 1 1 1\n" + std::to_string(i + 4) + " 10 20\n2 " + std::to_string(i + 2) +
+                " 2 1\n" + std::to_string(n / 2 + i + 4) + " 10 20 30\n";
+    }
+    const fs::path plain = write_temp("blocks-plain.msh", gmsh_tet);
+    const std::string text =
+        replace(replace(gmsh_tet, "$Elements\n3 3 1 3\n",
+                        "$Elements\n" + std::to_string(3 + n) + " " + std::to_string(3 + n) +
+                            " 1 " + std::to_string(3 + n) + "\n"),
+                "$EndElements", blocks + "$EndElements");
+    const fs::path padded = write_temp("blocks-padded.msh", text);
+    const auto added = static_cast<std::int64_t>(text.size() - gmsh_tet.size());
+    (void)autan::io::read_mesh(plain);
+    const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+    std::optional<autan::Mesh> mesh;
+    const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(padded); });
+    CAPTURE(before, after, added);
+    CHECK(after - before <= added + (std::int64_t{1} << 20));
+    CHECK(mesh->n_cells() == 1);
+    CHECK(std::ranges::any_of(mesh->face_zones(), [](const auto& z) { return z.name == "base"; }));
+  }
+  SECTION("Gmsh volume entities in a physical group without elements") {
+    std::string entities;
+    for (int i = 0; i < n; ++i) entities += std::to_string(i + 2) + " 0 0 0 1 1 1 1 9 0\n";
+    const fs::path plain = write_temp("grouped-plain.msh", gmsh_tet);
+    const std::string text = replace(replace(gmsh_tet, "$Entities\n1 0 2 1\n",
+                                             "$Entities\n1 0 2 " + std::to_string(1 + n) + "\n"),
+                                     "$EndEntities", entities + "$EndEntities");
+    const fs::path padded = write_temp("grouped-padded.msh", text);
+    const auto added = static_cast<std::int64_t>(text.size() - gmsh_tet.size());
+    (void)autan::io::read_mesh(plain);
+    const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+    std::optional<autan::Mesh> mesh;
+    const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(padded); });
+    CAPTURE(before, after, added);
+    CHECK(after - before <= added + (std::int64_t{1} << 20));
+    CHECK(std::ranges::any_of(mesh->cell_zones(),
+                              [](const auto& z) { return z.name == "solid-block"; }));
+  }
+  SECTION("Fluent zone records repeated") {
+    // The last record of an id names its zone: the others are read past, not kept.
+    std::string records;
+    for (int i = 0; i < n; ++i) records += "(45 (3 wall bottom-and-front)())\n";
+    const fs::path plain = write_temp("repeated-plain.msh", fluent_tet);
+    const fs::path padded = write_temp("repeated-padded.msh", fluent_tet + records);
+    const auto added = static_cast<std::int64_t>(records.size());
+    (void)autan::io::read_mesh(plain);
+    const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+    std::optional<autan::Mesh> mesh;
+    const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(padded); });
+    CAPTURE(before, after, added);
+    CHECK(after - before <= added + (std::int64_t{1} << 20));
+    CHECK(std::ranges::count(mesh->face_zones(), std::string("bottom-and-front"),
+                             &autan::FaceZone::name) == 1);
+  }
+  SECTION("Fluent fluid zones no cell is in") {
+    std::string zones;
+    // The file's own fluid zone and n / 32 - 1 more: the 16 384 records a file may hold.
+    for (int i = 0; i < n / 32 - 1; ++i) {
+      zones += "(45 (" + std::to_string(100 + i) + " fluid " + std::string(1024, 'f') + ")())\n";
+    }
+    const fs::path plain = write_temp("fluid-plain.msh", fluent_tet);
+    const fs::path padded = write_temp("fluid-padded.msh", fluent_tet + zones);
+    const auto added = static_cast<std::int64_t>(zones.size());
+    (void)autan::io::read_mesh(plain);
+    const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+    std::optional<autan::Mesh> mesh;
+    const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(padded); });
+    CAPTURE(before, after, added);
+    CHECK(after - before <= added + (std::int64_t{1} << 20));
+    REQUIRE(mesh->cell_zones().size() == 1);
+    CHECK(mesh->cell_zones()[0].name == "tet-cell");
+  }
+  SECTION("polyMesh cell zones without cells") {
+    const fs::path dir = single_hex_polymesh();
+    (void)autan::io::read_mesh(dir);
+    const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(dir); });
+    std::string zones;
+    for (int i = 0; i < n / 32; ++i) {
+      zones += "e" + std::to_string(i) + std::string(1024, 'z') + "\n{\n    type cellZone;\n" +
+               "    cellLabels List<label> 0();\n}\n";
+    }
+    const std::string cell_zones = foam_header("ascii", "cellZoneList", "cellZones") +
+                                   std::to_string(1 + n / 32) +
+                                   "\n(\nblock\n{\n    type cellZone;\n    cellLabels List<label> "
+                                   "(0);\n}\n" +
+                                   zones + ")\n";
+    write_temp("single-hex/cellZones", cell_zones);
+    const auto added = static_cast<std::int64_t>(zones.size());
+    std::optional<autan::Mesh> mesh;
+    const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(dir); });
+    CAPTURE(before, after, added);
+    CHECK(after - before <= added + (std::int64_t{1} << 20));
+    REQUIRE(mesh->cell_zones().size() == 1);
+    CHECK(mesh->cell_zones()[0].name == "block");
+  }
+  SECTION("polyMesh cell labels given again") {
+    // The last occurrence of a keyword wins (OpenFOAM User Guide, 4.2.14): the list it replaces
+    // is read past, not held.
+    const fs::path dir = single_hex_polymesh();
+    (void)autan::io::read_mesh(dir);
+    const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(dir); });
+    std::string replaced = std::to_string(n) + "(";
+    for (int i = 0; i < n; ++i) replaced += "0 ";
+    replaced += ")";
+    const std::string cell_zones = foam_header("ascii", "cellZoneList", "cellZones") +
+                                   "1\n(\nblock\n{\n    type cellZone;\n    cellLabels "
+                                   "List<label> " +
+                                   replaced + ";\n    cellLabels List<label> 1(0);\n}\n)\n";
+    write_temp("single-hex/cellZones", cell_zones);
+    const auto added = static_cast<std::int64_t>(replaced.size());
+    std::optional<autan::Mesh> mesh;
+    const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(dir); });
+    CAPTURE(before, after, added);
+    CHECK(after - before <= added + (std::int64_t{1} << 20));  // held, 8 bytes a label
+    REQUIRE(mesh->cell_zones().size() == 1);
+    CHECK(mesh->cell_zones()[0].name == "block");
+  }
+}
+namespace {
+
+// A column of `cells` unit hexahedra along z, written as Fluent (hexadecimal indices, normals
+// toward c0): its boundary faces in one wall section, each interior face in a section and zone of
+// its own.
+std::string fluent_column(int cells) {
+  const auto hex = [](long long v) {
+    char buffer[32];
+    std::snprintf(buffer, sizeof buffer, "%llx", v);
+    return std::string(buffer);
+  };
+  const auto node = [](int layer, int corner) { return 4LL * layer + corner + 1; };
+  const auto face = [&](std::array<long long, 4> nodes, long long c0, long long c1) {
+    std::string row;
+    for (const long long v : nodes) row += hex(v) + " ";
+    return row + hex(c0) + " " + hex(c1) + "\n";
+  };
+  const long long n_nodes = 4LL * (cells + 1);
+  const long long n_boundary = 4LL * cells + 2;
+  const long long n_faces = n_boundary + cells - 1;
+  std::string out = "(0 \"column\")\n(2 3)\n(10 (0 1 " + hex(n_nodes) + " 0 3))\n(10 (1 1 " +
+                    hex(n_nodes) + " 1 3)(\n";
+  const std::array<std::array<int, 2>, 4> corners{{{0, 0}, {1, 0}, {1, 1}, {0, 1}}};
+  for (int layer = 0; layer <= cells; ++layer) {
+    for (const auto& [x, y] : corners) {
+      out += std::to_string(x) + " " + std::to_string(y) + " " + std::to_string(layer) + "\n";
+    }
+  }
+  out += "))\n(12 (0 1 " + hex(cells) + " 0))\n(12 (2 1 " + hex(cells) + " 1 4))\n";
+  out += "(13 (0 1 " + hex(n_faces) + " 0))\n(13 (3 1 " + hex(n_boundary) + " 3 4)(\n";
+  out += face({node(0, 0), node(0, 1), node(0, 2), node(0, 3)}, 1, 0);
+  out += face({node(cells, 3), node(cells, 2), node(cells, 1), node(cells, 0)}, cells, 0);
+  for (int c = 1; c <= cells; ++c) {
+    const int lo = c - 1;
+    for (int side = 0; side < 4; ++side) {
+      const int a = side, b = (side + 1) % 4;
+      out += face({node(lo, a), node(c, a), node(c, b), node(lo, b)}, c, 0);
+    }
+  }
+  out += "))\n";
+  for (int c = 1; c < cells; ++c) {
+    const long long f = n_boundary + c;
+    out += "(13 (" + hex(9 + c) + " " + hex(f) + " " + hex(f) + " 2 4)(\n" +
+           face({node(c, 0), node(c, 1), node(c, 2), node(c, 3)}, c + 1, c) + "))\n";
+  }
+  return out + "(45 (2 fluid column)())\n(45 (3 wall walls)())\n";
+}
+
+}  // namespace
+
+TEST_CASE("A Fluent file holds at most 16 384 fluid, solid or interior zone records", "[io]") {
+  // mesh.md, Readers: a record each read again by offset for the cells that use it.
+  std::string zones;
+  for (int i = 0; i < 16383; ++i) zones += "(45 (" + std::to_string(100 + i) + " fluid f)())\n";
+  CHECK(autan::io::read_mesh(write_temp("fluid-limit.msh", fluent_tet + zones)).n_cells() == 1);
+  require_error(autan::ErrorCode::io_unsupported,
+                write_temp("fluid-over.msh", fluent_tet + zones + "(45 (99999 solid s)())\n"));
+  // Likewise its sections of interior faces, each a zone MeshInfo does not show: a column whose
+  // 16 384 interior faces each have their own reads, one more is refused.
+  const autan::Mesh column =
+      autan::io::read_mesh(write_temp("sections-limit.msh", fluent_column(16385)));
+  CHECK(column.n_cells() == 16385);
+  CHECK(column.n_interior_faces() == 16384);
+  require_error(autan::ErrorCode::io_unsupported,
+                write_temp("sections-over.msh", fluent_column(16386)));
+}
+TEST_CASE("Fluent interior zones no face is in are not kept", "[io]") {
+  // mesh.md, Readers: 16 383 empty interior zones of 1024-byte names cost their text.
+  std::string zones;
+  for (int i = 0; i < 16383; ++i) {
+    zones += "(45 (" + std::to_string(100 + i) + " interior " + std::string(1024, 'i') + ")())\n";
+  }
+  const fs::path plain = write_temp("interior-plain.msh", fluent_tet);
+  const fs::path padded = write_temp("interior-padded.msh", fluent_tet + zones);
+  const auto added = static_cast<std::int64_t>(zones.size());
+  (void)autan::io::read_mesh(plain);
+  const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+  std::optional<autan::Mesh> mesh;
+  const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(padded); });
+  CAPTURE(before, after, added);
+  CHECK(after - before <= added + (std::int64_t{1} << 20));
+  CHECK(mesh->face_zones().size() == autan::io::read_mesh(plain).face_zones().size());
+}
+
+TEST_CASE("A Fluent zone of interior faces keeps no name of its own", "[io]") {
+  // mesh.md, Readers: a zone whose faces are interior, whatever its type (a fan here), which
+  // nothing exposes, is named by its id, so its record's name, here 4096 bytes and the same as a
+  // boundary zone's, is neither kept nor checked.
+  const std::string type = GENERATE("interior", "fan");
+  CAPTURE(type);
+  const std::string name(4096, 'n');
+  std::ifstream in(data_dir / "hex" / "hex.fluent.msh", std::ios::binary);
+  std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  text = replace(
+      replace(text, "(39 (2 interior interior-1)())", "(39 (2 " + type + " " + name + ")())"),
+      "(39 (10 pressure-outlet xmin)())", "(39 (10 pressure-outlet " + name + ")())");
+  const autan::Mesh mesh = autan::io::read_mesh(write_temp("interior-named.msh", text));
+  const auto named = std::ranges::count(mesh.face_zones(), name, &autan::FaceZone::name);
+  CHECK(named == 1);
+  CHECK(zone_named(mesh, name).boundary);
+  CHECK_FALSE(zone_named(mesh, "(interior 2)").boundary);
+}
+TEST_CASE("Sizes a text reader is told are checked before they are allocated", "[io]") {
+  SECTION("a polyMesh uniform list longer than the mesh's faces") {
+    // mesh.md, Readers: N{v} expands to N labels from a few bytes of text; owner holds as many
+    // as the faces file has faces. 2^28 is refused before the 2 GiB are allocated: anything
+    // sized by N costs at least N bytes, sixteen times the bound.
+    const fs::path dir = single_hex_polymesh();
+    write_temp("single-hex/owner", foam_header("ascii", "labelList", "owner") + "268435456{0}\n");
+    const std::int64_t peak = peak_of([&] { require_error(autan::ErrorCode::io_malformed, dir); });
+    CHECK(peak <= std::int64_t{1} << 24U);
+  }
+  SECTION("a polyMesh header key longer than 4096 bytes") {
+    const fs::path dir = single_hex_polymesh();
+    write_temp("single-hex/owner", "FoamFile\n{\n    " + std::string(4097, 'k') +
+                                       " 1;\n    format ascii;\n    class labelList;\n"
+                                       "    object owner;\n}\n6{0}\n");
+    require_error(autan::ErrorCode::mesh_text_too_long, dir);
+  }
+  SECTION("a Fluent section header of more than 8 fields") {
+    // The node, cell and face headers hold five (Ansys Fluent legacy file formats).
+    require_error(autan::ErrorCode::io_malformed,
+                  write_temp("header.msh",
+                             replace(fluent_tet, "(10 (0 1 4 0 3))", "(10 (0 1 4 0 3 0 0 0 0))")));
+  }
+}
+#endif

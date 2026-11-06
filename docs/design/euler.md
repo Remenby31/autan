@@ -78,7 +78,7 @@ Unsteady runs use SSP-RK3 (Shu and Osher 1988) with one global time step from `d
 
 Start: each cell takes its zone's `initial` state, or, with an initial-state file ([initial-state.md](../contracts/initial-state.md)), its row of the file; `autan_vv.initial_state.write_initial_state` writes one from an oracle (the isentropic vortex) at the cell centroids.
 
-Restart: `restart_fields` holds the conserved variables bit for bit, the averaging sums, and the steady solver's state (penalty, order, reference residuals) as uniform fields, so that `continue` reproduces the uninterrupted run (`tests/physics/test_euler_run.cpp`).
+Restart: `restart_fields` holds the conserved variables bit for bit (5 arrays), after averaging the sums and their weight (7), for a steady case the solver's state (penalty, order, reference residuals: 10) as uniform fields, and one circulation per point vortex, so that `continue` reproduces the uninterrupted run (`tests/physics/test_euler_run.cpp`).
 
 ## Partitions
 

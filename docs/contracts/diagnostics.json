@@ -151,6 +151,12 @@
       "fix": "Repair the cell in the meshing tool; it is inverted or flat.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0121"
     },
+    "E0122": {
+      "severity": "error",
+      "title": "Mesh text too long",
+      "fix": "Shorten the name in the meshing tool: names identify zones, they carry no data.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0122"
+    },
     "E0130": {
       "severity": "error",
       "title": "Mesh file cannot be opened",
@@ -186,6 +192,30 @@
       "title": "Entity in several zones",
       "fix": "Assign each entity to one zone in the meshing tool.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0135"
+    },
+    "E0136": {
+      "severity": "error",
+      "title": "Zone groups file unreadable",
+      "fix": "Fix the file against docs/contracts/mesh-info.md, or remove it.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0136"
+    },
+    "E0137": {
+      "severity": "error",
+      "title": "Zone groups file describes another mesh",
+      "fix": "Regenerate the groups for this mesh, then the MeshInfo and the solver input.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0137"
+    },
+    "E0138": {
+      "severity": "error",
+      "title": "Bad zone group",
+      "fix": "Correct the group against the zone names of the mesh's MeshInfo.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0138"
+    },
+    "E0139": {
+      "severity": "error",
+      "title": "Zone group defined twice",
+      "fix": "Give each group one entry.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0139"
     },
     "E0140": {
       "severity": "error",
@@ -288,6 +318,24 @@
       "title": "Manufactured solution does not match the case",
       "fix": "Build the case gas from the solution's parameters, or export the solution the case needs.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0209"
+    },
+    "E0210": {
+      "severity": "error",
+      "title": "The MeshInfo's zone groups describe another groups file",
+      "fix": "Regenerate the MeshInfo with `autan-mesh-info` after changing the groups file.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0210"
+    },
+    "W0211": {
+      "severity": "warning",
+      "title": "Zone groups file not found",
+      "fix": "Put the groups file next to the mesh.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0211"
+    },
+    "E0212": {
+      "severity": "error",
+      "title": "MeshInfo prepared for another run",
+      "fix": "Run `autan-mesh-info --json --scale <metres per mesh unit>` again, with `--ranks N` (and `--groups lines` for a steady CPU run with the lines solver) for a run on N ranks.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0212"
     },
     "E0301": {
       "severity": "error",
@@ -423,9 +471,27 @@
     },
     "E0427": {
       "severity": "error",
-      "title": "Coupled turbulence needs the host multigrid",
+      "title": "Opt-in step needs the host multigrid",
       "fix": "Use `linear_solver='multigrid'` and run on one CPU rank, or drop the option.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0427"
+    },
+    "E0428": {
+      "severity": "error",
+      "title": "Zone group pattern matches no group",
+      "fix": "Use one of the group names the message lists, or select zones by name.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0428"
+    },
+    "E0429": {
+      "severity": "error",
+      "title": "Matrix-free step not applicable",
+      "fix": "Remove `matrix_free=True`, or use compressible laminar physics.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0429"
+    },
+    "W0429": {
+      "severity": "warning",
+      "title": "Matrix-free step outside its validated domain",
+      "fix": "Compare with a run without the option before relying on the result.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0429"
     },
     "E0501": {
       "severity": "error",
@@ -576,6 +642,36 @@
       "title": "Exempt equation left its floor",
       "fix": "Check the boundary conditions and the mesh: a symmetric or 2D problem whose symmetry breaks during the run usually means a boundary condition breaks it.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#w0710"
+    },
+    "E0711": {
+      "severity": "error",
+      "title": "Not enough memory for the run",
+      "fix": "Run on more devices or a machine with more free memory; `--allow-oversubscription` starts it anyway, at the risk of exhausting the machine.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0711"
+    },
+    "W0712": {
+      "severity": "warning",
+      "title": "Run started beyond its memory",
+      "fix": "Watch the machine's memory; a unified-memory device shares it with every process.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0712"
+    },
+    "W0713": {
+      "severity": "warning",
+      "title": "Memory limit unverifiable",
+      "fix": "Mount the cgroup hierarchy from its root in the container (cgroup namespace), or check the job's memory limit by other means.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0713"
+    },
+    "W0714": {
+      "severity": "warning",
+      "title": "Checkpoint not written",
+      "fix": "Check the space and permissions of the run directory's file system.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0714"
+    },
+    "W0715": {
+      "severity": "warning",
+      "title": "Different solver binary",
+      "fix": "Continue with the binary of the original run, or start the chain again with this one.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0715"
     },
     "W0801": {
       "severity": "warning",

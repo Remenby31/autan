@@ -57,8 +57,8 @@ void write_atomically(const fs::path& path, const std::string& text) {
 
 RunDirectory::RunDirectory(const fs::path& runs, const std::string& run_id,
                            const std::string& run_json, const std::string& case_toml,
-                           const std::string& mesh_info_json, const std::string& first_log_line,
-                           const std::optional<std::string>& manufactured_json,
+                           const std::string& mesh_info_json, const std::string& first_log_lines,
+                           const std::string* manufactured_json,
                            const std::map<std::string, std::string>& state_files) {
   std::error_code ec;
   fs::create_directories(runs, ec);
@@ -68,14 +68,14 @@ RunDirectory::RunDirectory(const fs::path& runs, const std::string& run_id,
   write_file(staging / "run.json", run_json);
   write_file(staging / "case.toml", case_toml);
   write_file(staging / "mesh-info.json", mesh_info_json);
-  if (manufactured_json) write_file(staging / "manufactured.json", *manufactured_json);
+  if (manufactured_json != nullptr) write_file(staging / "manufactured.json", *manufactured_json);
   if (!state_files.empty()) {
     if (!fs::create_directory(staging / "states", ec) || ec) fail("create", staging / "states");
     for (const auto& [sha256, bytes] : state_files) {
       write_file(staging / "states" / (sha256 + ".json"), bytes);
     }
   }
-  write_file(staging / "log.jsonl", first_log_line + "\n");
+  write_file(staging / "log.jsonl", first_log_lines + "\n");
   path_ = runs / run_id;
   rename_no_replace(staging, path_);
 }
@@ -126,6 +126,23 @@ fs::path RunDirectory::solution_staging() const { return path_ / ".solution.cgns
 void RunDirectory::publish_solution() {
   if (std::rename(solution_staging().c_str(), (path_ / "solution.cgns").c_str()) != 0) {
     fail("publish", path_ / "solution.cgns");
+  }
+}
+
+fs::path RunDirectory::checkpoint_staging() const { return path_ / ".checkpoint.cgns.tmp"; }
+
+void RunDirectory::publish_checkpoint() {
+  if (std::rename(checkpoint_staging().c_str(), (path_ / "checkpoint.cgns").c_str()) != 0) {
+    fail("publish", path_ / "checkpoint.cgns");
+  }
+}
+
+void RunDirectory::remove_checkpoint() {
+  std::error_code ec;
+  fs::remove(path_ / "checkpoint.cgns", ec);
+  if (ec) {
+    errno = ec.value();
+    fail("remove", path_ / "checkpoint.cgns");
   }
 }
 
