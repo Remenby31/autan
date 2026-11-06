@@ -1046,8 +1046,9 @@ class EulerPhysics final : public runtime::Physics {
     if (first_norms_.empty()) first_norms_ = current;
     for (std::size_t k = 0; k < 5; ++k) {
       // A woken equation drops from the reference of its kind, as in the convergence rule.
-      const double from = exempt_.reference(first_norms_, k);
-      if (from > 0.0 && !exempt_.exempt(k)) drop = std::max(drop, current[k] / from);
+      if (exempt_.exempt(k)) continue;
+      const double from = exempt_.woken(k) ? exempt_.woken_reference(k) : first_norms_[k];
+      if (from > 0.0) drop = std::max(drop, current[k] / from);
     }
     return drop;
   }
@@ -1090,7 +1091,10 @@ class EulerPhysics final : public runtime::Physics {
     const auto r = steady ? device_->step(device_steady_cfl, std::nullopt, true)
                           : device_->step(t.cfl.value_or(0.0), t.cfl ? std::nullopt : t.dt, false);
     host_stale_ = true;
-    if (steady) switch_order(relative_drop(r.residuals, r.residuals));
+    // The exemption is decided on the residuals the runtime receives, as on the host.
+    if (steady)
+      switch_order(
+          relative_drop(r.residuals, report.residuals.empty() ? r.residuals : report.residuals));
     if (report.residuals.empty()) report.residuals = r.residuals;
     if (!steady) report.time_step = r.time_step;
     report.diverged_cell = r.invalid;

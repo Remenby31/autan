@@ -2394,7 +2394,8 @@ TEST_CASE("An equation at round-off from iteration 1 does not hold back converge
 TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]") {
   // momentum-x leaves its floor at iterations 10-14, then falls back to 1e-15: woken, it drops
   // from momentum-z's 4 at iteration 1, and the run converges with the others at k = 28. A run
-  // continued from iteration 20 must do the same, through start.woken, without a new W0710.
+  // continued from iteration 12, while it is still above its floor, must do the same through
+  // start.woken: without it, iteration 13 would report a second W0710.
   autan_test::RelaxationOptions options;
   options.silent_equation = 1;
   options.wake_at = 10;
@@ -2406,7 +2407,7 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
     });
   };
   const Outcome whole = run(doc(40), options);
-  const Outcome a = run(doc(20), options);
+  const Outcome a = run(doc(12), options);
   Json next = doc(40);
   next["start"] = start_from(a.run, "continue");
   CHECK(next["start"]["woken"] == Json::array({"momentum-x"}));
