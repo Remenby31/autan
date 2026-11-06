@@ -68,7 +68,6 @@ def _case(
     if time is not None:
         case.time = autan.Unsteady(steps=1, dt=time * s)
     if manufactured is not None:
-        # A verification case takes every boundary's data from its manufactured solution.
         case.verification = manufactured
     else:
         case.boundary("*").farfield()
@@ -332,8 +331,6 @@ def test_runs_that_do_not_fit_the_oracle_or_each_other_are_rejected(tmp_path: Pa
             call()
         assert err.value.code == code
 
-    # One manufactured solution, the same bytes, named by another path in each study directory:
-    # one family (#466). Another solution is another case.
     def solution(directory: Path, text: str) -> autan.Manufactured:
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "euler.mms.json").write_text(text)
@@ -343,7 +340,6 @@ def test_runs_that_do_not_fit_the_oracle_or_each_other_are_rejected(tmp_path: Pa
     text = dump_json(CATALOG["euler"]())
     same = solution(tmp_path / "one", text)
     moved = solution(tmp_path / "two", text)
-    # The same solution in other bytes (one more newline): another file, another case.
     different = solution(tmp_path / "three", text + "\n")
     one = _runs(tmp_path / "one", meshes[:2], "mms-euler", 2.0, manufactured=same)
     two = _runs(tmp_path / "two", meshes[2:], "mms-euler", 2.0, manufactured=moved)
