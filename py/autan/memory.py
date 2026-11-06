@@ -70,6 +70,8 @@ _HDF5_CACHE = 4 * 2**20 + 8 * 2**20 + 64 * 2**10
 # array for at least 2 characters, 112 B an object member for at least 6, doubled for a
 # vector's growth.
 _JSON_DOCUMENT = 40
+# A zone-groups sidecar's largest size (mesh-info.md, Zone groups).
+_GROUPS_BYTES = 2**20
 # DeviceMesh stages each upload through at most this many values (device.cuh, upload_chunk).
 _UPLOAD_CHUNK = 2**20
 
@@ -262,6 +264,10 @@ def _rank(
     add("runtime", _RUNTIME)
     # Rank 0 reads its executable in 1 MiB chunks to hash it (results.md, solver.binary_sha256).
     add("binary hash", 2**20, transient=True)
+    if mesh.groups_source is not None:
+        # The zone-groups sidecar, at most 1 MiB (mesh-info.md): read through a stream and copied
+        # out of it, then parsed (io::read_zone_groups), during setup only.
+        add("zone groups", (3 + _JSON_DOCUMENT) * _GROUPS_BYTES, transient=True)
     # The solver input (at most input_bytes): the runtime keeps the case's name and text, and
     # reads and parses the document once.
     add("solver input", input_bytes)
