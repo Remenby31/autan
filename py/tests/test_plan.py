@@ -502,6 +502,14 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     assert by_name["multigrid setup"].bytes_host == 160 * 20 + 284 * 10 + 72 * 20
     setup = {c.name: c for c in deeper.memory.components}["multigrid setup"].bytes_host
     assert setup == 69 * 20 + 48 * 1 + 296 * 10 + 156 * 2 + 144 * 20
+    # A coarse level of 1 cell and no edge leaves the line grouping the largest.
+    single: dict[str, Any] = tiny_mesh(20).document()
+    single["quality"]["multigrid"] = {"cells_by_level": [10, 1], "edges_by_level": [20, 0]}
+    coarse = autan.load(write_case(TINY)).plan(
+        autan.MeshInfo.from_document(single, autan.Location()), device_kind="cpu"
+    )
+    setup = {c.name: c for c in coarse.memory.components}["multigrid setup"].bytes_host
+    assert setup == 160 * 20 + 284 * 10 + 72 * 20
     # A start reads the previous solution on every rank and takes the rank's share: 8 (C + C_r)
     # bytes per field, the 34 written fields for a continuation, the 6 primitives for a warm one;
     # and its descriptors at their bounds, held from cg_open: run metadata of 64 KiB, also

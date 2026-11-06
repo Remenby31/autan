@@ -368,9 +368,9 @@ TEST_CASE("Hostile or contradictory sizes are coded errors, not crashes", "[io]"
         ErrorCode::io_malformed,
         write_temp("elements.msh", replace(gmsh_tet, "3 3 1 3\n", "3 18446744073709551615 1 3\n")));
   }
-  SECTION("Gmsh non-positive physical name tag") {
+  SECTION("Gmsh physical name tag 0") {
     require_error(ErrorCode::io_malformed,
-                  write_temp("name.msh", replace(gmsh_tet, "2 7 \"base\"", "2 -7 \"base\"")));
+                  write_temp("name.msh", replace(gmsh_tet, "2 7 \"base\"", "2 0 \"base\"")));
   }
   SECTION("Gmsh non-positive physical tag") {
     require_error(ErrorCode::io_malformed,

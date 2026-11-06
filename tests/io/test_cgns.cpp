@@ -573,14 +573,16 @@ TEST_CASE("Zone names outside the node-name rule survive a write and read", "[cg
 
 TEST_CASE("Point and edge sections are skipped, and the ids after them still resolve", "[cgns]") {
   // mesh.md, Readers (CGNS): BAR_2 and NODE elements carry nothing the mesh uses. A tet whose
-  // face (1, 2, 3) a BC "wall" names by its element id, without and with three elements before
-  // that face, edges in a BAR_2 section or a point and two edges in a MIXED one: the same mesh,
+  // face (1, 2, 3) a BC "wall" names by its element id, without and with elements before that
+  // face: three edges in a BAR_2 section, a point and two edges in a MIXED one, or an edge and
+  // the face itself in one MIXED section, the face right after the skipped edge: the same mesh,
   // the face still found by its id.
-  enum class Edges : std::uint8_t { none, section, mixed };
+  enum class Edges : std::uint8_t { none, section, mixed, mixed_face };
   const auto write = [](Edges edges) {
     const char* name = edges == Edges::none      ? "no-edges.cgns"
                        : edges == Edges::section ? "edges.cgns"
-                                                 : "mixed-edges.cgns";
+                       : edges == Edges::mixed   ? "mixed-edges.cgns"
+                                                 : "mixed-edge-face.cgns";
     return cgns_file(name, [&](int fn, int base) {
       unstructured_tet(fn, base, "Zone");
       int section = 0, bc = 0;
@@ -597,10 +599,19 @@ TEST_CASE("Point and edge sections are skipped, and the ids after them still res
         REQUIRE(cg_poly_section_write(fn, base, 1, "Edges", CGNS_ENUMV(MIXED), next, next + 2, 0,
                                       bars.data(), offsets.data(), &section) == CG_OK);
         next += 3;
+      } else if (edges == Edges::mixed_face) {
+        const cgsize_t bar = CGNS_ENUMV(BAR_2), tri = CGNS_ENUMV(TRI_3);
+        const std::array<cgsize_t, 7> elements{bar, 2, 3, tri, 1, 3, 2};
+        const std::array<cgsize_t, 3> offsets{0, 3, 7};
+        REQUIRE(cg_poly_section_write(fn, base, 1, "EdgeAndWall", CGNS_ENUMV(MIXED), next, next + 1,
+                                      0, elements.data(), offsets.data(), &section) == CG_OK);
+        next += 1;
       }
-      const std::array<cgsize_t, 3> tri{1, 3, 2};
-      REQUIRE(cg_section_write(fn, base, 1, "Wall", CGNS_ENUMV(TRI_3), next, next, 0, tri.data(),
-                               &section) == CG_OK);
+      if (edges != Edges::mixed_face) {
+        const std::array<cgsize_t, 3> tri{1, 3, 2};
+        REQUIRE(cg_section_write(fn, base, 1, "Wall", CGNS_ENUMV(TRI_3), next, next, 0, tri.data(),
+                                 &section) == CG_OK);
+      }
       REQUIRE(cg_boco_write(fn, base, 1, "wall", CGNS_ENUMV(BCWall), CGNS_ENUMV(PointList), 1,
                             &next, &bc) == CG_OK);
       REQUIRE(cg_boco_gridlocation_write(fn, base, 1, bc, CGNS_ENUMV(FaceCenter)) == CG_OK);
@@ -609,7 +620,8 @@ TEST_CASE("Point and edge sections are skipped, and the ids after them still res
   const autan::Mesh plain = autan::io::read_mesh(write(Edges::none));
   const autan::Mesh with_edges = autan::io::read_mesh(write(Edges::section));
   const autan::Mesh mixed = autan::io::read_mesh(write(Edges::mixed));
-  for (const autan::Mesh* m : {&plain, &with_edges, &mixed}) {
+  const autan::Mesh mixed_face = autan::io::read_mesh(write(Edges::mixed_face));
+  for (const autan::Mesh* m : {&plain, &with_edges, &mixed, &mixed_face}) {
     CHECK(m->n_cells() == 1);
     CHECK(m->n_faces() == 4);
     const auto zones = m->face_zones();
@@ -620,6 +632,7 @@ TEST_CASE("Point and edge sections are skipped, and the ids after them still res
   }
   CHECK(std::ranges::equal(plain.face_nodes(), with_edges.face_nodes()));
   CHECK(std::ranges::equal(plain.face_nodes(), mixed.face_nodes()));
+  CHECK(std::ranges::equal(plain.face_nodes(), mixed_face.face_nodes()));
 }
 
 namespace {
