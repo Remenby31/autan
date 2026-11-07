@@ -198,7 +198,7 @@ Every failure throws `autan::Error`; callers branch on `code()`, never on the me
 | E0131 | `io_unknown_format` | The content matches no supported format. |
 | E0132 | `io_malformed` | The file violates its format specification (syntax, truncation, inconsistent counts). |
 | E0133 | `io_unsupported` | The file is valid but uses a feature the reader does not support yet; the message names it. |
-| E0134 | `io_external_reference` | A CGNS file the code reads (a mesh, a `start` solution, a run's solution) has data in another file: a CGNS link, an HDF5 external link, a dataset with external storage or a virtual dataset (`data.node` names the first). Files must be self-contained. |
+| E0134 | `io_external_reference` | A CGNS file the code reads (a mesh, a `start` solution, a run's solution) has data in another file: a CGNS link, an HDF5 link of a user-defined class (64 to 255, 64 being the external link; refused whatever its target, which is never resolved), a dataset with external storage or a virtual dataset (`data.node` names the first). Files must be self-contained. |
 | E0135 | `io_ambiguous_zone` | An entity belongs to several zones in the source (Gmsh entity in two physical groups, face in two OpenFOAM face zones). |
 | E0136 | `zone_groups_invalid` | The mesh's `<mesh>.zones.json` is not JSON, or not an `autan.zone-groups/1` document (missing or unknown key, wrong type). |
 | E0137 | `zone_groups_other_mesh` | The `mesh_sha256` of the mesh's `<mesh>.zones.json` differs from the mesh hash, or the file the runtime reads differs from the solver input's `mesh.groups_sha256`. |

@@ -13,7 +13,10 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <optional>
 #include <random>
+#include <ranges>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -206,6 +209,40 @@ void inviscid_along_x(Json& doc, const char* precision) {
 void laminar_along_x(Json& doc, const char* precision) {
   inviscid_along_x(doc, precision);
   doc["physics"]["turbulence"]["model"] = "laminar";
+}
+
+const fs::path ringleb_n004 = data_dir / "mesh" / "ringleb" / "ringleb-n004.msh";
+
+// tests/data/mesh/ringleb, one cell thick in z, inviscid along x from a uniform state at 1.3 times
+// the freestream pressure and an initial z-velocity of w times the speed: farfield on its sides,
+// symmetry on its faces of constant z, `iterations` steps at most.
+Json ringleb_slab(double w, std::int64_t iterations) {
+  return input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, "fp64");
+    d["mesh"]["path"] = fs::absolute(ringleb_n004).string();
+    d["mesh"]["sha256"] = autan::io::mesh_hash(ringleb_n004);
+    const double speed = d["freestream"]["speed"].get<double>();
+    Json zone = d["cell_zones"][0];
+    zone["zone"] = "fluid";
+    zone["initial"]["pressure"] = 1.3 * zone["initial"]["pressure"].get<double>();
+    zone["initial"]["velocity"] = {speed, 0.0, w * speed};
+    d["cell_zones"] = Json::array({zone});
+    Json boundaries = Json::array();
+    for (const char* name : {"k-min", "k-max", "inflow", "outflow", "back", "front"}) {
+      Json b = d["boundaries"][0];
+      for (auto& [key, value] : b.items()) {
+        if (key != "zone" && key != "kind") value = nullptr;
+      }
+      b["zone"] = name;
+      const bool side = std::string(name) != "back" && std::string(name) != "front";
+      b["kind"] = side ? "farfield" : "symmetry";
+      boundaries.push_back(b);
+    }
+    d["boundaries"] = boundaries;
+    d["monitors"] = Json::array();
+    d["time"]["max_iterations"] = iterations;
+    d["time"]["residual_orders"] = 30.0;
+  });
 }
 
 }  // namespace
@@ -1380,35 +1417,8 @@ TEST_CASE("an equation at the round-off floor does not set the steady CFL number
   // Φ_k bounds (case-schema.md#time, computed here from its definition); the history's norm is
   // an RMS over cells, as Φ_k, so it moves by as much: 2 n_f ε Φ_k with a margin of 2. Measured
   // at 0.006 of that bound; with the exemption disabled, 3e4 times it.
-  const fs::path mesh = data_dir / "mesh" / "ringleb" / "ringleb-n004.msh";
-  auto doc = [&](double w) {
-    return input("hybrid.solver-input.json", [&](Json& d) {
-      inviscid_along_x(d, "fp64");
-      d["mesh"]["path"] = fs::absolute(mesh).string();
-      d["mesh"]["sha256"] = autan::io::mesh_hash(mesh);
-      const double speed = d["freestream"]["speed"].get<double>();
-      Json zone = d["cell_zones"][0];
-      zone["zone"] = "fluid";
-      zone["initial"]["pressure"] = 1.3 * zone["initial"]["pressure"].get<double>();
-      zone["initial"]["velocity"] = {speed, 0.0, w * speed};
-      d["cell_zones"] = Json::array({zone});
-      Json boundaries = Json::array();
-      for (const char* name : {"k-min", "k-max", "inflow", "outflow", "back", "front"}) {
-        Json b = d["boundaries"][0];
-        for (auto& [key, value] : b.items()) {
-          if (key != "zone" && key != "kind") value = nullptr;
-        }
-        b["zone"] = name;
-        const bool side = std::string(name) != "back" && std::string(name) != "front";
-        b["kind"] = side ? "farfield" : "symmetry";
-        boundaries.push_back(b);
-      }
-      d["boundaries"] = boundaries;
-      d["monitors"] = Json::array();
-      d["time"]["max_iterations"] = 40;
-      d["time"]["residual_orders"] = 30.0;
-    });
-  };
+  const fs::path mesh = ringleb_n004;
+  auto doc = [](double w) { return ringleb_slab(w, 40); };
   const auto a = run(doc(0.0));
   INFO(a.err);
   REQUIRE(a.status == ExitStatus::finished);
@@ -1475,6 +1485,80 @@ TEST_CASE("an equation at the round-off floor does not set the steady CFL number
   REQUIRE(woken.status == ExitStatus::finished);
   CHECK(read(woken.run / "history.jsonl") == read(plain.run / "history.jsonl"));
   CHECK(noisy);  // the injected noise did reach the z-momentum residual
+}
+
+TEST_CASE("the steady CFL penalty halves after a rise of the relative residual above 10 %",
+          "[euler]") {
+  // euler.md, time stepping: the penalty halves after a step whose largest residual relative to
+  // its value at the start of the current order rose by more than 10 % over the step before's,
+  // and otherwise recovers by half, up to 1 (a shortened step, or a failed linear solve, lowers it
+  // too; steps next to one, which log a warning, are not judged). Past the first-order start
+  // those residuals are the history's, relative to the first second-order line, whose residuals
+  // the restart state holds as the reference; the z-momentum, below 1e-12 of the largest residual
+  // at iteration 1, is left out (case-schema.md#time). The restart state also holds the penalty
+  // after a run's last step, so runs of k - 1 and k steps give step k's change. Steps away from
+  // the margin are judged: a rise above 15 % and one below 5 %.
+  const std::int64_t steps = 120;
+  const auto whole = run(ringleb_slab(0.0, steps));
+  INFO(whole.err);
+  REQUIRE(whole.status == ExitStatus::finished);
+  REQUIRE(field(whole.run, "SolverSecondOrder", "RestartState").front() == 1.0);
+  const std::vector<std::string> names{"density", "momentum-x", "momentum-y", "momentum-z",
+                                       "energy"};
+  std::vector<double> reference;
+  for (std::size_t k = 0; k < names.size(); ++k) {
+    const std::string name = "SolverReferenceResidual" + std::to_string(k);
+    reference.push_back(field(whole.run, name.c_str(), "RestartState").front());
+  }
+  const auto h = history(whole.run);
+  const auto at = [&](std::size_t i, std::size_t k) {
+    return h[i]["residuals"][names[k]].get<double>();
+  };
+  std::size_t first = 0;
+  while (first < h.size() && !std::ranges::all_of(
+                                 std::views::iota(std::size_t{0}, names.size()),
+                                 [&](std::size_t k) { return at(first, k) == reference[k]; })) {
+    ++first;
+  }
+  INFO("first second-order line " << first + 1 << " of " << h.size());
+  REQUIRE(first + 2 < h.size());
+  double largest = 0.0;
+  for (std::size_t k = 0; k < names.size(); ++k) largest = std::max(largest, at(0, k));
+  auto relative = [&](std::size_t i) {
+    double drop = 0.0;
+    for (std::size_t k = 0; k < names.size(); ++k) {
+      if (at(0, k) >= 1e-12 * largest) drop = std::max(drop, at(i, k) / reference[k]);
+    }
+    return drop;
+  };
+  std::set<std::int64_t> warned;
+  {
+    std::ifstream log_in(whole.run / "log.jsonl");
+    for (std::string line; std::getline(log_in, line);) {
+      const Json event = Json::parse(line);
+      if (event["level"] == "warning" && event["iteration"].is_number_integer()) {
+        warned.insert(event["iteration"].get<std::int64_t>());
+      }
+    }
+  }
+  std::optional<std::int64_t> rise, small;  // iterations
+  for (std::size_t i = first + 1; i < h.size(); ++i) {
+    const std::int64_t k = h[i]["iteration"].get<std::int64_t>();
+    if (warned.contains(k) || warned.contains(k - 1)) continue;
+    const double ratio = relative(i) / relative(i - 1);
+    if (!rise && ratio > 1.15) rise = k;
+    if (!small && ratio > 1.0 && ratio < 1.05) small = k;
+  }
+  REQUIRE(rise);
+  REQUIRE(small);
+  auto penalty = [](std::int64_t k) {
+    const auto r = run(ringleb_slab(0.0, k));
+    REQUIRE(r.status == ExitStatus::finished);
+    return field(r.run, "SolverPenalty", "RestartState").front();
+  };
+  INFO("rise at " << *rise << ", small rise at " << *small);
+  CHECK(penalty(*rise) == 0.5 * penalty(*rise - 1));
+  CHECK(penalty(*small) == std::min(1.0, 1.5 * penalty(*small - 1)));
 }
 
 TEST_CASE("a diverged run names the cell whose stored state is not physical", "[euler]") {

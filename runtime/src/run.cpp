@@ -2619,6 +2619,10 @@ class Run final : public Log {
         status = "failed";
       }
     }
+    // The plateau belongs to a run that ends converged (results.md), in run.json and in the
+    // solution's RunMetadata alike: set before the solution is written.
+    if (info_["convergence"].is_object())
+      info_["convergence"]["plateau"] = status == "converged" ? plateau_ : Json::array();
     // results.md: the solution is required unless the run diverged (written
     // if possible) or failed (optional).
     if (physics_ && status != "failed") {
@@ -2641,9 +2645,9 @@ class Run final : public Log {
     // A failed run is not timed (results.md).
     info_["timing"] = status == "failed" ? Json(nullptr) : timing(done);
     if (status == "failed") info_["monitors"] = nullptr;
-    // The plateau belongs to a run that ends converged (results.md).
-    if (info_["convergence"].is_object())
-      info_["convergence"]["plateau"] = status == "converged" ? plateau_ : Json::array();
+    // A run that fails to write its solution lists no plateau.
+    if (info_["convergence"].is_object() && status != "converged")
+      info_["convergence"]["plateau"] = Json::array();
     info_["status"] = status;
     info_["finished"] = utc(std::chrono::system_clock::now(), "%Y-%m-%dT%H:%M:%SZ");
     note(status == "failed" ? "error" : "info", "solver", "run finished: " + status, "",
