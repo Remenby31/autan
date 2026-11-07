@@ -69,6 +69,9 @@ class Counts(_Strict):
     face_nodes: Positive
     cells_by_type: CellsByType
     stencil_entries: Count
+    vertex_stencil_entries: Count
+    band_entries: Count
+    boundary_fit_entries: Count
     periodic_ghosts: Count
 
 
@@ -191,6 +194,9 @@ class Partition(_Strict):
     faces_by_rank: ByRank
     interior_faces_by_rank: ByRank
     stencil_entries_by_rank: ByRank
+    vertex_stencil_entries_by_rank: ByRank
+    band_entries_by_rank: ByRank
+    boundary_fit_entries_by_rank: ByRank
     nodes_by_rank: ByRank
     face_nodes_by_rank: ByRank
     sent_cells_by_rank: ByRank

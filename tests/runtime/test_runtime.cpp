@@ -1310,6 +1310,7 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
         [](Json& m) { m.erase("counts"); },
         [](Json& m) { m["unknown"] = 1; },
         [](Json& m) { m["counts"]["stencil_entries"] = -1; },
+        [](Json& m) { m["counts"].erase("band_entries"); },
         [](Json& m) {
           m["counts"]["cells_by_type"]["hexa"] =
               m["counts"]["cells_by_type"]["hexa"].get<int>() + 1;
@@ -1332,6 +1333,9 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
                             {"faces_by_rank", {0, 0}},
                             {"interior_faces_by_rank", {0, 0}},
                             {"stencil_entries_by_rank", {0, 0}},
+                            {"vertex_stencil_entries_by_rank", {0, 0}},
+                            {"band_entries_by_rank", {0, 0}},
+                            {"boundary_fit_entries_by_rank", {0, 0}},
                             {"nodes_by_rank", {0, 0}},
                             {"face_nodes_by_rank", {0, 0}},
                             {"sent_cells_by_rank", {0, 0}}};
@@ -2176,14 +2180,15 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
   SECTION("the previous run has no solution") {
     require_error(from([&](Json& d) { d["start"]["run"] = fresh_dir().string(); }), "E0707");
   }
-#if defined(__linux__)
-  SECTION("the previous run's solution cannot be read") {
-    // A directory in its place: opened, then each read fails (EISDIR).
-    const fs::path previous = fresh_dir();
-    fs::create_directory(previous / "solution.cgns");
-    require_error(from([&](Json& d) { d["start"]["run"] = previous.string(); }), "E0707");
+  SECTION("the previous run's solution is not a regular file") {
+    // A directory reads nothing without an error on libc++; a named pipe blocks its reader.
+    const fs::path directory = fresh_dir();
+    fs::create_directory(directory / "solution.cgns");
+    require_error(from([&](Json& d) { d["start"]["run"] = directory.string(); }), "E0707");
+    const fs::path pipe = fresh_dir();
+    REQUIRE(::mkfifo((pipe / "solution.cgns").c_str(), 0600) == 0);
+    require_error(from([&](Json& d) { d["start"]["run"] = pipe.string(); }), "E0707");
   }
-#endif
   SECTION("the previous run used another precision") {
     require_error(from([](Json& d) { d["precision"] = "fp64"; }), "E0708");
   }

@@ -412,6 +412,11 @@ class SnapshotFile {
     std::random_device random;
     path_ = fs::temp_directory_path() /
             ("autan-start-" + std::to_string(random()) + "-" + std::to_string(random()) + ".cgns");
+    // A directory opens on some standard libraries and reads nothing without an error: anything
+    // but a regular file is refused before it is opened, alike on every platform.
+    std::error_code ec;
+    if (!fs::is_regular_file(from, ec))
+      throw Error(ErrorCode::io_cannot_open, "'" + from.string() + "' is not a regular file");
     std::ifstream in(from, std::ios::binary);
     std::ofstream out(path_, std::ios::binary | std::ios::trunc);
     if (!in || !out) throw Error(ErrorCode::io_cannot_open, "cannot read '" + from.string() + "'");
