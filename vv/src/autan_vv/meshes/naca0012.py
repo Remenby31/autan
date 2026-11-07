@@ -87,7 +87,7 @@ class KarmanTrefftz:
         tau = 2 * _MP.atan(abs(_slope(self.x_te)))  # eq. 6
         self.power = float(2 - tau / _MP.pi)
         self.z1 = complex(self.x_te, 0.0)
-        self.z2 = complex(0.5 * 1.1019 * THICKNESS**2, 0.0)  # eqs. 7 and 10
+        self.z2 = complex(0.5 * 1.1019 * (THICKNESS * THICKNESS), 0.0)  # eqs. 7 and 10
 
     def circle_point(self, z: complex) -> Any:
         """The mapped point of z, unrounded (an mpmath complex at 120 bits)."""
@@ -156,8 +156,8 @@ def _quasi_circle(kt: KarmanTrefftz, centre: float, n: int) -> tuple[FloatArray,
 
 
 @functools.cache
-def _construction() -> tuple[KarmanTrefftz, float, float]:
-    """The map, the centre of eq. 12 and R1 of eq. 13, common to every level."""
+def _construction() -> tuple[float, float]:
+    """The centre of eq. 12 and R1 of eq. 13, common to every level, computed once."""
     kt = KarmanTrefftz()
     zeta_le = complex(kt.circle_point(0j))
     centre = 0.5 * (zeta_le.real + 1.0)  # eq. 12, zeta_TE = zeta1 = 1
@@ -165,7 +165,7 @@ def _construction() -> tuple[KarmanTrefftz, float, float]:
     zeta_finest = kt.to_circle(z_finest)
     step = (np.roll(zeta_finest, -1) - zeta_finest).tolist()
     r1 = math.fsum(float(abs(_MP.mpc(d))) for d in step) / (2.0 * math.pi)
-    return kt, centre, r1
+    return centre, r1
 
 
 def plane_grid(nc: int) -> tuple[ComplexArray, KarmanTrefftz]:
@@ -174,7 +174,8 @@ def plane_grid(nc: int) -> tuple[ComplexArray, KarmanTrefftz]:
     if nc < 4 or nc % 4 or FINEST % nc:
         msg = f"NC must be a multiple of 4 dividing {FINEST}, got {nc}"
         raise VVError(msg, code="V0309")
-    kt, centre, r1 = _construction()
+    kt = KarmanTrefftz()
+    centre, r1 = _construction()
     theta, z_surface = _quasi_circle(kt, centre, nc)
     _, r_surface = kt.about(z_surface, centre)
     growth = 2.0 * math.pi * np.arange(nc + 1) / nc
