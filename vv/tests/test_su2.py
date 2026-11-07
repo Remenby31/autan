@@ -340,7 +340,9 @@ def _watcher(script: str) -> str:
     return "\n".join(line.strip() for line in match.group(1).split("\n"))
 
 
-def _history_csv(path: Path, residuals: dict[str, np.ndarray]) -> None:
+def _history_csv(
+    path: Path, residuals: dict[str, np.ndarray], cd: np.ndarray | None = None
+) -> None:
     header = (DATA / "su2-v8.6.0-naca0012-m080-a125-n0032-2d.csv").read_text().split("\n")[0]
     names = [h.strip().strip('"') for h in header.split(",")]
     columns = dict(
@@ -350,7 +352,9 @@ def _history_csv(path: Path, residuals: dict[str, np.ndarray]) -> None:
     rows = [header]
     rows += [
         ",".join(
-            repr(float(np.log10(columns[c][i]))) if c in columns else ("0.01" if c == "Time(sec)" else "0")
+            repr(float(np.log10(columns[c][i]))) if c in columns
+            else repr(float(cd[i])) if c == "CD" and cd is not None
+            else ("0.01" if c == "Time(sec)" else "0")
             for c in names
         )
         for i in range(n)
@@ -360,12 +364,17 @@ def _history_csv(path: Path, residuals: dict[str, np.ndarray]) -> None:
 
 @pytest.mark.skipif(shutil.which("awk") is None, reason="awk is not installed")
 def test_runner_stops_su2_where_the_criterion_is_met(tmp_path: Path) -> None:
+    scripts = Path(__file__).parents[1] / "su2"
+    for script in ("run.sh", "campaign.sh"):
+        assert subprocess.run(["bash", "-n", str(scripts / script)], check=False).returncode == 0
     program = _watcher("run.sh")
     assert program == _watcher("campaign.sh")
     (tmp_path / "watch.awk").write_text(program)
 
-    def stops(residuals: dict[str, np.ndarray], skip_zero: int = 0) -> bool:
-        _history_csv(tmp_path / "history.csv", residuals)
+    def stops(
+        residuals: dict[str, np.ndarray], skip_zero: int = 0, cd: np.ndarray | None = None
+    ) -> bool:
+        _history_csv(tmp_path / "history.csv", residuals, cd)
         cmd = [
             "awk",
             "-F,",
@@ -375,6 +384,8 @@ def test_runner_stops_su2_where_the_criterion_is_met(tmp_path: Path) -> None:
             "stall=2000",
             "-v",
             f"skipzero={skip_zero}",
+            "-v",
+            "stopfile=stop.csv",
             "-f",
             "watch.awk",
             "history.csv",
@@ -406,6 +417,34 @@ def test_runner_stops_su2_where_the_criterion_is_met(tmp_path: Path) -> None:
     assert stops({"d": slow, "u": slow, "w": woken, "e": slow})
     assert not stops({"d": slow, "u": slow, "w": woken, "e": slow}, skip_zero=1)
     assert not stops({**met, "w": woken[:600]}, skip_zero=1)
+    # With a stop.csv (#493): every residual at or below its threshold and CD stationary to 1e-7
+    # over the window. The verdict does not depend on the first residuals; a woken equation at
+    # the floor converges; CD still moving, or one equation above its threshold, does not.
+    stop = "\n".join(
+        [f"threshold,{c},-8.0" for c in ("rms[Rho]", "rms[RhoU]", "rms[RhoV]", "rms[RhoE]")]
+        + ["output,CD", "window,100", "rtol,1e-07"]
+    )
+    (tmp_path / "stop.csv").write_text(stop + "\n")
+    n = 400
+    floor = np.full(n, 1e-9)
+    settled = np.full(n, 2.8e-3)
+    assert stops({"d": floor, "u": floor, "w": floor, "e": floor}, cd=settled)
+    shifted = floor.copy()
+    shifted[:5] = 1e3
+    assert stops({"d": shifted, "u": floor, "w": woken[:n], "e": floor}, cd=settled)
+    moving = 2.8e-3 * (1 + 1e-5 * np.cos(np.arange(n)))
+    assert not stops({"d": floor, "u": floor, "w": floor, "e": floor}, cd=moving)
+    assert not stops({"d": floor, "u": floor, "w": floor, "e": np.full(n, 1e-7)}, cd=settled)
+    # SU2 writes its history in buffered blocks: a last line cut short is not a row.
+    _history_csv(
+        tmp_path / "history.csv", {"d": floor, "u": floor, "w": floor, "e": floor}, settled
+    )
+    text = (tmp_path / "history.csv").read_text()
+    (tmp_path / "history.csv").write_text(text + text.splitlines()[-1][:40])
+    cmd = ["awk", "-F,", "-v", "orders=10", "-v", "stall=2000", "-v", "skipzero=0", "-v",
+           "stopfile=stop.csv", "-f", "watch.awk", "history.csv"]  # fmt: skip
+    assert subprocess.run(cmd, cwd=tmp_path, check=False).returncode == 0
+    (tmp_path / "stop.csv").unlink()
 
 
 def _geometric_like(residuals: dict[str, np.ndarray]) -> history.History:
@@ -828,13 +867,21 @@ CFL3D_CD = {816: 0.295438152e-2, 3264: 0.288437885e-2, 13056: 0.286620917e-2,
 
 
 def _flat_plate_run(
-    run: Path, model: str, cells: int, drop: float, first: float = -2.0, nu: float = 0.0
+    run: Path,
+    model: str,
+    cells: int,
+    drop: float,
+    first: float = -2.0,
+    nu: float = 0.0,
+    rows: int = 30,
+    settle: float = 0.0,
 ) -> None:
     from autan_vv.su2 import flatplate  # noqa: PLC0415
 
     run.mkdir(parents=True)
     (run / "m.su2").write_text(f"mesh {cells}\n")
     (run / "case.cfg").write_text("MESH_FILENAME= m.su2\n")
+    shutil.copy(DATA / "su2-v8.6.0-flatplate-35x25-log-freestream.txt", run / "log.txt")
     sha = {f: hashlib.sha256((run / f).read_bytes()).hexdigest() for f in ("m.su2", "case.cfg")}
     (run / "level.json").write_text(json.dumps({
         "model": model, "cells": cells, "case_sha256": sha["case.cfg"],
@@ -848,17 +895,17 @@ def _flat_plate_run(
     header = (DATA / "su2-v8.6.0-flatplate-35x25-history.csv").read_text().split("\n")[0]
     names = [h.strip().strip('"') for h in header.split(",")]
     lines = [header]
-    for i in range(30):
-        rms = first - drop * i / 29
-        row = {"Inner_Iter": i, "Time(sec)": 0.01, "CD": CFL3D_CD[cells]}
+    for i in range(rows):
+        rms = first - drop * i / (rows - 1)
+        row = {"Inner_Iter": i, "Time(sec)": 0.01, "CD": CFL3D_CD[cells] * (1 + settle * 0.97**i)}
         lines.append(",".join(
             str(row.get(n, rms + nu * (n == "rms[nu]") if n.startswith("rms[") else 0.0))
             for n in names
         ))  # fmt: skip
     (run / "history.csv").write_text("\n".join(lines) + "\n")
-    rows = ['"PointID","x","y","Skin_Friction_Coefficient_x"']
-    rows += [f"{k}, {x}, 0.0, {CFL3D_CF[cells]!r}" for k, x in enumerate((0.0, 0.5, 1.5, 2.0))]
-    (run / f"{flatplate.SURFACE}.csv").write_text("\n".join(rows) + "\n")
+    surface = ['"PointID","x","y","Skin_Friction_Coefficient_x"']
+    surface += [f"{k}, {x}, 0.0, {CFL3D_CF[cells]!r}" for k, x in enumerate((0.0, 0.5, 1.5, 2.0))]
+    (run / f"{flatplate.SURFACE}.csv").write_text("\n".join(surface) + "\n")
 
 
 def test_flat_plate_report_against_tmr(tmp_path: Path) -> None:
@@ -882,6 +929,36 @@ def test_flat_plate_report_against_tmr(tmp_path: Path) -> None:
     assert model["continuum"]["cd"]["estimate"] == pytest.approx(2.85924e-3, abs=5e-9)
     assert all(lv["gap"]["CFL3D"] == {"cf": 0.0, "cd": 0.0} for lv in model["levels"])
     assert model["pass"]
+    # The absolute criterion of #493 needs a baseline whose CD settles for a window: thirty
+    # iterations are not one.
+    with pytest.raises(VVError) as err:
+        flatplate.results(root, cache, ("sa-noft2",), absolute=root)
+    assert err.value.code == "V0904"
+    # Runs of 900 iterations whose CD is CFL3D's times 1 + 1e-3 0.97^i: CD is within 1e-7 of its
+    # final value from i = 303 (0.97^i <= 1e-4), so it has been stationary over 500 iterations
+    # from i = 803, the 804th iteration; the residuals are below their thresholds from 303 on.
+    settled = tmp_path / "settled"
+    for cells in CFL3D_CF:
+        _flat_plate_run(settled / "sa-noft2" / f"n{cells}", "sa-noft2", cells, drop=11.0,
+                        rows=900, settle=1e-3)  # fmt: skip
+    absolute = flatplate.results(settled, cache, ("sa-noft2",), absolute=settled)
+    absolute = absolute["models"]["sa-noft2"]
+    assert [lv["absolute"]["iterations"] for lv in absolute["levels"]] == [804] * 5
+    assert absolute["absolute"]["continuum"]["cd"]["estimate"] == pytest.approx(
+        2.85924e-3, abs=5e-9
+    )
+    # The stop.csv `prepare --absolute` writes stops the runner's watcher on that history.
+    finest = settled / "sa-noft2" / "n208896"
+    mesh = hashlib.sha256((finest / "m.su2").read_bytes()).hexdigest()
+    (finest / "stop.csv").write_text(flatplate.stop_csv(flatplate.stop_rule(finest, mesh)))
+    (finest / "watch.awk").write_text(_watcher("run.sh"))
+    cmd = ["awk", "-F,", "-v", "orders=10", "-v", "stall=2000", "-v", "skipzero=0", "-v",
+           "stopfile=stop.csv", "-f", "watch.awk", "history.csv"]  # fmt: skip
+    assert subprocess.run(cmd, cwd=finest, check=False).returncode == 0
+    # Its first 800 iterations do not meet it yet.
+    lines = (finest / "history.csv").read_text().splitlines()
+    (finest / "history.csv").write_text("\n".join(lines[:801]) + "\n")
+    assert subprocess.run(cmd, cwd=finest, check=False).returncode == 1
     # A variant whose first residuals are three orders lower stops 8.5 orders down, at or below the
     # levels the published runs had at the criterion: not converged by the protocol's rule, so no
     # estimate, but converged by the amended one (#195), with CFL3D's continuum again. The
@@ -918,4 +995,216 @@ def test_flat_plate_report_against_tmr(tmp_path: Path) -> None:
     (root / "sa" / "n816" / "case.cfg").write_text("MESH_FILENAME= m.su2\nCFL_NUMBER= 5\n")
     with pytest.raises(VVError) as err:
         flatplate.results(root, cache)
+    assert err.value.code == "V0904"
+
+
+def test_absolute_criterion_does_not_depend_on_the_initial_state() -> None:
+    n = 800
+    it = np.arange(n, dtype=np.float64)
+    decay = 1e-2 * 0.9**it + 1e-14
+    cd = 2.8e-3 * (1.0 + 0.5**it)
+    scales = {"d": 1.0, "u": 10.0, "e": 1e5}
+
+    def run(residuals: dict[str, np.ndarray], drag: np.ndarray = cd) -> history.History:
+        return history.History(
+            iterations=it.astype(np.int64), residuals=residuals, cl=np.zeros(n), cd=drag,
+            cmy=np.zeros(n), wall_seconds=None,
+        )  # fmt: skip
+
+    base = run({eq: decay * s for eq, s in scales.items()})
+    # cd is within 1e-7 of its final value from 0.5^i <= 1e-7 (1 + 0.5^799), i = 24; epsilon is the
+    # largest scaled residual there, every equation's being decay[24].
+    eps = history.epsilon(base, scales, ("cd",))
+    assert eps == pytest.approx(decay[24], rel=1e-12)
+    thresholds = {eq: eps * s for eq, s in scales.items()}
+    # The residuals reach the thresholds at 24, cd is then stationary over 500 iterations at 524.
+    at = history.absolute_converged_at(base, thresholds, ("cd",))
+    assert at == 524
+    # First residuals three orders higher: the relative criterion moves, the absolute does not.
+    shifted = {eq: np.where(it < 5, 1e3, 1.0) * decay * s for eq, s in scales.items()}
+    assert history.converged_at(run(shifted), 10.0) != history.converged_at(base, 10.0)
+    assert history.absolute_converged_at(run(shifted), thresholds, ("cd",)) == at
+    # An equation that starts identically zero and wakes to the floor converges.
+    woken = {**base.residuals, "u": np.where(it < 1, 1e-30, 1e-13)}
+    assert history.absolute_converged_at(run(woken), thresholds, ("cd",)) == at
+    # cd moving by 1e-6 never is stationary to 1e-7.
+    wobble = 2.8e-3 * (1.0 + 1e-6 * np.cos(it))
+    assert history.absolute_converged_at(run(base.residuals, wobble), thresholds, ("cd",)) is None
+    # SU2 v8.6.0's own freestream table (35x25 flat plate log): its values, and the flux scales
+    # from them with H = E + p / rho and nu_tilde = 3 mu / rho.
+    fs = history.su2_freestream(
+        (DATA / "su2-v8.6.0-flatplate-35x25-log-freestream.txt").read_text()
+    )
+    assert fs == {"pressure": 114455.0, "density": 1.32905, "energy": 217705.0,
+                  "speed": 69.4448, "viscosity": 1.84592e-05}  # fmt: skip
+    flux = history.flux_scales(fs, 1.0)
+    assert flux["density"] == pytest.approx(1.32905 * 69.4448, rel=1e-15)
+    assert flux["energy"] == pytest.approx(
+        1.32905 * 69.4448 * (217705.0 + 114455.0 / 1.32905), rel=1e-15
+    )
+    assert flux["nu-tilde"] == pytest.approx(3.0 * 1.84592e-05 / 1.32905 * 69.4448, rel=1e-15)
+    # The residuals are in the solver's units, the "Non-dim. value" column; an Euler run prints no
+    # viscosity and has no SA scale.
+    table = (DATA / "su2-v8.6.0-flatplate-35x25-log-freestream.txt").read_text()
+    pressure = "|       Static Pressure|        114455|             1|        Pa|        114455|"
+    assert pressure in table
+    euler = table.replace(pressure, pressure[: -len("114455|")] + "0.7142857|")
+    euler = "\n".join(line for line in euler.splitlines() if "Viscosity" not in line)
+    fs = history.su2_freestream(euler)
+    assert fs["pressure"] == 0.7142857
+    assert "viscosity" not in fs
+    assert "nu-tilde" not in history.flux_scales(fs, 1.0)
+
+
+def test_accuracy_study_compares_both_codes_each_its_own_baseline(tmp_path: Path) -> None:
+    import autan  # noqa: PLC0415
+    from autan.units import deg, m  # noqa: PLC0415
+    from autan_vv.runs import mesh_info, write_run  # noqa: PLC0415
+    from autan_vv.su2 import accuracy  # noqa: PLC0415
+
+    levels = (8, 16, 32)
+    family, meshes = naca0012.generate_family(levels, tmp_path / "family")
+    # Forces F(h) = F0 + C h^2 exactly: Richardson recovers F0. Each history settles as
+    # 1 + 1e-3 0.97^i: within 1e-7 of its end from i = 303, steady over 500 iterations from i = 803.
+    f0 = {"cl": 0.35, "cd": 0.0224, "cmy": -0.038}
+    slope = {"cl": 0.5, "cd": 0.1, "cmy": -0.2}
+    rows = 900
+
+    def forces(n: int, offset: float) -> dict[str, float]:
+        return {k: f0[k] + slope[k] / n**2 + offset for k in f0}
+
+    autan_runs, su2_cases = [], []
+    for lv, face_mesh in zip(family.levels, meshes, strict=True):
+        path = tmp_path / "family" / lv.file
+        case = autan.Case("naca0012-m080-a125", mesh=str(path))
+        case.physics = autan.Compressible(turbulence=autan.Inviscid(), precision="fp64")
+        case.freestream(mach=0.8, aoa=1.25 * deg, pressure=101325.0 * autan.units.ureg.Pa,
+                        ref_length=1.0 * m)  # fmt: skip
+        case.time = autan.Steady(max_iterations=rows, residual_orders=99.0)
+        for zone, kind in (("airfoil", "slip"), ("farfield", "farfield"), ("back", "symmetry"),
+                           ("front", "symmetry")):  # fmt: skip
+            getattr(case.boundary(zone), kind)()
+        cells = face_mesh.n_cells
+        fields = {"Density": np.ones(cells), "VelocityX": np.zeros(cells),
+                  "VelocityY": np.zeros(cells), "VelocityZ": np.zeros(cells),
+                  "Pressure": np.full(cells, 101325.0), "Temperature": np.full(cells, 288.15)}  # fmt: skip
+        info = mesh_info(face_mesh, path, "gmsh")
+        run = write_run(tmp_path / "autan", case, face_mesh, info, fields).path
+        target = forces(lv.n, 0.0)
+        lines = []
+        for i in range(rows):
+            settle = 1.0 + 1e-3 * 0.97**i
+            equations = ("density", "momentum-x", "momentum-y", "momentum-z", "energy")
+            residuals = dict.fromkeys(equations, 1e-2 * 0.97**i + 1e-14)
+            monitors = {"forces": {k: v * settle for k, v in target.items()}}
+            lines.append(json.dumps({"iteration": i + 1, "time": None, "residuals": residuals,
+                                     "monitors": monitors}))  # fmt: skip
+        (run / "history.jsonl").write_text("\n".join(lines) + "\n")
+        autan_runs.append(run)
+        # SU2 on the same file: forces lower by 1e-4, its own settling history and wall nodes.
+        d = tmp_path / "su2" / f"n{lv.n:04d}"
+        d.mkdir(parents=True)
+        record = mesh.convert(path, d / "mesh.su2", 2)
+        _, _, points, markers = _read_su2_mesh(d / "mesh.su2")
+        nodes = np.unique(markers["airfoil"][:, 1:])
+        surface = ['"PointID","x","y","Density","Momentum_x","Momentum_y","Energy"']
+        surface += [f"{k}, {points[k, 0]:.17g}, {points[k, 1]:.17g}, 1.0, 0.0, 0.0, 2.5"
+                    for k in nodes.tolist()]  # fmt: skip
+        (d / "surface.csv").write_text("\n".join(surface) + "\n")
+        theirs = forces(lv.n, -1e-4)
+        header = (DATA / "su2-v8.6.0-naca0012-m080-a125-n0032-2d.csv").read_text().split("\n")[0]
+        names = [h.strip().strip('"') for h in header.split(",")]
+        csv_rows = [header]
+        for i in range(rows):
+            settle = 1.0 + 1e-3 * 0.97**i
+            row = {"Inner_Iter": i, "Time(sec)": 0.01, "CL": theirs["cl"] * settle,
+                   "CD": theirs["cd"] * settle, "CMz": -theirs["cmy"] * settle}  # fmt: skip
+            rms = float(np.log10(1e-2 * 0.97**i + 1e-14))
+            csv_rows.append(",".join(repr(float(row.get(n, rms if n.startswith("rms[") else 0.0)))
+                                     for n in names))  # fmt: skip
+        (d / "history.csv").write_text("\n".join(csv_rows) + "\n")
+        shutil.copy(DATA / "su2-v8.6.0-flatplate-35x25-log-freestream.txt", d / "log.txt")
+        (d / "case.cfg").write_text("MESH_FILENAME= mesh.su2\n")
+        (d / "level.json").write_text(json.dumps({
+            "condition": "m080-a125", "n": lv.n, "scheme": "jst",
+            "mesh": {"source_sha256": record.source_sha256},
+        }))  # fmt: skip
+        (d / "provenance.json").write_text(json.dumps({
+            "exit_status": 0, "su2": "v8.6.0", "image_id": "sha256:i", "case_sha256": "c",
+        }))  # fmt: skip
+        su2_cases.append(d)
+    report = accuracy.study(autan_runs, su2_cases)
+    assert report["condition"] == "m080-a125"
+    assert report["outputs"] == ["cl", "cd", "cmy"]
+    drop = math.log10((1e-2 + 1e-14) / (1e-2 * 0.97 ** (rows - 1) + 1e-14))
+    for row, lv in zip(report["levels"], family.levels, strict=True):
+        assert row["autan"]["iterations"] == 804
+        assert row["su2"]["iterations"] == 804
+        assert row["autan"]["drop"]["density"] == pytest.approx(drop, rel=1e-12)
+        settled = 1.0 + 1e-3 * 0.97 ** (rows - 1)
+        assert row["difference"]["cd"] == pytest.approx(1e-4 * settled, rel=1e-9)
+        assert row["cp"]["faces"] == lv.n
+    for code, offset in (("autan", 0.0), ("su2", -1e-4)):
+        continuum = report["continuum"][code]
+        assert continuum["levels"] == list(levels)
+        for k in ("cl", "cd"):
+            expected = (f0[k] + offset) * (1.0 + 1e-3 * 0.97 ** (rows - 1))
+            assert continuum[k]["estimate"] == pytest.approx(expected, rel=1e-6)
+    # Two runs of one level, or a level from another binary, are not one family.
+    with pytest.raises(VVError) as err:
+        accuracy.study([*autan_runs, autan_runs[0]], su2_cases)
+    assert err.value.code == "V0905"
+    original = (autan_runs[0] / "run.json").read_text()
+    info = json.loads(original)
+    info["solver"]["binary_sha256"] = "0" * 64
+    (autan_runs[0] / "run.json").write_text(json.dumps(info))
+    with pytest.raises(VVError) as err:
+        accuracy.study(autan_runs, su2_cases)
+    assert err.value.code == "V0905"
+    (autan_runs[0] / "run.json").write_text(original)
+    # Another mesh file on one side is another problem.
+    level = json.loads((su2_cases[0] / "level.json").read_text())
+    level["mesh"]["source_sha256"] = "0" * 64
+    (su2_cases[0] / "level.json").write_text(json.dumps(level))
+    with pytest.raises(VVError) as err:
+        accuracy.study(autan_runs, su2_cases)
+    assert err.value.code == "V0905"
+
+
+def test_accuracy_reads_a_run_continued_in_chunks_as_one_history(tmp_path: Path) -> None:
+    import autan  # noqa: PLC0415
+    from autan_vv.runs import mesh_info  # noqa: PLC0415
+    from autan_vv.su2 import accuracy  # noqa: PLC0415
+
+    family, meshes = naca0012.generate_family((8,), tmp_path / "family")
+    path = tmp_path / "family" / family.levels[0].file
+    info = mesh_info(meshes[0], path, "gmsh")
+    case = cases.case("m080-a125", str(path))
+    whole = case.run(info, backend=autan.FakeBackend(), runs=tmp_path / "whole")
+    # The same case stopped after 10 iterations (a chunk) and continued from it.
+    first = cases.case("m080-a125", str(path), max_iterations=10).run(
+        info, backend=autan.FakeBackend(), runs=tmp_path / "chunks"
+    )
+    second = case.run(info, backend=autan.FakeBackend(), runs=tmp_path / "chunks", start=first,
+                      mode="continue")  # fmt: skip
+    level = accuracy.autan_level(second.path)
+    assert level["chain"] == [first.run.run_id, second.run.run_id]
+    assert level["last_iteration"] == whole.run.iterations
+    # A continued run is the uninterrupted one (results.md): the same forces, the same convergence
+    # iteration and level, and the residual drop from the first chunk's first iteration.
+    reference = accuracy.autan_level(whole.path)
+    for key in ("cl", "cd", "cmy", "converged", "iterations", "epsilon", "drop"):
+        assert level[key] == reference[key], key
+    # A chain with a run missing, a run without history, or a gap is refused.
+    original = (first.path / "history.jsonl").read_text()
+    kept = original.splitlines()
+    for broken in ("", "\n".join(kept[:3] + kept[4:]) + "\n"):
+        (first.path / "history.jsonl").write_text(broken)
+        with pytest.raises(VVError) as err:
+            accuracy.autan_level(second.path)
+        assert err.value.code == "V0904"
+    (first.path / "history.jsonl").write_text(original)
+    first.path.rename(first.path.with_name("elsewhere"))
+    with pytest.raises(VVError) as err:
+        accuracy.autan_level(second.path)
     assert err.value.code == "V0904"

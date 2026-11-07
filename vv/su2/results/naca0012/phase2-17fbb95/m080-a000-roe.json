@@ -1,0 +1,549 @@
+{
+  "schema": "autan.su2-accuracy/1",
+  "condition": "m080-a000",
+  "outputs": [
+    "cd"
+  ],
+  "levels": [
+    {
+      "n": 32,
+      "autan": {
+        "run": "run-20261106T120012Z-c220f205",
+        "chain": [
+          "run-20261106T120012Z-c220f205"
+        ],
+        "condition": "m080-a000",
+        "n": 32,
+        "cells": 1024,
+        "h": 0.03125,
+        "mesh_sha256": "6fb2e3acbc3635d5cf88f1f9505acb407e8580b5861733bdeb41f1ea013e70f1",
+        "commit": "17fbb95ac554d46ac0228d05a84f481ab0b56d4e",
+        "binary_sha256": "46071f4e26885479b14c931e9e6cf8d33c7888a24659dc26052df2d43ad9dd26",
+        "backend": "cpu",
+        "precision": "fp64",
+        "status": "completed",
+        "last_iteration": 3000,
+        "cl": 2.0686909158571872e-15,
+        "cd": 0.025110056050585628,
+        "cmy": -3.0278631888326622e-16,
+        "converged": true,
+        "iterations": 718,
+        "epsilon": 9.340328756212486e-09,
+        "drop": {
+          "density": 11.763480152377902,
+          "momentum-x": 11.5068359619774,
+          "momentum-y": -14.373317636605792,
+          "momentum-z": 11.6912788450959,
+          "energy": 11.627765913513326
+        }
+      },
+      "su2": {
+        "condition": "m080-a000",
+        "n": 32,
+        "scheme": "roe",
+        "mesh_sha256": "6fb2e3acbc3635d5cf88f1f9505acb407e8580b5861733bdeb41f1ea013e70f1",
+        "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+        "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+        "last_iteration": 13603,
+        "cl": -1.378064329e-14,
+        "cd": -0.004476943319,
+        "cmy": 2.827599266e-15,
+        "converged": true,
+        "iterations": 839,
+        "epsilon": 2.946916530876684e-11,
+        "drop": {
+          "density": 11.528015532,
+          "momentum-x": 11.217105204000001,
+          "momentum-z": 11.082307802,
+          "energy": 11.499248896
+        }
+      },
+      "difference": {
+        "cl": 1.5849334205857188e-14,
+        "cd": 0.02958699936958563,
+        "cmy": -3.1303855848832663e-15
+      },
+      "cp": {
+        "faces": 32,
+        "all": {
+          "max_abs": 0.3981816252995714,
+          "rms": 0.1875917539288266
+        },
+        "shock_upper": {
+          "autan": 0.46916183316000004,
+          "su2": 0.9536907002024999
+        },
+        "shock_lower": {
+          "autan": 0.46916183316000004,
+          "su2": 0.9536907002024999
+        },
+        "outside_shocks": {
+          "max_abs": 0.3830049843512526,
+          "rms": 0.1784076214499464
+        },
+        "body": {
+          "max_abs": 0.3830049843512526,
+          "rms": 0.1784076214499464,
+          "faces": 14
+        }
+      }
+    },
+    {
+      "n": 64,
+      "autan": {
+        "run": "run-20261106T120038Z-1b5728af",
+        "chain": [
+          "run-20261106T120038Z-1b5728af"
+        ],
+        "condition": "m080-a000",
+        "n": 64,
+        "cells": 4096,
+        "h": 0.015625,
+        "mesh_sha256": "9d5630faf37d17987d2a213a9b52354b55450085ff3e66c042d8ffd2d13b0d61",
+        "commit": "17fbb95ac554d46ac0228d05a84f481ab0b56d4e",
+        "binary_sha256": "46071f4e26885479b14c931e9e6cf8d33c7888a24659dc26052df2d43ad9dd26",
+        "backend": "cpu",
+        "precision": "fp64",
+        "status": "completed",
+        "last_iteration": 3000,
+        "cl": 1.8307664158493995e-15,
+        "cd": 0.012727302921531103,
+        "cmy": -3.031164978255057e-16,
+        "converged": true,
+        "iterations": 720,
+        "epsilon": 6.083111377694848e-10,
+        "drop": {
+          "density": 11.621757604084943,
+          "momentum-x": 11.391214877239648,
+          "momentum-y": -11.517446467412478,
+          "momentum-z": 11.576671517651063,
+          "energy": 11.554191792807883
+        }
+      },
+      "su2": {
+        "condition": "m080-a000",
+        "n": 64,
+        "scheme": "roe",
+        "mesh_sha256": "9d5630faf37d17987d2a213a9b52354b55450085ff3e66c042d8ffd2d13b0d61",
+        "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+        "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+        "last_iteration": 3224,
+        "cl": -1.953992523e-14,
+        "cd": 0.008512001674,
+        "cmy": 5.092280764e-15,
+        "converged": true,
+        "iterations": 819,
+        "epsilon": 3.703291471206355e-11,
+        "drop": {
+          "density": 11.436953049,
+          "momentum-x": 11.113331039,
+          "momentum-z": 11.001336781,
+          "energy": 11.375796043000001
+        }
+      },
+      "difference": {
+        "cl": 2.13706916458494e-14,
+        "cd": 0.004215301247531103,
+        "cmy": -5.395397261825506e-15
+      },
+      "cp": {
+        "faces": 64,
+        "all": {
+          "max_abs": 0.4799870787192476,
+          "rms": 0.12246203490933243
+        },
+        "shock_upper": {
+          "autan": 0.515955668405,
+          "su2": 0.515955668405
+        },
+        "shock_lower": {
+          "autan": 0.515955668405,
+          "su2": 0.515955668405
+        },
+        "outside_shocks": {
+          "max_abs": 0.4799870787192476,
+          "rms": 0.12303742471011042
+        },
+        "body": {
+          "max_abs": 0.19275561155331333,
+          "rms": 0.056953492520824094,
+          "faces": 48
+        }
+      }
+    },
+    {
+      "n": 128,
+      "autan": {
+        "run": "run-20261106T120237Z-b82b868b",
+        "chain": [
+          "run-20261106T120237Z-b82b868b"
+        ],
+        "condition": "m080-a000",
+        "n": 128,
+        "cells": 16384,
+        "h": 0.0078125,
+        "mesh_sha256": "84b0ab13728c949fe52397251f2291303d93ff5baa8ba2fe554112ed18443bc1",
+        "commit": "17fbb95ac554d46ac0228d05a84f481ab0b56d4e",
+        "binary_sha256": "46071f4e26885479b14c931e9e6cf8d33c7888a24659dc26052df2d43ad9dd26",
+        "backend": "cpu",
+        "precision": "fp64",
+        "status": "completed",
+        "last_iteration": 3000,
+        "cl": 9.27279432925089e-16,
+        "cd": 0.009267911577247935,
+        "cmy": -3.3366171863756634e-16,
+        "converged": true,
+        "iterations": 716,
+        "epsilon": 1.0185302831377661e-08,
+        "drop": {
+          "density": 11.516008313072094,
+          "momentum-x": 11.307181816952333,
+          "momentum-y": -11.30016772489276,
+          "momentum-z": 11.477670918215608,
+          "energy": 11.45390426341841
+        }
+      },
+      "su2": {
+        "condition": "m080-a000",
+        "n": 128,
+        "scheme": "roe",
+        "mesh_sha256": "84b0ab13728c949fe52397251f2291303d93ff5baa8ba2fe554112ed18443bc1",
+        "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+        "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+        "last_iteration": 2904,
+        "cl": -2.690556111e-14,
+        "cd": 0.0110831216,
+        "cmy": 7.794979939e-15,
+        "converged": true,
+        "iterations": 953,
+        "epsilon": 5.2692632342280315e-11,
+        "drop": {
+          "density": 11.244976827999999,
+          "momentum-x": 10.930964677,
+          "momentum-z": 10.796389504000002,
+          "energy": 11.174947612
+        }
+      },
+      "difference": {
+        "cl": 2.783284054292509e-14,
+        "cd": -0.0018152100227520652,
+        "cmy": -8.128641657637567e-15
+      },
+      "cp": {
+        "faces": 128,
+        "all": {
+          "max_abs": 0.4776918256941898,
+          "rms": 0.07796851010306609
+        },
+        "shock_upper": {
+          "autan": 0.5159088437025,
+          "su2": 0.49219409033250006
+        },
+        "shock_lower": {
+          "autan": 0.5159088437025,
+          "su2": 0.49219409033250006
+        },
+        "outside_shocks": {
+          "max_abs": 0.4776918256941898,
+          "rms": 0.08069281974148418
+        },
+        "body": {
+          "max_abs": 0.07838912551269472,
+          "rms": 0.028112938828234624,
+          "faces": 102
+        }
+      }
+    },
+    {
+      "n": 256,
+      "autan": {
+        "run": "run-20261106T121102Z-43f6b5a6",
+        "chain": [
+          "run-20261106T121102Z-43f6b5a6"
+        ],
+        "condition": "m080-a000",
+        "n": 256,
+        "cells": 65536,
+        "h": 0.00390625,
+        "mesh_sha256": "6e0747590b3403036de3352b4f3dff76884ba9727c99bdbedfec392a031d9f7e",
+        "commit": "17fbb95ac554d46ac0228d05a84f481ab0b56d4e",
+        "binary_sha256": "46071f4e26885479b14c931e9e6cf8d33c7888a24659dc26052df2d43ad9dd26",
+        "backend": "cpu",
+        "precision": "fp64",
+        "status": "completed",
+        "last_iteration": 3000,
+        "cl": 4.934272377464143e-15,
+        "cd": 0.008517807054202731,
+        "cmy": -1.0906788770145248e-15,
+        "converged": true,
+        "iterations": 727,
+        "epsilon": 1.2604471660429327e-08,
+        "drop": {
+          "density": 11.365852294564723,
+          "momentum-x": 11.163102829000776,
+          "momentum-y": -11.379463933936805,
+          "momentum-z": 11.340774862097375,
+          "energy": 11.300189310444267
+        }
+      },
+      "su2": {
+        "condition": "m080-a000",
+        "n": 256,
+        "scheme": "roe",
+        "mesh_sha256": "6e0747590b3403036de3352b4f3dff76884ba9727c99bdbedfec392a031d9f7e",
+        "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+        "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+        "last_iteration": 3007,
+        "cl": 1.026956298e-15,
+        "cd": 0.01044002131,
+        "cmy": -9.15283474e-16,
+        "converged": true,
+        "iterations": 1133,
+        "epsilon": 1.9553647644948812e-11,
+        "drop": {
+          "density": 11.112459864,
+          "momentum-x": 10.785493286000001,
+          "momentum-z": 10.659906825,
+          "energy": 11.041291138
+        }
+      },
+      "difference": {
+        "cl": 3.907316079464142e-15,
+        "cd": -0.001922214255797269,
+        "cmy": -1.7539540301452475e-16
+      },
+      "cp": {
+        "faces": 256,
+        "all": {
+          "max_abs": 0.44169866714166794,
+          "rms": 0.05995200893170314
+        },
+        "shock_upper": {
+          "autan": 0.5040245488049999,
+          "su2": 0.5040245488049999
+        },
+        "shock_lower": {
+          "autan": 0.5040245488049999,
+          "su2": 0.5040245488049999
+        },
+        "outside_shocks": {
+          "max_abs": 0.44169866714166794,
+          "rms": 0.05068680159801588
+        },
+        "body": {
+          "max_abs": 0.04331791067918467,
+          "rms": 0.014830952188533959,
+          "faces": 216
+        }
+      }
+    },
+    {
+      "n": 512,
+      "autan": {
+        "run": "run-20261106T133200Z-1bc77324",
+        "chain": [
+          "run-20261106T133200Z-1bc77324"
+        ],
+        "condition": "m080-a000",
+        "n": 512,
+        "cells": 262144,
+        "h": 0.001953125,
+        "mesh_sha256": "59ea37cfd8bb89d1a4176747ae80f89d4f98cc274237002ae7d890d82215f5a7",
+        "commit": "17fbb95ac554d46ac0228d05a84f481ab0b56d4e",
+        "binary_sha256": "46071f4e26885479b14c931e9e6cf8d33c7888a24659dc26052df2d43ad9dd26",
+        "backend": "cpu",
+        "precision": "fp64",
+        "status": "completed",
+        "last_iteration": 3000,
+        "cl": 3.978719844003589e-15,
+        "cd": 0.008378086015923374,
+        "cmy": -2.7977987819776296e-16,
+        "converged": true,
+        "iterations": 761,
+        "epsilon": 2.088927071139333e-08,
+        "drop": {
+          "density": 11.206046411899962,
+          "momentum-x": 11.006715665603881,
+          "momentum-y": -11.90446690908569,
+          "momentum-z": 11.154772177585167,
+          "energy": 11.13910380095101
+        }
+      },
+      "su2": {
+        "condition": "m080-a000",
+        "n": 512,
+        "scheme": "roe",
+        "mesh_sha256": "59ea37cfd8bb89d1a4176747ae80f89d4f98cc274237002ae7d890d82215f5a7",
+        "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+        "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+        "last_iteration": 4062,
+        "cl": -1.756234047e-14,
+        "cd": 0.009573857103,
+        "cmy": 4.118233532e-15,
+        "converged": true,
+        "iterations": 1880,
+        "epsilon": 4.025882589132184e-12,
+        "drop": {
+          "density": 10.962702573,
+          "momentum-x": 10.641877487,
+          "momentum-z": 10.515167918,
+          "energy": 10.895758767
+        }
+      },
+      "difference": {
+        "cl": 2.1541060314003588e-14,
+        "cd": -0.0011957710870766271,
+        "cmy": -4.398013410197763e-15
+      },
+      "cp": {
+        "faces": 512,
+        "all": {
+          "max_abs": 0.4167675409397804,
+          "rms": 0.036245020184818004
+        },
+        "shock_upper": {
+          "autan": 0.504020502435,
+          "su2": 0.504020502435
+        },
+        "shock_lower": {
+          "autan": 0.504020502435,
+          "su2": 0.504020502435
+        },
+        "outside_shocks": {
+          "max_abs": 0.4167675409397804,
+          "rms": 0.03297869492366042
+        },
+        "body": {
+          "max_abs": 0.023364332310121638,
+          "rms": 0.007735252727564508,
+          "faces": 440
+        }
+      }
+    },
+    {
+      "n": 1024,
+      "autan": {
+        "run": "run-20261107T081530Z-2412befe",
+        "chain": [
+          "run-20261106T194229Z-11ebfad0",
+          "run-20261107T051511Z-a981e802",
+          "run-20261107T081530Z-2412befe"
+        ],
+        "condition": "m080-a000",
+        "n": 1024,
+        "cells": 1048576,
+        "h": 0.0009765625,
+        "mesh_sha256": "3f5fcf7b23071296335430f1389acf38080132166754365af20ec9cb19f93ed1",
+        "commit": "17fbb95ac554d46ac0228d05a84f481ab0b56d4e",
+        "binary_sha256": "46071f4e26885479b14c931e9e6cf8d33c7888a24659dc26052df2d43ad9dd26",
+        "backend": "cpu",
+        "precision": "fp64",
+        "status": "completed",
+        "last_iteration": 3000,
+        "cl": 1.5902885320216266e-15,
+        "cd": 0.008350317596114822,
+        "cmy": -5.331106652250017e-16,
+        "converged": true,
+        "iterations": 872,
+        "epsilon": 8.409590635102947e-11,
+        "drop": {
+          "density": 11.041952332520056,
+          "momentum-x": 10.84554142851322,
+          "momentum-y": -12.672591058759007,
+          "momentum-z": 10.894511069490404,
+          "energy": 10.975472137894084
+        }
+      },
+      "su2": {
+        "condition": "m080-a000",
+        "n": 1024,
+        "scheme": "roe",
+        "mesh_sha256": "3f5fcf7b23071296335430f1389acf38080132166754365af20ec9cb19f93ed1",
+        "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+        "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+        "last_iteration": 6839,
+        "cl": -1.21260407e-06,
+        "cd": 0.009004695647,
+        "cmy": 2.914271308e-07,
+        "converged": true,
+        "iterations": 5101,
+        "epsilon": 9.415298535724637e-13,
+        "drop": {
+          "density": 7.535893285999999,
+          "momentum-x": 7.392581793999999,
+          "momentum-z": 7.595325979000001,
+          "energy": 7.62430675
+        }
+      },
+      "difference": {
+        "cl": 1.2126040715902885e-06,
+        "cd": -0.0006543780508851786,
+        "cmy": -2.9142713133311067e-07
+      },
+      "cp": {
+        "faces": 1024,
+        "all": {
+          "max_abs": 0.3799094807602156,
+          "rms": 0.02126923360408353
+        },
+        "shock_upper": {
+          "autan": 0.50401949055,
+          "su2": 0.50401949055
+        },
+        "shock_lower": {
+          "autan": 0.50401949055,
+          "su2": 0.50401949055
+        },
+        "outside_shocks": {
+          "max_abs": 0.3799094807602156,
+          "rms": 0.021022543825374145
+        },
+        "body": {
+          "max_abs": 0.021858613773091493,
+          "rms": 0.004076705830018754,
+          "faces": 888
+        }
+      }
+    }
+  ],
+  "continuum": {
+    "autan": {
+      "cl": {
+        "error": "V0108"
+      },
+      "cd": {
+        "estimate": 0.008343429993580852,
+        "order": 2.331032282169037,
+        "gci": 8.609503167461003e-06,
+        "order_if_zero": 0.004789625988951096
+      },
+      "cmy": {
+        "error": "V0107"
+      },
+      "levels": [
+        256,
+        512,
+        1024
+      ]
+    },
+    "su2": {
+      "cl": {
+        "error": "V0108"
+      },
+      "cd": {
+        "estimate": 0.007913982642136146,
+        "order": 0.6058025914378242,
+        "gci": 0.0013633912560798167,
+        "order_if_zero": 0.08842275813401011
+      },
+      "cmy": {
+        "error": "V0108"
+      },
+      "levels": [
+        256,
+        512,
+        1024
+      ]
+    }
+  }
+}
