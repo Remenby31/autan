@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import statistics
+from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -18,6 +20,7 @@ if TYPE_CHECKING:
 ZERO_FLOOR = 1e-12
 PLATEAU_RATIO = 0.9
 PLATEAU_STEPS = 100
+PLATEAU_WINDOW = 100
 BAND = 10.0
 
 
@@ -41,22 +44,29 @@ class _Disagreement:
 
 
 def _first_stop(h: _History) -> tuple[int | None, list[int]]:
-    """The first line meeting the rule and the equations met there on a plateau. A provisional
-    line starts every plateau anew."""
+    """The first line meeting the rule and the equations met there on a plateau. A residual's
+    level is the median of its last 100 counted residuals, and its plateau reference the first
+    level, then each level below 0.9 times the reference before it. A provisional line starts
+    every plateau anew."""
     n = len(h.reference)
     plateau_ref, since, counted = [math.inf] * n, [0] * n, 0
+    window: list[deque[float]] = [deque(maxlen=PLATEAU_WINDOW) for _ in range(n)]
     for i, line in enumerate(h.residuals):
         if h.provisional[i]:
             plateau_ref, since, counted = [math.inf] * n, [0] * n, 0
+            window = [deque(maxlen=PLATEAU_WINDOW) for _ in range(n)]
         else:
             counted += 1
         met_all, on_plateau = True, []
         for e, r in enumerate(line):
             flat = False
             if h.floors is not None and not h.provisional[i]:
-                if r < PLATEAU_RATIO * plateau_ref[e]:
-                    plateau_ref[e], since[e] = r, counted
-                flat = counted - since[e] >= PLATEAU_STEPS
+                window[e].append(r)
+                if counted >= PLATEAU_WINDOW:
+                    level = statistics.median(window[e])
+                    if level < PLATEAU_RATIO * plateau_ref[e]:
+                        plateau_ref[e], since[e] = level, counted
+                flat = since[e] > 0 and counted - since[e] >= PLATEAU_STEPS
             met = i < h.exempt_until[e] or r <= h.reference[e] * h.drop
             plateau = h.floors is not None and flat and r <= BAND * h.floors[e]
             if not met and plateau:

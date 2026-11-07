@@ -222,6 +222,17 @@ TEST_CASE("Invalid meshes are rejected with their documented code", "[mesh]") {
     auto cell_zone = two_cubes();
     cell_zone.cell_zone[1] = 1;
     require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)autan::assemble(cell_zone); });
+    // A node index equal to the node count, in a cell face and in a labelled face.
+    auto cw = autan::test::box(1, autan::test::BoxFill::hexa, 0.0, false);
+    const auto past = static_cast<index_t>(cw.x.size());
+    auto cell_face = cw;
+    cell_face.face_nodes[0] = past;
+    require_error(ErrorCode::mesh_index_out_of_range,
+                  [&] { (void)autan::to_face_based(cell_face); });
+    cw.face_zones.push_back(autan::FaceZone{
+        .name = "side", .bc_type = "", .kind = autan::BcKind::unspecified, .provenance = {}});
+    cw.add_labelled_face(std::array<index_t, 4>{0, 2, 6, past}, 0);
+    require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)autan::to_face_based(cw); });
   }
   SECTION("E0103 face with fewer than 3 nodes") {
     // Two nodes left, or none: equal offsets do not decrease.
@@ -310,8 +321,12 @@ TEST_CASE("Invalid meshes are rejected with their documented code", "[mesh]") {
     auto cw = autan::test::box(1, autan::test::BoxFill::hexa, 0.0, false);
     cw.face_zones.push_back(autan::FaceZone{
         .name = "side", .bc_type = "", .kind = autan::BcKind::unspecified, .provenance = {}});
+    auto past = cw;
     cw.add_labelled_face(std::array<index_t, 4>{0, 2, 6, 4}, -1);
     require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)autan::to_face_based(cw); });
+    past.add_labelled_face(std::array<index_t, 4>{0, 2, 6, 4},
+                           static_cast<index_t>(past.face_zones.size()));
+    require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)autan::to_face_based(past); });
   }
   SECTION("E0109 labels on both interior and boundary faces") {
     auto cw = autan::test::box(2, autan::test::BoxFill::hexa, 0.0, false);
