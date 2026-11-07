@@ -134,7 +134,8 @@ Json first_cell_height(const Mesh& mesh, const Geometry& g, index_t first, index
   if (first == last) return nullptr;
   std::vector<double> h;
   h.reserve(static_cast<std::size_t>(last - first));
-  for (auto f = static_cast<std::size_t>(first); f < static_cast<std::size_t>(last); ++f) {
+  for (index_t face = first; face < last; ++face) {
+    const auto f = static_cast<std::size_t>(face);
     const auto c = static_cast<std::size_t>(mesh.owner()[f]);
     const double d = (g.cell_centroid_x[c] - g.face_centroid_x[f]) * g.face_area_x[f] +
                      (g.cell_centroid_y[c] - g.face_centroid_y[f]) * g.face_area_y[f] +
