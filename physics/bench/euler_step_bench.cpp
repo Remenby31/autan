@@ -61,6 +61,8 @@ int bench(const autan::Mesh& mesh, const char* precision, int steps, bool gate) 
   for (std::size_t k = 0; k < 5; ++k) std::fill_n(data.begin() + k * nb, nb, w[k]);
   host.set_boundary(kind, data);
   host.set_second_order(true);
+  // As EulerPhysics: the planar loops where every face is planar.
+  host.set_planar(host.all_planar());
   std::vector<double> u(5 * n);
   for (std::size_t c = 0; c < n; ++c) {
     const double bump = 0.05 * std::sin(6.0 * g.cell_centroid_x[c]) *
@@ -101,9 +103,9 @@ int bench(const autan::Mesh& mesh, const char* precision, int steps, bool gate) 
 
   std::printf(
       "{\"precision\":\"%s\",\"cells\":%zu,\"steps\":%d,\"device_step_ns_per_cell\":%.4f,"
-      "\"host_residual_ns_per_cell\":%.4f}\n",
+      "\"host_residual_ns_per_cell\":%.4f,\"planar\":%s}\n",
       precision, n, steps, 1e9 * step_s / static_cast<double>(n),
-      1e9 * host_s / static_cast<double>(n));
+      1e9 * host_s / static_cast<double>(n), host.planar() ? "true" : "false");
   return 0;
 }
 
