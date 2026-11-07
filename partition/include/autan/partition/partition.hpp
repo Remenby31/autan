@@ -26,7 +26,8 @@ struct PartitionOptions {
   /// Groups of cells that must share a part (a smoother's lines), as CSR: group g holds
   /// group_cells[group_offsets[g] .. group_offsets[g + 1]). Each group is one node of the graph
   /// the method partitions, weighing the sum of its cells. Groups are non-empty and disjoint,
-  /// or the request is refused (E0140) whatever the part count. Both empty: no group.
+  /// or the request is refused (E0140) whatever the part count. On two parts or more, a group
+  /// whose cells weigh more than 2³¹ − 1 in total is refused too (E0140). Both empty: no group.
   std::span<const offset_t> group_offsets = {};
   std::span<const index_t> group_cells = {};
 };
@@ -142,7 +143,8 @@ LocalPartition extract_partition(const Mesh& global, const Geometry& global_geom
                                  std::int32_t rank, int layers = 2);
 
 /// One level of a graph hierarchy (a multigrid level): n_nodes nodes, edges owner -> neighbour
-/// (indices of nodes), and each node's global id.
+/// (indices of nodes), and each node's global id. Global ids are distinct and an edge joins two
+/// distinct nodes; extract_graph relies on both without checking them.
 struct GraphLevel {
   std::size_t n_nodes = 0;
   std::span<const index_t> owner, neighbour;
@@ -151,7 +153,8 @@ struct GraphLevel {
 
 /// The part of each coarse node: that of its child with the least global id, so that every
 /// rank, holding the same hierarchy, agrees. `coarse_node` gives each fine node's coarse node
-/// (n_coarse of them). Throws E0140 for sizes that do not match or a coarse node without child.
+/// (n_coarse of them), `global_id` its id, distinct (not checked). Throws E0140 for sizes that do
+/// not match, a coarse node out of range or one without child.
 std::vector<std::int32_t> coarse_parts(std::span<const std::int32_t> parts,
                                        std::span<const index_t> coarse_node,
                                        std::span<const std::int64_t> global_id,
