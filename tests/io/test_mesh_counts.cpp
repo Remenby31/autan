@@ -80,8 +80,8 @@ Rings box_rings(int n) {
   const auto gathered = [&](int i, int j, int k, int r) {
     const std::array<int, 3> at{i, j, k};
     std::int64_t total = std::int64_t{within(i, r)} * within(j, r) * within(k, r) - 1;
-    for (int a = 0; a < 3; ++a) {
-      const int b = (a + 1) % 3, c = (a + 2) % 3;
+    for (std::size_t a = 0; a < 3; ++a) {
+      const std::size_t b = (a + 1) % 3, c = (a + 2) % 3;
       const std::int64_t side = std::int64_t{within(at[b], r)} * within(at[c], r);
       if (at[a] <= r - 1) total += side;
       if (n - 1 - at[a] <= r - 1) total += side;
