@@ -9,18 +9,18 @@ from typing import TYPE_CHECKING
 
 import autan
 import numpy as np
+import pytest
 from autan import initial_state
 from autan.meshinfo import mesh_sha256
 from autan_vv.cases.shock_tube import END_TIME, STEPS_PER_CELL
 from autan_vv.cli import main
+from autan_vv.errors import VVError
 from autan_vv.meshes.families import BOX_ZONES, generate_level
 from autan_vv.meshes.tube import WIDTH
 from autan_vv.oracles.inviscid import GAMMA, shock_tube
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
 
 def test_a_level_is_one_layer_of_n_cells_along_x() -> None:
@@ -36,6 +36,11 @@ def test_a_level_is_one_layer_of_n_cells_along_x() -> None:
         assert np.allclose(hi, [1.0, WIDTH, WIDTH])
         # Every cell holds the eight corners of one slab [i/n, (i+1)/n] x [0, w]^2.
         assert mesh.points.shape[0] == 4 * (n + 1)
+    # With an odd n the diaphragm x = 0.5 falls inside a cell, which would take one side's state.
+    for n in (0, 5):
+        with pytest.raises(VVError) as err:
+            generate_level("sod-tube", n)
+        assert err.value.code == "V0309"
 
 
 def test_every_level_solves_one_case_from_its_own_initial_state(tmp_path: Path) -> None:
@@ -110,5 +115,14 @@ def test_a_mesh_file_other_than_its_manifest_is_refused(
         (tmp_path / "other" / "sod-tube-n016.msh").read_bytes()
     )
     family, out = str(tmp_path / "mesh"), str(tmp_path / "c")
+    assert main(["sod-cases", "--family", family, "--out", out]) == 2
+    assert "V0805" in capsys.readouterr().err
+    # A manifest rewritten for the other file: its hash and its mesh hash match, but the level
+    # does not regenerate from its n.
+    manifest_path = tmp_path / "mesh" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    other = json.loads((tmp_path / "other" / "manifest.json").read_text())["levels"][0]
+    manifest["levels"][0] |= {k: other[k] for k in ("file_sha256", "mesh_sha256")}
+    manifest_path.write_text(json.dumps(manifest))
     assert main(["sod-cases", "--family", family, "--out", out]) == 2
     assert "V0805" in capsys.readouterr().err

@@ -2160,7 +2160,7 @@ class Run final : public Log {
     RoundOffExemption exempt(
         equations, continued() && in.start->woken ? *in.start->woken : std::vector<std::string>{});
     // One round-off plateau per equation, counted from this run's first step.
-    std::vector<Plateau> plateaus(equations.size());
+    std::vector<ResidualPlateau> plateaus(equations.size());
     double time = 0.0, average_start = 0.0;
     std::int64_t from = 1;
     if (continued()) {

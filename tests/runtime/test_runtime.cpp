@@ -11,6 +11,7 @@
 #include <functional>
 #include <initializer_list>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <optional>
 #include <random>
@@ -51,6 +52,7 @@
 #include "autan/partition/partition.hpp"
 #include "autan/physics/euler_physics.hpp"
 #include "autan/runtime/input.hpp"
+#include "autan/runtime/round_off.hpp"
 #include "autan/runtime/run.hpp"
 #include "planned.hpp"
 #include "relaxation.hpp"
@@ -1308,6 +1310,7 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
         [](Json& m) { m.erase("counts"); },
         [](Json& m) { m["unknown"] = 1; },
         [](Json& m) { m["counts"]["stencil_entries"] = -1; },
+        [](Json& m) { m["counts"].erase("band_entries"); },
         [](Json& m) {
           m["counts"]["cells_by_type"]["hexa"] =
               m["counts"]["cells_by_type"]["hexa"].get<int>() + 1;
@@ -1330,6 +1333,9 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
                             {"faces_by_rank", {0, 0}},
                             {"interior_faces_by_rank", {0, 0}},
                             {"stencil_entries_by_rank", {0, 0}},
+                            {"vertex_stencil_entries_by_rank", {0, 0}},
+                            {"band_entries_by_rank", {0, 0}},
+                            {"boundary_fit_entries_by_rank", {0, 0}},
                             {"nodes_by_rank", {0, 0}},
                             {"face_nodes_by_rank", {0, 0}},
                             {"sent_cells_by_rank", {0, 0}}};
@@ -2811,11 +2817,41 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
   CHECK(chain == lines_of(whole.run / "history.jsonl"));
 }
 
+TEST_CASE("A residual's plateau follows its level, not its lowest value", "[runtime]") {
+  // case-schema.md#time: the level is the median of the last 100 counted residuals, its first
+  // value (counted step 100) the reference; with no level below 0.9 times it, the residual is on a
+  // plateau at counted step 200. Stationary round-off with a coefficient of variation of 0.2
+  // (#557's largest), uniform on 0.65 to 1.35 times p along the golden-ratio sequence, with one
+  // draw at 0.85 times its lowest value at step 150 that does not move the level; then the same
+  // noise falling 15 % every 100 steps, whose level sets a new reference within every 100 steps.
+  const double p = 1e-6;
+  const auto noise = [p](int k) {
+    return p * (1.0 + 0.35 * (2.0 * std::fmod(k * 0.6180339887498949, 1.0) - 1.0));
+  };
+  for (const bool low_draw : {false, true}) {
+    CAPTURE(low_draw);
+    autan::runtime::ResidualPlateau plateau;
+    double lowest = std::numeric_limits<double>::infinity();
+    int at = 0;
+    for (int k = 1; k <= 1000 && at == 0; ++k) {
+      const double r = low_draw && k == 150 ? 0.85 * lowest : noise(k);
+      lowest = std::min(lowest, r);
+      if (plateau.add(r)) at = k;
+    }
+    CHECK(at == 200);
+  }
+  autan::runtime::ResidualPlateau falling;
+  bool flat = false;
+  for (int k = 1; k <= 1000; ++k) flat = flat || falling.add(noise(k) * std::pow(0.85, k / 100.0));
+  CHECK_FALSE(flat);
+}
+
 TEST_CASE("In fp32+acc64 an equation converges on a round-off plateau near its floor",
           "[runtime]") {
   // case-schema.md#time. Residuals (e + 1) max(0.5^(k-1), p) and scales 1e4 (e + 1) give floors
-  // f_e = 0.5 2^-23 1e4 (e + 1) = 5.96e-4 (e + 1). A plateau is 100 steps without a value below
-  // 0.9 times the least before; an equation converges on one at most 10 f_e high.
+  // f_e = 0.5 2^-23 1e4 (e + 1) = 5.96e-4 (e + 1). A plateau is 100 counted steps without a level
+  // (median of the last 100) below 0.9 times the reference; an equation converges on one at most
+  // 10 f_e high.
   const std::vector<std::string> equations{"density",    "momentum-x", "momentum-y",
                                            "momentum-z", "energy",     "nu-tilde"};
   autan_test::RelaxationOptions scaled;
@@ -2854,8 +2890,8 @@ TEST_CASE("In fp32+acc64 an equation converges on a round-off plateau near its f
 
   SECTION("a plateau above the floor and within the band converges, every equation on it") {
     // p = 1.5 f_0 (the NS manufactured solution's plateau of #467): 0.5^10 = 9.8e-4 > p >
-    // 0.5^11, so the values fall to k = 11 and are p from k = 12, which is not below 0.9 x 9.8e-4:
-    // the last new least value is at k = 11, the plateau holds at k = 111.
+    // 0.5^11, so the values fall to k = 11 and are p from k = 12. The level, the median of the
+    // last 100, is p from its first value at k = 100, the reference: the plateau holds at k = 200.
     autan_test::RelaxationOptions flat = scaled;
     flat.plateau = 1.5 * floor;
     const Outcome converged = run(input([&](Json& d) {
@@ -2866,7 +2902,7 @@ TEST_CASE("In fp32+acc64 an equation converges on a round-off plateau near its f
     REQUIRE(converged.status == ExitStatus::finished);
     const Json info = Json::parse(read(converged.run / "run.json"));
     CHECK(info["status"] == "converged");
-    CHECK(info["iterations"] == 111);
+    CHECK(info["iterations"] == 200);
     CHECK(info["convergence"]["plateau"] == Json(equations));
     // results.md, RunMetadata: the solution carries run.json's convergence, plateau included.
     int fn = 0;
@@ -2887,10 +2923,10 @@ TEST_CASE("In fp32+acc64 an equation converges on a round-off plateau near its f
     REQUIRE(metadata.is_object());
     CHECK(metadata["convergence"] == info["convergence"]);
 
-    // Provisional steps (a first-order start) do not count: from k = 50 the plateau needs 100
-    // counted steps, k = 50 to 149, and holds at k = 150.
+    // Provisional steps (a first-order start) do not count: counted from k = 50, the first level
+    // is at k = 149 and the plateau holds 100 counted steps later, at k = 249.
     flat.provisional_until = 50;
-    CHECK(run_json(flat, "fp32+acc64")["iterations"] == 150);
+    CHECK(run_json(flat, "fp32+acc64")["iterations"] == 249);
 
     // A run that converges on its plateau and then fails to write its solution lists none.
     flat.provisional_until = 0;
