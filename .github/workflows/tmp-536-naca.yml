@@ -72,14 +72,15 @@ jobs:
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install --yes --no-install-recommends libglu1-mesa
       - name: Install from the lock file, Gmsh included
         run: uv sync --locked --all-groups
-      - name: test_naca0012.py, one test at a time, each bounded
+      - name: "#532's probe alone, then the file as CI runs it, each bounded"
         timeout-minutes: 15
         run: |
-          uv run --locked --no-sync pytest --collect-only -q tests/test_naca0012.py | grep '::' > ids.txt
-          while read -r id; do
+          probe=tests/test_naca0012.py::test_probe_the_committed_slab_is_this_platforms_level_32
+          for args in "$probe" "-ra tests/test_naca0012.py"; do
             start=$(date +%s)
-            timeout 150 uv run --locked --no-sync pytest -q -p no:cacheprovider -o faulthandler_timeout=120 "$id" > out.txt 2>&1
+            # shellcheck disable=SC2086 # args holds several pytest arguments on purpose
+            timeout 300 uv run --locked --no-sync pytest -p no:cacheprovider -o faulthandler_timeout=60 $args < /dev/null > out.txt 2>&1
             rc=$?
-            echo "rc=$rc $(( $(date +%s) - start ))s $id"
-            if [ "$rc" -ne 0 ]; then grep -E '^E |File "|Timeout|Thread|passed|failed' out.txt | head -40; fi
-          done < ids.txt
+            echo "rc=$rc $(( $(date +%s) - start ))s pytest $args"
+            grep -E '^E |File "|Timeout|Thread|passed|failed|Skipping|index' out.txt | cut -c1-300 | head -60
+          done
