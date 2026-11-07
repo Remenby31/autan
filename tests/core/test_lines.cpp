@@ -76,6 +76,12 @@ TEST_CASE("lines follow the strong coupling of stretched cells", "[lines]") {
     }
     CHECK((rising || falling));
   }
+  // 2^3 cells of 5 x 5 x 0.5: a z face couples 25 / 0.5 = 50, an x or y face 2.5 / 5 = 0.5, and
+  // each z column of two cells is one line.
+  const auto pairs = stretched_box(2, 10.0);
+  const auto two = autan::smoother_lines(pairs, autan::compute_geometry(pairs));
+  CHECK(two.offsets.size() == 5);
+  CHECK(autan::cells_in_lines(two) == 8);
   const auto isotropic = stretched_box(4, 1.0);
   CHECK(autan::smoother_lines(isotropic, autan::compute_geometry(isotropic)).cells.empty());
   // No two candidates tie here (each cell has one z neighbour on each side), so the lines, as

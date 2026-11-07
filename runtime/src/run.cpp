@@ -31,6 +31,10 @@
 #include <picosha2.h>
 #include <sys/resource.h>
 
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#endif
+
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/core/renumber.hpp"
@@ -239,8 +243,9 @@ void check_manufactured_depth(const std::string& text) {
 // Set by SIGINT and SIGTERM; the loop finalises the run as stopped.
 volatile std::sig_atomic_t stop_requested = 0;
 
-// The process's resident memory at its peak so far, in bytes: VmHWM on Linux,
-// ru_maxrss elsewhere (bytes on macOS).
+// The process's memory at its peak so far, in bytes: VmHWM on Linux; on macOS the peak physical
+// footprint, which counts the pages the memory compressor holds (ru_maxrss counts resident pages
+// only, and macOS compresses idle ones even without pressure: #534); ru_maxrss elsewhere.
 std::int64_t host_peak_bytes() {
 #if defined(__linux__)
   std::ifstream status("/proc/self/status");
@@ -248,6 +253,14 @@ std::int64_t host_peak_bytes() {
     if (line.starts_with("VmHWM:")) return std::stoll(line.substr(6)) * 1024;  // kB
   }
   return 0;
+#elif defined(__APPLE__)
+  task_vm_info_data_t info{};
+  mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+  if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&info), &count) !=
+      KERN_SUCCESS) {
+    return 0;
+  }
+  return static_cast<std::int64_t>(info.ledger_phys_footprint_peak);
 #else
   rusage usage{};
   getrusage(RUSAGE_SELF, &usage);
@@ -1650,6 +1663,7 @@ class Run final : public Log {
         {"solver",
          {{"version", build.version},
           {"commit", build.commit},
+          {"dirty", build.dirty},
           {"backend", backend},
           {"binary_sha256", binary}}},
         {"precision", in.precision},
@@ -2611,6 +2625,10 @@ class Run final : public Log {
         status = "failed";
       }
     }
+    // The plateau belongs to a run that ends converged (results.md), in run.json and in the
+    // solution's RunMetadata alike: set before the solution is written.
+    if (info_["convergence"].is_object())
+      info_["convergence"]["plateau"] = status == "converged" ? plateau_ : Json::array();
     // results.md: the solution is required unless the run diverged (written
     // if possible) or failed (optional).
     if (physics_ && status != "failed") {
@@ -2633,9 +2651,9 @@ class Run final : public Log {
     // A failed run is not timed (results.md).
     info_["timing"] = status == "failed" ? Json(nullptr) : timing(done);
     if (status == "failed") info_["monitors"] = nullptr;
-    // The plateau belongs to a run that ends converged (results.md).
-    if (info_["convergence"].is_object())
-      info_["convergence"]["plateau"] = status == "converged" ? plateau_ : Json::array();
+    // A run that fails to write its solution lists no plateau.
+    if (info_["convergence"].is_object() && status != "converged")
+      info_["convergence"]["plateau"] = Json::array();
     info_["status"] = status;
     info_["finished"] = utc(std::chrono::system_clock::now(), "%Y-%m-%dT%H:%M:%SZ");
     note(status == "failed" ? "error" : "info", "solver", "run finished: " + status, "",

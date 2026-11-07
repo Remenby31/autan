@@ -184,7 +184,7 @@
     "E0134": {
       "severity": "error",
       "title": "File refers to another file",
-      "fix": "Export a self-contained file: no links to other files, no external storage or virtual datasets.",
+      "fix": "Export a self-contained file: no links to other files, no user-defined HDF5 links, no external storage or virtual datasets. Remove each such link or replace it with the data it refers to.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0134"
     },
     "E0135": {

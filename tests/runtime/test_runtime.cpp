@@ -68,7 +68,8 @@ const fs::path data_dir{AUTAN_TEST_DATA_DIR};
 const fs::path mesh_path = data_dir / "mesh" / "hybrid" / "polyMesh";
 // The Euler manufactured solution autan-vv exported for the SDK's tests.
 const fs::path mms_path = data_dir / ".." / ".." / "py" / "tests" / "fixtures" / "euler.mms.json";
-const autan::runtime::SolverBuild build{.version = "0.0.0", .commit = std::string(40, 'a')};
+const autan::runtime::SolverBuild build{
+    .version = "0.0.0", .commit = std::string(40, 'a'), .dirty = true};
 
 std::string read(const fs::path& path) {
   std::ifstream in(path, std::ios::binary);
@@ -685,13 +686,15 @@ TEST_CASE("A checkpoint names its iteration, and a start checks it", "[runtime]"
   CHECK(off.err.find("E0707") != std::string::npos);
 }
 
+// `s` quoted for the shell.
+std::string quoted(const std::string& s) {
+  std::string q = "'";
+  for (const char c : s) q += c == '\'' ? std::string("'\\''") : std::string(1, c);
+  return q + "'";
+}
+
 // The SHA-256 of `file` by CMake's implementation, independent of the runtime's.
 std::string sha256_of(const std::string& file) {
-  const auto quoted = [](const std::string& s) {
-    std::string q = "'";
-    for (const char c : s) q += c == '\'' ? std::string("'\\''") : std::string(1, c);
-    return q + "'";
-  };
   const std::string command = quoted(AUTAN_TEST_CMAKE) + " -E sha256sum " + quoted(file);
   std::FILE* pipe = popen(command.c_str(), "r");
   REQUIRE(pipe != nullptr);
@@ -782,6 +785,99 @@ TEST_CASE("An executable's cached hash serves only that unchanged file", "[runti
   CHECK(logged);
 }
 
+// The exit status and standard output of `command` run by the shell.
+std::pair<int, std::string> shell(const std::string& command) {
+  std::FILE* pipe = popen(command.c_str(), "r");
+  REQUIRE(pipe != nullptr);
+  std::string out;
+  std::array<char, 4096> chunk{};
+  std::size_t got = 0;
+  while ((got = std::fread(chunk.data(), 1, chunk.size(), pipe)) > 0) out.append(chunk.data(), got);
+  const int status = pclose(pipe);
+  return {WIFEXITED(status) ? WEXITSTATUS(status) : -1, out};
+}
+
+TEST_CASE("solver.dirty is the SDK's rule in a checkout and the build's own flag in an export",
+          "[runtime]") {
+  const fs::path dir = fresh_dir();
+  const fs::path out = dir / "autan_build_info.hpp";
+  const auto build_info = [&](const fs::path& source, const std::string& defines) {
+    fs::remove(out);
+    return shell(quoted(AUTAN_TEST_CMAKE) + " -DSOURCE=" + quoted(source.string()) +
+                 " -DOUT=" + quoted(out.string()) + " -DVERSION=0.0.0 " + defines + " -P " +
+                 quoted(AUTAN_TEST_BUILD_INFO) + " >/dev/null 2>&1")
+        .first;
+  };
+  const auto recorded = [&] {
+    std::smatch m;
+    const std::string text = read(out);
+    REQUIRE(std::regex_search(text, m,
+                              std::regex("AUTAN_BUILD_COMMIT \"([0-9a-f]*)\"\n#define "
+                                         "AUTAN_BUILD_DIRTY (true|false)\n")));
+    return std::pair<std::string, bool>{m[1].str(), m[2].str() == "true"};
+  };
+  const auto git = [](const fs::path& repo, const std::string& args) {
+    const auto [status, text] =
+        shell("git -C " + quoted(repo.string()) +
+              " -c user.name=t -c user.email=t@t -c commit.gpgsign=false " + args + " 2>/dev/null");
+    REQUIRE(status == 0);
+    return text;
+  };
+  // A checkout, unpacked inside another repository: its own HEAD, dirty when a tracked file
+  // differs from it (results.md). py/build_hook.py reads the same `git status` for the SDK.
+  const fs::path outer = dir / "outer";
+  const fs::path source = outer / "autan";
+  fs::create_directories(source);
+  git(outer, "init -q");
+  git(outer, "commit -q --allow-empty -m outer");
+  std::ofstream(source / "f") << "a";
+  git(source, "init -q");
+  git(source, "add f");
+  git(source, "commit -q -m c");
+  const std::string head = git(source, "rev-parse HEAD").substr(0, 40);
+  const std::string other(40, 'b');
+  struct Step {
+    std::string what;
+    std::function<void()> change;
+    bool dirty;
+  };
+  const std::vector<Step> steps{
+      {"clean", [] {}, false},
+      {"untracked file only", [&] { std::ofstream(source / "new") << "x"; }, false},
+      {"tracked file edited", [&] { std::ofstream(source / "f") << "b"; }, true},
+      {"edit staged", [&] { git(source, "add f"); }, true},
+  };
+  for (const Step& step : steps) {
+    INFO(step.what);
+    step.change();
+    REQUIRE(build_info(source, "-DAUTAN_COMMIT=" + other + " -DAUTAN_DIRTY=OFF") == 0);
+    CHECK(recorded() == std::pair<std::string, bool>{head, step.dirty});
+    CHECK(step.dirty == !git(source, "status --porcelain --untracked-files=no").empty());
+  }
+  // An export (no .git) states both, even inside another repository; missing or malformed, the
+  // build stops.
+  const fs::path exported = outer / "export";
+  fs::create_directories(exported);
+  REQUIRE(build_info(exported, "-DAUTAN_COMMIT=" + other + " -DAUTAN_DIRTY=ON") == 0);
+  CHECK(recorded() == std::pair<std::string, bool>{other, true});
+  REQUIRE(build_info(exported, "-DAUTAN_COMMIT=" + other + " -DAUTAN_DIRTY=OFF") == 0);
+  CHECK(recorded() == std::pair<std::string, bool>{other, false});
+  const std::vector<std::string> refused{
+      "",
+      "-DAUTAN_DIRTY=OFF",
+      "-DAUTAN_COMMIT=" + other,
+      "-DAUTAN_COMMIT=" + other + " -DAUTAN_DIRTY=",
+      "-DAUTAN_COMMIT=" + other + " -DAUTAN_DIRTY=yes",
+      "-DAUTAN_COMMIT=deadbeef -DAUTAN_DIRTY=OFF",
+  };
+  for (const std::string& defines : refused) {
+    INFO(defines);
+    CHECK(build_info(exported, defines) != 0);
+    CHECK_FALSE(fs::exists(out));
+  }
+  fs::remove_all(dir);
+}
+
 TEST_CASE("A converging run writes the run directory of results.md", "[runtime]") {
   // Residuals 0.5^(k-1) drop 8 orders at k = 28 (0.5^27 < 1e-8 < 0.5^26).
   const Json doc = input();
@@ -821,6 +917,7 @@ TEST_CASE("A converging run writes the run directory of results.md", "[runtime]"
   CHECK(info["mesh"]["path"] == fs::absolute(mesh_path).lexically_normal().string());
   CHECK(info["solver"] == Json{{"version", "0.0.0"},
                                {"commit", build.commit},
+                               {"dirty", build.dirty},
                                {"backend", "cpu"},
                                {"binary_sha256", info["solver"]["binary_sha256"]}});
   // The executable that ran, hashed once per process: a second run records the same.
@@ -2761,10 +2858,34 @@ TEST_CASE("In fp32+acc64 an equation converges on a round-off plateau near its f
     // the last new least value is at k = 11, the plateau holds at k = 111.
     autan_test::RelaxationOptions flat = scaled;
     flat.plateau = 1.5 * floor;
-    const Json info = run_json(flat, "fp32+acc64");
+    const Outcome converged = run(input([&](Json& d) {
+                                    d["precision"] = "fp32+acc64";
+                                    d["time"]["max_iterations"] = 10000;
+                                  }),
+                                  flat);
+    REQUIRE(converged.status == ExitStatus::finished);
+    const Json info = Json::parse(read(converged.run / "run.json"));
     CHECK(info["status"] == "converged");
     CHECK(info["iterations"] == 111);
     CHECK(info["convergence"]["plateau"] == Json(equations));
+    // results.md, RunMetadata: the solution carries run.json's convergence, plateau included.
+    int fn = 0;
+    REQUIRE(cg_open((converged.run / "solution.cgns").string().c_str(), CG_MODE_READ, &fn) ==
+            CG_OK);
+    REQUIRE(cg_goto(fn, 1, "end") == CG_OK);
+    int count = 0;
+    REQUIRE(cg_ndescriptors(&count) == CG_OK);
+    Json metadata;
+    for (int d = 1; d <= count; ++d) {
+      char name[33];
+      char* text = nullptr;
+      REQUIRE(cg_descriptor_read(d, name, &text) == CG_OK);
+      if (std::string_view(name) == "RunMetadata") metadata = Json::parse(text);
+      cg_free(text);
+    }
+    cg_close(fn);
+    REQUIRE(metadata.is_object());
+    CHECK(metadata["convergence"] == info["convergence"]);
 
     // Provisional steps (a first-order start) do not count: from k = 50 the plateau needs 100
     // counted steps, k = 50 to 149, and holds at k = 150.

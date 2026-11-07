@@ -134,6 +134,12 @@ TEST_CASE("MeshInfo types follow the normalisation table", "[mesh-info]") {
     }
   }
   CHECK(doc["cell_zones"][0]["type"] == "fluid");
+  const fs::path poly = data_dir / "hybrid" / "polyMesh";
+  const auto poly_doc = nlohmann::json::parse(autan::io::mesh_info_json(
+      autan::io::read_mesh(poly), autan::io::mesh_hash(poly), autan::io::mesh_bytes(poly),
+      autan::io::mesh_logical_bytes(poly), {}));
+  REQUIRE(poly_doc["cell_zones"].size() == 2);
+  for (const auto& zone : poly_doc["cell_zones"]) CHECK(zone["type"].is_null());
 }
 
 TEST_CASE("Only cells with the topology of a standard shape count as that shape", "[mesh-info]") {
