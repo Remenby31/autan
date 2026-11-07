@@ -217,11 +217,17 @@ TEST_CASE("Graph partitioners return balanced, reproducible parts", "[partition]
   const auto q = autan::partition_quality(global, parts, n_parts, options.cell_weights);
   CHECK(q.imbalance <= 1.0 + options.imbalance_tolerance + 1e-12);
   CHECK(std::all_of(q.owned_cells.begin(), q.owned_cells.end(), [](auto c) { return c > 0; }));
-  // A partitioner beats slabs, whose cut is (n_parts - 1) layers of the box.
+  // Slabs cut (n_parts - 1) planes of the box. On 2 parts that plane is the least bisection, which
+  // a multilevel partitioner need not find: it must cut fewer than two planes. On 4 and 8 parts
+  // blocks cut 2 and 3 planes against 3 and 7: a partitioner beats slabs.
   const auto slab_cut = autan::partition_quality(
                             global, slabs(autan::compute_geometry(global), n_parts, 1.0), n_parts)
                             .cut_faces;
-  CHECK(q.cut_faces <= slab_cut);
+  if (n_parts == 2) {
+    CHECK(q.cut_faces < 2 * slab_cut);
+  } else {
+    CHECK(q.cut_faces <= slab_cut);
+  }
   check_split(global, parts, n_parts);
 }
 #endif
@@ -246,7 +252,12 @@ TEST_CASE("Invalid partition requests are rejected with their documented code", 
   require_error(ErrorCode::partition_invalid_request,
                 [&] { autan::extract_partition(global, gg, two, 1, 1); });
   require_error(ErrorCode::partition_invalid_request,
-                [&] { autan::partition_quality(global, std::vector<std::int32_t>(8, 3), 2); });
+                [&] { autan::partition_quality(global, std::vector<std::int32_t>(8, 2), 2); });
+  // The bounds themselves are valid: one part, weights of 1, no imbalance allowed.
+  autan::PartitionOptions bounds;
+  bounds.cell_weights.assign(8, 1);
+  bounds.imbalance_tolerance = 0.0;
+  CHECK(autan::partition_cells(global, 1, bounds) == std::vector<std::int32_t>(8, 0));
 
   const auto parts = slabs(gg, 2, 1.0);
   const auto half = autan::extract_partition(global, gg, parts, 2, 0);
@@ -666,8 +677,8 @@ TEST_CASE("Groups of cells stay in one part", "[partition][graph]") {
                                              .group_cells = grouped}));
     }
   }
-  // Malformed groups, refused on one part as on two: a cell in two groups, an empty group
-  // (no phantom node), cells without offsets.
+  // Malformed groups, refused on one part as on two: a cell in two groups, a cell equal to the
+  // cell count, an empty group (no phantom node), cells without offsets.
   const auto refused = [&](std::vector<autan::offset_t> group_offsets,
                            std::vector<index_t> group_cells) {
     for (const std::int32_t n : {1, 2}) {
@@ -679,10 +690,22 @@ TEST_CASE("Groups of cells stay in one part", "[partition][graph]") {
     }
   };
   refused({0, 2, 4}, {0, 1, 1, 2});
+  refused({0, 2}, {0, mesh.n_cells()});
   std::vector<index_t> all(at(mesh.n_cells()));
   std::iota(all.begin(), all.end(), index_t{0});
   refused({0, 0, static_cast<autan::offset_t>(all.size())}, all);
   refused({}, {0, 1});
+  const std::vector<autan::offset_t> halves{0, static_cast<autan::offset_t>(all.size() / 2),
+                                            static_cast<autan::offset_t>(all.size())};
+  for (const auto method : methods) {
+    const auto parts = autan::partition_cells(
+        mesh, 2,
+        {.method = method, .cell_weights = {}, .group_offsets = halves, .group_cells = all});
+    REQUIRE(parts.size() == all.size());
+    CHECK(std::ranges::all_of(parts, [](std::int32_t p) { return p == 0 || p == 1; }));
+    for (std::size_t c = 0; c < parts.size(); ++c)
+      CHECK((parts[c] == parts.front()) == (c < at(halves[1])));
+  }
 }
 #endif
 
@@ -820,7 +843,7 @@ TEST_CASE("Greedy colouring visits nodes by increasing global id", "[partition][
                                std::vector<std::int64_t>{0, 1});
   });
   require_error(autan::ErrorCode::partition_invalid_request, [&] {
-    (void)autan::colour_greedy(triangle_offsets, std::vector<index_t>{1, 2, 0, 2, 0, 7},
+    (void)autan::colour_greedy(triangle_offsets, std::vector<index_t>{1, 2, 0, 2, 0, 3},
                                std::vector<std::int64_t>{0, 1, 2});
   });
 }

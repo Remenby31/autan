@@ -9,10 +9,10 @@ on:
   workflow_dispatch:
     inputs:
       kind:
-        description: "Family: all (tet, hex, poly, hybrid) or one of the unit cube's families"
+        description: "Family: all (tet, hex, poly, hybrid), one of the unit cube's families, or onera-m6 (levels required, perturbation 0)"
         type: choice
         default: all
-        options: [all, tet, hex, poly, hybrid, prism, agglomerated]
+        options: [all, tet, hex, poly, hybrid, prism, agglomerated, onera-m6]
       levels:
         description: "Comma-separated levels; empty: the family's gate levels (one kind only otherwise)"
         type: string
@@ -64,6 +64,12 @@ jobs:
             kinds=("$KIND")
           fi
           items=()
+          # The ONERA M6 wing is never perturbed: its generator takes no perturbation, and an
+          # artifact named for one would hold the unperturbed mesh.
+          if [[ $KIND == onera-m6 ]]; then
+            [[ -n $LEVELS ]] || fail "onera-m6 has no gate levels: give levels"
+            awk -v p="$PERTURBATION" 'BEGIN { exit !(p == 0) }' || fail "onera-m6 is not perturbed: give perturbation 0"
+          fi
           for kind in "${kinds[@]}"; do
             levels=${LEVELS:-${gate[$kind]:-}}
             [[ -n $levels ]] || fail "$kind has no gate levels: give levels"
