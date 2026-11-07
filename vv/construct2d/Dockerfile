@@ -1,5 +1,9 @@
-# Construct2D (GPL-3.0), the RAE 2822 grid generator of docs/validation/meshes.md: a development
-# tool built and run in its own image, never vendored in this repository nor linked with Autan.
+# NEVER push this image to a registry or publish it: it holds a GPL-3.0 binary, and distributing it
+# would oblige us to provide its corresponding source. Build it locally and keep it local.
+#
+# Construct2D, GPL-3.0, offline tool, not redistributed: the RAE 2822 grid generator of
+# docs/validation/meshes.md, built and run in its own image, never vendored in this repository nor
+# linked with Autan. Source: C2D_URL below, pinned by C2D_SHA256 and checked before the build.
 # The release's Makefile_Linux_MacOSX unchanged, in a fixed directory: the binary is then
 # byte-reproducible (its debug information records the path) and writes the pinned grids.
 ARG BASE_IMAGE=autan-dev:local
