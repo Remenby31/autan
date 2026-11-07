@@ -1,6 +1,6 @@
 # 0003: Linear exactness is judged against certified per-cell radii, not a fixed 64 ε
 
-**Status:** proposed, 2026-11-07, revision 4 (after the third review on #577; accepted once these changes are in, the orchestrator decided, with Codex re-checking them in the freeze-commit review). Not accepted. The orchestrator has it reviewed again before any verdict changes, and no PASS is recorded before that review and the held-out validation below. **Decided by:** to be decided by the orchestrator, for the lead's delegate. **Issues:** #43, #566 (scope decision 3).
+**Status:** proposed, 2026-11-07, revision 4, amended 2026-11-07 for √ and `hypot` (after the third review on #577; accepted once these changes are in, the orchestrator decided, with Codex re-checking them in the freeze-commit review). Not accepted. The orchestrator has it reviewed again before any verdict changes, and no PASS is recorded before that review and the held-out validation below. **Decided by:** to be decided by the orchestrator, for the lead's delegate. **Issues:** #43, #566 (scope decision 3).
 
 ## Context
 
@@ -61,6 +61,22 @@ Every quantity X carries its **exact value** x and a **radius** r ≥ 0. The rad
 - by (r_x + |x/y| r_y)/(|y| − r_y) for /, using |Ŷ| ≥ |y| − r_y > 0.
 
 The refinement holds because rounding a representable value under round-to-nearest is exact. No first-order truncation and no safety factor is used: the earlier "first order × 2 under a 1/8 condition" is dropped.
+
+**Two operations beyond the four rules** (amendment, 2026-11-07, decided on #43). The geometry construction (`core/src/geometry.cpp`) uses `std::sqrt` and `std::hypot`. The rational-only semantics are extended to exactly these two operations.
+
+- **√, correctly rounded (IEEE 754).** Let x be the executed finite input, X the exact value, |X − x| ≤ r and X − r > 0. Take rationals 0 ≤ L ≤ U with L² ≤ X − r and U² ≥ X + r, and ℓ, m > 0 with ℓ² ≤ X − r and m² ≤ X. Then the executed y = fl(√x) satisfies
+
+  |y − √X| ≤ r/(ℓ + m) + u·U + η.
+
+  √X is irrational in general, so the certified value is a rational centre μ with radius ρ ≥ |μ − √X|, validated by exact squaring: (μ − ρ)² ≤ X ≤ (μ + ρ)², with μ − ρ ≥ 0. Floating-point roots only *propose* the witnesses μ, ρ, ℓ, m, L, U; exact squaring validates them, or the instance is invalid. The result may be re-centred on the executed y with radius ρ + |y − μ|.
+- **`hypot`, no libm assumption.** Its accuracy is not taken from any library documentation (regression tolerances such as glibc's libm-test-ulps are not guarantees, and say nothing of the three-argument form). Each executed result h is checked **per instance, exactly**:
+  - S = a² + b² + c² is computed in rationals from the executed arguments;
+  - h²(1 − ε)² ≤ S ≤ h²(1 + ε)² must hold, which certifies |h − √S| ≤ ε·h;
+  - ε = k·u, with the integer k declared in the freeze;
+  - an instance where the check fails is **invalid**, and fail-closed;
+  - the arguments' own uncertainty is propagated to √S by the √ rule.
+- **Correspondence through these operations.** The intended values are rational. The face normal's magnitude cancels in the centroid's weighted ratio, and the length scale cancels in volume and centroid. That identity is proven once, tied to the frozen sequences and their branches, and written in `sequences.py` and FREEZE.md. Per instance, its hypotheses are checked: each branch is the one the identity assumes (e.g. magnitude > 0 certified by a positive lower bound), and every denominator is separated from zero by its certified radius. The rational parts are checked exactly.
+- **The radius covers the whole computed result.** Cancellation in exact arithmetic does not remove the rounding that the executed sequence actually performs, so every rounding along the executed path (√, `hypot`, the divisions by magnitude and length) is propagated into the radius.
 
 **Declared operation sequences.** The radius of a quantity is propagated through a declared sequence, frozen with the code below:
 - the field: the fixture's evaluation of a + x·G in binary64, then storage;
