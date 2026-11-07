@@ -69,12 +69,11 @@ The refinement holds because rounding a representable value under round-to-neare
   |y − √X| ≤ r/(ℓ + m) + u·U + η.
 
   √X is irrational in general, so the certified value is a rational centre μ with radius ρ ≥ |μ − √X|, validated by exact squaring: (μ − ρ)² ≤ X ≤ (μ + ρ)², with μ − ρ ≥ 0. Floating-point roots only *propose* the witnesses μ, ρ, ℓ, m, L, U; exact squaring validates them, or the instance is invalid. The result may be re-centred on the executed y with radius ρ + |y − μ|.
-- **`hypot`, no libm assumption.** Its accuracy is not taken from any library documentation (regression tolerances such as glibc's libm-test-ulps are not guarantees, and say nothing of the three-argument form). Each executed result h is checked **per instance, exactly**:
-  - S = a² + b² + c² is computed in rationals from the executed arguments;
-  - h²(1 − ε)² ≤ S ≤ h²(1 + ε)² must hold, which certifies |h − √S| ≤ ε·h;
-  - ε = k·u, with the integer k declared in the freeze;
-  - an instance where the check fails is **invalid**, and fail-closed;
-  - the arguments' own uncertainty is propagated to √S by the √ rule.
+- **`hypot`, a declared sequence replayed bit for bit** (decided on #43, replacing a per-instance (1 ± k·u) check: stricter, not a relaxation).
+  - In the build's toolchain the three-argument `std::hypot` is not a library call. It is libstdc++'s inline `__hypot3` (GCC 13, `/usr/include/c++/13/cmath`:3550–3563): a = max(|x|, |y|, |z|) by the source's comparisons, then x/a, the squares, their sum in the source order, √, and × a. It is declared in `sequences.py`, with the libstdc++ version and lines pinned in FREEZE.md.
+  - Per instance, the sequence is replayed by exact emulation of binary64 round-to-nearest-even from the stored area components. The stored magnitude, as the kernels read it, must equal the replay **bit for bit**. A mismatch means the build does not run the declared sequence (another library, an FMA, another branch), and the instance is **invalid**, fail-closed.
+  - The radius comes from the certified rules on that sequence (÷, ×, +, √, with η).
+  - a = 0 (a zero face) is an exact zero only when every exact area component is certainly zero; otherwise invalid.
 - **Correspondence through these operations.** The intended values are rational. The face normal's magnitude cancels in the centroid's weighted ratio, and the length scale cancels in volume and centroid. That identity is proven once, tied to the frozen sequences and their branches, and written in `sequences.py` and FREEZE.md. Per instance, its hypotheses are checked: each branch is the one the identity assumes (e.g. magnitude > 0 certified by a positive lower bound), and every denominator is separated from zero by its certified radius. The rational parts are checked exactly.
 - **The radius covers the whole computed result.** Cancellation in exact arithmetic does not remove the rounding that the executed sequence actually performs, so every rounding along the executed path (√, `hypot`, the divisions by magnitude and length) is propagated into the radius.
 
