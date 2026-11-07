@@ -239,9 +239,9 @@ def manufactured_at_bounds(tmp_path: Path) -> tuple[Path, str]:
 SIDES = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
 
 
+# The unit cube in n^3 hexahedra, or 6 n^3 Kuhn tetrahedra, as MSH 4.1 ASCII: one surface entity
+# per side, physical groups named after the sides, then `fluid`.
 def box_msh(path: Path, n: int, cell: str) -> Path:
-    """The unit cube in n^3 hexahedra, or 6 n^3 Kuhn tetrahedra, as MSH 4.1 ASCII: one surface
-    entity per side, physical groups named after the sides, then `fluid`."""
 
     def node(i: int, j: int, k: int) -> int:
         return 1 + i + (n + 1) * (j + (n + 1) * k)

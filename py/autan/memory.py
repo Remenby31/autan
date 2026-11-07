@@ -137,12 +137,11 @@ def estimate(
     )
 
 
+# A rank's local mesh: cells with ghosts, faces, interior faces, the face2 and vertex stencils'
+# entries, the vertex-ring bounds of the band and the boundary fit (mesh-info.md), and its index
+# in the MeshInfo's partition (None without one).
 @dataclass(frozen=True)
 class _Share:
-    """A rank's local mesh: cells with ghosts, faces, interior faces, the face2 and vertex
-    stencils' entries, the vertex-ring bounds of the band and the boundary fit (mesh-info.md),
-    and its index in the MeshInfo's partition (``None`` without one)."""
-
     cells: int
     faces: int
     interior: int
@@ -481,10 +480,11 @@ def _rank(
     )
 
 
+# The host arrays of the Navier-Stokes physics and of Spalart-Allmaras beyond Euler's
+# (docs/sdk/plan.md): s bytes a state value and a geometry weight, the vertex stencil V, the
+# band B and the boundary fit Q at their MeshInfo bounds. A vector grown by doubling holds at
+# most twice its size, and three times while it moves to a larger buffer.
 def _viscous(add: Callable[..., None], mesh: MeshInfo, share: _Share, s: int, *, sa: bool) -> None:
-    """The host arrays of the Navier-Stokes physics and of Spalart-Allmaras beyond Euler's
-    (docs/sdk/plan.md, viscous physics): s bytes a state value and a geometry weight, the
-    vertex stencil V, the band B and the boundary fit Q at their MeshInfo bounds."""
     c, f, fi = share.cells, share.faces, share.interior
     fb, v, b, q = f - fi, share.vertex, share.band, share.fit
     k = 2 * fi + fb
@@ -493,7 +493,7 @@ def _viscous(add: Callable[..., None], mesh: MeshInfo, share: _Share, s: int, *,
     # offsets and entries, and the band's offsets, entries (a vector grown to at most twice
     # its size) and weights. Setting the boundary builds the weights in FP64 first, in a vector
     # grown to at most twice, then their columns, beside the weights it converts them to.
-    add("quadratic gradient", c * (15 * s + 24) + 8 + 4 * v + b * (8 + 3 * s))
+    add("quadratic gradient", c * (15 * s + 24) + 8 + 8 * v + b * (8 + 3 * s))
     add("quadratic gradient setup", 72 * b, transient=True)
     # NavierStokes (navier_stokes.cpp): the viscous gradient, geometry, viscosities, boundary
     # states and tractions, the fit's seven gradients and its weights, the viscous Jacobian
@@ -502,12 +502,12 @@ def _viscous(add: Callable[..., None], mesh: MeshInfo, share: _Share, s: int, *,
     # takes on every call.
     add(
         "viscous",
-        c * (128 * s + 88) + f * (99 * s + 24) + 64 * fi + 36 * v + q * (8 + 21 * s) + 10 * c * s,
+        c * (128 * s + 88) + f * (99 * s + 24) + 64 * fi + 40 * v + q * (8 + 21 * s) + 10 * c * s,
     )
     # Its own packed geometry with a vertex stencil's node lists, or the fit's coefficients
-    # (152 B an entry, in a vector grown to at most twice), whichever is larger.
+    # (152 B an entry) and entries (4 B) while they grow, whichever is larger.
     packed = 8 * (25 * f + 4 * c + 4 * k) + 16 * counts.nodes + 8 * counts.face_nodes
-    add("viscous setup", max(packed + 6 * c + 5 * fb, 304 * q + c), transient=True)
+    add("viscous setup", max(packed + 6 * c + 5 * fb, 3 * 156 * q + c), transient=True)
     if not sa:
         return
     # SpalartAllmaras (spalart_allmaras.cpp) and the steady step's scalar system
