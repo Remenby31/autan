@@ -560,6 +560,19 @@ int autan_spike_mesh_nodes(const void* mesh, std::int64_t* counts, double* xyz,
   });
 }
 
+/// The face area magnitudes exactly as the kernels read them (PackedGeometry::face_area_magnitude,
+/// assigned from Geometry::face_area), read-only, for the exact hypot check of ADR 0003 (check 2):
+/// n_faces values into out.
+int autan_spike_mesh_face_magnitude(const void* mesh, double* out, char* err, std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return guarded(err, err_len, [&] {
+    const std::vector<double>& stored = m->packed.face_area_magnitude;
+    for (std::size_t f = 0; f < stored.size(); ++f) {
+      out[f] = stored[f];
+    }
+  });
+}
+
 /// Builds a mesh from face-based arrays (face_cell1 = -1 on the boundary), the last
 /// n_ghost_cells cells being ghosts; all boundary faces in one zone. Returns 0 and a handle in
 /// *out, or 1 with a coded message in err.

@@ -56,7 +56,12 @@ def test_round_to_reproduces_the_hardware(fmt: str) -> None:
     for _ in range(3000):
         a, b = (cast(float(v)) for v in rng.standard_normal(2) * 10.0 ** rng.integers(-30, 30, 2))
         for op in ops:
-            hw = op(a, b) if fmt == "binary64" else float(op(np.float32(a), np.float32(b)))
+            with np.errstate(over="ignore"):
+                hw = op(a, b) if fmt == "binary64" else float(op(np.float32(a), np.float32(b)))
+            if not math.isfinite(hw):  # overflow: refused by design, never a value
+                with pytest.raises(c.Invalid):
+                    c.round_to(op(Fr(a), Fr(b)), f)
+                continue
             assert c.round_to(op(Fr(a), Fr(b)), f) == Fr(hw), (a, b)
 
 

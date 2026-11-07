@@ -110,6 +110,15 @@ def mesh_nodes(m: Mesh) -> tuple[F64, npt.NDArray[np.int64], npt.NDArray[np.int3
     return xyz.reshape(-1, 3), offsets, nodes
 
 
+def face_area_magnitude(m: Mesh) -> F64:
+    """The face area magnitudes exactly as the kernels read them: read-only."""
+    err = ctypes.create_string_buffer(512)
+    out = np.zeros(m.n_faces)
+    rc = lib().autan_spike_mesh_face_magnitude(m.handle, _p(out), err, ctypes.c_size_t(len(err)))
+    _check(rc, err)
+    return out
+
+
 def partition(m: Mesh, parts: npt.NDArray[np.int32], n_parts: int, rank: int, layers: int) -> Mesh:
     """Part `rank` of `parts` (one per cell of the unpartitioned `m`) with `layers` ghost layers,
     ghost geometry filled from `m` (autan::extract_partition)."""
