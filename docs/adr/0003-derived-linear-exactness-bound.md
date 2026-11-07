@@ -1,6 +1,6 @@
 # 0003: Linear exactness is judged against certified per-cell radii, not a fixed 64 ε
 
-**Status:** proposed, 2026-11-07, revision 2 (after the review on #577). Not accepted. The orchestrator has it reviewed again before any verdict changes, and no PASS is recorded before that review and the held-out validation below. **Decided by:** to be decided by the orchestrator, for the lead's delegate. **Issues:** #43, #566 (scope decision 3).
+**Status:** proposed, 2026-11-07, revision 3 (after the second review on #577). Not accepted. The orchestrator has it reviewed again before any verdict changes, and no PASS is recorded before that review and the held-out validation below. **Decided by:** to be decided by the orchestrator, for the lead's delegate. **Issues:** #43, #566 (scope decision 3).
 
 ## Context
 
@@ -66,18 +66,31 @@ The refinement holds because rounding a representable value under round-to-neare
 
 The **values**, unlike the radii, never come from the code under test.
 
+**Correspondence obligation.** A radius bounds the distance from the computed value to the *exact evaluation of the declared sequence*. The checks centre their intervals on the *intended operator's* exact value. The two must be the same number.
+
+So, on every instance and for every quantity that enters a check (each geometric array entry, each weight, each cell's gradient component), the oracle evaluates the declared sequence **with every rounding removed**, in exact rationals on the exact data, and verifies that it equals the intended operator's exact value. Any mismatch makes the instance **invalid**, reported as a correspondence failure (the code computes another function), never a pass.
+
+This obligation is checked, not assumed. A proof for a whole operator does not replace it.
+
 ## Decision (proposed)
 
 The gate "linear fields exact to 64 ε" becomes four mandatory checks per instance. Each fails on its own; a failure of one never enlarges another's tolerance.
 
-1. **Topology and orientation.** The mesh the kernels read (owner, neighbour, cell_faces, face orientation and incidence sides) equals the one derived exactly from the input node lists of `FaceArrays`. Any difference fails.
+1. **Topology and orientation, derived independently.** The oracle derives the topology from the **cells' own node lists**: the outward polygons each builder of `codegen/spike/meshes.py` returns per cell, before `to_faces` merges them. It does not use the face-based arrays.
+   - Each cell's polygons must form a closed surface, every edge traversed exactly twice, once in each direction (`docs/contracts/mesh.md`, rule 5).
+   - The cell's exact signed volume, by the divergence theorem on those polygons, must be positive. That certifies "outward".
+   - Each face of the kernels' mesh must match polygons of exactly two cells, with opposite node orders (interior), or of one cell (boundary).
+   - Owner and neighbour follow the contract's convention: the face's right-hand normal points from owner to neighbour, interior faces have owner < neighbour, and a face is outward for c iff owner[f] = c.
+   - After agglomeration, the merged cell's polygons are those of its parts minus the shared ones.
+
+   The kernels' owner, neighbour, cell_faces, incidence sides and face node orders must equal this derivation. Any difference fails.
 2. **Geometry against the nodes.** The *intended* geometry is evaluated exactly from the node coordinates by the construction's definitions: face vector areas and centroids, face moments, cell volumes and centroids, LSQ weights. Every stored array the kernels read must lie within its certified radius of these exact values.
    This is an independent check: a common scaling of s, M and V, which keeps the closure zero and the gradient unchanged, fails here. The closure terms z and Z are no longer used as allowances.
 3. **D1, the kernel against the intended operator from the nodes.** The oracle evaluates the intended operator exactly, with the exact node-defined geometry and weights, on the kernel's stored field values q̂.
    - For LSQ: Σₖ w_k (q̂_k − q̂_c), with w = M⁻¹d/|d|² exact.
    - For GG: the face reconstruction, face sum and division, with the exact areas, moments, centroids and volumes.
 
-   The check is |ĝ_u − g_int,u| ≤ R_D1,c,u, where R_D1 propagates the geometry construction, the weights, the casts and the kernel arithmetic, but not the field's rounding. Corrupted stored weights or geometry fail here, and in check 2.
+   The check is |ĝ_u − g_int,u| ≤ R_D1,c,u, where R_D1 propagates the geometry construction, the weights, the casts and the kernel arithmetic, but not the field's rounding.
 4. **The linear-exactness bound.** First, the oracle verifies exactly that the intended operator reproduces G on the exact field with the exact geometry. This holds by construction for LSQ, Σw dᵀ = I. For GG it is the design premise of the face moment, and is checked per cell; a cell where it fails is reported as a property of the operator, never covered by a tolerance.
    Then |ĝ_u − G_u| ≤ R_c,u, where R propagates everything from the exact data (nodes, a, G): the field's evaluation and storage, the geometry, the weights, the casts and the kernel arithmetic.
    R replaces "T_arith + T_data + T_geom". The coordinate and injected-gradient terms of GG are inside R by construction, not added by hand. For reporting, R is also propagated with one source class at a time (field, geometry, gradient injection, arithmetic). Each such radius bounds that class alone; the gate uses the joint R.
@@ -92,28 +105,32 @@ No check claims to detect every defect. A PASS establishes consistency with the 
 
 ### Defect controls
 
-Each control must FAIL the stated check. Its witness is chosen from the certified radii so that it lies **provably outside** the allowance: the injected change exceeds twice the radius of the quantity it corrupts, and is representable and nonzero.
+Each control must FAIL the stated check, and its failure is **proven at the output** before it is run. A primitive change larger than its own allowance does not by itself move the output: a corrupted weight times a zero field difference is invisible.
+
+So, for every control, the oracle evaluates exactly the declared sequence on the *corrupted* inputs (exact value y_c) and certifies its radius r_c. It proves that the whole interval [y_c − r_c, y_c + r_c] lies outside the stated check's acceptance interval [centre − R, centre + R]: |y_c − centre| > R + r_c. Only then is the control run, and the run must fail.
+
+The fields of the controls have every neighbour difference q_k − q_c nonzero, checked exactly per cell, so no corrupted weight can be multiplied by zero. A control whose proof cannot be established on a declared case is reported as **not demonstrated**, never as passed.
 
 | # | corruption | must fail |
 |---|---|---|
-| 1 | one stored LSQ weight component doubled, where \|w\| > 2 r_w | 2 and 3 |
-| 2 | one weight's sign flipped, where \|w\| > r_w | 2 and 3 |
+| 1 | one stored LSQ weight component doubled | 2, and 3 where the output proof holds |
+| 2 | one weight's sign flipped | 2, and 3 where the output proof holds |
 | 3 | one incidence dropped from a cell | 1 and 3 |
-| 4 | one face area scaled by 1 + 2⁻ᵏ, k the largest integer with \|s\|·2⁻ᵏ > 2 r_s | 2 |
+| 4 | one face area component moved by K units in the last place of its stored type (representable by construction). K is the smallest integer ≥ 1 with \|s′ − s\| > 2 r_s computed exactly after rounding, so K = 1 when r_s = 0 | 2 |
 | 5 | s, M and V of every face and cell scaled by 2 together (closure stays zero) | 2 |
 | 6 | one cell volume changed by more than 2 r_V | 2 |
 | 7 | one face moment changed by more than 2 r_M | 2 |
 | 8 | one cell centroid moved by more than 2 r_x | 2 |
 | 9 | one interior face's owner and neighbour swapped, its area not negated | 1 |
 | 10 | the kernel's output offset to the representable value beyond G ± R (the next float past the interval's far side, so it is outside whatever its sign or R = 0) | 4 |
-| 11 | wrong precision: a certified-exact fixture under fp32+acc64 (R = 0) whose binary32 accumulation is proven inexact by exact emulation, evaluated with accumulation narrowed to binary32 | 3 and 4 |
+| 11 | wrong precision: the gradient evaluated with its accumulation narrowed to binary32 under fp32+acc64. Inexact binary32 intermediates do not imply a wrong output ((1, 2⁻²⁵, −2⁻²⁵) sums to 1 in both precisions). So a fixture qualifies only if **exact emulation** of the narrowed sequence, step by step in binary32 under round-to-nearest, gives a final output outside both the D1 interval and the bound interval of fp32+acc64. Fixtures are searched in a declared, frozen family; if none qualifies, the control is reported not demonstrated | 3 and 4 |
 | 12 | boundary cases: cells with only boundary faces, a single boundary face, a zero gradient component, the constant field | run as fixtures; each must pass |
 
 ### Prospective protocol
 
-Before the held-out run, one commit freezes:
+Before the held-out run, one commit freezes the items below. That **freeze commit is reviewed (Codex) and approved by the orchestrator before any held-out case is executed**. No choice of a declared sequence (operation order, cast placement, accumulation order) may enlarge a radius without that review. The commit freezes:
 - this ADR's equations and tables, as reviewed;
-- the oracle and radius code, with its path and SHA-256;
+- the oracle and radius code, with its path and SHA-256, including the declared operation sequences and the correspondence checks;
 - the build: the commit of the kernels, compiler and version, flags, and the FP assumptions above;
 - the complete **case manifest**: every family, seed, level, policy, a, G, fixture and control.
 
