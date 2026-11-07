@@ -125,19 +125,21 @@ autan::io::Solution solution_of(const autan::Mesh& mesh) {
 // sum of the terms' magnitudes, the scale of its round-off.
 std::array<double, 2> volume(const std::vector<std::int64_t>& faces, std::size_t begin,
                              const std::vector<double>& points) {
-  const auto p = [&](std::int64_t i, int k) { return points[3 * static_cast<std::size_t>(i) + k]; };
+  const auto p = [&](std::int64_t i, std::size_t d) {
+    return points[3 * static_cast<std::size_t>(i) + d];
+  };
   std::size_t k = begin;
-  const auto n_faces = faces[k++];
+  const auto n_faces = static_cast<std::size_t>(faces[k++]);
   double v = 0.0, scale = 0.0;
-  for (std::int64_t f = 0; f < n_faces; ++f) {
-    const auto n = faces[k++];
+  for (std::size_t f = 0; f < n_faces; ++f) {
+    const auto n = static_cast<std::size_t>(faces[k++]);
     std::array<double, 3> c{};
-    for (std::int64_t i = 0; i < n; ++i)
-      for (int d = 0; d < 3; ++d) c[d] += p(faces[k + i], d) / static_cast<double>(n);
-    for (std::int64_t i = 0; i < n; ++i) {
+    for (std::size_t i = 0; i < n; ++i)
+      for (std::size_t d = 0; d < 3; ++d) c[d] += p(faces[k + i], d) / static_cast<double>(n);
+    for (std::size_t i = 0; i < n; ++i) {
       const auto a = faces[k + i], b = faces[k + (i + 1) % n];
       std::array<double, 3> u{}, w{}, g{};
-      for (int d = 0; d < 3; ++d) {
+      for (std::size_t d = 0; d < 3; ++d) {
         u[d] = p(a, d) - c[d];
         w[d] = p(b, d) - c[d];
         g[d] = (c[d] + p(a, d) + p(b, d)) / 3.0;
@@ -149,7 +151,7 @@ std::array<double, 2> volume(const std::vector<std::int64_t>& faces, std::size_t
       v += term;
       scale += std::abs(term);
     }
-    k += static_cast<std::size_t>(n);
+    k += n;
   }
   return {v, scale};
 }
