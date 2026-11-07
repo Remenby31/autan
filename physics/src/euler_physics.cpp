@@ -19,6 +19,7 @@
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/euler_device.hpp"
+#include "autan/physics/first_order_start.hpp"
 #include "autan/physics/manufactured.hpp"
 #include "autan/physics/point_vortex.hpp"
 #include "autan/runtime/exact_sum.hpp"
@@ -48,8 +49,6 @@ constexpr std::array<const char*, 5> conserved_names = {"Density", "MomentumX", 
 // scales with the viscous time step h^2 (docs/design/multigrid.md, measurements).
 constexpr double cfl_start = 1000.0;
 constexpr double cfl_min = 1.0;
-constexpr double first_order_drop = 1e-3;
-constexpr int first_order_max_steps = 200;
 constexpr double cfl_max = 1e6;
 // Each step's linear system is solved to this relative residual (inexact Newton), with at most
 // this many multigrid-preconditioned iterations.
@@ -461,14 +460,14 @@ class EulerPhysics final : public runtime::Physics {
         {"SolverPenalty", penalty_},
         {"SolverShortened", shortened_ ? 1.0 : 0.0},
         {"SolverSecondOrder", second_order_ ? 1.0 : 0.0},
-        {"SolverFirstOrderSteps", static_cast<double>(first_order_steps_)}};
+        {"SolverFirstOrderSteps", static_cast<double>(first_order_.state().steps)}};
     for (std::size_t k = 0; k < 5; ++k) {
       v.emplace_back("SolverReferenceResidual" + std::to_string(k),
                      first_norms_.empty() ? -1.0 : first_norms_[k]);
     }
     v.emplace_back("SolverCflCap", cfl_cap_);
     // The first-order start's plateau (-1: no reference yet), which decides when it ends.
-    const auto plateau = first_order_plateau_.state();
+    const auto plateau = first_order_.state().plateau;
     v.emplace_back("SolverFirstOrderPlateauReference",
                    std::isinf(plateau.reference) ? -1.0 : plateau.reference);
     v.emplace_back("SolverFirstOrderPlateauCount", static_cast<double>(plateau.count));
@@ -481,16 +480,18 @@ class EulerPhysics final : public runtime::Physics {
     shortened_ = v[1].second != 0.0;
     second_order_ = v[2].second != 0.0;
     euler_.set_second_order(second_order_);
-    first_order_steps_ = static_cast<int>(v[3].second);
+
     first_norms_.clear();
     if (v[4].second >= 0.0) {
       for (std::size_t k = 0; k < 5; ++k) first_norms_.push_back(v[4 + k].second);
     }
     cfl_cap_ = v[9].second;
-    first_order_plateau_.restore(
-        {.reference = v[10].second < 0.0 ? std::numeric_limits<double>::infinity() : v[10].second,
-         .count = static_cast<std::size_t>(v[11].second),
-         .since = static_cast<std::size_t>(v[12].second)});
+    first_order_.restore(
+        {.steps = static_cast<int>(v[3].second),
+         .plateau = {.reference = v[10].second < 0.0 ? std::numeric_limits<double>::infinity()
+                                                     : v[10].second,
+                     .count = static_cast<std::size_t>(v[11].second),
+                     .since = static_cast<std::size_t>(v[12].second)}});
   }
 
   // initial-state.md: the owned cells' state from the case's initial-state file; a NaN row (a
@@ -1044,9 +1045,10 @@ class EulerPhysics final : public runtime::Physics {
     double drop = 0.0;
     if (first_norms_.empty()) first_norms_ = current;
     for (std::size_t k = 0; k < 5; ++k) {
-      if (first_norms_[k] > 0.0 && !exempt_.exempt(k)) {
-        drop = std::max(drop, current[k] / first_norms_[k]);
-      }
+      // A woken equation drops from the reference of its kind, as in the convergence rule.
+      if (exempt_.exempt(k)) continue;
+      const double from = exempt_.woken(k) ? exempt_.woken_reference(k) : first_norms_[k];
+      if (from > 0.0) drop = std::max(drop, current[k] / from);
     }
     return drop;
   }
@@ -1057,8 +1059,7 @@ class EulerPhysics final : public runtime::Physics {
   void switch_order(double drop) {
     if (second_order_) return;
     // Also once the drop is on a round-off plateau: in fp32+acc64 three orders can lie below it.
-    const bool flat = first_order_plateau_.add(drop);
-    if (drop < first_order_drop || flat || ++first_order_steps_ > first_order_max_steps) {
+    if (first_order_.ends_after(drop)) {
       second_order_ = true;
       euler_.set_second_order(true);
       if (device_) device_->set_second_order(true);
@@ -1090,7 +1091,10 @@ class EulerPhysics final : public runtime::Physics {
     const auto r = steady ? device_->step(device_steady_cfl, std::nullopt, true)
                           : device_->step(t.cfl.value_or(0.0), t.cfl ? std::nullopt : t.dt, false);
     host_stale_ = true;
-    if (steady) switch_order(relative_drop(r.residuals, r.residuals));
+    // The exemption is decided on the residuals the runtime receives, as on the host.
+    if (steady)
+      switch_order(
+          relative_drop(r.residuals, report.residuals.empty() ? r.residuals : report.residuals));
     if (report.residuals.empty()) report.residuals = r.residuals;
     if (!steady) report.time_step = r.time_step;
     report.diverged_cell = r.invalid;
@@ -1174,7 +1178,7 @@ class EulerPhysics final : public runtime::Physics {
   Euler<P> euler_;
   std::array<double, 5> reference_;  // the state the cells store differences from
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
-  runtime::Plateau first_order_plateau_;
+  FirstOrderStart first_order_;
   std::optional<BlockMatrix> matrix_;            // steady runs only
   std::optional<solvers::Multigrid> multigrid_;  // linear_solver = "multigrid"
   std::optional<solvers::LineSmoother> lines_;   // linear_solver = "lines"
@@ -1185,7 +1189,6 @@ class EulerPhysics final : public runtime::Physics {
   double cfl_ = cfl_start;
   double penalty_ = 1.0;
   bool second_order_ = false;
-  int first_order_steps_ = 0;
   bool shortened_ = false;
   double mean_weight_ = 0.0;
   std::vector<State> state_, lambda_;
