@@ -1,122 +1,135 @@
-# 0003: Linear exactness is judged against a derived per-cell bound, not 64 ε
+# 0003: Linear exactness is judged against certified per-cell radii, not a fixed 64 ε
 
-**Status:** proposed, 2026-11-07. Not accepted: the orchestrator has it reviewed (Codex) before any verdict changes, and no PASS is recorded before that review and the held-out validation below. **Decided by:** to be decided by the orchestrator, for the lead's delegate. **Issues:** #43, #566 (scope decision 3).
+**Status:** proposed, 2026-11-07, revision 2 (after the review on #577). Not accepted. The orchestrator has it reviewed again before any verdict changes, and no PASS is recorded before that review and the held-out validation below. **Decided by:** to be decided by the orchestrator, for the lead's delegate. **Issues:** #43, #566 (scope decision 3).
 
 ## Context
 
-`acceptance.md` requires LSQ and corrected Green-Gauss gradients "exact to 64 ε" on linear fields (line 18). The M1 spike did not meet it: LSQ ≤ 400 ε, and the tests allow 9600 ε. Scope decision 3 of #566 forbids relaxing the threshold without first finding the cause.
+`acceptance.md` line 18 requires LSQ and corrected Green-Gauss gradients "exact to 64 ε" on linear fields. Read as written, that is an **absolute** bound per component: |ĝ_u − G_u| ≤ 64 ε of the policy. The M1 spike did not meet it: LSQ ≤ 400 ε, and the tests allow 9600 ε. Scope decision 3 of #566 forbids relaxing the threshold without first finding the cause.
 
-The cause was analysed on paper before any value was computed (#43, step A, revised after review), then measured as an exploration (#43, step B). Both were on main b3683284, on the host, in exact rational arithmetic on the kernels' stored inputs.
+The cause was analysed on paper before any value (#43, step A, revised after review), then explored (#43, step B), on main b3683284, host only, in exact rational arithmetic. **This ADR comes after that exploration.**
 
-- **The kernels are not at fault.** In every instance the LSQ and GG kernels lie within the arithmetic bound of their generated operation graph, at worst 0.44 (LSQ) and 0.25 (GG) of it (D1). The stored geometry closes at the roundoff of its storage type (G2).
-- **Where the 64 ε gap comes from.** For LSQ it is the rounding of the stored field values, e_data = Σₖ ŵₖ(ηₖ − η_c). It roughly doubles with each doubling of the cells per direction and is proportional to the field's offset a, while the stencil conditioning h·Σ|ŵ| stays between 1.1 and 5.5.
-- **For GG it is the inputs and the kernel's own rounding together.** The exact same-cell decomposition (https://github.com/Remenby31/autan/issues/43#issuecomment-6710945756) attributes the worst cell's input error to the field data on clean meshes and to the closure term a z + Z G on perturbed ones. Coordinate rounding (fp32 only, ≤ 17.4 ε) and the injected gradient's rounding (≤ 0.32 ε) are smaller. The kernel's arithmetic, within its bound, is of the same order as the input terms (up to 252.8 ε in one cell).
+Units: step B's tables report |ĝ_u − G_u| / (ε ‖G‖∞) with ‖G‖∞ = 1.2. They are *relative to ‖G‖∞*, and absolute values are 1.2 times larger. They are kept distinct from the original absolute 64 ε below.
 
-For LSQ, a fixed 64 ε relative to |G| is therefore not a property any kernel reading these inputs can guarantee: the inputs already deviate from the linear field by more than that. For GG the same holds of the inputs, and the kernel's rounding, which grows with a, adds to it. Hence a per-cell bound with an arithmetic term, rather than a fixed multiple of ε.
+What step B observed, limited to the discrepancies it tested and to the arithmetic model below:
+- **D1, as step B defined it** (the kernel against its formula evaluated exactly on its *stored* inputs): no observed deviation exceeded its bound, at worst 0.44 (LSQ) and 0.25 (GG) of it. That check reads the stored inputs, so it cannot detect corrupted stored geometry or weights. It is replaced below by an oracle built from the nodes.
+- **LSQ:** the gap to G is dominated by the rounding of the stored field values. It roughly doubles with each doubling of the cells per direction and is proportional to the field's offset a.
+- **GG, the exact same-cell decomposition** (https://github.com/Remenby31/autan/issues/43#issuecomment-6710945756):
+  - In the cell of largest input error, the field data dominates on clean meshes and the closure term on perturbed ones.
+  - Coordinate rounding is ≤ 17.4 ε, fp32 only; the injected gradient's rounding is ≤ 0.32 ε.
+  - The kernel's own arithmetic is of the same order as the input terms. Its maximum over all cells is 267.2 ε with a = 1, and 174 307.3 ε with a = 10³ (hybrid, perturbed, fp64, N = 16), in units of ε‖G‖∞.
+  - The norm columns are maxima of absolute values, not an additive identity, and the selected cell maximises input error, not total error.
 
-**This change comes after exploration.** It is proposed after step B's values were seen. To keep it from being fitted to them:
-- every constant below is derived from operation counts, not from B's values;
-- every constant is frozen in this document before the held-out validation;
-- the held-out meshes and fields are disjoint from B's.
+A fixed absolute 64 ε cannot hold for these operators on these inputs as the mesh is refined or the field offset grows. The proposal replaces it with checks against radii that are **proven** from a declared operation sequence, not fitted.
 
-## Definitions
+## Arithmetic model and definitions
 
-- **Roundoff.** u is the unit roundoff of a format: 2⁻⁵³ (binary64), 2⁻²⁴ (binary32). ε = 2u is its machine epsilon. γₙ(u) = n u / (1 − n u), defined only for n u < 1/2 (checked).
-- **Arithmetic model.** IEEE 754 round to nearest even, no FMA contraction on the host (`-ffp-contract=off`, CMakeLists.txt). No underflow or overflow: every input and intermediate magnitude is checked to lie in the normal range of its type, or the instance is invalid, which is reported and not counted as a pass.
-- **Roles per policy** (`codegen/include/autan/kernels/runtime.hpp`; emission in `codegen/src/autan_codegen/emit_cpp.py`):
+- **Format and rounding.** IEEE 754 binary64 and binary32, round to nearest even, no FMA contraction on the host (`-ffp-contract=off`, CMakeLists.txt). Unit roundoff u_t of format t: 2⁻⁵³ or 2⁻²⁴. Machine epsilon ε_t = 2u_t.
+- **Range.** Every operation's exact result is either 0 or of magnitude at least the smallest normal of its format, and finite. Zero results and zero inputs are allowed. A nonzero subnormal or an overflow makes the instance **invalid**: reported, never a pass.
+- **Roles and casts per policy** (`runtime.hpp`, `emit_cpp.py`):
 
-| policy | state u_s | compute u_c | accumulation u_a | gradient u_g | geometry read through `rel` u_x | other geometry reaching bodies u_v |
+| policy | state | compute | accumulation | gradient | geometry read through `rel` | other geometry in bodies |
 |---|---|---|---|---|---|---|
-| fp64 | 2⁻⁵³ | 2⁻⁵³ | 2⁻⁵³ | 2⁻⁵³ | 2⁻⁵³ | 2⁻⁵³ |
-| fp32+acc64 | 2⁻²⁴ | 2⁻²⁴ | 2⁻⁵³ | 2⁻²⁴ | 2⁻⁵³ (double storage) | 2⁻²⁴ (`geom_value`) |
-| fp32 | 2⁻²⁴ | 2⁻²⁴ | 2⁻²⁴ | 2⁻²⁴ | 2⁻²⁴ | 2⁻²⁴ |
+| fp64 | 64 | 64 | 64 | 64 | 64 | 64 |
+| fp32+acc64 | 32 | 32 | 64 | 32 | 64 | 32 (`geom_value`) |
+| fp32 | 32 | 32 | 32 | 32 | 32 | 32 |
 
-  A value's "stored" form is its double rounded to the role's type (round to nearest). Casts from a narrower to a wider type are exact.
-- **Norms.** Every comparison is **per cell c and per Cartesian component u**, with absolute values. A gate passes when every (c, u) passes. No ratio is formed, so a zero bound is not a division.
-- **Zero cases.** If T_{c,u} = 0, the gate requires ĝ_u = G_u exactly. If the measured error is 0, the cell passes whatever its bound.
-- **Exact evaluation.** Every reference, bound and decomposition is evaluated in exact rational arithmetic (`fractions.Fraction` of each double). Floating-point sums (fsum, ExactSum) are never a reference.
-- **Field.** q(x) = a + G·x. The fixture evaluates it in binary64 at the binary64 centroids x (or face centroids) and stores q̂ = fl_s(fl₆₄(a + x·G)).
-  b_q,i bounds |q̂ᵢ − q(xᵢ)|: b_q,i := u_s |q̂ᵢ| + (1 + u_s) γ₄(2⁻⁵³)(|a| + Σⱼ |Gⱼ xᵢⱼ|).
+  The geometry is built in binary64 (`core/src/geometry.cpp`, `codegen/cpp/geometry.cpp`), then cast to the role's type.
+- **Comparisons.** Per cell c and per component u, on absolute values. No ratio is formed. A radius of 0 requires exact equality.
+- **Exact evaluation.** Every value, reference and radius is evaluated in exact rational arithmetic. Floating-point sums are never a reference.
+
+### Certified error propagation
+
+Every quantity X carries its **exact value** x and a **radius** r ≥ 0. The radius is proven to bound |X̂ − x| for the value X̂ that any evaluation of the declared operation sequence produces under the model above. For an operation whose exact result on the computed operands is rounded to format t (unit u):
+
+| operation | radius of the result |
+|---|---|
+| input given exactly | 0 |
+| X ± Y | (1 + u)(r_x + r_y) + u·\|x ± y\| |
+| X · Y | (1 + u)(\|x\| r_y + \|y\| r_x + r_x r_y) + u·\|x y\| |
+| X / Y, valid only if r_y < \|y\| | (1 + u)·(r_x + \|x/y\| r_y)/(\|y\| − r_y) + u·\|x/y\| |
+| cast to a narrower format (unit u_t) | (1 + u_t) r_x + u_t \|x\| |
+| widening cast | r_x |
+
+**Exactness refinement.** When r_x = r_y = 0 and the exact result is representable in t, the radius is 0.
+
+**Proof sketch.** Write X̂ = x + δ_x with |δ_x| ≤ r_x. The computed result is fl(X̂ op Ŷ) = (X̂ op Ŷ)(1 + η), |η| ≤ u. Then |fl(X̂ op Ŷ) − (x op y)| ≤ |X̂ op Ŷ − x op y| + u|X̂ op Ŷ| ≤ (1 + u)|X̂ op Ŷ − x op y| + u|x op y|. The first factor is bounded exactly:
+- by r_x + r_y for ±;
+- by |x|r_y + |y|r_x + r_x r_y for ·;
+- by (r_x + |x/y| r_y)/(|y| − r_y) for /, using |Ŷ| ≥ |y| − r_y > 0.
+
+The refinement holds because rounding a representable value under round-to-nearest is exact. No first-order truncation and no safety factor is used: the earlier "first order × 2 under a 1/8 condition" is dropped.
+
+**Declared operation sequences.** The radius of a quantity is propagated through a declared sequence, frozen with the code below:
+- the field: the fixture's evaluation of a + x·G in binary64, then storage;
+- the geometry construction, operation by operation as in `core/src/geometry.cpp` (face area, centroid and volume by fans and the apex decomposition) and `codegen/cpp/geometry.cpp` (moments, LSQ weights with `inverse3`);
+- the kernel bodies, driven by the generator's own IR instruction list for each body, with the `C()` conversions and storage types of `emit_cpp.py`, and the loop's accumulation order (incidence order for `cell_reduce` and the gathers, face order for the scatter).
+
+The **values**, unlike the radii, never come from the code under test.
 
 ## Decision (proposed)
 
-The gate "linear fields exact to 64 ε" becomes four mandatory checks per instance. Each fails on its own; none enlarges another's tolerance.
+The gate "linear fields exact to 64 ε" becomes four mandatory checks per instance. Each fails on its own; a failure of one never enlarges another's tolerance.
 
-### 1. D1, the kernel against its exact reference
+1. **Topology and orientation.** The mesh the kernels read (owner, neighbour, cell_faces, face orientation and incidence sides) equals the one derived exactly from the input node lists of `FaceArrays`. Any difference fails.
+2. **Geometry against the nodes.** The *intended* geometry is evaluated exactly from the node coordinates by the construction's definitions: face vector areas and centroids, face moments, cell volumes and centroids, LSQ weights. Every stored array the kernels read must lie within its certified radius of these exact values.
+   This is an independent check: a common scaling of s, M and V, which keeps the closure zero and the gradient unchanged, fails here. The closure terms z and Z are no longer used as allowances.
+3. **D1, the kernel against the intended operator from the nodes.** The oracle evaluates the intended operator exactly, with the exact node-defined geometry and weights, on the kernel's stored field values q̂.
+   - For LSQ: Σₖ w_k (q̂_k − q̂_c), with w = M⁻¹d/|d|² exact.
+   - For GG: the face reconstruction, face sum and division, with the exact areas, moments, centroids and volumes.
 
-g_ref is the kernel's formula evaluated exactly on its stored inputs. The check is |ĝ_u − g_ref,u| ≤ T_arith,c,u, where T_arith is the arithmetic bound of the generated operation graph (#43, revised step A, D1):
+   The check is |ĝ_u − g_int,u| ≤ R_D1,c,u, where R_D1 propagates the geometry construction, the weights, the casts and the kernel arithmetic, but not the field's rounding. Corrupted stored weights or geometry fail here, and in check 2.
+4. **The linear-exactness bound.** First, the oracle verifies exactly that the intended operator reproduces G on the exact field with the exact geometry. This holds by construction for LSQ, Σw dᵀ = I. For GG it is the design premise of the face moment, and is checked per cell; a cell where it fails is reported as a property of the operator, never covered by a tolerance.
+   Then |ĝ_u − G_u| ≤ R_c,u, where R propagates everything from the exact data (nodes, a, G): the field's evaluation and storage, the geometry, the weights, the casts and the kernel arithmetic.
+   R replaces "T_arith + T_data + T_geom". The coordinate and injected-gradient terms of GG are inside R by construction, not added by hand. For reporting, R is also propagated with one source class at a time (field, geometry, gradient injection, arithmetic). Each such radius bounds that class alone; the gate uses the joint R.
 
-- **LSQ:** T_arith = u_g |g_ref,u| + (1 + u_g) θ Σₖ |ŵ_uk| |q̂ₖ − q̂_c|, with θ = (1 + u_c)³(1 + γ_{m−1}(u_a)) − 1.
-- **GG:** per face, the `rel` subtraction in u_x then the conversion in u_c, two 3-term dot products and the face sum in γ₇(u_c), q̃ŝ and M̂ᵀĝ in γ₄(u_c). Per cell, the accumulation γ_{m_c}(u_a), then conversion, division and storage, (1 + u_c)²(1 + u_g) − 1.
+No check claims to detect every defect. A PASS establishes consistency with the intended operator within the certified envelope, for the declared sequences, on the instances run.
 
-A doubled weight, a wrong sign or a missing incidence fails here, because g_ref reads the same stored inputs.
+### Exact fixtures
 
-### 2. G1, LSQ weights, componentwise
+- **Hex fixtures:** uniform hexahedral meshes with dyadic node coordinates, dyadic G and a.
+- **Constant fields:** G = 0.
+- **Certification:** a fixture is *certified exact* when the propagation, with its exactness refinement, gives R = 0 for every cell and component. The check is then ĝ = G exactly. Dyadic inputs alone do not certify anything: a fixture whose propagation gives R > 0 anywhere is not counted as exact, and is reported with its R.
 
-The exact weights w are computed in rationals from the stored binary64 centroids, by the operations of `store_lsq_weights` and `inverse3` (`codegen/cpp/geometry.cpp`). For every weight component, |ŵ_uk − w_uk| ≤ τ_w,uk. τ_w is the first-order forward bound of that operation graph:
+### Defect controls
 
-- propagate γ through each operation from the absolute values of its exact operands (differences d, squared norms, the 9 accumulated products of M, the 2×2 cofactors, the determinant, the reciprocal, the products with d);
-- multiply by 2 for second-order terms;
-- add u_v |w_uk| for the cast to the body's type.
+Each control must FAIL the stated check. Its witness is chosen from the certified radii so that it lies **provably outside** the allowance: the injected change exceeds twice the radius of the quantity it corrupts, and is representable and nonzero.
 
-τ_w is absolute, built from operand magnitudes, so a near-zero weight gets the absolute tolerance its operands imply, not a relative one. The factor 2 is valid while every stage's relative bound is at most 1/8 (checked; otherwise the instance is invalid).
+| # | corruption | must fail |
+|---|---|---|
+| 1 | one stored LSQ weight component doubled, where \|w\| > 2 r_w | 2 and 3 |
+| 2 | one weight's sign flipped, where \|w\| > r_w | 2 and 3 |
+| 3 | one incidence dropped from a cell | 1 and 3 |
+| 4 | one face area scaled by 1 + 2⁻ᵏ, k the largest integer with \|s\|·2⁻ᵏ > 2 r_s | 2 |
+| 5 | s, M and V of every face and cell scaled by 2 together (closure stays zero) | 2 |
+| 6 | one cell volume changed by more than 2 r_V | 2 |
+| 7 | one face moment changed by more than 2 r_M | 2 |
+| 8 | one cell centroid moved by more than 2 r_x | 2 |
+| 9 | one interior face's owner and neighbour swapped, its area not negated | 1 |
+| 10 | the kernel's output offset to the representable value beyond G ± R (the next float past the interval's far side, so it is outside whatever its sign or R = 0) | 4 |
+| 11 | wrong precision: a certified-exact fixture under fp32+acc64 (R = 0) whose binary32 accumulation is proven inexact by exact emulation, evaluated with accumulation narrowed to binary32 | 3 and 4 |
+| 12 | boundary cases: cells with only boundary faces, a single boundary face, a zero gradient component, the constant field | run as fixtures; each must pass |
 
-### 3. G2, geometry closure
+### Prospective protocol
 
-Exactly, z_c = Σ_f σ_f ŝ_f and Z_c = Σ_f σ_f (ŝ_f x̂_fᵀ + M̂_fᵀ) − V̂_c I. These are zero for exact geometry:
-- the fan vector area of `core/src/geometry.cpp` equals the polygon's vector area for any fan centre;
-- the vector areas of a closed surface sum to zero;
-- the face moment is defined so that s x_fᵀ + M is the face's first moment.
+Before the held-out run, one commit freezes:
+- this ADR's equations and tables, as reviewed;
+- the oracle and radius code, with its path and SHA-256;
+- the build: the commit of the kernels, compiler and version, flags, and the FP assumptions above;
+- the complete **case manifest**: every family, seed, level, policy, a, G, fixture and control.
 
-So z and Z are pure rounding. Their margins τ_z,c and τ_Z,c are the first-order forward bounds of the construction's operation graph, propagated from the stored node coordinates (exact rationals), times 2:
-- face area: n-node fan, node mean, differences, cross products, sum over n triangles, `core/src/geometry.cpp` lines 46–70;
-- face centroid and the cell's apex decomposition for volume and centroid: lines 79–110;
-- face moments: fan of `codegen/cpp/geometry.cpp`, lines 208–264;
-- plus the casts to the body types (u_v, u_x).
-
-|z_c| > τ_z,c or |Z_c| > τ_Z,c is a **geometry defect**: it fails, and never enlarges a tolerance.
-
-### 4. The linear-exactness bound
-
-For every cell and component, |ĝ_u − G_u| ≤ T_c,u := T_arith,c,u + T_data,c,u + T_geom,c,u:
-
-- **LSQ:**
-  - T_data = Σₖ |ŵ_uk| (b_q,k + b_q,c).
-  - T_geom = |(E_c G)_u|, with E_c = Σₖ ŵₖ (xₖ − x_c)ᵀ − I exact on the stored weights and centroids. It is admitted only if G1 passes for the cell.
-- **GG:**
-  - T_data = Σ_f |ŝ_fu| b̄_f / |V̂_c|, with b̄_f = ½(b_q,l + b_q,r) on interior faces and b_q,b on boundary faces.
-  - T_coord = Σ_f |ŝ_fu| ½ Σⱼ |Gⱼ| (u_x |x_lj| + u_x |x_rj|) / |V̂_c| (the field evaluated at x, the reconstruction reading the stored X).
-  - T_grad = Σ_f [ |ŝ_fu| ½ Σⱼ u_g |Gⱼ| (|r_lj| + |r_rj|) + Σⱼ |M̂_ju| u_g |Gⱼ| ] / |V̂_c|.
-  - T_geom = |a z_c + Z_c G|_u / |V̂_c|, admitted only if G2 passes for the cell.
-
-T_data, T_coord and T_grad bound the propagated input errors. T_geom is the exact closure term, admitted only for validated geometry.
-
-### Fixtures that stay tight, and controls that must fail
-
-- **Exact fixtures.** On uniform hexahedral meshes with dyadic coordinates, a dyadic G and a, every stored input is exact, so T_data = T_coord = T_grad = 0. The bound reduces to T_arith + T_geom, both computed. A constant field (G = 0) must give ĝ = 0 exactly for LSQ (every difference is exactly 0).
-- **Defect controls**, each required to FAIL the stated check:
-  1. stored LSQ weights doubled in one cell: D1 passes (same stored inputs), G1 fails;
-  2. one weight's sign flipped: G1 fails;
-  3. one incidence dropped from the gradient: D1 fails;
-  4. one face area scaled by 1 + 10⁻⁶: G2 fails;
-  5. a kernel output offset by 2 T_c in one cell: the bound fails.
-
-### Validation before acceptance
-
-The constants above are frozen as written here, before the validation runs. These are γ indices, the factor 2, the 1/8 validity limit, b_q, and the definitions of τ_w, τ_z and τ_Z.
-
-The held-out set is disjoint from step B:
-- mesh seeds 11 and 13 (B used 3 and 9);
-- levels N = 6, 12, 24 (B: 4, 8, 16);
+The held-out cases are disjoint from step B:
+- seeds 11 and 13 (B: 3, 9);
+- N = 6, 12, 24 (B: 4, 8, 16);
 - the agglomerated family (not in B);
-- G = (−0.9, 0.4, 1.3) and a ∈ {−7.5, 250} (B: G = (0.3, −1.2, 0.7), a ∈ {1, 10³});
-- the three policies.
+- G = (−0.9, 0.4, 1.3) and a ∈ {−7.5, 250} (B: (0.3, −1.2, 0.7), {1, 10³}).
 
-The ADR is accepted only if every held-out instance is valid and passes checks 1–4, every exact fixture meets its threshold, and every defect control fails as stated. A failure is reported as is. It is not answered by changing a constant: any change would need a new ADR and a new held-out set.
+None of these cases has been evaluated by the kernels or the oracle in this analysis. The commit states so.
+
+Every run is kept, failed ones included, with its raw output. Any amendment after the freeze, to an equation, the code, the build or the manifest, needs a new prior approval and a new disjoint case set. The ADR is accepted only if every held-out case is valid and passes checks 1–4, every certified-exact fixture meets ĝ = G, and every control fails as stated.
 
 ## Consequences
 
 - `acceptance.md` line 18 states the four checks and links here. The PR that changes it reports the held-out validation and the controls.
-- `codegen/tests/test_gradients.py` replaces its fixed 9600 ε by these checks. They need exact evaluation, so the per-cell computation runs in a test helper, not in the kernels.
-- **Scope:** host only. The device kernels contract FMAs (#571); their bounds and determinism are decided there.
-- Conservation keeps its 64 ε Σ|F| gate. That gate is unaffected by this ADR, and its PASS on #43 is limited to the tested scope (host, interior-only, source-free advection face loop).
+- `codegen/tests/test_gradients.py` replaces its fixed 9600 ε by these checks, through a test helper that holds the oracle and the propagation, never the kernels.
+- **Scope:** host only. The device contracts FMAs (#571), so its sequences differ; it is decided there.
+- Conservation keeps its 64 ε Σ|F| gate, unaffected by this ADR. Its PASS on #43 is limited to the tested scope (host, interior-only, source-free advection face loop). Boundary and source terms, the device, MPI, time integration, converged GG, and N = 32 or agglomerated meshes are not covered.
