@@ -216,3 +216,16 @@ def test_two_checkouts_generate_the_same_text_relative_to_their_source_root(
     assert str(tmp_path) not in "".join(generated[0].values())
     if module == "roe":
         assert generated[0]["roe_metal.hpp"].count('R"autan_msl(') > 1
+
+
+def test_face_values_are_opt_in_and_leave_the_kernels_unchanged(tmp_path: Path) -> None:
+    # The per-face values (#43) are measurement tooling: generated only on request, in a header
+    # of their own, so the kernels the product compiles are the same bytes with or without them.
+    kernel = ROOT / "kernels" / "advection.py"
+    plain, opted = tmp_path / "plain", tmp_path / "opted"
+    generate(kernel, plain, ["cpu"])
+    generate(kernel, opted, ["cpu"], face_values=True)
+    assert sorted(p.name for p in plain.iterdir()) == ["advection.hpp", "advection_cpu.hpp"]
+    for name in ("advection.hpp", "advection_cpu.hpp"):
+        assert (opted / name).read_bytes() == (plain / name).read_bytes()
+    assert "void residual_values(" in (opted / "advection_values_cpu.hpp").read_text()
