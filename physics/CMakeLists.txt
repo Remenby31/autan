@@ -96,7 +96,7 @@ add_custom_target(
   autan_physics_mms_build_info
   COMMAND
     ${CMAKE_COMMAND} -DSOURCE=${PROJECT_SOURCE_DIR} -DOUT=${mms_build_info}
-    -DVERSION=${AUTAN_VERSION} "-DAUTAN_COMMIT=${AUTAN_COMMIT}" -P
+    -DVERSION=${AUTAN_VERSION} "-DAUTAN_COMMIT=${AUTAN_COMMIT}" "-DAUTAN_DIRTY=${AUTAN_DIRTY}" -P
     ${PROJECT_SOURCE_DIR}/runtime/cmake/build_info.cmake
   BYPRODUCTS ${mms_build_info}
   VERBATIM
