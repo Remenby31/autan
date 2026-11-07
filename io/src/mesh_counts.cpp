@@ -1,5 +1,6 @@
 #include "autan/io/mesh_counts.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <optional>
 #include <utility>
@@ -14,10 +15,79 @@
 namespace autan::io {
 namespace {
 
-std::int64_t stencil_entries(const Mesh& mesh, const Geometry& geometry) {
+struct Stencils {
+  std::int64_t face2 = 0, vertex = 0, band = 0, boundary_fit = 0;
+};
+
+// The cells within `rings` vertex rings of c, c excluded, and the boundary faces in the vertex
+// stencils of those within rings - 1: what the quadratic gradient's band (two rings) and the
+// viscous boundary fit (two, or three where two leave it undetermined) gather when every
+// boundary face gives a value (physics/src/euler.cpp band_weights, navier_stokes.cpp
+// fit_weights). `mark` and `bmark` hold the last cell that listed each cell and boundary face.
+std::int64_t gathered(const kernels::CellStencil& vertex, index_t c, int rings,
+                      std::vector<index_t>& mark, std::vector<index_t>& bmark, index_t nint,
+                      std::vector<index_t>& layer, std::vector<index_t>& next) {
+  std::int64_t count = 0;
+  layer.assign(1, c);
+  mark[static_cast<std::size_t>(c)] = c;
+  for (int r = 0; r < rings; ++r) {
+    next.clear();
+    for (const index_t e : layer) {
+      const auto i = static_cast<std::size_t>(e);
+      for (auto k = vertex.offsets[i]; k < vertex.offsets[i + 1]; ++k) {
+        const index_t x = vertex.entries[static_cast<std::size_t>(k)];
+        if (x >= 0) {
+          if (mark[static_cast<std::size_t>(x)] != c) {
+            mark[static_cast<std::size_t>(x)] = c;
+            next.push_back(x);
+            ++count;
+          }
+        } else if (auto& m = bmark[static_cast<std::size_t>(-1 - x - nint)]; m != c) {
+          m = c;
+          ++count;
+        }
+      }
+    }
+    layer.swap(next);
+  }
+  return count;
+}
+
+Stencils stencils(const Mesh& mesh, const Geometry& geometry) {
   const auto packed = kernels::pack_geometry(mesh, geometry);
-  return static_cast<std::int64_t>(
+  Stencils out;
+  out.face2 = static_cast<std::int64_t>(
       kernels::cell_stencil(mesh, packed, kernels::StencilKind::face2).entries.size());
+  const auto vertex = kernels::cell_stencil(mesh, packed, kernels::StencilKind::vertex);
+  out.vertex = static_cast<std::int64_t>(vertex.entries.size());
+  const auto nc = static_cast<std::size_t>(mesh.n_cells());
+  const index_t nint = mesh.n_interior_faces();
+  const auto owner = mesh.owner();
+  const auto neighbour = mesh.neighbour();
+  // The cells the boundary fit serves when every boundary face is a wall: their owners and
+  // the owners' face neighbours.
+  std::vector<char> fitted(nc, 0);
+  for (auto f = static_cast<std::size_t>(nint); f < owner.size(); ++f)
+    fitted[static_cast<std::size_t>(owner[f])] = 1;
+  for (std::size_t f = 0; f < neighbour.size(); ++f) {
+    const auto a = static_cast<std::size_t>(owner[f]), b = static_cast<std::size_t>(neighbour[f]);
+    if (fitted[a] == 1 && fitted[b] == 0) fitted[b] = 2;
+    if (fitted[b] == 1 && fitted[a] == 0) fitted[a] = 2;
+  }
+  std::vector<index_t> mark(nc, -1), bmark(owner.size() - static_cast<std::size_t>(nint), -1);
+  std::vector<index_t> layer, next;
+  for (std::size_t c = 0; c < nc; ++c) {
+    const auto cell = static_cast<index_t>(c);
+    out.band += gathered(vertex, cell, 2, mark, bmark, nint, layer, next);
+  }
+  std::ranges::fill(mark, -1);
+  std::ranges::fill(bmark, -1);
+  for (std::size_t c = 0; c < nc; ++c) {
+    if (fitted[c] != 0)
+      out.boundary_fit +=
+          gathered(vertex, static_cast<index_t>(c), 3, mark, bmark, nint, layer, next);
+  }
+  return out;
 }
 
 // What depends on the cell order: the smoother's lines, and the multigrid's hierarchy, which
@@ -63,27 +133,42 @@ MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
                                   .faces = {},
                                   .interior_faces = {},
                                   .stencil_entries = {},
+                                  .vertex_stencil_entries = {},
+                                  .band_entries = {},
+                                  .boundary_fit_entries = {},
                                   .nodes = {},
                                   .face_nodes = {},
                                   .sent_cells = {}};
   const auto count_part = [](MeshInfoRun::Partition& p, const LocalPartition& part,
-                             std::int64_t stencil) {
+                             const Stencils& stencil) {
     p.cells.push_back(part.mesh.n_owned_cells());
     p.ghosts.push_back(part.mesh.n_cells() - part.mesh.n_owned_cells());
     p.faces.push_back(part.mesh.n_faces());
     p.interior_faces.push_back(part.mesh.n_interior_faces());
-    p.stencil_entries.push_back(stencil);
+    p.stencil_entries.push_back(stencil.face2);
+    p.vertex_stencil_entries.push_back(stencil.vertex);
+    p.band_entries.push_back(stencil.band);
+    p.boundary_fit_entries.push_back(stencil.boundary_fit);
     p.nodes.push_back(part.mesh.n_points());
     p.face_nodes.push_back(static_cast<std::int64_t>(part.mesh.face_nodes().size()));
     p.sent_cells.push_back(static_cast<std::int64_t>(part.halo.send_cells.size()));
   };
+  const auto set_counts = [&out](const Stencils& st) {
+    out.stencil_entries = st.face2;
+    out.vertex_stencil_entries = st.vertex;
+    out.band_entries = st.band;
+    out.boundary_fit_entries = st.boundary_fit;
+  };
   if (mesh.periodic_pairs().empty()) {
-    out.stencil_entries = stencil_entries(mesh, geometry);
+    set_counts(stencils(mesh, geometry));
     one_part.cells = {mesh.n_cells()};
     one_part.ghosts = {0};
     one_part.faces = {mesh.n_faces()};
     one_part.interior_faces = {mesh.n_interior_faces()};
     one_part.stencil_entries = {out.stencil_entries};
+    one_part.vertex_stencil_entries = {out.vertex_stencil_entries};
+    one_part.band_entries = {out.band_entries};
+    one_part.boundary_fit_entries = {out.boundary_fit_entries};
     one_part.nodes = {mesh.n_points()};
     one_part.face_nodes = {static_cast<std::int64_t>(mesh.face_nodes().size())};
     one_part.sent_cells = {0};
@@ -92,8 +177,9 @@ MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
     LocalPartition part = extract_partition(mesh, geometry, one, 1, 0);
     fill_ghost_geometry(part);
     out.periodic_ghosts = part.mesh.n_cells() - part.mesh.n_owned_cells();
-    out.stencil_entries = stencil_entries(part.mesh, part.geometry);
-    count_part(one_part, part, out.stencil_entries);
+    const Stencils st = stencils(part.mesh, part.geometry);
+    set_counts(st);
+    count_part(one_part, part, st);
   }
 
   if (!ranks || ranks->ranks == 1) {
@@ -117,13 +203,16 @@ MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
                            .faces = {},
                            .interior_faces = {},
                            .stencil_entries = {},
+                           .vertex_stencil_entries = {},
+                           .band_entries = {},
+                           .boundary_fit_entries = {},
                            .nodes = {},
                            .face_nodes = {},
                            .sent_cells = {}};
   for (std::int32_t r = 0; r < ranks->ranks; ++r) {
     // Ghost cells hold no geometry here: the counts depend on the connectivity only.
     const LocalPartition part = extract_partition(mesh, geometry, parts, ranks->ranks, r);
-    count_part(p, part, stencil_entries(part.mesh, part.geometry));
+    count_part(p, part, stencils(part.mesh, part.geometry));
   }
   out.partition = std::move(p);
   return out;

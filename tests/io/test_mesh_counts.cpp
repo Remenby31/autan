@@ -1,6 +1,11 @@
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <set>
 #include <utility>
+#include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -9,6 +14,7 @@
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/io/mesh_counts.hpp"
+#include "autan/io/read_mesh.hpp"
 #include "fixtures.hpp"
 
 namespace {
@@ -59,7 +65,130 @@ std::int64_t face2_entries(int n) {
   return total;
 }
 
+struct Rings {
+  std::int64_t vertex = 0, band = 0, boundary_fit = 0;
+};
+
+// The ring counts of the n^3 hexahedra of a box, from their definition (mesh-info.md): the cells
+// within r vertex rings of a cell are those at Chebyshev index distance 1 to r; the boundary
+// faces in the vertex stencils of the cells within r - 1 rings are, on each side of the box
+// within r - 1 cells of the cell, the squares within r of it along the side.
+Rings box_rings(int n) {
+  const auto within = [n](int i, int r) { return std::min(i + r, n - 1) - std::max(i - r, 0) + 1; };
+  const auto gathered = [&](int i, int j, int k, int r) {
+    const std::array<int, 3> at{i, j, k};
+    std::int64_t total = std::int64_t{within(i, r)} * within(j, r) * within(k, r) - 1;
+    for (int a = 0; a < 3; ++a) {
+      const int b = (a + 1) % 3, c = (a + 2) % 3;
+      const std::int64_t side = std::int64_t{within(at[b], r)} * within(at[c], r);
+      if (at[a] <= r - 1) total += side;
+      if (n - 1 - at[a] <= r - 1) total += side;
+    }
+    return total;
+  };
+  Rings out;
+  for (int i = 0; i < n; ++i) {
+    for (int j = 0; j < n; ++j) {
+      for (int k = 0; k < n; ++k) {
+        out.vertex += gathered(i, j, k, 1);
+        out.band += gathered(i, j, k, 2);
+        // The fit serves the cells owning a boundary face and their face neighbours.
+        const int edge = std::min({i, j, k, n - 1 - i, n - 1 - j, n - 1 - k});
+        if (edge <= 1) out.boundary_fit += gathered(i, j, k, 3);
+      }
+    }
+  }
+  return out;
+}
+
+// The same counts from the mesh's face-to-node connectivity alone, without the cell stencil:
+// two cells are in each other's ring when they share a node, a boundary face is in a cell's
+// stencil when it has one of the cell's nodes.
+Rings counted_rings(const autan::Mesh& mesh) {
+  const auto nc = static_cast<std::size_t>(mesh.n_cells());
+  const auto nf = static_cast<std::size_t>(mesh.n_faces());
+  const auto nint = static_cast<std::size_t>(mesh.n_interior_faces());
+  const auto owner = mesh.owner();
+  const auto neighbour = mesh.neighbour();
+  std::vector<std::set<autan::index_t>> nodes(nc);
+  std::vector<std::vector<std::size_t>> cells_at(static_cast<std::size_t>(mesh.n_points()));
+  std::vector<std::vector<std::size_t>> bfaces_at(cells_at.size());
+  for (std::size_t f = 0; f < nf; ++f) {
+    for (const autan::index_t v : mesh.face_nodes(static_cast<autan::index_t>(f))) {
+      nodes[static_cast<std::size_t>(owner[f])].insert(v);
+      if (f < nint) nodes[static_cast<std::size_t>(neighbour[f])].insert(v);
+      if (f >= nint) bfaces_at[static_cast<std::size_t>(v)].push_back(f);
+    }
+  }
+  for (std::size_t c = 0; c < nc; ++c) {
+    for (const autan::index_t v : nodes[c]) cells_at[static_cast<std::size_t>(v)].push_back(c);
+  }
+  const auto gathered = [&](std::size_t c, int rings) {
+    std::set<std::size_t> cells{c}, faces;
+    for (int r = 0; r < rings; ++r) {
+      std::set<std::size_t> next = cells;
+      for (const std::size_t e : cells) {
+        for (const autan::index_t v : nodes[e]) {
+          for (const std::size_t x : cells_at[static_cast<std::size_t>(v)]) next.insert(x);
+          for (const std::size_t f : bfaces_at[static_cast<std::size_t>(v)]) faces.insert(f);
+        }
+      }
+      cells = std::move(next);
+    }
+    return static_cast<std::int64_t>(cells.size() - 1 + faces.size());
+  };
+  std::vector<int> fitted(nc, 0);
+  for (std::size_t f = nint; f < nf; ++f) fitted[static_cast<std::size_t>(owner[f])] = 1;
+  for (std::size_t f = 0; f < nint; ++f) {
+    const auto a = static_cast<std::size_t>(owner[f]), b = static_cast<std::size_t>(neighbour[f]);
+    if (fitted[a] == 1 && fitted[b] == 0) fitted[b] = 2;
+    if (fitted[b] == 1 && fitted[a] == 0) fitted[a] = 2;
+  }
+  Rings out;
+  for (std::size_t c = 0; c < nc; ++c) {
+    out.vertex += gathered(c, 1);
+    out.band += gathered(c, 2);
+    if (fitted[c] != 0) out.boundary_fit += gathered(c, 3);
+  }
+  return out;
+}
+
 }  // namespace
+
+TEST_CASE("MeshInfo counts the vertex rings of the quadratic gradient and the boundary fit",
+          "[mesh-info]") {
+  // A box of hexahedra against the formula, and the same box, tetrahedra, a hybrid box and a
+  // polyhedral mesh against an independent count over the node connectivity.
+  for (const int n : {4, 7}) {
+    CAPTURE(n);
+    const auto c = counts(box(n, 1.0), CellOrder::rcm);
+    const Rings expected = box_rings(n);
+    CHECK(c.vertex_stencil_entries == expected.vertex);
+    CHECK(c.band_entries == expected.band);
+    CHECK(c.boundary_fit_entries == expected.boundary_fit);
+  }
+  for (const auto fill :
+       {autan::test::BoxFill::hexa, autan::test::BoxFill::tetra, autan::test::BoxFill::hybrid}) {
+    CAPTURE(autan::test::to_string(fill));
+    const autan::Mesh mesh = autan::assemble(autan::to_face_based(autan::test::box(5, fill)));
+    const auto c = autan::io::run_counts(mesh, 1.0, CellOrder::input);
+    const Rings expected = counted_rings(mesh);
+    CHECK(c.vertex_stencil_entries == expected.vertex);
+    CHECK(c.band_entries == expected.band);
+    CHECK(c.boundary_fit_entries == expected.boundary_fit);
+    REQUIRE(c.partition);
+    CHECK(c.partition->vertex_stencil_entries == std::vector<std::int64_t>{expected.vertex});
+    CHECK(c.partition->band_entries == std::vector<std::int64_t>{expected.band});
+    CHECK(c.partition->boundary_fit_entries == std::vector<std::int64_t>{expected.boundary_fit});
+  }
+  const autan::Mesh poly =
+      autan::io::read_mesh(std::filesystem::path(AUTAN_TEST_MESH_DIR) / "poly" / "polyMesh");
+  const auto c = autan::io::run_counts(poly, 1.0, CellOrder::rcm);
+  const Rings expected = counted_rings(poly);
+  CHECK(c.vertex_stencil_entries == expected.vertex);
+  CHECK(c.band_entries == expected.band);
+  CHECK(c.boundary_fit_entries == expected.boundary_fit);
+}
 
 TEST_CASE("MeshInfo counts the cells in the smoother's lines", "[mesh-info]") {
   // Hexahedra 10 times wider than tall couple 100 times more strongly across their z faces
@@ -121,6 +250,8 @@ TEST_CASE("MeshInfo counts a single-rank run's stencil entries and periodic ghos
   CHECK(images.face_nodes[0] == 4 * images.faces[0]);
   CHECK(images.nodes[0] > (n + 1) * (n + 1) * (n + 1));
   CHECK(images.stencil_entries == std::vector<std::int64_t>{periodic.stencil_entries});
+  CHECK(images.band_entries == std::vector<std::int64_t>{periodic.band_entries});
+  CHECK(periodic.band_entries > plain.band_entries);
   CHECK(periodic.stencil_entries > plain.stencil_entries);
 }
 
@@ -149,6 +280,9 @@ TEST_CASE("MeshInfo counts each rank of a partitioned run", "[mesh-info]") {
     CHECK(p.ghosts[r] > 0);
     CHECK(p.interior_faces[r] < p.faces[r]);
     CHECK(p.stencil_entries[r] > 0);
+    CHECK(p.vertex_stencil_entries[r] > p.stencil_entries[r]);
+    CHECK(p.band_entries[r] > p.vertex_stencil_entries[r]);
+    CHECK(p.boundary_fit_entries[r] > 0);
     // The lines are the box's columns: kept whole, each rank owns whole columns.
     if (groups == autan::io::RankGroups::lines) CHECK(p.cells[r] % n == 0);
   }
