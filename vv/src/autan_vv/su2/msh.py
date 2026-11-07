@@ -1,4 +1,4 @@
-"""Reader of Gmsh MSH 4.1 ASCII files, linear quadrangles and hexahedra only.
+"""Reader of Gmsh MSH 4.1 ASCII files, linear triangles, quadrangles, tetrahedra and hexahedra only.
 
 Follows the format description of the Gmsh reference manual, section "MSH file format" (version
 4.1): sections `$MeshFormat`, `$PhysicalNames`, `$Entities`, `$Nodes` and `$Elements` are read;
@@ -21,18 +21,20 @@ if TYPE_CHECKING:
 FloatArray = npt.NDArray[np.float64]
 IntArray = npt.NDArray[np.int64]
 
-QUAD, HEX = 3, 5
-_NODES_PER_TYPE = {QUAD: 4, HEX: 8}
+TRIANGLE, QUAD, TET, HEX = 2, 3, 4, 5
+_NODES_PER_TYPE = {TRIANGLE: 3, QUAD: 4, TET: 4, HEX: 8}
 
 
 @dataclass(frozen=True)
 class Msh:
     """Points (n, 3) in node-tag order and, per physical group name, its elements as zero-based
-    point indices: quadrangles (k, 4) for 2D groups, hexahedra (k, 8) for 3D groups."""
+    point indices (k, nodes per element) and their Gmsh type (`types`): triangles or quadrangles
+    for 2D groups, tetrahedra or hexahedra for 3D groups, one type per group."""
 
     points: FloatArray
     groups: dict[str, IntArray]
     dims: dict[str, int]
+    types: dict[str, int]
 
 
 def _bad(path: Path, what: str) -> VVError:
@@ -63,8 +65,9 @@ def _sections(path: Path, lines: list[str]) -> dict[str, list[str]]:
 
 
 def read(path: Path) -> Msh:
-    """Read `path`. A file that breaks the format, or holds anything but linear quadrangles and
-    hexahedra in its physical groups, raises V0901."""
+    """Read `path`. A file that breaks the format, holds anything but linear triangles,
+    quadrangles, tetrahedra and hexahedra in its physical groups, or mixes types in one group,
+    raises V0901."""
     lines = [line.rstrip("\r") for line in path.read_text().split("\n")]
     sec = _sections(path, lines)
     for need in ("MeshFormat", "PhysicalNames", "Entities", "Nodes", "Elements"):
@@ -115,6 +118,7 @@ def read(path: Path) -> Msh:
 
     groups: dict[str, list[IntArray]] = {}
     dims: dict[str, int] = {}
+    types: dict[str, int] = {}
     elements = sec["Elements"]
     n_blocks = int(elements[0].split()[0])
     row = 1
@@ -128,7 +132,7 @@ def read(path: Path) -> Msh:
         if not physical:
             continue
         if etype not in _NODES_PER_TYPE:
-            raise _bad(path, f"element type {etype} in a physical group; only 3 and 5 are read")
+            raise _bad(path, f"element type {etype} in a physical group; only 2 to 5 are read")
         width = _NODES_PER_TYPE[etype] + 1
         conn = np.asarray(" ".join(block).split(), dtype=np.int64).reshape(count, width)[:, 1:]
         if conn.min() < 1 or conn.max() > max_tag or np.any(index[conn] < 0):
@@ -137,6 +141,8 @@ def read(path: Path) -> Msh:
             name = names.get((dim, p))
             if name is None:
                 raise _bad(path, f"physical group ({dim}, {p}) has no name")
+            if types.setdefault(name, etype) != etype:
+                raise _bad(path, f"physical group {name!r} mixes element types")
             groups.setdefault(name, []).append(index[conn])
             dims[name] = dim
-    return Msh(points, {k: np.concatenate(v) for k, v in groups.items()}, dims)
+    return Msh(points, {k: np.concatenate(v) for k, v in groups.items()}, dims, types)

@@ -59,16 +59,20 @@ def _fail(what: str) -> VVError:
 
 
 def read_slab(path: Path) -> Slab:
-    """The slab in `path`: exactly one 3D group of hexahedra, every node on y0 or y1 (y0 < y1),
-    each hexahedron with four nodes on each plane, the y1 nodes above the y0 ones. V0902 otherwise."""
+    """The slab in `path`: exactly one 3D group of hexahedra, boundary zones of quadrangles, every
+    node on y0 or y1 (y0 < y1), each hexahedron with four nodes on each plane, the y1 nodes above
+    the y0 ones. V0902 otherwise."""
     m = msh.read(path)
     volumes = [n for n, d in m.dims.items() if d == 3]
     if len(volumes) != 1:
         msg = f"{path}: expected one 3D physical group, got {volumes}"
         raise _fail(msg)
     hexes = m.groups[volumes[0]]
-    if hexes.shape[1] != 8:
+    if m.types[volumes[0]] != msh.HEX:
         msg = f"{path}: the 3D group is not made of hexahedra"
+        raise _fail(msg)
+    if any(m.types[n] != msh.QUAD for n, d in m.dims.items() if d == 2):
+        msg = f"{path}: a boundary zone is not made of quadrangles"
         raise _fail(msg)
     y = m.points[:, 1]
     y0, y1 = float(y.min()), float(y.max())
