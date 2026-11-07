@@ -42,7 +42,7 @@ The viscous face loops write their Jacobian blocks dF_v/dW_L, dF_v/dW_R in the s
 
 ## Verification
 
-**Status.** `ns-mms-order` passes in FP64 on every family, clean and perturbed, and in FP32 on all but the clean hexahedral one: there, ρv's error at n = 96 and 128 falls under the gate's evidence threshold of 100 times the FP32 rounding floor, as it does for any scheme this accurate (#524). `rans-sa-mms-order` falls short on ρE at n = 16–48, a pre-asymptotic deficit that one level finer removes (#497). Measurements and the choice of the quadratic gradient: [#137](https://github.com/Remenby31/autan/issues/137).
+**Status.** `ns-mms-order` passes in FP64 on every family, clean and perturbed, and in FP32 on all but the clean hexahedral one: there, ρv's error at n = 96 and 128 falls under the gate's evidence threshold of 100 times the FP32 rounding floor, as it does for any scheme this accurate (#524). `rans-sa-mms-order` failed on ρE on its former family (n, 4n, n) at n = 24–64, a failure recorded as such; the family's anisotropy, not the scheme or the model, keeps pressure pre-asymptotic there, and the gate's family for later runs is in [ADR 0002](../adr/0002-rans-sa-order-gate-family.md) (#497). Measurements and the choice of the quadratic gradient: [#137](https://github.com/Remenby31/autan/issues/137).
 
 | Test | Oracle | Where |
 |---|---|---|
@@ -57,6 +57,6 @@ The viscous face loops write their Jacobian blocks dF_v/dW_L, dF_v/dW_R in the s
 | MMS `navier_stokes` through `autan-run` and `autan-vv verify`, gate `ns-mms-order` | Roy et al. (2004) form, μ = 10, Pr = 0.72 | `physics/mms/study.sh` |
 | MMS `rans_sa`, gate `rans-sa-mms-order` | Eça et al. (2007), Oliver et al. (2012) principles, wall y = 0 | same |
 
-Levels: [acceptance.md §M3](../validation/acceptance.md#m3--navier-stokes-and-spalart-allmaras). The `rans_sa` fields have a boundary layer of thickness 0.15 at y = 0, under three cells on the coarse levels of the cube families, hence its Cartesian family (n, 4n, n) (`autan_vv.meshes.families.cartesian`, written with `write_fluent`); its aspect ratio is the same on every level, so h = (V/N)^(1/3) measures the refinement.
+Levels: [acceptance.md §M3](../validation/acceptance.md#m3--navier-stokes-and-spalart-allmaras). The `rans_sa` fields have a boundary layer of thickness 0.15 at y = 0, under three cells on the coarse levels of the cube families, hence its Cartesian families (`autan_vv.meshes.families.cartesian`, written with `write_fluent`), whose aspect ratio is the same on every level, so that h = (V/N)^(1/3) measures the refinement ([ADR 0002](../adr/0002-rans-sa-order-gate-family.md)).
 
 On the poly family, ρv's fitted L2 order exceeds 2.6 for every convective gradient measured (the band, its average-fit variant, and the quadratic fit in every cell, #137), so `ns-mms-order` reports it for investigation. The excess is pre-asymptotic. ρv's error fits A h² + B h³ with the h³ term as large as the h² term at n = 64, and with the same ratio B/A ≈ 60–68 for every gradient. One level finer the pairwise order falls as that fit predicts: on the x86 poly family (`autan-vv meshes poly --seed 0`, Gmsh 4.15.2; n = 64 sha256 46da8c94…, n = 96 sha256 52e1d808…), ρv's pair 64→96 is 2.44 against a predicted 2.47, where a single power law would give 2.67 (#514). The gate still flags it at its levels.

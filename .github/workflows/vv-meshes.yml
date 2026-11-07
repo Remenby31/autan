@@ -140,4 +140,4 @@ jobs:
           name: meshes-${{ matrix.kind }}-p${{ matrix.perturbation }}-s${{ matrix.seed }}
           path: ${{ env.OUT }}
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 90

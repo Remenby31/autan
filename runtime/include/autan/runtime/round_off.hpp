@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <limits>
 #include <span>
@@ -73,15 +74,14 @@ class RoundOffExemption {
   double floor_ = 0.0;
 };
 
-/// case-schema.md#time: the reference of a sequence is its first value, then each value below
-/// plateau_ratio times the reference before it; the sequence is on a plateau once plateau_steps
-/// values have passed without a new reference. Converging fp64 NACA 0012 runs (#473) go at most
-/// 49 steps without one, so 100 does not take a converging run for a stationary one.
+/// A plateau's reference is the first value, then each value below plateau_ratio times the
+/// reference before it; the sequence is on a plateau once plateau_steps values have passed
+/// without a new reference.
 inline constexpr std::size_t plateau_steps = 100;
 inline constexpr double plateau_ratio = 0.9;
 
-/// The plateau rule over one sequence (a residual, or a physics' relative drop), fed one value
-/// per step.
+/// The plateau rule over the values themselves: euler.md#time-stepping's stall of the first-order
+/// start, fed its relative drop once per step.
 class Plateau {
  public:
   /// Adds this step's value; true once the sequence is on a plateau.
@@ -110,6 +110,40 @@ class Plateau {
   }
 
  private:
+  double reference_ = std::numeric_limits<double>::infinity();
+  std::size_t count_ = 0, since_ = 0;
+};
+
+/// case-schema.md#time: the round-off plateau of a residual, over its level, the median of its
+/// last plateau_window counted values (the mean of the two middle ones). On stationary round-off
+/// a level's relative spread is at most 0.022 (#557), so plateau_ratio is 4.5 of them, where one
+/// value's spread (up to 0.20) made the reference a draw of the noise's lower tail.
+inline constexpr std::size_t plateau_window = 100;
+
+class ResidualPlateau {
+ public:
+  /// Adds this counted step's residual; true once the residual is on a plateau.
+  bool add(double value) {
+    window_[count_ % plateau_window] = value;
+    ++count_;
+    if (count_ >= plateau_window) {
+      std::array<double, plateau_window> sorted = window_;
+      const auto upper = sorted.begin() + plateau_window / 2;
+      std::nth_element(sorted.begin(), upper, sorted.end());
+      const double level = (*std::max_element(sorted.begin(), upper) + *upper) / 2;
+      if (level < plateau_ratio * reference_) {
+        reference_ = level;
+        since_ = count_;
+      }
+    }
+    return since_ > 0 && count_ - since_ >= plateau_steps;
+  }
+
+  /// Forgets every value: the next add() starts a new sequence.
+  void reset() { *this = ResidualPlateau{}; }
+
+ private:
+  std::array<double, plateau_window> window_{};
   double reference_ = std::numeric_limits<double>::infinity();
   std::size_t count_ = 0, since_ = 0;
 };

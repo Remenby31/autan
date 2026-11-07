@@ -5,7 +5,7 @@
 #              freestream static pressure at the outflow, farfield on top, symmetry ahead of the
 #              adiabatic plate (x 0 to 2); forces over the plate.
 #   bump       2DBC: M 0.2, Re 3e6 per metre; same inflow and outflow, symmetry on top and on
-#              y = 0 outside the adiabatic wall (x 0 to 1.5); forces over the wall.
+#              y = 0 outside the adiabatic wall (x 0 to 1.5); forces over the wall per its length 1.5 (TMR's SREF).
 #   naca0012   2DN00: M 0.15, Re 6e6 per chord, farfield 500 chords away, adiabatic airfoil.
 #   rae2822    RAE 2822 case 9 (Cook, McDonald and Firmin, 1981 tape file 1122): M 0.730,
 #              alpha 2.79 deg (corrected) unless ALPHA_DEG is given, Re 6.5e6 per chord, fully
@@ -20,7 +20,7 @@ build=${AUTAN_BUILD:-$top/build}
 export AUTAN_RUN=$build/runtime/autan-run
 case $kind in
   flatplate) mach=0.2 re=5.0e6 wall=plate length=2.0 ;;
-  bump) mach=0.2 re=3.0e6 wall=wall length=1.0 ;;
+  bump) mach=0.2 re=3.0e6 wall=wall length=1.5 ;;
   naca0012) mach=0.15 re=6.0e6 wall=airfoil length=1.0 ;;
   rae2822) mach=0.730 re=6.5e6 wall=airfoil length=1.0 ;;
   *) echo "unknown case $kind" >&2; exit 2 ;;

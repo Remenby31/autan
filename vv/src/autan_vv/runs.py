@@ -33,7 +33,7 @@ from autan.results import (
     utc_now,
 )
 from autan.schema import Steady
-from autan.version import COMMIT, __version__
+from autan.version import COMMIT, DIRTY, __version__
 
 from autan_vv.errors import VVError
 
@@ -60,8 +60,9 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str, scale: float = 1.0) 
 
     Gmsh files carry no boundary types (`type: null`); Fluent files carry theirs. The derived counts
     of a run's memory estimate need the core, so they are upper bounds: every cell in lines of every
-    length (RCM order, at `scale` metres per mesh unit, the case's `mesh_unit`) and a gradient
-    stencil of each cell's face neighbours and theirs. The multigrid hierarchy is the mesh alone (no coarsening declared). Fixture meshes have no
+    length (RCM order, at `scale` metres per mesh unit, the case's `mesh_unit`), a gradient
+    stencil of each cell's face neighbours and theirs, and vertex rings of a cell's every face
+    node's every face's two sides. The multigrid hierarchy is the mesh alone (no coarsening declared). Fixture meshes have no
     periodic pairs. Nothing reads these counts from a fixture run.
     """
     kinds = mesh.cell_kinds or ("polyhedron",) * mesh.n_cells
@@ -79,6 +80,16 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str, scale: float = 1.0) 
     faces_per_cell = np.bincount(
         np.concatenate([mesh.owner, mesh.neighbour]), minlength=mesh.n_cells
     )
+    # A cell's vertex stencil holds at most the two sides of every face at each of its faces'
+    # nodes; its rings at most that many times the widest stencil per ring.
+    at_node = np.bincount(mesh.face_nodes, minlength=mesh.points.shape[0])
+    per_face = np.add.reduceat(2 * at_node[mesh.face_nodes], mesh.face_offsets[:-1])
+    vertex = np.bincount(mesh.owner, per_face, mesh.n_cells) + np.bincount(
+        mesh.neighbour, per_face[:ni], mesh.n_cells
+    )
+    widest = int(vertex.max())
+    vertex_entries = int(vertex.sum())
+    band = (mesh.n_cells + vertex_entries) * widest
     typed = mesh_format == "fluent"
     document = {
         "schema": "autan.mesh-info/1",
@@ -108,6 +119,9 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str, scale: float = 1.0) 
             "face_nodes": len(mesh.face_nodes),
             "cells_by_type": by_type,
             "stencil_entries": int(np.sum(1 + faces_per_cell * int(faces_per_cell.max()))),
+            "vertex_stencil_entries": vertex_entries,
+            "band_entries": band,
+            "boundary_fit_entries": band * (1 + widest),
             "periodic_ghosts": 0,
         },
         "boundary_zones": [
@@ -286,7 +300,9 @@ def write_run(
         raise VVError(msg, code="V0731")
     started = utc_now()
     # Always the fake backend: fixture fields are given, never computed, so they are never evidence.
-    solver = Solver(version=__version__, commit=COMMIT, backend="fake", binary_sha256=None)
+    solver = Solver(
+        version=__version__, commit=COMMIT, dirty=DIRTY, backend="fake", binary_sha256=None
+    )
     devices = Devices(kind="cpu", count=1)
     groups = info.groups_source.sha256 if info.groups_source else None
     run = RunInfo(

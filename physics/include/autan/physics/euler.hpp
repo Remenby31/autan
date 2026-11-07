@@ -108,6 +108,17 @@ class Euler {
   void set_boundary(std::span<const BoundaryKind> kind, std::span<const double> data);
   /// Replaces the data of the conditions set_boundary set (5 x n_boundary_faces), keeping them.
   void set_boundary_data(std::span<const double> data);
+  /// Every face moment of the mesh is an exact zero (kernels::PackedGeometry::all_planar).
+  [[nodiscard]] bool all_planar() const noexcept;
+  /// Evaluates the residual with the loops without the warped-face terms (kernels/euler.py,
+  /// `*_planar`): where every moment is zero those terms are signed zeros, so the residual has
+  /// the same values wherever the full loops' arithmetic stays finite (a state so large that
+  /// the warp term overflows makes the full residual NaN and the planar one finite). Throws
+  /// std::invalid_argument unless all_planar().
+  /// On a partition every rank must make the same choice (EulerPhysics takes the minimum
+  /// over the ranks). The Jacobian and tangent loops keep their full form.
+  void set_planar(bool on);
+  [[nodiscard]] bool planar() const noexcept;
   /// Switches the linear reconstruction on or off (Scheme::second_order).
   void set_second_order(bool on);
   /// The least-squares weights of the gradient over its stencil (layout of
@@ -153,6 +164,15 @@ class Euler {
   /// First-order residual's tangent dR/dU du (no reconstruction): the preconditioning operator.
   void first_order_tangent(std::span<const State> u, std::span<const State> du,
                            std::span<Res> dres);
+  /// The faces a gradient tangent covers.
+  enum class Faces { boundary, interior };
+  /// After residual(s) or residual_and_jacobian(s): adds to dres the derivative of the chosen
+  /// faces' fluxes through the reconstruction's gradients, (dF/d grad W)(d grad W/dU) du, the
+  /// limiter and the gradient fit's boundary values held fixed (docs/design/euler.md, Boundary
+  /// values): the term the approximate Jacobian drops (Time stepping). Nothing for a first-order
+  /// scheme.
+  void gradient_tangent(std::span<const State> s, std::span<const State> du, std::span<Res> dres,
+                        Faces faces);
 
   /// After residual(u): sum over each cell's faces of (|v . n| + c) A (n_cells), so that
   /// CFL V / lambda is the cell's convective time step.

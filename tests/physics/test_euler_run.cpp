@@ -35,14 +35,19 @@ extern char** environ;
 #endif
 
 #include "../runtime/planned.hpp"
+#include "autan/core/cellwise.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
+#include "autan/io/write_polymesh.hpp"
+#include "autan/kernels/geometry.hpp"
+#include "autan/partition/partition.hpp"
 #include "autan/physics/euler_physics.hpp"
 #include "autan/physics/first_order_start.hpp"
 #include "autan/physics/manufactured.hpp"
 #include "autan/runtime/physics.hpp"
 #include "autan/runtime/run.hpp"
+#include "fixtures.hpp"
 
 namespace {
 
@@ -69,6 +74,20 @@ Json input(const char* file, const std::function<void(Json&)>& edit) {
     doc["verification"]["path"] = fs::absolute(mms_path).string();
   edit(doc);
   return autan_test::planned(doc, mesh_path);
+}
+
+// How many times a run logged that it takes the planar loops (EulerPhysics, #412).
+int planar_events(const fs::path& run) {
+  int n = 0;
+  std::istringstream log(read(run / "log.jsonl"));
+  for (std::string l; std::getline(log, l);) {
+    const auto e = Json::parse(l);
+    if (e["source"] == "solver" &&
+        e["message"].get<std::string>().starts_with("every face is planar")) {
+      ++n;
+    }
+  }
+  return n;
 }
 
 struct Outcome {
@@ -235,7 +254,7 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     inviscid_along_x(d, precision);
     // fp32+acc64 starts at round-off: it converges once its residuals are on a plateau
-    // (case-schema.md#time), after the first-order start's provisional steps and 100 more.
+    // (case-schema.md#time), after the first-order start's provisional steps and 200 more.
     d["monitors"][0]["every"] = 1;
     if (steady) {
       d["time"]["max_iterations"] = 400;
@@ -303,6 +322,67 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   }
 }
 
+TEST_CASE("a run takes the planar loops exactly when every face is planar and the flow inviscid",
+          "[euler]") {
+  // EulerPhysics logs its choice (#412): the loops without the warped-face terms on the
+  // axis-aligned hexahedra, never on the polyhedra's warped faces, and never for Navier-Stokes,
+  // whose no-slip walls the planar boundary loops would send to the Riemann solver (#540). Closed
+  // by no-slip walls and the symmetry plane zmax, a laminar flow keeps its mass: after explicit
+  // steps sum(rho V) is the initial rho sum(V), within each step's round-off.
+  const bool hex = GENERATE(true, false);
+  const bool viscous = GENERATE(false, true);
+  const fs::path path = data_dir / "mesh" / (hex ? "hex/hex.ascii.msh" : "poly/polyMesh");
+  INFO(path << (viscous ? " laminar" : " inviscid"));
+  const auto mesh = autan::io::read_mesh(path);
+  const auto geometry = autan::compute_geometry(mesh);
+  const bool planar = autan::kernels::pack_geometry(mesh, geometry).all_planar;
+  REQUIRE(planar == hex);
+  const int steps = 5;
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    Json wall;
+    for (const auto& b : d["boundaries"]) {
+      if (b["kind"] == "wall") wall = b;
+    }
+    if (viscous) {
+      laminar_along_x(d, "fp64");
+      for (auto& b : d["boundaries"]) {
+        if (b["zone"] == "zmax") continue;
+        Json w = wall;
+        w["zone"] = b["zone"];
+        b = w;
+      }
+      d["time"] = {{"kind", "unsteady"}, {"steps", steps},
+                   {"dt", nullptr},      {"cfl", 0.8},
+                   {"average_from", 1},  {"checkpoint", {{"seconds", 1800.0}}}};
+    } else {
+      inviscid_along_x(d, "fp64");
+      d["time"]["max_iterations"] = 2;
+    }
+    d["mesh"]["path"] = fs::absolute(path).string();
+    d["mesh"]["sha256"] = autan::io::mesh_hash(path);
+    Json zone = d["cell_zones"][0];
+    zone["zone"] = "fluid";
+    d["cell_zones"] = Json::array({zone});
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  CHECK(planar_events(out.run) == (planar && !viscous ? 1 : 0));
+  if (!viscous) return;
+  const double rho = doc["cell_zones"][0]["initial"]["density"].is_number()
+                         ? doc["cell_zones"][0]["initial"]["density"].get<double>()
+                         : doc["freestream"]["density"].get<double>();
+  const auto density = field(out.run, "Density");
+  REQUIRE(density.size() == geometry.cell_volume.size());
+  double mass = 0.0, volume = 0.0;
+  for (std::size_t c = 0; c < density.size(); ++c) {
+    mass += density[c] * geometry.cell_volume[c];
+    volume += geometry.cell_volume[c];
+  }
+  CHECK(std::abs(mass - rho * volume) <=
+        64.0 * steps * std::numeric_limits<double>::epsilon() * rho * volume);
+}
+
 // Two runs of `doc`, one with the default cadence and one with a checkpoint after every
 // iteration: the same history and solution, bit for bit (results.md#checkpointcgns), and no
 // checkpoint left once the run ends.
@@ -330,9 +410,9 @@ void check_checkpoints_change_nothing(Json doc) {
 TEST_CASE("a continued steady run ends its first-order start where the uninterrupted one does",
           "[euler]") {
   // results.md: a `continue` run gives the uninterrupted run's history, bit for bit. A uniform
-  // flow's first-order drop is round-off, so its first-order start ends on the plateau rule of
-  // case-schema.md#time, about 100 steps in: a continuation from iteration 60 must carry that
-  // count over.
+  // flow's first-order drop is round-off, so its first-order start ends on its stall
+  // (euler.md#time-stepping), about 100 steps in: a continuation from iteration 60 must carry
+  // that count over.
   auto doc = input("hybrid.solver-input.json", [](Json& d) {
     inviscid_along_x(d, "fp64");
     d["time"]["max_iterations"] = 200;
@@ -1001,6 +1081,8 @@ TEST_CASE("several ranks give the one-rank solution to round-off", "[euler][mpi]
   REQUIRE(one.status == ExitStatus::finished);
   const fs::path many = run_on_ranks(doc, ranks);
   REQUIRE(!many.empty());
+  // The hybrid mesh's faces are all planar: these runs take the planar loops (#412).
+  if (!periodic) CHECK(planar_events(many) == 1);
   const double eps = std::string(precision) == "fp64" ? std::numeric_limits<double>::epsilon()
                                                       : std::numeric_limits<float>::epsilon();
   // History: every residual norm.
@@ -1052,6 +1134,72 @@ TEST_CASE("several ranks give the one-rank solution to round-off", "[euler][mpi]
   for (const char* name : {"Density", "VelocityX", "Pressure"}) {
     CHECK(field(again, name) == field(many, name));
   }
+}
+
+TEST_CASE("ranks that disagree on planar faces all run the full loops", "[euler][mpi]") {
+  // A box of hexahedra with one interior node moved along z, in the part that autan-run's
+  // partition gives rank 1 and away from rank 0's ghost layers: rank 0's faces are all planar,
+  // rank 1's are not. EulerPhysics takes the minimum over the ranks: no rank logs the planar
+  // loops, and under reproducibility "ranks" two ranks give the one-rank run bit for bit.
+  constexpr int n = 10;
+  auto box = autan::test::box(n, autan::test::BoxFill::hexa);
+  const auto plain = autan::assemble(autan::to_face_based(autan::CellwiseMesh(box)));
+  const auto parts =
+      autan::partition_cells(plain, 2, {.cell_weights = autan::cell_cost_weights(plain)});
+  const auto g = autan::compute_geometry(plain);
+  const double h = 1.0 / n;
+  // The interior node whose nearest rank-0 cell centroid is farthest.
+  int best = -1;
+  double far = 0.0;
+  for (int k = 1; k < n; ++k) {
+    for (int j = 1; j < n; ++j) {
+      for (int i = 1; i < n; ++i) {
+        double nearest = 1e300;
+        for (std::size_t c = 0; c < parts.size(); ++c) {
+          if (parts[c] != 0) continue;
+          nearest = std::min(nearest,
+                             std::hypot(g.cell_centroid_x[c] - i * h, g.cell_centroid_y[c] - j * h,
+                                        g.cell_centroid_z[c] - k * h));
+        }
+        if (nearest > far) {
+          far = nearest;
+          best = i + (n + 1) * (j + (n + 1) * k);
+        }
+      }
+    }
+  }
+  // Two ghost layers of rank 0 reach centroids within 2.5 h of its part: the moved node's faces
+  // lie beyond them.
+  REQUIRE(far > 3.6 * h);
+  box.z[static_cast<std::size_t>(best)] += 0.25 * h;
+  const auto mesh = autan::assemble(autan::to_face_based(std::move(box)));
+  REQUIRE_FALSE(autan::kernels::pack_geometry(mesh, autan::compute_geometry(mesh)).all_planar);
+  std::random_device random;
+  const fs::path dir =
+      fs::temp_directory_path() / ("autan_euler_disagree-" + std::to_string(random()));
+  autan::io::write_polymesh(dir / "polyMesh", mesh);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    d["reproducibility"] = "ranks";
+    inviscid_along_x(d, "fp64");
+    for (auto& b : d["boundaries"]) b["kind"] = "farfield";
+    d["mesh"]["path"] = (dir / "polyMesh").string();
+    d["mesh"]["sha256"] = autan::io::mesh_hash(dir / "polyMesh");
+    Json zone = d["cell_zones"][0];
+    zone["zone"] = "fluid";
+    zone["initial"]["density"] = 1.2 * zone["initial"]["density"].get<double>();
+    d["cell_zones"] = Json::array({zone});
+    d["time"] = {{"kind", "unsteady"},      {"steps", 6},
+                 {"dt", nullptr},           {"cfl", 0.8},
+                 {"average_from", nullptr}, {"checkpoint", {{"seconds", 1800.0}}}};
+  });
+  const auto one = run(doc);
+  INFO(one.err);
+  REQUIRE(one.status == ExitStatus::finished);
+  const fs::path many = run_on_ranks(doc, 2);
+  REQUIRE(!many.empty());
+  CHECK(planar_events(one.run) == 0);
+  CHECK(planar_events(many) == 0);
+  check_bit_for_bit(one.run, many);
 }
 
 TEST_CASE("a steady multigrid case on several ranks is refused before any directory exists",

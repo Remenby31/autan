@@ -68,11 +68,15 @@ struct MeshInfoRun {
   /// The multigrid's levels, finest (the mesh) first: their nodes and edges.
   std::vector<std::int64_t> multigrid_cells, multigrid_edges;
   std::int64_t stencil_entries = 0;
+  std::int64_t vertex_stencil_entries = 0;
+  std::int64_t band_entries = 0;
+  std::int64_t boundary_fit_entries = 0;
   std::int64_t periodic_ghosts = 0;
   struct Partition {
     std::int32_t ranks = 0;
     std::string groups;  // "none" or "lines"
     std::vector<std::int64_t> cells, ghosts, faces, interior_faces, stencil_entries;
+    std::vector<std::int64_t> vertex_stencil_entries, band_entries, boundary_fit_entries;
     std::vector<std::int64_t> nodes, face_nodes, sent_cells;
   };
   std::optional<Partition> partition;

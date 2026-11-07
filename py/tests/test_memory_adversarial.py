@@ -1,5 +1,6 @@
 """The memory estimate bounds what the runtime allocates for every input the contract accepts,
-padded files included: docs/sdk/plan.md, #358 (memory gate, round 9)."""
+padded files included (docs/sdk/plan.md, #358, memory gate round 9), and for every physics
+(#542)."""
 
 import hashlib
 import json
@@ -235,6 +236,118 @@ def manufactured_at_bounds(tmp_path: Path) -> tuple[Path, str]:
     )
 
 
+SIDES = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
+
+
+# The unit cube in n^3 hexahedra, or 6 n^3 Kuhn tetrahedra, as MSH 4.1 ASCII: one surface entity
+# per side, physical groups named after the sides, then `fluid`.
+def box_msh(path: Path, n: int, cell: str) -> Path:
+
+    def node(i: int, j: int, k: int) -> int:
+        return 1 + i + (n + 1) * (j + (n + 1) * k)
+
+    cubes = [(i, j, k) for k in range(n) for j in range(n) for i in range(n)]
+    corners = [
+        (0, 0, 0),
+        (1, 0, 0),
+        (1, 1, 0),
+        (0, 1, 0),
+        (0, 0, 1),
+        (1, 0, 1),
+        (1, 1, 1),
+        (0, 1, 1),
+    ]
+    if cell == "hex":
+        volumes = [[node(i + a, j + b, k + c) for a, b, c in corners] for i, j, k in cubes]
+        kind, face_kind = 5, 3
+    else:
+        # Kuhn: the 6 paths from (0,0,0) to (1,1,1) along the axes, one tetrahedron each.
+        paths = [(0, 1, 2), (0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 0, 1), (2, 1, 0)]
+        volumes = []
+        for i, j, k in cubes:
+            for walk in paths:
+                at, tet, steps = [0, 0, 0], [node(i, j, k)], []
+                for axis in walk:
+                    at[axis] += 1
+                    tet.append(node(i + at[0], j + at[1], k + at[2]))
+                    steps.append(axis)
+                # Gmsh orders a tetrahedron's nodes with a positive volume: the path's three
+                # unit steps, in order, form an even or odd permutation of (x, y, z).
+                odd = steps in ([0, 2, 1], [1, 0, 2], [2, 1, 0])
+                volumes.append([tet[0], tet[1], tet[3], tet[2]] if odd else tet)
+        kind, face_kind = 4, 2
+    faces: dict[str, list[list[int]]] = {}
+    for side in SIDES:
+        axis, high = "xyz".index(side[0]), side.endswith("max")
+        quads = []
+        for a in range(n):
+            for b in range(n):
+                square = []
+                for da, db in ((0, 0), (1, 0), (1, 1), (0, 1)):
+                    at = [0, 0, 0]
+                    at[axis] = n if high else 0
+                    at[(axis + 1) % 3], at[(axis + 2) % 3] = a + da, b + db
+                    square.append(node(*at))
+                quads.append(square)
+        if cell == "hex":
+            faces[side] = quads
+        else:
+            # The Kuhn split cuts each boundary square along its diagonal through the corner
+            # with the smallest node index, the one nearest the origin.
+            faces[side] = []
+            for square in quads:
+                r = square.index(min(square))
+                q = square[r:] + square[:r]
+                faces[side] += [[q[0], q[1], q[2]], [q[0], q[2], q[3]]]
+    nodes = (n + 1) ** 3
+    total = len(volumes) + sum(len(f) for f in faces.values())
+    lines = ["$MeshFormat", "4.1 0 8", "$EndMeshFormat", "$PhysicalNames", str(len(SIDES) + 1)]
+    lines += [f'2 {t + 1} "{side}"' for t, side in enumerate(SIDES)] + [
+        f'3 {len(SIDES) + 1} "fluid"'
+    ]
+    lines += ["$EndPhysicalNames", "$Entities", f"0 0 {len(SIDES)} 1"]
+    lines += [f"{t + 1} 0 0 0 1 1 1 1 {t + 1} 0" for t in range(len(SIDES))]
+    lines += [f"1 0 0 0 1 1 1 1 {len(SIDES) + 1} 0", "$EndEntities", "$Nodes"]
+    lines += [f"{len(SIDES) + 1} {nodes} 1 {nodes}"] + [f"2 {t + 1} 0 0" for t in range(len(SIDES))]
+    lines += [f"3 1 0 {nodes}"] + [str(t) for t in range(1, nodes + 1)]
+    lines += [
+        f"{i / n:.16g} {j / n:.16g} {k / n:.16g}"
+        for k in range(n + 1)
+        for j in range(n + 1)
+        for i in range(n + 1)
+    ]
+    lines += ["$EndNodes", "$Elements", f"{len(SIDES) + 1} {total} 1 {total}"]
+    tag = 1
+    for t, side in enumerate(SIDES):
+        lines.append(f"2 {t + 1} {face_kind} {len(faces[side])}")
+        for f in faces[side]:
+            lines.append(" ".join(map(str, [tag, *f])))
+            tag += 1
+    lines.append(f"3 1 {kind} {len(volumes)}")
+    for v in volumes:
+        lines.append(" ".join(map(str, [tag, *v])))
+        tag += 1
+    path.write_text("\n".join([*lines, "$EndElements", ""]))
+    return path
+
+
+def viscous_box(cell: str, n: int, turbulence: str) -> Callable[[Path], tuple[Path, str]]:
+    # A viscous run on a box large enough that the physics' per-cell arrays (the quadratic fit
+    # over two vertex rings, the viscous terms, the SA equation) outweigh the fixed setup.
+    def make(tmp_path: Path) -> tuple[Path, str]:
+        mesh = box_msh(tmp_path / f"{cell}.msh", n, cell)
+        return mesh, (
+            f"case.physics = autan.Compressible(turbulence=autan.{turbulence}(),"
+            " precision='fp64')\n"
+            "case.boundary('ymin').wall()\n"
+            "for side in ('xmin', 'xmax', 'ymax', 'zmin', 'zmax'):\n"
+            "    case.boundary(side).farfield()\n"
+        )
+
+    make.__name__ = f"{turbulence.lower()}_{cell}_{n}"
+    return make
+
+
 @pytest.mark.parametrize(
     "make",
     [
@@ -250,15 +363,20 @@ def manufactured_at_bounds(tmp_path: Path) -> tuple[Path, str]:
         many_long_zone_names,
         long_case_name,
         manufactured_at_bounds,
+        viscous_box("hex", 20, "Laminar"),
+        viscous_box("hex", 20, "SA"),
+        viscous_box("tet", 12, "Laminar"),
+        viscous_box("tet", 12, "SA"),
     ],
+    ids=lambda make: make.__name__,
 )
-def test_the_estimate_bounds_a_run_on_padded_files(
+def test_the_estimate_bounds_the_run(
     make: Callable[[Path], tuple[Path, str]], tmp_path: Path
 ) -> None:
     # plan.md: each file of the case counts at its size, whatever it carries beyond the mesh
     # and the states (skipped sections, unreferenced nodes, descriptors, whitespace, empty
-    # zones and their names, element sections the reader skips, the case's own name): the
-    # measured peak (VmHWM, CPU) never exceeds the estimate.
+    # zones and their names, element sections the reader skips, the case's own name), and the
+    # physics counts its arrays: the measured peak (VmHWM, CPU) never exceeds the estimate.
     mesh, boundaries = make(tmp_path)
     info = mesh_info(mesh, tmp_path)
     name = LONG if make is long_case_name else "padded"

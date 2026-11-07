@@ -12,6 +12,7 @@ namespace autan::runtime {
 struct SolverBuild {
   std::string version;  ///< version.txt
   std::string commit;   ///< full 40-character git commit
+  bool dirty = false;   ///< tracked files of the source differed from `commit`
 };
 
 /// Exit statuses of autan-run (docs/contracts/solver-input.md, Invocation).
