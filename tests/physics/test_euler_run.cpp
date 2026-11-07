@@ -736,9 +736,8 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
           "[euler]") {
   // The multigrid agglomerates one mesh's cells and takes no image ghosts: E0706 at
   // `time.linear_solver`. The multigrid sums in local cell order: reproducibility "ranks" is
-  // E1109. The coupled turbulence step is SA's and the matrix-free step laminar flow's
-  // (case-schema.md#time): E0426 and E0429 on inviscid flow. Neither is written for the
-  // Navier-Stokes physics yet: E0426 and E0429 on SA and laminar flow as well.
+  // E1109. No physics has either opt-in steady step yet (case-schema.md#time): E0426 and E0429
+  // on inviscid, SA and laminar flow alike.
   const std::string reason =
       GENERATE("periodic", "ranks", "coupled", "matrix-free", "coupled sa", "matrix-free laminar");
   CAPTURE(reason);

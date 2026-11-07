@@ -192,7 +192,6 @@ def plan(
     _check_interfaces(case, mesh, cell_zones, found)
     _check_monitors(case, spec, mesh, found)
     _check_prepared(case, spec, mesh, gpus, device_kind, found)
-    _check_opt_in(case, spec, gpus, found)
 
     scale = metres_per(spec.mesh_unit)
     return Plan(
@@ -382,26 +381,6 @@ def _check_groups_file(case: Case, mesh: MeshInfo, found: list[Diagnostic]) -> N
                 groups=str(path),
             )
         )
-
-
-def _check_opt_in(case: Case, spec: CaseSpec, gpus: int, found: list[Diagnostic]) -> None:
-    """The opt-in steady steps run in the host multigrid on one rank and are validated on one
-    TMR flat plate each (case-schema.md#time). The runtime refuses them on a device (E0427)."""
-    if not isinstance(spec.time, Steady):
-        return
-    steps = [
-        ("coupled_turbulence", "the coupled turbulence step", "W0426", "TMR flat plate"),
-        ("matrix_free", "the matrix-free step", "W0429", "TMR laminar flat plate"),
-    ]
-    for key, step, warning, validated in steps:
-        if not getattr(spec.time, key):
-            continue
-        where = case.locate(f"time.{key}")
-        if spec.time.linear_solver != "multigrid" or gpus > 1:
-            message = f"{step} needs linear_solver='multigrid' on one rank"
-            found.append(diagnostic("E0427", message, location=where))
-        message = f"{step} is validated on the {validated} only (#429)"
-        found.append(diagnostic(warning, message, location=where))
 
 
 def _matches(pattern: str, names: list[str]) -> list[str]:

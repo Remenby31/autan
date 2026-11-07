@@ -1477,28 +1477,17 @@ bool same_gas(const runtime::Medium& a, const runtime::Medium& b) {
 // What the Euler physics runs beyond its key: every cell zone of one ideal gas, boundary
 // conditions that apply to inviscid flow, and the multigrid on one rank without periodic pairs.
 std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& in, int ranks) {
-  // case-schema.md#time: the opt-in steps, the coupled turbulence step SA's and the matrix-free
-  // step laminar flow's, in the host's steady multigrid on one rank.
+  // case-schema.md#time: no physics has either opt-in steady step yet.
   if (in.time.kind == "steady") {
-    for (const auto& [key, on, model, code] :
-         {std::tuple{"coupled_turbulence", in.time.coupled_turbulence, "sa", "E0426"},
-          std::tuple{"matrix_free", in.time.matrix_free, "laminar", "E0429"}}) {
-      if (!on) continue;
-      const std::string path = std::string("time.") + key;
-      if (in.turbulence.model != model) {
-        return runtime::PhysicsRefusal{
-            .message = path + " needs the " + model + " model, not '" + in.turbulence.model + "'",
-            .path = path,
-            .data_json = nlohmann::json{{"model", in.turbulence.model}}.dump(),
-            .code = code};
-      }
-      if (in.time.linear_solver != "multigrid" || ranks > 1) {
-        return runtime::PhysicsRefusal{
-            .message = path + " runs in the host multigrid on one rank",
-            .path = path,
-            .data_json =
-                nlohmann::json{{"linear_solver", in.time.linear_solver}, {"ranks", ranks}}.dump(),
-            .code = "E0427"};
+    for (const auto& [key, on, code] :
+         {std::tuple{"coupled_turbulence", in.time.coupled_turbulence, "E0426"},
+          std::tuple{"matrix_free", in.time.matrix_free, "E0429"}}) {
+      if (on) {
+        const std::string path = std::string("time.") + key;
+        return runtime::PhysicsRefusal{.message = path + ": no physics has this step yet",
+                                       .path = path,
+                                       .data_json = "{}",
+                                       .code = code};
       }
     }
   }
@@ -1600,21 +1589,6 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
 // distances from, unless a manufactured solution gives them.
 std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::SolverInput& in,
                                                            int ranks) {
-  // case-schema.md#time's opt-in steady steps: neither is written for this physics yet.
-  if (in.time.kind == "steady" && in.time.coupled_turbulence) {
-    return runtime::PhysicsRefusal{
-        .message = "the Navier-Stokes physics has no coupled turbulence step yet",
-        .path = "time.coupled_turbulence",
-        .data_json = "{}",
-        .code = "E0426"};
-  }
-  if (in.time.kind == "steady" && in.time.matrix_free) {
-    return runtime::PhysicsRefusal{
-        .message = "the Navier-Stokes physics has no matrix-free step yet",
-        .path = "time.matrix_free",
-        .data_json = "{}",
-        .code = "E0429"};
-  }
   // NavierStokes<P> and SpalartAllmaras<P> fill no ghost cells of their own (their fields, fits
   // and Jacobian blocks would be wrong across a periodic pair): one rank, no periodic pairs.
   if (!in.periodic.empty()) {
@@ -1670,14 +1644,6 @@ std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::Solver
 // measure the circulation; the host's steady step does).
 std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverInput& in,
                                                           int ranks) {
-  if (in.time.kind == "steady" && (in.time.coupled_turbulence || in.time.matrix_free)) {
-    const std::string path =
-        in.time.coupled_turbulence ? "time.coupled_turbulence" : "time.matrix_free";
-    return runtime::PhysicsRefusal{.message = path + " runs in the host multigrid, not on a device",
-                                   .path = path,
-                                   .data_json = "{}",
-                                   .code = "E0427"};
-  }
   // The device loops sum in local order: the host's global-order gathers have no device
   // counterpart in the Euler physics yet.
   if (in.reproducibility == "ranks") {

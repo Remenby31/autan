@@ -310,9 +310,8 @@ def _default_checkpoint() -> Checkpoint:
 class Steady(Spec):
     """Local time stepping until every residual drops ``residual_orders`` orders, at most
     ``max_iterations`` iterations; an implicit physics solves each step's linear system with
-    ``linear_solver``. ``coupled_turbulence`` solves the flow and the SA variable together in
-    each step (validated on the TMR flat plate only); ``matrix_free`` applies the laminar
-    step's Jacobian without assembling it (validated on the TMR laminar flat plate only)."""
+    ``linear_solver``. ``coupled_turbulence`` and ``matrix_free`` name steps no physics has
+    yet: either set is refused."""
 
     kind: Literal["steady"] = "steady"
     max_iterations: Count = 10000
@@ -648,22 +647,10 @@ def consistency(spec: CaseSpec) -> list[tuple[str, str, str]]:
         found.append(
             ("E0417", "time", "manufactured solutions are steady: verification needs a steady time")
         )
-    coupled = isinstance(spec.time, Steady) and spec.time.coupled_turbulence
-    if coupled and not (isinstance(physics, Compressible) and isinstance(physics.turbulence, SA)):
-        found.append(
-            (
-                "E0426",
-                "time.coupled_turbulence",
-                "only compressible SA has a coupled turbulence step",
-            )
-        )
-    matrix_free = isinstance(spec.time, Steady) and spec.time.matrix_free
-    if matrix_free and not (
-        isinstance(physics, Compressible) and isinstance(physics.turbulence, Laminar)
-    ):
-        found.append(
-            ("E0429", "time.matrix_free", "only compressible laminar flow has a matrix-free step")
-        )
+    if isinstance(spec.time, Steady) and spec.time.coupled_turbulence:
+        found.append(("E0426", "time.coupled_turbulence", "no physics has a coupled step yet"))
+    if isinstance(spec.time, Steady) and spec.time.matrix_free:
+        found.append(("E0429", "time.matrix_free", "no physics has a matrix-free step yet"))
     if isinstance(physics.turbulence, DDES | WMLES) and not isinstance(spec.time, Unsteady):
         found.append(
             ("E0305", "time", f"{physics.turbulence.model} needs case.time = autan.Unsteady(...)")
@@ -699,14 +686,8 @@ def json_schema() -> dict[str, Any]:
     def absent(*keys: str) -> dict[str, Any]:
         return {"not": {"anyOf": [{"required": [k]} for k in keys]}}
 
-    def opt_in(key: str, model: str) -> dict[str, Any]:
-        time = {"required": [key], "properties": {key: {"const": True}}}
-        turbulence = {"properties": {"model": {"const": model}}}
-        kind = {"kind": {"const": "compressible"}, "turbulence": turbulence}
-        return {
-            "if": {"required": ["time"], "properties": {"time": time}},
-            "then": {"properties": {"physics": {"properties": kind}}},
-        }
+    def never(key: str) -> dict[str, Any]:
+        return {"properties": {"time": {"properties": {key: {"const": False}}}}}
 
     def zone_states(rule: dict[str, Any]) -> dict[str, Any]:
         initial = {"properties": {"initial": {"anyOf": [{"type": "null"}, rule]}}}
@@ -783,7 +764,7 @@ def json_schema() -> dict[str, Any]:
                 "properties": {"time": {"properties": {"kind": {"const": "unsteady"}}}},
             },
         },
-        opt_in("coupled_turbulence", "sa"),
-        opt_in("matrix_free", "laminar"),
+        never("coupled_turbulence"),
+        never("matrix_free"),
     ]
     return {"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": SCHEMA_ID, **schema}

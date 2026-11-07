@@ -460,20 +460,8 @@
     "E0426": {
       "severity": "error",
       "title": "Coupled turbulence not applicable",
-      "fix": "Remove `coupled_turbulence=True`, or use compressible SA physics.",
+      "fix": "Remove `coupled_turbulence=True`.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0426"
-    },
-    "W0426": {
-      "severity": "warning",
-      "title": "Coupled turbulence outside its validated domain",
-      "fix": "Compare with a run without the option before relying on the result.",
-      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0426"
-    },
-    "E0427": {
-      "severity": "error",
-      "title": "Opt-in step needs the host multigrid",
-      "fix": "Use `linear_solver='multigrid'` and run on one CPU rank, or drop the option.",
-      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0427"
     },
     "E0428": {
       "severity": "error",
@@ -484,14 +472,8 @@
     "E0429": {
       "severity": "error",
       "title": "Matrix-free step not applicable",
-      "fix": "Remove `matrix_free=True`, or use compressible laminar physics.",
+      "fix": "Remove `matrix_free=True`.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0429"
-    },
-    "W0429": {
-      "severity": "warning",
-      "title": "Matrix-free step outside its validated domain",
-      "fix": "Compare with a run without the option before relying on the result.",
-      "doc": "https://remenby31.github.io/autan/sdk/errors/#w0429"
     },
     "E0501": {
       "severity": "error",
