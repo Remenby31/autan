@@ -211,3 +211,23 @@ def test_a_run_that_writes_no_grid_fails_even_beside_an_earlier_grid(tmp_path: P
         construct2d.generate(exe, _tape(tmp_path), out)
     assert err.value.code == "V0311"
     assert not (out / "rae2822.p3d").exists()
+
+
+def test_a_grid_other_than_the_pinned_one_is_refused_and_leaves_no_level(tmp_path: Path) -> None:
+    # A Construct2D that writes a complete grid, of other dimensions (V0311) or of the namelist's
+    # dimensions but other coordinates (V0312): no level is left for plot3d.py to convert.
+    out = tmp_path / "out"
+    out.mkdir()
+    for nj, ni, code in (
+        (3, construct2d.NSRF + 2 * 4, "V0311"),
+        (construct2d.JMAX, construct2d.NSRF + 2 * construct2d.NWKE, "V0312"),
+    ):
+        grid = tmp_path / "grid.p3d"
+        _construct2d_file(grid, _polar(ni, nj, 1.0, 1.05, math.pi / ni))
+        exe = tmp_path / "construct2d"
+        exe.write_text(f"#!/bin/sh\ncp {grid} rae2822.p3d\n")
+        exe.chmod(0o755)
+        with pytest.raises(VVError) as err:
+            construct2d.generate(exe, _tape(tmp_path), out)
+        assert err.value.code == code
+        assert not list(out.glob("rae2822-*.p2dfmt"))

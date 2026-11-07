@@ -88,7 +88,6 @@ class CGrid:
     wake_cells: int
 
     def coarsened(self) -> CGrid:
-        """Every other line in i and j: the next coarser nested level."""
         return CGrid(self.x[::2, ::2], self.y[::2, ::2], self.wake_cells // 2)
 
 
@@ -242,8 +241,9 @@ def passes(level: str, m: dict[str, float]) -> dict[str, bool]:
 
 def generate(exe: Path, tape: Path, out: Path) -> dict[str, object]:
     """Runs Construct2D in `out`, writes `rae2822-{fine,medium,coarse}.p2dfmt` and returns each
-    level's measures. VVError V0311 if Construct2D writes no grid, V0312 if a level's SHA-256
-    differs from its pinned value (a build or input other than the pinned ones)."""
+    level's measures. VVError V0311 if Construct2D writes no grid or one of other dimensions, V0312
+    if a level's SHA-256 differs from its pinned value (a build or input other than the pinned
+    ones); neither leaves a level in `out`."""
     out.mkdir(parents=True, exist_ok=True)
     stale = ["rae2822.p3d", "rae2822_stats.p3d", "rae2822.nmf", "quality.json"]
     for name in stale + [f"rae2822-{level}.p2dfmt" for level in GRIDS]:
@@ -263,6 +263,9 @@ def generate(exe: Path, tape: Path, out: Path) -> dict[str, object]:
         msg = f"Construct2D wrote no grid (exit {run.returncode}), see {out / 'construct2d.log'}"
         raise VVError(msg, code="V0311")
     grid = read_grid(out / "rae2822.p3d")
+    if grid.x.shape != (JMAX, NSRF + 2 * NWKE):
+        msg = f"Construct2D wrote a {grid.x.shape[1]} x {grid.x.shape[0]} grid, not the namelist's"
+        raise VVError(msg, code="V0311")
     report: dict[str, object] = {
         "construct2d": VERSION,
         "namelist": NAMELIST,
@@ -280,6 +283,8 @@ def generate(exe: Path, tape: Path, out: Path) -> dict[str, object]:
             "sha256": digest,
         }
         if digest != GRIDS[level]:
+            for name in GRIDS:
+                (out / f"rae2822-{name}.p2dfmt").unlink(missing_ok=True)
             msg = f"{path.name}: SHA-256 {digest}, pinned {GRIDS[level]}"
             raise VVError(msg, code="V0312")
         grid = grid.coarsened()
