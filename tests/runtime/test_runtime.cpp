@@ -2760,10 +2760,34 @@ TEST_CASE("In fp32+acc64 an equation converges on a round-off plateau near its f
     // the last new least value is at k = 11, the plateau holds at k = 111.
     autan_test::RelaxationOptions flat = scaled;
     flat.plateau = 1.5 * floor;
-    const Json info = run_json(flat, "fp32+acc64");
+    const Outcome converged = run(input([&](Json& d) {
+                                    d["precision"] = "fp32+acc64";
+                                    d["time"]["max_iterations"] = 10000;
+                                  }),
+                                  flat);
+    REQUIRE(converged.status == ExitStatus::finished);
+    const Json info = Json::parse(read(converged.run / "run.json"));
     CHECK(info["status"] == "converged");
     CHECK(info["iterations"] == 111);
     CHECK(info["convergence"]["plateau"] == Json(equations));
+    // results.md, RunMetadata: the solution carries run.json's convergence, plateau included.
+    int fn = 0;
+    REQUIRE(cg_open((converged.run / "solution.cgns").string().c_str(), CG_MODE_READ, &fn) ==
+            CG_OK);
+    REQUIRE(cg_goto(fn, 1, "end") == CG_OK);
+    int count = 0;
+    REQUIRE(cg_ndescriptors(&count) == CG_OK);
+    Json metadata;
+    for (int d = 1; d <= count; ++d) {
+      char name[33];
+      char* text = nullptr;
+      REQUIRE(cg_descriptor_read(d, name, &text) == CG_OK);
+      if (std::string_view(name) == "RunMetadata") metadata = Json::parse(text);
+      cg_free(text);
+    }
+    cg_close(fn);
+    REQUIRE(metadata.is_object());
+    CHECK(metadata["convergence"] == info["convergence"]);
 
     // Provisional steps (a first-order start) do not count: from k = 50 the plateau needs 100
     // counted steps, k = 50 to 149, and holds at k = 150.
