@@ -106,6 +106,57 @@ def representable(v: Fraction, fmt: Format) -> bool:
     return scaled.denominator == 1
 
 
+CENTRE_BITS = 128  # significant bits of a tidied centre
+RADIUS_BITS = 64  # significant bits of a tidied radius
+
+
+def dyadic_exponent(a: Fraction) -> int:
+    """floor(log2 |a|) for a != 0, exactly."""
+    a = abs(a)
+    e = a.numerator.bit_length() - a.denominator.bit_length()
+    if Fraction(2) ** e > a:
+        e -= 1
+    return e
+
+
+def _nearest_dyadic(v: Fraction, bits: int) -> Fraction:
+    """The dyadic with `bits` significant bits nearest to v, ties to the even last kept bit."""
+    if v == 0:
+        return Fraction(0)
+    scale = Fraction(2) ** (bits - 1 - dyadic_exponent(v))
+    scaled = abs(v) * scale
+    n = scaled.numerator // scaled.denominator
+    rest = scaled - n
+    if rest > Fraction(1, 2) or (rest == Fraction(1, 2) and n % 2 == 1):
+        n += 1
+    out = Fraction(n) / scale
+    return out if v > 0 else -out
+
+
+def _dyadic_ceiling(r: Fraction, bits: int) -> Fraction:
+    """The least dyadic with `bits` significant bits that is >= r >= 0, exactly."""
+    if r == 0:
+        return Fraction(0)
+    scale = Fraction(2) ** (bits - 1 - dyadic_exponent(r))
+    scaled = r * scale
+    n = -(-scaled.numerator // scaled.denominator)
+    return Fraction(n) / scale
+
+
+def tidy(x: Cert) -> Cert:
+    """Re-centre x on the nearest dyadic v' of CENTRE_BITS significant bits (ties to even) and
+    round r + |v - v'| up, exactly, to a dyadic r' of RADIUS_BITS significant bits.
+
+    Sound: |computed - v'| <= |computed - v| + |v - v'| <= r + |v - v'| <= r', so the interval
+    [v' - r', v' + r'] contains [v - r, v + r]: tidy never shrinks an interval. It enlarges the
+    radius by at most 2^-63 r' + |v - v'| <= 2^-63 (r + |v - v'|) + 2^-128 |v|, that is
+    <= 2^-63 R + 2^-127 |v| per operation. An exact dyadic of at most CENTRE_BITS bits with r = 0
+    is unchanged. Without it, every rule adds about 53 bits to the denominators (#43).
+    """
+    v2 = _nearest_dyadic(x.value, CENTRE_BITS)
+    return Cert(v2, _dyadic_ceiling(x.radius + abs(x.value - v2), RADIUS_BITS), x.fmt)
+
+
 def _rounded(v: Fraction, d: Fraction, fmt: Format) -> Cert:
     """The result of rounding, to `fmt`, an exact operation result within d of v."""
     if abs(v) + d > fmt.max:
@@ -116,7 +167,7 @@ def _rounded(v: Fraction, d: Fraction, fmt: Format) -> Cert:
     r = (1 + fmt.u) * d + fmt.u * abs(v)
     if abs(v) - d < fmt.normal_min:
         r += fmt.eta
-    return Cert(v, r, fmt)
+    return tidy(Cert(v, r, fmt))
 
 
 def add(x: Cert, y: Cert, fmt: Format) -> Cert:
