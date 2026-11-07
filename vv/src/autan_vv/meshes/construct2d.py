@@ -1,10 +1,11 @@
 """RAE 2822 C-grids generated offline by Construct2D 2.1.4, measured against the criteria of #408.
 
 Construct2D (D. Prosser, https://sourceforge.net/projects/construct2d/, GPL-3.0) is a V&V dev tool
-here, like gmsh: never vendored, linked or shipped. This module pins its release, writes its inputs
-(the RAE 2822 surface of file 1121 of the 1981 tape and the namelist selected on #449), runs a binary
-built from that release, reads its 2D PLOT3D grid, derives the nested medium and coarse levels by
-removing every other line, measures each level and checks it against the grid's pinned hash.
+here, like gmsh: never vendored, linked or shipped; vv/construct2d/Dockerfile builds the pinned
+release. This module writes its inputs (the RAE 2822 surface of file 1121 of the 1981 tape and the
+namelist selected on #449), runs that binary, reads its 2D PLOT3D grid, derives the nested medium
+and coarse levels by removing every other line, measures each level and checks it against the
+grid's pinned hash.
 
 i runs along the wall line from the end of the wake below the cut, along the wake to the trailing
 edge, around the airfoil (lower surface, leading edge, upper surface) and back along the wake above
@@ -33,8 +34,6 @@ from autan_vv.errors import VVError
 FloatArray = npt.NDArray[np.float64]
 
 VERSION = "2.1.4"
-URL = "https://downloads.sourceforge.net/project/construct2d/Construct2D_2.1.4.zip"
-SHA256 = "9926dd6c5abb4c675826261a6c39ac00537f6bcbeccc25024f1e1bc6d0bf3159"
 
 NSRF, NWKE, JMAX = 481, 128, 129
 RADIUS = 500.0
