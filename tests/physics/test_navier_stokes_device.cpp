@@ -11,6 +11,7 @@
 #include <memory>
 #include <numeric>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <variant>
@@ -281,11 +282,12 @@ TEMPLATE_TEST_CASE("the device's Spalart-Allmaras residual and eddy viscosity ma
   auto nt_at = [&](double x, double y, double z) {
     return sign * (1.0 + 0.5 * std::sin(2.0 * x + 3.0 * y + z));
   };
-  std::vector<double> rnu(n), dist(n), nt_b(pb.nb, 0.0);
+  std::vector<double> rnu(n), dist(n), nt_b(pb.nb, 0.0), nt_source(n);
   double d_min = std::numeric_limits<double>::infinity();
   for (std::size_t c = 0; c < n; ++c) {
     rnu[c] = pb.u[c] * nt_at(g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]);
     dist[c] = g.cell_centroid_y[c] + 0.05;
+    nt_source[c] = 0.1 * std::cos(4.0 * g.cell_centroid_z[c] - g.cell_centroid_x[c]);
     d_min = std::min(d_min, dist[c]);
   }
   for (std::size_t b = 0; b < pb.nb; ++b) {
@@ -298,6 +300,7 @@ TEMPLATE_TEST_CASE("the device's Spalart-Allmaras residual and eddy viscosity ma
     std::vector<double> d(dist);
     for (auto& v : d) v += far;
     m->set_wall_distance(d);
+    m->set_source(nt_source);
     return m;
   };
   std::vector<typename P::state> rs(n);
@@ -307,12 +310,24 @@ TEMPLATE_TEST_CASE("the device's Spalart-Allmaras residual and eddy viscosity ma
   auto sa = model(true, 0.0);
   sa->residual(rs, r_sa);
   REQUIRE(finite(r_sa));
-  // The device copies the host's eddy viscosity now, before the model sets it: zero.
+  // An eddy viscosity the model must overwrite everywhere, zeros included: the device copies it
+  // now, before the model sets it.
+  std::vector<double> stale(n, 0.25), stale_b(pb.nb, 0.15);
+  host.set_eddy_viscosity(stale, stale_b);
   autan::runtime::OneRank rank;
   NoGhosts ghosts;
   auto device = autan::physics::make_device_stepper<P>(pb.mesh, pb.g, host, air.gamma, true, rank,
                                                        ghosts, nullptr, &pb.keys);
   auto sa_device = autan::physics::make_device_spalart_allmaras<P>(*sa, *device);
+  {
+    // Only the stepper of the flow the model is coupled to.
+    NavierStokes<P> other(pb.mesh, pb.g, air, pb.s, pb.t, &pb.keys);
+    other.set_boundary(pb.kind, pb.data);
+    auto other_device = autan::physics::make_device_stepper<P>(
+        pb.mesh, pb.g, other, air.gamma, true, rank, ghosts, nullptr, &pb.keys);
+    CHECK_THROWS_AS(autan::physics::make_device_spalart_allmaras<P>(*sa, *other_device),
+                    std::invalid_argument);
+  }
 
   // Omega_max: |curl v| of `flow` is at most sqrt(10^2 + 45^2) < 46.1; the discrete vorticity of
   // the gradients the model reads is checked against twice that.
@@ -344,8 +359,8 @@ TEMPLATE_TEST_CASE("the device's Spalart-Allmaras residual and eddy viscosity ma
     return worst;
   };
   if (sign > 0.0) {
-    // The tolerance is tight: leaving out ft2, or the near-wall destruction (the wall moved far
-    // away), moves the residual by more than ten times it.
+    // The tolerance is tight: leaving out ft2, or the wall's terms (destruction and the wall term
+    // of S_tilde, the wall moved far away), moves the residual by more than ten times it.
     std::vector<typename P::residual> r_other(n);
     model(false, 0.0)->residual(rs, r_other);
     CHECK(distance(r_other) > 10.0);
@@ -359,6 +374,10 @@ TEMPLATE_TEST_CASE("the device's Spalart-Allmaras residual and eddy viscosity ma
     std::size_t moved = 0;
     for (std::size_t i = n; i < 5 * n; ++i) moved += r_flow_t[i] != r_flow[i] ? 1 : 0;
     REQUIRE(moved >= 4 * n * 9 / 10);
+  } else {
+    // nt < 0 gives no eddy viscosity: the stale one is gone and the flow is laminar again.
+    REQUIRE(bit_difference(r_flow, std::vector<double>(r_flow_t.begin(), r_flow_t.end())).first ==
+            0);
   }
 
   std::vector<double> d_flow(5 * n), d_sa(n), d_flow_t(5 * n);

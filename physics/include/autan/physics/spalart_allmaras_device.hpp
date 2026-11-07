@@ -24,7 +24,7 @@ class DeviceSpalartAllmaras {
 
 // The model of `host` (its wall distance, boundary values, source and parameters when this is
 // called) on the device of `flow`, which must come from make_device_stepper of the NavierStokes<P>
-// `host` is coupled to (std::invalid_argument otherwise).
+// `host` is coupled to (std::invalid_argument otherwise) and outlive the model.
 template <class P>
 std::unique_ptr<DeviceSpalartAllmaras<P>> make_device_spalart_allmaras(
     const SpalartAllmaras<P>& host, DeviceStepper<P>& flow);

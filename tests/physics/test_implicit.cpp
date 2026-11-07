@@ -9,6 +9,7 @@
 #include <map>
 #include <random>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 #include <catch2/catch_template_test_macros.hpp>
@@ -644,4 +645,10 @@ TEMPLATE_TEST_CASE("under global keys, renumbered cells have the residual and Ja
   std::size_t sa_differs = 0;
   for (std::size_t c = 0; c < nc; ++c) sa_differs += bits_differ(sa_rb[c], sa_ra[cell(c)]);
   CHECK(sa_differs == 0);
+  // Under keys that reverse faces their viscous and SA blocks are in global orientation: the
+  // assembly, written for the mesh's own, refuses them.
+  BlockMatrix viscous_b(b);
+  CHECK_THROWS_AS(flow_b.assemble(shift_b, viscous_b), std::logic_error);
+  std::vector<double> sa_diag(nc), sa_upper(ni), sa_lower(ni);
+  CHECK_THROWS_AS(sa_b.assemble(shift_b, sa_diag, sa_upper, sa_lower), std::logic_error);
 }

@@ -47,7 +47,8 @@ class NavierStokesStepper final : public device::CudaStepper<P> {
                       runtime::GhostExchange& ghosts, void* stream, const kernels::GlobalKeys* keys)
       : Base(mesh, geometry, host.euler(), gamma, second_order, ranks, ghosts, stream, keys,
              /*moments=*/true, /*release=*/false),
-        quadratic_(host.euler().scheme().gradient_fit == GradientFit::quadratic) {
+        quadratic_(host.euler().scheme().gradient_fit == GradientFit::quadratic),
+        origin_(host.data().mu_t) {
     const N& h = host.data();
     const auto n = this->n_;
     const auto nf = this->nf_;
@@ -124,6 +125,8 @@ class NavierStokesStepper final : public device::CudaStepper<P> {
   [[nodiscard]] cudaStream_t stream() const noexcept { return this->stream_; }
   [[nodiscard]] std::size_t n_cells() const noexcept { return this->n_; }
   [[nodiscard]] std::size_t n_faces() const noexcept { return this->nf_; }
+  // Whether `mu_t` is the eddy viscosity array of the host flow this stepper copies.
+  [[nodiscard]] bool copies(const void* mu_t) const noexcept { return mu_t == origin_; }
 
  private:
   // NavierStokes<P>::residual after the Euler residual: under the quadratic fit the linear
@@ -154,6 +157,8 @@ class NavierStokesStepper final : public device::CudaStepper<P> {
   }
 
   bool quadratic_;
+  // The host flow's eddy viscosity array: the turbulence model of that flow shares it.
+  const void* origin_;
   gpu::DeviceArray<kernels::offset_t> fit_offsets_;
   gpu::DeviceArray<kernels::index_t> fit_entries_;
   std::array<gpu::DeviceArray<element<decltype(N::q0)>>, 7> q_;
@@ -285,8 +290,9 @@ template <class P>
 std::unique_ptr<DeviceSpalartAllmaras<P>> make_device_spalart_allmaras(
     const SpalartAllmaras<P>& host, DeviceStepper<P>& flow) {
   auto* ns = dynamic_cast<NavierStokesStepper<P>*>(&flow);
-  if (ns == nullptr) {
-    throw std::invalid_argument("Spalart-Allmaras on a device needs a Navier-Stokes stepper");
+  if (ns == nullptr || !ns->copies(host.data().mu_t)) {
+    throw std::invalid_argument(
+        "Spalart-Allmaras on a device needs the stepper of the flow it is coupled to");
   }
   return std::make_unique<SpalartAllmarasDevice<P>>(host, *ns);
 }

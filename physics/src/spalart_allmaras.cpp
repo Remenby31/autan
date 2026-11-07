@@ -192,6 +192,12 @@ template <class P>
 void SpalartAllmaras<P>::assemble(std::span<const double> shift, std::span<double> diag,
                                   std::span<double> upper, std::span<double> lower) const {
   const auto& m = *impl_;
+  // Under keys that reverse a face the face loops' blocks are in its global orientation, which
+  // the placement below does not undo.
+  if (const auto* rev = m.d.topo.face_reversed;
+      rev != nullptr && std::any_of(rev, rev + m.nf, [](auto r) { return r != 0; })) {
+    throw std::logic_error("SpalartAllmaras: assemble under keys that reverse a face");
+  }
   for (std::size_t c = 0; c < m.nc; ++c) {
     diag[c] = shift[c] + std::max(0.0, static_cast<double>(m.cell_jac[c]));
   }

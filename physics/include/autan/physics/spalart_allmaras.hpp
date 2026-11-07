@@ -49,6 +49,7 @@ class SpalartAllmaras {
   /// negative part of each cell's source derivative dropped (production does not lower the
   /// diagonal): `diag` per cell, `upper` (row owner, column neighbour) and `lower` (row
   /// neighbour, column owner) per interior face, in mesh face order, as BlockMatrix.
+  /// Refused (std::logic_error) under flow keys that reverse a face.
   void assemble(std::span<const double> shift, std::span<double> diag, std::span<double> upper,
                 std::span<double> lower) const;
   /// Solves the assembled system A dx = b with `sweeps` symmetric Gauss-Seidel sweeps in cell
