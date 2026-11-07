@@ -89,3 +89,41 @@ def test_the_stored_geometry_is_the_declared_construction_bit_for_bit(
         assert len(got) == len(values), name
         for i, (row, want) in enumerate(zip(got, values, strict=True)):
             assert [float(v) for v in row] == [float(v) for v in np.atleast_1d(want)], (name, i)
+
+
+@pytest.mark.parametrize(("kind", "perturbation"), CASES)
+def test_the_stored_geometry_is_within_its_certified_radius_of_the_exact_geometry(
+    kind: str, perturbation: float
+) -> None:
+    # Check 2: the geometry evaluated exactly from the nodes (independently of the sequence) and
+    # the stored geometry both lie in the certified interval of the declared construction.
+    from oracle import topology as t  # noqa: PLC0415
+
+    m = s.mesh(meshes.build(kind, 4, perturbation, seed=3))
+    read = t.read_mesh(m)
+    assert q.check_geometry(read, q.stored_geometry(m)) == []
+
+
+def test_a_common_scaling_of_areas_moments_and_volumes_fails_check_2() -> None:
+    # Control 5: closure would stay zero, the gradient unchanged; the nodes say otherwise.
+    from oracle import topology as t  # noqa: PLC0415
+
+    m = s.mesh(meshes.build("hex", 3, 0.15, seed=3))
+    stored = q.stored_geometry(m)
+    for name in ("face_area", "face_moment", "cell_volume"):
+        stored[name] = [[2 * v for v in row] for row in stored[name]]
+    assert q.check_geometry(t.read_mesh(m), stored)
+
+
+def test_one_moved_centroid_fails_check_2() -> None:
+    from oracle import topology as t  # noqa: PLC0415
+
+    m = s.mesh(meshes.build("tet", 3, 0.15, seed=3))
+    stored = q.stored_geometry(m)
+    row = list(stored["cell_centroid"][0])
+    row[0] = math.nextafter(row[0], math.inf)
+    for _ in range(8):  # eight ulps: beyond a radius of a few ulps
+        row[0] = math.nextafter(row[0], math.inf)
+    stored["cell_centroid"][0] = row
+    issues = q.check_geometry(t.read_mesh(m), stored)
+    assert any("cell_centroid" in i for i in issues)
