@@ -927,6 +927,10 @@ def json_schema() -> dict[str, Any]:
         }
         for (model, base), values in TURBULENCE_VALUES.items()
     ]
+    defs["PhysicsInput"]["oneOf"] = [
+        {"properties": {"kind": {"const": "compressible"}, "flux": {"type": "string"}}},
+        {"properties": {"kind": {"const": "incompressible"}, "flux": {"type": "null"}}},
+    ]
     defs["StartInput"]["oneOf"] = [
         {"properties": {"residual_reference": {"type": "null"}, "woken": {"type": "null"}}},
         {"properties": {"residual_reference": {"type": "object"}, "woken": WOKEN_SCHEMA}},

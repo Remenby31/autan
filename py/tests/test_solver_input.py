@@ -394,6 +394,17 @@ def test_the_flux_reaches_the_runtime_and_the_hash(
     document = json.loads(capsys.readouterr().out)
     jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
     assert document["physics"]["flux"] == flux
+    # The flux is given exactly for compressible physics, in the schema as in the model.
+    for physics in (
+        document["physics"] | {"flux": None},
+        document["physics"] | {"kind": "incompressible"},
+    ):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.Draft202012Validator(json_schema("solver-input")).validate(
+                document | {"physics": physics}
+            )
+        with pytest.raises(ValidationError):
+            autan.solver_input.SolverInput.model_validate(document | {"physics": physics})
     with pytest.raises(autan.CaseError):
         autan.load(write_case(CRM_HL.replace("autan.SA())", "autan.SA(), flux='jst')")))
 
