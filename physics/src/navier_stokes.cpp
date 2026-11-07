@@ -858,6 +858,32 @@ void NavierStokes<P>::viscous_traction(std::span<double> t) const {
 }
 
 template <class P>
+void NavierStokes<P>::wall_state(std::span<double> pressure, std::span<double> temperature) const {
+  const auto& m = *impl_;
+  const auto nb = static_cast<std::size_t>(n_boundary_faces());
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  const auto ni = static_cast<std::size_t>(m.topo.n_interior_faces);
+  const double p_ref = static_cast<double>(m.d.p_ref[0]);
+  for (std::size_t b = 0; b < nb; ++b) {
+    pressure[b] = static_cast<double>(m.d.prim_b[4 * nf + ni + b]) + p_ref;
+    temperature[b] = static_cast<double>(m.ut_b[ni + b]);
+  }
+}
+
+double viscosity(const Transport& transport, double t) {
+  if (!transport.sutherland) return transport.mu_ref;
+  // Sutherland (1893): mu = mu_ref (T / T_ref)^(3/2) (T_ref + S) / (T + S)
+  return transport.mu_ref * std::pow(t / transport.t_ref, 1.5) * (transport.t_ref + transport.s) /
+         (t + transport.s);
+}
+
+double wall_y_plus(double y1, double tau, double p_wall, double t_wall, double gas_constant,
+                   const Transport& transport) {
+  const double rho = p_wall / (gas_constant * t_wall);
+  return y1 * std::sqrt(std::abs(tau) * rho) / viscosity(transport, t_wall);
+}
+
+template <class P>
 typename Euler<P>::QuadraticGradient NavierStokes<P>::quadratic_gradient() const {
   return impl_->euler.quadratic_gradient();
 }

@@ -181,5 +181,7 @@ SolverInput parse_solver_input(const std::string& json_text);
 /// the order of docs/contracts/results.md.
 std::vector<std::string> residual_names(const SolverInput& input);
 std::vector<std::string> field_names(const SolverInput& input);
+/// The WallSolution fields of solution.cgns for this input, in that order.
+std::vector<std::string> wall_field_names(const SolverInput& input);
 
 }  // namespace autan::runtime

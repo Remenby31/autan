@@ -426,6 +426,17 @@ class EulerPhysics final : public runtime::Physics {
                                {.name = "WallShearStressX", .values = {}},
                                {.name = "WallShearStressY", .values = {}},
                                {.name = "WallShearStressZ", .values = {}}};
+    // results.md, WallSolution YPlus, for viscous physics: from the wall state of the viscous
+    // wall flux (p_w, T_w) and the first-cell height of the face's owner.
+    std::vector<double> p_wall, t_wall;
+    Transport transport;
+    if constexpr (is_viscous) {
+      out.push_back({.name = "YPlus", .values = {}});
+      p_wall.resize(nb);
+      t_wall.resize(nb);
+      euler_.wall_state(p_wall, t_wall);
+      transport = transport_of(ctx_.input);
+    }
     for (const auto f : faces) {
       const auto i = static_cast<std::size_t>(f);
       const auto b = i - ni;
@@ -438,7 +449,21 @@ class EulerPhysics final : public runtime::Physics {
                                     g.face_area_z[i] / a};
       const std::array<double, 3> tv{t[b], t[nb + b], t[2 * nb + b]};
       const double tn = tv[0] * n[0] + tv[1] * n[1] + tv[2] * n[2];
-      for (std::size_t k = 0; k < 3; ++k) out[1 + k].values.push_back(tv[k] - tn * n[k]);
+      std::array<double, 3> shear{};
+      for (std::size_t k = 0; k < 3; ++k) {
+        shear[k] = tv[k] - tn * n[k];
+        out[1 + k].values.push_back(shear[k]);
+      }
+      if constexpr (is_viscous) {
+        const auto c = static_cast<std::size_t>(ctx_.mesh.owner()[i]);
+        const double y1 = std::abs((g.cell_centroid_x[c] - g.face_centroid_x[i]) * n[0] +
+                                   (g.cell_centroid_y[c] - g.face_centroid_y[i]) * n[1] +
+                                   (g.cell_centroid_z[c] - g.face_centroid_z[i]) * n[2]);
+        const double tau =
+            std::sqrt(shear[0] * shear[0] + shear[1] * shear[1] + shear[2] * shear[2]);
+        out[4].values.push_back(
+            wall_y_plus(y1, tau, p_wall[b], t_wall[b], gas_.gas_constant, transport));
+      }
     }
     return out;
   }

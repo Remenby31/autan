@@ -31,6 +31,7 @@ from autan.results import (
     run_identity,
     run_metadata,
     utc_now,
+    wall_field_names,
 )
 from autan.schema import Steady
 from autan.version import COMMIT, DIRTY, __version__
@@ -175,7 +176,12 @@ def _elements(
 
 
 def _write_solution(
-    path: Path, mesh: FaceMesh, plan: autan.Plan, info: RunInfo, fields: dict[str, FloatArray]
+    path: Path,
+    mesh: FaceMesh,
+    plan: autan.Plan,
+    info: RunInfo,
+    fields: dict[str, FloatArray],
+    wall_fields: list[str],
 ) -> None:
     boundary_names = [b.zone for b in plan.boundaries]
     boundary_nodes, cell_nodes = node_names(boundary_names, ["fluid"])
@@ -256,7 +262,7 @@ def _write_solution(
             wall = cgns.node(zone, "WallSolution", "ZoneSubRegion_t", np.array([2], np.int32))
             _point_list(wall, ids + 1)
             cgns.node(wall, "GridLocation", "GridLocation_t", "FaceCenter")
-            for name in ("Pressure", "WallShearStressX", "WallShearStressY", "WallShearStressZ"):
+            for name in wall_fields:
                 cgns.data_array(wall, name, np.zeros(ids.size))
 
 
@@ -359,7 +365,14 @@ def write_run(
     }
     final = writer.info.model_copy(update=changes)
     staging = writer.path / ".solution.cgns.tmp"
-    _write_solution(staging, mesh, plan, final, {k: fields[k] for k in field_names(spec)})
+    _write_solution(
+        staging,
+        mesh,
+        plan,
+        final,
+        {k: fields[k] for k in field_names(spec)},
+        wall_field_names(spec),
+    )
     staging.rename(writer.path / "solution.cgns")
     writer.finish(**changes)
     return autan.Results.open(writer.path)

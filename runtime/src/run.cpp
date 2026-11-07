@@ -2507,6 +2507,10 @@ class Run final : public Log {
     for (const auto& f : s.fields) names.push_back(f.name);
     if (names != field_names(in))
       throw PhysicsFailure("the physics returned another set of fields");
+    names.clear();
+    for (const auto& f : s.wall_fields) names.push_back(f.name);
+    if (!s.wall_faces.empty() && names != wall_field_names(in))
+      throw PhysicsFailure("the physics returned another set of wall fields");
     // Rank 0 gathers every field, cells by mesh index, wall faces by slot.
     const auto ids = owned_ids();
     const auto gather = [&](std::vector<io::Field>& fields, std::span<const std::int64_t> where,

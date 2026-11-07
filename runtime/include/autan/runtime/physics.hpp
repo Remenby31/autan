@@ -155,7 +155,8 @@ class Physics {
   /// Cell-centred state beyond fields(false) that a `continue` needs to go
   /// on bit for bit (earlier time levels, averaging sums); empty when none.
   [[nodiscard]] virtual std::vector<io::Field> restart_fields() const = 0;
-  /// Pressure and WallShearStressX/Y/Z on `wall_faces` (ascending).
+  /// Pressure and WallShearStressX/Y/Z on `wall_faces` (ascending), and YPlus for viscous
+  /// physics (results.md, WallSolution).
   [[nodiscard]] virtual std::vector<io::Field> wall_fields(
       std::span<const index_t> wall_faces) const = 0;
   /// Loads on the boundary faces of `zones` (indices into Mesh::face_zones()).

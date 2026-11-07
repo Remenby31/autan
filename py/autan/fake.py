@@ -38,6 +38,7 @@ from autan.results import (
     run_identity,
     run_metadata,
     utc_now,
+    wall_field_names,
 )
 from autan.schema import (
     CaseSpec,
@@ -611,9 +612,9 @@ def _write_solution(
             cgns.node(region, "GridLocation", "GridLocation_t", "FaceCenter")
             owner = {abs(face) - 1: cell for cell, faces in enumerate(cells) for face in faces}
             cells_of_walls = np.array([owner[int(face)] for face in walls])
-            cgns.data_array(region, "Pressure", fields["Pressure"][cells_of_walls])
-            for axis in "XYZ":
-                cgns.data_array(region, f"WallShearStress{axis}", np.zeros(walls.size))
+            for name in wall_field_names(spec):
+                at_wall = fields["Pressure"][cells_of_walls]
+                cgns.data_array(region, name, at_wall if name == "Pressure" else 0.0 * at_wall)
 
 
 def _sizes(total: int, zones: list[str], pairs: list[tuple[str, str]]) -> dict[str, int]:
