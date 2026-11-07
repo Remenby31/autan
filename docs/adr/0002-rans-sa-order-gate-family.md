@@ -19,10 +19,12 @@ The family's anisotropy, not the scheme, is what keeps pressure pre-asymptotic a
 
 The gate refines the Cartesian family **(n, 2n, n), n = 24, 32, 48, 64**. The choice rests on two requirements of the physics and of refinement studies, not on which family passes:
 
-1. **The wall layer is resolved.** The manufactured solution's layer is 0.15 thick, and the refinement must resolve it on every level. As before (2026-11-01), the requirement is at least 6 cells across it at the coarsest level. With a spacing of 1/(2n) across the layer, n = 24 puts 7.2 cells there and n = 64 puts 19.2. The cube families put fewer than 3 on their coarse levels and stay excluded.
+1. **The wall layer is resolved.** The manufactured solution's layer is 0.15 thick, and the refinement must resolve it on every level. As before (2026-11-01), the requirement is at least 6 cells across it at the coarsest level. With a spacing of 1/(2n) across the layer, n = 24 puts 7.2 cells there and n = 64 puts 19.2. The cube families n³ put 3.6 cells there at n = 24 and 4.8 at n = 32, fewer than 6, and stay excluded.
 2. **The refinement is near-isotropic.** The observed order is measured against h = (V/N)^(1/3), and it reflects the scheme's order only when every direction's spacing follows h within a bounded ratio. Geometrically similar grids are the premise of systematic refinement (Roache 1998; Eça and Hoekstra 2014). The spacing along any direction stays within a factor 2 of the others, so the aspect ratio is at most 2. The former family's ratio of 4 kept the coarse directions' error, here pressure's, pre-asymptotic at every affordable level.
 
-**A mandatory check keeps the stretched case in view.** The same build also runs `rans_sa` on the former family (n, 4n, n), n = 24, 32, 48, 64. There, the L2 pairwise orders of p and ρE must rise from each pair to the next. A non-rising order fails the gate, even if the (n, 2n, n) verdict passes. The check is read from `autan-vv verify`'s per-level errors and reported with the verdict.
+**A mandatory check keeps the stretched case in view.** The same build also runs `rans_sa` on the former family (n, 4n, n), n = 24, 32, 48, 64. There, the L2 pairwise orders of p and ρE must not fall: each pair is at least the one before it minus 0.02, the round-off of a pairwise order at these levels. A pre-asymptotic family rises; an asymptotic one stays at its order, which also passes. A falling order fails the gate, even if the (n, 2n, n) verdict passes.
+
+**The verdict is composite.** `autan-vv verify --gate rans-sa-mms-order` on the (n, 2n, n) runs gives the order verdict; `PASS` there is necessary, not sufficient. The check is computed from the per-level `h` and the `Pressure` and `rhoE` L2 errors in the JSON of `autan-vv verify` on the (n, 4n, n) runs. The PR that reports the gate states both results; the gate passes only if both do. Until `autan-vv` computes the check itself, the PR shows that computation.
 
 ## Consequences
 

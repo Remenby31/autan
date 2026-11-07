@@ -42,7 +42,7 @@ The viscous face loops write their Jacobian blocks dF_v/dW_L, dF_v/dW_R in the s
 
 ## Verification
 
-**Status.** `ns-mms-order` passes in FP64 on every family, clean and perturbed, and in FP32 on all but the clean hexahedral one: there, ρv's error at n = 96 and 128 falls under the gate's evidence threshold of 100 times the FP32 rounding floor, as it does for any scheme this accurate (#524). `rans-sa-mms-order` falls short on ρE at n = 16–48, a pre-asymptotic deficit that one level finer removes (#497). Measurements and the choice of the quadratic gradient: [#137](https://github.com/Remenby31/autan/issues/137).
+**Status.** `ns-mms-order` passes in FP64 on every family, clean and perturbed, and in FP32 on all but the clean hexahedral one: there, ρv's error at n = 96 and 128 falls under the gate's evidence threshold of 100 times the FP32 rounding floor, as it does for any scheme this accurate (#524). `rans-sa-mms-order` failed on ρE on its former family (n, 4n, n) at n = 24–64, a failure recorded as such; the family's anisotropy, not the scheme or the model, keeps pressure pre-asymptotic there, and the gate's family for later runs is in [ADR 0002](../adr/0002-rans-sa-order-gate-family.md) (#497). Measurements and the choice of the quadratic gradient: [#137](https://github.com/Remenby31/autan/issues/137).
 
 | Test | Oracle | Where |
 |---|---|---|
