@@ -412,6 +412,11 @@ class SnapshotFile {
     std::random_device random;
     path_ = fs::temp_directory_path() /
             ("autan-start-" + std::to_string(random()) + "-" + std::to_string(random()) + ".cgns");
+    // A directory opens on some standard libraries and reads nothing without an error: anything
+    // but a regular file is refused before it is opened, alike on every platform.
+    std::error_code ec;
+    if (!fs::is_regular_file(from, ec))
+      throw Error(ErrorCode::io_cannot_open, "'" + from.string() + "' is not a regular file");
     std::ifstream in(from, std::ios::binary);
     std::ofstream out(path_, std::ios::binary | std::ios::trunc);
     if (!in || !out) throw Error(ErrorCode::io_cannot_open, "cannot read '" + from.string() + "'");
@@ -2155,7 +2160,7 @@ class Run final : public Log {
     RoundOffExemption exempt(
         equations, continued() && in.start->woken ? *in.start->woken : std::vector<std::string>{});
     // One round-off plateau per equation, counted from this run's first step.
-    std::vector<Plateau> plateaus(equations.size());
+    std::vector<ResidualPlateau> plateaus(equations.size());
     double time = 0.0, average_start = 0.0;
     std::int64_t from = 1;
     if (continued()) {
