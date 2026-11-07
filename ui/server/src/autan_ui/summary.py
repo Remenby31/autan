@@ -33,20 +33,23 @@ def residual_orders(
 
     An equation below the floor at iteration 1 (FLOOR times the largest first residual) is
     exempt while it stays at or below it; once above, it joins `woken`, which this call
-    updates, and is never exempt again. An equation a converged run counted converged on a
-    round-off plateau (`plateau`, run.json `convergence.plateau`) has converged, and so has one
-    at exactly zero. None when an
-    equation cannot be compared: a residual that is not a positive finite number, or that grew
-    from an exact zero; None for an empty line."""
+    updates, is never exempt again, and drops from the largest first residual of the momentum
+    components for a momentum component, of every equation otherwise. An equation a converged
+    run counted converged on a round-off plateau (`plateau`, run.json `convergence.plateau`)
+    has converged, and so has one at exactly zero. None when an equation cannot be compared (a
+    residual that is not a positive finite number) and for an empty line."""
     floor = FLOOR * max((v for v in first.values() if _positive(v)), default=0.0)
     drops = []
     comparable = True
     for name, value in residuals.items():
         start = first.get(name)
-        if name not in woken and _number(start) and 0 <= start < floor:  # type: ignore[operator]
+        zero = _number(start) and 0 <= start < floor  # type: ignore[operator]
+        if name not in woken and zero:
             if _number(value) and 0 <= value <= floor:
                 continue
             woken.add(name)
+        if zero:
+            start = _kind_reference(first, name)
         if name in (plateau or ()):
             continue  # Converged on a round-off plateau.
         if value == 0 and (start == 0 or _positive(start)):
@@ -58,6 +61,16 @@ def residual_orders(
     if not comparable or not residuals:
         return None
     return min(drops, default=math.inf)
+
+
+def _kind_reference(first: dict[str, float], name: str) -> float:
+    """The largest first residual of the momentum components for a momentum component, of every
+    equation otherwise (case-schema.md#time)."""
+    momentum = name.startswith("momentum-")
+    kind = [
+        v for k, v in first.items() if _positive(v) and (not momentum or k.startswith("momentum-"))
+    ]
+    return max(kind, default=0.0)
 
 
 def _number(value: object) -> bool:
