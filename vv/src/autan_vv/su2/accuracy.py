@@ -65,9 +65,43 @@ def _autan_scales(case: dict[str, Any]) -> dict[str, float]:
     )
 
 
+def _chain(run: Path) -> tuple[str, list[str]]:
+    """The history of `run` and of the runs it continues (`start`, results.md), each up to the
+    iteration its successor starts from, as one history.jsonl text; and the runs' ids, oldest
+    first. V0904 unless the chain is one case on one mesh by one solver build, its iterations
+    contiguous. The case is compared by name: a continuation may change the iteration budget, and
+    the runtime refuses any other change (E0708)."""
+    chunks = [run]
+    while (start := json.loads((chunks[0] / "run.json").read_text())["start"]) is not None:
+        if start["mode"] != "continue":
+            msg = f"{chunks[0]}: a {start['mode']} start is not a continuation"
+            raise VVError(msg, code="V0904")
+        chunks.insert(0, chunks[0].parent / start["run_id"])
+    infos = [json.loads((c / "run.json").read_text()) for c in chunks]
+    keys = {
+        json.dumps([i["case"]["name"], i["mesh"]["sha256"], i["solver"]["commit"],
+                    i["solver"]["binary_sha256"]])
+        for i in infos
+    }  # fmt: skip
+    if len(keys) != 1:
+        msg = f"{run}: its chain mixes cases, meshes or builds"
+        raise VVError(msg, code="V0904")
+    lines: list[dict[str, Any]] = []
+    for c, nxt in zip(chunks, [*infos[1:], None], strict=True):
+        own = [json.loads(x) for x in (c / "history.jsonl").read_text().splitlines() if x.strip()]
+        stop = nxt["start"]["iterations"] if nxt is not None else own[-1]["iteration"]
+        own = [x for x in own if x["iteration"] <= stop]
+        if lines and own and own[0]["iteration"] != lines[-1]["iteration"] + 1:
+            msg = f"{c}: iterations {lines[-1]['iteration']} then {own[0]['iteration']}"
+            raise VVError(msg, code="V0904")
+        lines += own
+    return "\n".join(json.dumps(x) for x in lines), [i["run_id"] for i in infos]
+
+
 def autan_level(run: Path) -> dict[str, Any]:
-    """One Autan run directory: its condition and level, mesh file SHA-256, solver identity,
-    forces at the last iteration and its own-baseline convergence. V0904 if a file is missing."""
+    """One Autan run directory, read with the runs it continues (`_chain`): its condition and
+    level, mesh file SHA-256, solver identity, forces at the last iteration and its own-baseline
+    convergence. V0904 if a file is missing or the chain is broken."""
     try:
         info = json.loads((run / "run.json").read_text())
         case = tomllib.loads((run / "case.toml").read_text())
@@ -76,10 +110,12 @@ def autan_level(run: Path) -> dict[str, Any]:
         msg = f"{run}: {err} is missing"
         raise VVError(msg, code="V0904") from None
     condition = case["name"].removeprefix("naca0012-")
-    runs = history.read_autan(run / "history.jsonl")
+    text, chain = _chain(run)
+    runs = history.read_autan(run / "history.jsonl", text=text)
     n = math.isqrt(cells)
     return {
-        "run": info["run_id"], "condition": condition, "n": n, "cells": cells, "h": 1.0 / n,
+        "run": info["run_id"], "chain": chain, "condition": condition, "n": n, "cells": cells,
+        "h": 1.0 / n,
         "mesh_sha256": info["mesh"]["sha256"], "commit": info["solver"]["commit"],
         "backend": info["solver"]["backend"], "precision": info["precision"],
         "status": info["status"], "last_iteration": int(runs.iterations[-1]),

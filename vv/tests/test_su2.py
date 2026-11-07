@@ -1155,3 +1155,28 @@ def test_accuracy_study_compares_both_codes_each_its_own_baseline(tmp_path: Path
     with pytest.raises(VVError) as err:
         accuracy.study(autan_runs, su2_cases)
     assert err.value.code == "V0905"
+
+
+def test_accuracy_reads_a_run_continued_in_chunks_as_one_history(tmp_path: Path) -> None:
+    import autan  # noqa: PLC0415
+    from autan_vv.runs import mesh_info  # noqa: PLC0415
+    from autan_vv.su2 import accuracy  # noqa: PLC0415
+
+    family, meshes = naca0012.generate_family((8,), tmp_path / "family")
+    path = tmp_path / "family" / family.levels[0].file
+    info = mesh_info(meshes[0], path, "gmsh")
+    case = cases.case("m080-a125", str(path))
+    whole = case.run(info, backend=autan.FakeBackend(), runs=tmp_path / "whole")
+    # The same case stopped after 10 iterations (a chunk) and continued from it.
+    first = cases.case("m080-a125", str(path), max_iterations=10).run(
+        info, backend=autan.FakeBackend(), runs=tmp_path / "chunks"
+    )
+    second = case.run(info, backend=autan.FakeBackend(), runs=tmp_path / "chunks", start=first,
+                      mode="continue")  # fmt: skip
+    level = accuracy.autan_level(second.path)
+    assert level["chain"] == [first.run.run_id, second.run.run_id]
+    assert level["last_iteration"] == whole.run.iterations
+    reference = accuracy.autan_level(whole.path)
+    assert (level["cl"], level["cd"], level["converged"]) == (
+        reference["cl"], reference["cd"], reference["converged"],
+    )  # fmt: skip
