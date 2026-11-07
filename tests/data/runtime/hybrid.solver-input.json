@@ -153,6 +153,7 @@
   },
   "physics": {
     "kind": "compressible",
+    "flux": "roe",
     "turbulence": {
       "model": "sa",
       "base": null,
