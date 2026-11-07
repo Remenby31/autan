@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import shutil
+import signal
 import sys
 from fnmatch import fnmatch
 from pathlib import Path
@@ -191,6 +192,10 @@ def _pair(args: argparse.Namespace) -> int:
     save()
     final = pair.OK
     try:
+        # The tracked benchmarks: those of a baseline (its --select), not every one the binary
+        # times; read once this run's record exists, so a bad baseline fails it, not an old one.
+        names = result.load(args.tracked)["benchmarks"] if args.tracked else None
+        tracked = {b["name"] for b in names} if names is not None else None
         # A first series that is not ok is confirmed by a second, in a hold of its own, which
         # decides (as gate.sh does for the absolute gate); never a third.
         for number in (1, 2) if args.confirm else (1,):
@@ -211,11 +216,12 @@ def _pair(args: argparse.Namespace) -> int:
                 lock_timeout_s=args.lock_timeout,
                 max_load_per_cpu=args.max_load,
                 on_run=keep,
+                ready_timeout_s=args.ready,
             )
             sides = series.sides
             change = [d for s, d in zip(sides, series.docs, strict=True) if s == "change"]
             base = [d for s, d in zip(sides, series.docs, strict=True) if s == "base"]
-            rows = pair.judge_all(change, base, args.threshold)
+            rows = pair.judge_all(change, base, args.threshold, tracked)
             final = pair.outcome(rows)
             summary["series"].append(pair.series_record(sides, series.lock_wait_s,
                                                         series.hold_s, rows, final))  # fmt: skip
@@ -226,9 +232,10 @@ def _pair(args: argparse.Namespace) -> int:
             _say(_pair_table(rows))
             if final == pair.OK:
                 break
-    except BenchError as err:
+    except (BenchError, SystemExit, KeyboardInterrupt) as err:
+        # Stopped (TERM, INT) as well as failed: the record never stays "running".
         summary["state"] = "failed"
-        summary["error"] = str(err)
+        summary["error"] = str(err) if isinstance(err, BenchError) else f"stopped ({err!r})"
         save()
         report()
         raise
@@ -486,6 +493,21 @@ def parser() -> argparse.ArgumentParser:
         help="refuse to run when the host's runnable threads per CPU exceed this (HOST_BUSY)",
     )
     a.add_argument(
+        "--tracked",
+        type=Path,
+        metavar="BASELINE",
+        help="judge only the benchmarks this baseline holds (the tracked set); default: all",
+    )
+    a.add_argument(
+        "--ready",
+        type=float,
+        nargs="?",
+        const=1800.0,
+        metavar="TIMEOUT_S",
+        help="gated binaries: one hold per pair, each pair's two processes set up outside the lock"
+        " (default 1800 s each for 'autan-bench: ready')",
+    )
+    a.add_argument(
         "binary_args",
         nargs=argparse.REMAINDER,
         help="-- then the binaries' arguments; none for the stream suite: the stream command's",
@@ -501,11 +523,16 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Entry point of the ``autan-bench`` command; returns 0 on success, 1 on regression, 2 on error, 3 when a comparison is inconclusive, 4 when ``health`` finds the machine unfit."""
     args = parser().parse_args(argv)
+    # A TERM (a cancelled job, a lock's limit) unwinds like an error, so that every finally
+    # runs: a gated binary, in a session of its own, is killed before the GPU lock is released.
+    previous = signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     try:
         return args.func(args)
     except BenchError as err:
         _say(str(err), err=True)
         return 2
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 if __name__ == "__main__":
