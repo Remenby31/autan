@@ -532,17 +532,26 @@ INF = math.inf
         # Identically zero at iteration 1 (below 1e-12 of the largest): exempt at the floor...
         ({"rho": 1.0, "my": 0.0}, {"rho": 1e-8, "my": 1e-12}, set(), {}, 8.0, set()),
         ({"rho": 1.0, "my": 1e-30}, {"rho": 1e-8, "my": 1e-33}, set(), {}, 8.0, set()),
-        # ...woken above it, for good: it must drop like the others, which it cannot from zero.
-        ({"rho": 1.0, "my": 0.0}, {"rho": 1e-8, "my": 1e-11}, set(), {}, None, {"my"}),
-        ({"rho": 1.0, "my": 0.0}, {"rho": 1e-8, "my": 1e-33}, {"my"}, {}, None, {"my"}),
-        ({"rho": 1.0, "my": 1e-30}, {"rho": 1e-8, "my": 1e-33}, {"my"}, {}, 3.0, {"my"}),
-        # Every equation of a line wakes, even after one that cannot be compared.
+        # ...woken above it, for good: it drops from the largest first residual, rho's 1 here.
+        ({"rho": 1.0, "my": 0.0}, {"rho": 1e-8, "my": 1e-11}, set(), {}, 8.0, {"my"}),
+        ({"rho": 1.0, "my": 0.0}, {"rho": 1e-8, "my": 1e-33}, {"my"}, {}, 8.0, {"my"}),
+        ({"rho": 1.0, "my": 1e-30}, {"rho": 1e-7, "my": 1e-6}, {"my"}, {}, 6.0, {"my"}),
+        # A woken momentum component drops from the largest first momentum residual (#432).
         (
-            {"rho": 1.0, "a": 0.0, "b": 1e-30},
-            {"rho": 1e-8, "a": 1.0, "b": 1.0},
+            {"density": 1.0, "momentum-x": 400.0, "momentum-y": 0.0, "energy": 3e5},
+            {"density": 1e-8, "momentum-x": 4e-6, "momentum-y": 4e-5, "energy": 3e-3},
             set(),
             {},
-            None,
+            7.0,
+            {"momentum-y"},
+        ),
+        # Every equation of a line wakes.
+        (
+            {"rho": 1.0, "a": 0.0, "b": 1e-30},
+            {"rho": 1e-8, "a": 1.0, "b": 1e-3},
+            set(),
+            {},
+            0.0,
             {"a", "b"},
         ),
         # On a round-off plateau (run.json convergence.plateau), an equation has converged;

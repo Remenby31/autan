@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -9,6 +10,7 @@
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
 #include "autan/kernels/geometry.hpp"
+#include "autan/kernels/runtime.hpp"
 #include "autan/physics/block_matrix.hpp"
 
 namespace autan::kernels::euler {
@@ -28,6 +30,7 @@ enum class BoundaryKind : std::uint8_t {
   slip,      ///< slip wall or symmetry plane; data unused
   inlet,     ///< subsonic, flow normal to the face: (p0, T0, -, -, -)
   outlet,    ///< subsonic: (-, -, -, -, p); supersonic outflow extrapolates
+  wall,      ///< no-slip wall at rest: (T_wall, -, -, -, -), T_wall = 0 when adiabatic
 };
 
 struct Gas {
@@ -40,9 +43,15 @@ struct Gas {
 /// every cell sharing a node.
 enum class GradientStencil : std::uint8_t { face2, vertex };
 
+/// Reconstruction gradient (docs/design/euler.md, Quadratic gradient): the linear least squares
+/// over the GradientStencil, or the quadratic fit of quadratic_gradient in every cell. Chosen by
+/// the physics: the Euler physics keeps the linear one, Navier-Stokes takes the quadratic one.
+enum class GradientFit : std::uint8_t { linear, quadratic };
+
 struct Scheme {
   Flux flux = Flux::roe;
   GradientStencil gradient = GradientStencil::face2;
+  GradientFit gradient_fit = GradientFit::linear;
   /// Linear reconstruction with least-squares gradients; first order otherwise.
   bool second_order = true;
   /// Venkatakrishnan limiter with threshold eps_k^2 = (K h / length)^3 scale_k^2, h^3 = V.
@@ -99,6 +108,17 @@ class Euler {
   void set_boundary(std::span<const BoundaryKind> kind, std::span<const double> data);
   /// Replaces the data of the conditions set_boundary set (5 x n_boundary_faces), keeping them.
   void set_boundary_data(std::span<const double> data);
+  /// Every face moment of the mesh is an exact zero (kernels::PackedGeometry::all_planar).
+  [[nodiscard]] bool all_planar() const noexcept;
+  /// Evaluates the residual with the loops without the warped-face terms (kernels/euler.py,
+  /// `*_planar`): where every moment is zero those terms are signed zeros, so the residual has
+  /// the same values wherever the full loops' arithmetic stays finite (a state so large that
+  /// the warp term overflows makes the full residual NaN and the planar one finite). Throws
+  /// std::invalid_argument unless all_planar().
+  /// On a partition every rank must make the same choice (EulerPhysics takes the minimum
+  /// over the ranks). The Jacobian and tangent loops keep their full form.
+  void set_planar(bool on);
+  [[nodiscard]] bool planar() const noexcept;
   /// Switches the linear reconstruction on or off (Scheme::second_order).
   void set_second_order(bool on);
   /// The least-squares weights of the gradient over its stencil (layout of
@@ -106,6 +126,29 @@ class Euler {
   /// where their condition gives the state there, and in the cells whose interior stencil alone
   /// cannot determine a gradient.
   [[nodiscard]] std::vector<double> gradient_weights() const;
+  /// With GradientFit::quadratic, the quadratic gradient (kernels/euler.py, band_gradients) of
+  /// every cell (empty with linear): per cell 1 where it replaces the linear one, else 0; its
+  /// stencil (n_cells + 1 offsets, entries as kernels::Topology::stencil) and weights (3 x
+  /// entries, the layout of gradient_weights). They depend on set_boundary. A cell whose two
+  /// vertex rings cannot determine the fit keeps the linear gradient (0 there).
+  struct QuadraticGradient {
+    std::vector<double> fitted;
+    std::vector<std::int64_t> offsets;
+    std::vector<index_t> entries;
+    std::vector<double> weights;
+  };
+  [[nodiscard]] QuadraticGradient quadratic_gradient() const;
+  /// With GradientFit::quadratic, the cells that keep the linear gradient: how many, and the
+  /// first (-1 if none). They depend on set_boundary.
+  struct LinearCells {
+    std::size_t count = 0;
+    index_t first = -1;
+  };
+  [[nodiscard]] LinearCells linear_cells() const noexcept;
+  /// After a second-order residual: the linear least-squares gradient of its primitives into
+  /// `out` (15 x n_cells, the reconstruction's layout), the reconstruction's own under
+  /// GradientFit::linear.
+  void linear_gradient(std::span<typename P::grad> out);
   /// Sets the volume source s (5 x n_cells), per unit volume; zero by default.
   void set_source(std::span<const double> source);
 
@@ -125,6 +168,22 @@ class Euler {
   /// After residual(u): sum over each cell's faces of (|v . n| + c) A (n_cells), so that
   /// CFL V / lambda is the cell's convective time step.
   void spectral_radius(std::span<State> lambda);
+  /// Arrays of the last evaluation, for physics that add terms to this residual (viscous fluxes,
+  /// docs/design/ns-sa.md): primitives W - (0, 0, 0, 0, p_ref) and their gradients per cell,
+  /// boundary states, codes and data per face, dW/dU per cell after residual_and_jacobian.
+  /// Layouts as the datasets of kernels/euler.py.
+  struct Arrays {
+    State* prim;
+    typename P::grad* grad;
+    State* prim_b;
+    typename P::geom* bc_kind;
+    State* bc;
+    const typename P::jac* dwdu;
+    kernels::Topology topo;  ///< with the gradient stencil
+    const typename P::geom_value* stencil_lsq_weight;
+  };
+  [[nodiscard]] Arrays arrays() noexcept;
+
   /// After residual(s): absolute pressure of the boundary flux's face state at every boundary face
   /// (n_boundary_faces, FP64) and, unless `force` is empty, the pressure force on each face as
   /// the residual integrates it, warped-face correction included (3 x n_boundary_faces).

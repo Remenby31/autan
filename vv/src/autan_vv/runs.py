@@ -33,7 +33,7 @@ from autan.results import (
     utc_now,
 )
 from autan.schema import Steady
-from autan.version import COMMIT, __version__
+from autan.version import COMMIT, DIRTY, __version__
 
 from autan_vv.errors import VVError
 
@@ -286,7 +286,9 @@ def write_run(
         raise VVError(msg, code="V0731")
     started = utc_now()
     # Always the fake backend: fixture fields are given, never computed, so they are never evidence.
-    solver = Solver(version=__version__, commit=COMMIT, backend="fake", binary_sha256=None)
+    solver = Solver(
+        version=__version__, commit=COMMIT, dirty=DIRTY, backend="fake", binary_sha256=None
+    )
     devices = Devices(kind="cpu", count=1)
     groups = info.groups_source.sha256 if info.groups_source else None
     run = RunInfo(
@@ -319,7 +321,13 @@ def write_run(
     }
     if spec.initial_state is not None:
         states[spec.initial_state.sha256] = case.resolve(spec.initial_state.path).read_bytes()
-    writer = RunWriter(runs, run, spec, info, states=states)
+    # A verified run keeps its manufactured solution beside it, as autan-run writes it (E0701).
+    manufactured = (
+        case.resolve(spec.verification.manufactured.path).read_bytes()
+        if spec.verification is not None
+        else None
+    )
+    writer = RunWriter(runs, run, spec, info, manufactured=manufactured, states=states)
     if residuals is None:
         ones = dict.fromkeys(residual_names(spec), 1.0)
         residuals = [ones]
