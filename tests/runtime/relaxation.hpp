@@ -71,6 +71,8 @@ struct RelaxationOptions {
   /// At iteration 1, a non-empty directory at the checkpoint's staging path of every run in this
   /// runs directory: every checkpoint write then fails (W0714). Empty: none.
   std::string block_checkpoints_in{};
+  /// At iteration 1, likewise at the final solution's staging path: its write fails. Empty: none.
+  std::string block_solution_in{};
   std::int64_t log_bytes = 0;  ///< a log event of this many bytes at every step; 0: none
   int pause_ms = 0;
   double pressure_offset = 0.0;  ///< added to every fluid cell's pressure, Pa
@@ -100,10 +102,11 @@ struct RelaxationOptions {
   std::int64_t hold_device_bytes = 0;
   /// An equation the flow does not excite: its residual stays at round-off
   /// (1e-15), except from iteration `wake_at` (0: never) to `sleep_at`
-  /// (excluded; 0: never), where it is 1e-3.
+  /// (excluded; 0: never), where it is `awake_value`.
   std::int64_t silent_equation = -1;
   std::int64_t wake_at = 0;
-  std::int64_t sleep_at = 0;     ///< 0: never; from then on, back at 1e-15
+  std::int64_t sleep_at = 0;  ///< 0: never; from then on, back at 1e-15
+  double awake_value = 1e-3;
   std::vector<double> scales{};  ///< residual_scales(); empty: none
   /// Equation e's residual stops decreasing at (e + 1) times this value; 0: never.
   double plateau = 0.0;
@@ -258,6 +261,10 @@ class Relaxation final : public autan::runtime::Physics {
       for (const auto& run : std::filesystem::directory_iterator(options_.block_checkpoints_in))
         std::filesystem::create_directories(run.path() / ".checkpoint.cgns.tmp" / "blocked");
     }
+    if (iteration == 1 && !options_.block_solution_in.empty()) {
+      for (const auto& run : std::filesystem::directory_iterator(options_.block_solution_in))
+        std::filesystem::create_directories(run.path() / ".solution.cgns.tmp" / "blocked");
+    }
     if (options_.log_bytes > 0) {
       context_.log.write(
           "info", "solver", "bulk", "",
@@ -276,7 +283,8 @@ class Relaxation final : public autan::runtime::Physics {
     if (options_.silent_equation >= 0) {
       const bool awake = options_.wake_at > 0 && iteration >= options_.wake_at &&
                          (options_.sleep_at == 0 || iteration < options_.sleep_at);
-      report.residuals[static_cast<std::size_t>(options_.silent_equation)] = awake ? 1e-3 : 1e-15;
+      report.residuals[static_cast<std::size_t>(options_.silent_equation)] =
+          awake ? options_.awake_value : 1e-15;
     }
     for (auto& f : state_) {
       for (auto& v : f.values) v *= 1.0 + options_.growth;

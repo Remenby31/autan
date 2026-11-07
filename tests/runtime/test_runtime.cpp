@@ -944,6 +944,19 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(info["monitors"].is_null());
     CHECK(info["timing"].is_null());
   }
+  SECTION("failed writing the solution file: E0704, no solution") {
+    // A directory stands at the solution's staging path.
+    const fs::path dir = fresh_dir();
+    autan_test::RelaxationOptions options;
+    options.factor = 0.5;
+    options.block_solution_in = (dir / "runs").string();
+    const Outcome o = run_in(dir, input(), autan_test::relaxation_registry(options));
+    CHECK(o.status == ExitStatus::failed);
+    const Json info = Json::parse(read(o.run / "run.json"));
+    CHECK(info["status"] == "failed");
+    CHECK(info["diagnostics"][0]["code"] == "E0704");
+    CHECK_FALSE(fs::exists(o.run / "solution.cgns"));
+  }
   SECTION("diverged: D0107 with the iteration, cell and zone") {
     const Outcome o = run(input(), {.factor = 0.9, .diverge_at = 7, .diverge_cell = 3});
     CHECK(o.status == ExitStatus::finished);
@@ -1357,7 +1370,10 @@ TEST_CASE("Forces monitors report the loads and their coefficients", "[runtime]"
     d["freestream"]["sideslip"] = beta;
   });
   const Outcome o = run(doc, {.factor = 0.5, .pressure_offset = dp});
-  const Json f = history(o.run)[4]["monitors"]["forces"];
+  REQUIRE(o.status == ExitStatus::finished);
+  const auto lines = history(o.run);
+  REQUIRE(lines.size() > 4);
+  const Json f = lines[4]["monitors"]["forces"];
   const double q = 0.5 * doc["freestream"]["density"].get<double>() *
                    std::pow(doc["freestream"]["speed"].get<double>(), 2);
   const std::array<double, 3> force{0.0, -dp, 0.0};
@@ -1952,27 +1968,33 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
     require_error(run(doc), "E0203");
   }
   SECTION("the previous solution lacks run metadata the continuation needs") {
-    // A solution.cgns whose RunMetadata has no `averaging`, with its hash.
-    const autan::Mesh mesh = autan::io::read_mesh(mesh_path);
-    Json metadata = Json::parse(read(a.run / "run.json"));
-    metadata.erase("averaging");
-    autan::io::Solution solution;
-    solution.run_metadata = metadata.dump();
-    solution.boundary_bc_types.assign(autan::io::meshinfo_zones(mesh).boundary.size(),
-                                      "BCFarfield");
-    for (const auto& name :
-         autan::runtime::field_names(autan::runtime::parse_solver_input(input().dump()))) {
-      solution.fields.push_back(
-          {.name = name,
-           .values = solution_field(a.run / "solution.cgns", "FlowSolution", name.c_str())});
+    // results.md, RunMetadata: `averaging` is null or the four bounds of the interval. The
+    // previous run's own solution, its RunMetadata without `averaging` or with one bound only.
+    const bool absent = GENERATE(true, false);
+    CAPTURE(absent);
+    const fs::path solution = a.run / "solution.cgns";
+    int fn = 0;
+    REQUIRE(cg_open(solution.string().c_str(), CG_MODE_MODIFY, &fn) == CG_OK);
+    REQUIRE(cg_goto(fn, 1, "end") == CG_OK);
+    int count = 0;
+    REQUIRE(cg_ndescriptors(&count) == CG_OK);
+    Json metadata;
+    for (int d = 1; d <= count; ++d) {
+      char name[33];
+      char* text = nullptr;
+      REQUIRE(cg_descriptor_read(d, name, &text) == CG_OK);
+      if (std::string_view(name) == "RunMetadata") metadata = Json::parse(text);
+      cg_free(text);
     }
-    const fs::path previous = fresh_dir();
-    autan::io::write_solution(previous / "solution.cgns", mesh, solution);
-    require_error(from([&](Json& d) {
-                    d["start"]["run"] = previous.string();
-                    d["start"]["solution_sha256"] = file_sha256(previous / "solution.cgns");
-                  }),
-                  "E0707");
+    REQUIRE(metadata.contains("averaging"));
+    if (absent) {
+      metadata.erase("averaging");
+    } else {
+      metadata["averaging"] = Json{{"from_step", 1}};
+    }
+    REQUIRE(cg_descriptor_write("RunMetadata", metadata.dump().c_str()) == CG_OK);
+    REQUIRE(cg_close(fn) == CG_OK);
+    require_error(from([](Json&) {}), "E0707");
   }
   SECTION("the previous solution keeps data in another file") {
     // mesh.md, E0134, in each form (tests/io/outside_data.hpp), refused from the file's
@@ -2388,8 +2410,9 @@ TEST_CASE("An equation at round-off from iteration 1 does not hold back converge
   CHECK(info["status"] == "converged");
   CHECK(info["iterations"] == 28);
 
-  // From iteration 10 it is 1e-3, above the floor: W0710 once, and the run
-  // cannot converge on it any more.
+  // From iteration 10 it is 1e-3, above the floor: W0710 once. It then drops from the largest
+  // momentum residual at iteration 1, momentum-z's 4 (#432): 1e-3 is above 4e-8, so the run
+  // cannot converge.
   autan_test::RelaxationOptions waking = quiet;
   waking.wake_at = 10;
   const Outcome w = run(input([](Json& d) { d["time"]["max_iterations"] = 100; }), waking);
@@ -2411,12 +2434,25 @@ TEST_CASE("An equation at round-off from iteration 1 does not hold back converge
   CHECK(warnings[0]["data"]["iteration"] == 10);
   CHECK(warnings[0]["data"]["residual"] == 1e-3);
   CHECK(warnings[0]["data"]["floor"] == 1e-12 * 6.0);
+
+  // Just below that target the run converges with the other equations; just above it does not.
+  waking.awake_value = 3.9e-8;
+  const Outcome below = run(input([](Json& d) { d["time"]["max_iterations"] = 100; }), waking);
+  REQUIRE(below.status == ExitStatus::finished);
+  const Json info_below = Json::parse(read(below.run / "run.json"));
+  CHECK(info_below["status"] == "converged");
+  CHECK(info_below["iterations"] == 28);
+  waking.awake_value = 4.1e-8;
+  const Outcome above = run(input([](Json& d) { d["time"]["max_iterations"] = 100; }), waking);
+  REQUIRE(above.status == ExitStatus::finished);
+  CHECK(Json::parse(read(above.run / "run.json"))["status"] == "completed");
 }
 
 TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]") {
-  // momentum-x leaves its floor at iterations 10-14, then falls back: it is
-  // no longer exempt, so the run cannot converge (budget 40). A run
-  // continued from iteration 20 must do the same, through start.woken.
+  // momentum-x leaves its floor at iterations 10-14, then falls back to 1e-15: woken, it drops
+  // from momentum-z's 4 at iteration 1, and the run converges with the others at k = 28. A run
+  // continued from iteration 12, while it is still above its floor, must do the same through
+  // start.woken: without it, iteration 13 would report a second W0710.
   autan_test::RelaxationOptions options;
   options.silent_equation = 1;
   options.wake_at = 10;
@@ -2428,14 +2464,15 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
     });
   };
   const Outcome whole = run(doc(40), options);
-  const Outcome a = run(doc(20), options);
+  const Outcome a = run(doc(12), options);
   Json next = doc(40);
   next["start"] = start_from(a.run, "continue");
   CHECK(next["start"]["woken"] == Json::array({"momentum-x"}));
   const Outcome b = run(next, options);
   REQUIRE(b.status == ExitStatus::finished);
   const Json info = Json::parse(read(b.run / "run.json"));
-  CHECK(info["status"] == "completed");
+  CHECK(info["status"] == "converged");
+  CHECK(info["iterations"] == 28);
   CHECK(info["start"]["woken"] == Json::array({"momentum-x"}));
   // The equation woke in the first run: no new W0710 in the continuation.
   CHECK(info["diagnostics"].empty());
