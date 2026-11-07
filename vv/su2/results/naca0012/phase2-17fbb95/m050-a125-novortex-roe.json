@@ -1,0 +1,559 @@
+{
+  "schema": "autan.su2-accuracy/1",
+  "condition": "m050-a125",
+  "outputs": [
+    "cl",
+    "cmy"
+  ],
+  "levels": [
+    {
+      "n": 32,
+      "autan": {
+        "run": "run-20261106T120012Z-589046b3",
+        "chain": [
+          "run-20261106T120012Z-589046b3"
+        ],
+        "condition": "m050-a125",
+        "n": 32,
+        "cells": 1024,
+        "h": 0.03125,
+        "mesh_sha256": "6fb2e3acbc3635d5cf88f1f9505acb407e8580b5861733bdeb41f1ea013e70f1",
+        "commit": "17fbb95ac554d46ac0228d05a84f481ab0b56d4e",
+        "backend": "cpu",
+        "precision": "fp64",
+        "status": "completed",
+        "last_iteration": 3000,
+        "cl": 0.16843679679759294,
+        "cd": 0.01445275117106904,
+        "cmy": -0.0032953228344482963,
+        "converged": true,
+        "iterations": 535,
+        "epsilon": 1.7307594835842186e-11,
+        "drop": {
+          "density": 11.630331090407742,
+          "momentum-x": 11.333257176662567,
+          "momentum-y": -14.162860457576496,
+          "momentum-z": 11.46881119030295,
+          "energy": 11.587455829128817
+        }
+      },
+      "su2": {
+        "condition": "m050-a125",
+        "n": 32,
+        "scheme": "roe",
+        "mesh_sha256": "6fb2e3acbc3635d5cf88f1f9505acb407e8580b5861733bdeb41f1ea013e70f1",
+        "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+        "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+        "last_iteration": 14215,
+        "cl": 0.1155823132,
+        "cd": -0.02001046983,
+        "cmy": -0.0007158693489,
+        "converged": true,
+        "iterations": 599,
+        "epsilon": 1.2525779660351747e-09,
+        "drop": {
+          "density": 11.360956346,
+          "momentum-x": 10.985421220000001,
+          "momentum-z": 10.670707838999999,
+          "energy": 11.309399319
+        }
+      },
+      "difference": {
+        "cl": 0.05285448359759294,
+        "cd": 0.034463221001069036,
+        "cmy": -0.0025794534855482962
+      },
+      "cp": {
+        "faces": 32,
+        "all": {
+          "max_abs": 0.5778624959942162,
+          "rms": 0.22140848266365307
+        },
+        "shock_upper": {
+          "autan": 0.2115280874375,
+          "su2": 0.9536907002024999
+        },
+        "shock_lower": {
+          "autan": 0.9536907002024999,
+          "su2": 0.9536907002024999
+        },
+        "outside_shocks": {
+          "max_abs": 0.5778624959942162,
+          "rms": 0.21097568260464153
+        },
+        "body": {
+          "max_abs": 0.5778624959942162,
+          "rms": 0.21097568260464153,
+          "faces": 17
+        }
+      }
+    },
+    {
+      "n": 64,
+      "autan": {
+        "run": "run-20261106T120038Z-742e5a1e",
+        "chain": [
+          "run-20261106T120038Z-742e5a1e"
+        ],
+        "condition": "m050-a125",
+        "n": 64,
+        "cells": 4096,
+        "h": 0.015625,
+        "mesh_sha256": "9d5630faf37d17987d2a213a9b52354b55450085ff3e66c042d8ffd2d13b0d61",
+        "commit": "17fbb95ac554d46ac0228d05a84f481ab0b56d4e",
+        "backend": "cpu",
+        "precision": "fp64",
+        "status": "completed",
+        "last_iteration": 3000,
+        "cl": 0.17249094318855956,
+        "cd": 0.0046143809920345625,
+        "cmy": -0.001708317040658637,
+        "converged": true,
+        "iterations": 536,
+        "epsilon": 2.504101194415785e-12,
+        "drop": {
+          "density": 11.575815605123935,
+          "momentum-x": 11.241797503452291,
+          "momentum-y": -11.397924979061278,
+          "momentum-z": 11.456673288830016,
+          "energy": 11.515444021938377
+        }
+      },
+      "su2": {
+        "condition": "m050-a125",
+        "n": 64,
+        "scheme": "roe",
+        "mesh_sha256": "9d5630faf37d17987d2a213a9b52354b55450085ff3e66c042d8ffd2d13b0d61",
+        "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+        "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+        "last_iteration": 3295,
+        "cl": 0.1529018576,
+        "cd": -0.001639124885,
+        "cmy": -0.0008732679125,
+        "converged": true,
+        "iterations": 621,
+        "epsilon": 1.1954571498285819e-10,
+        "drop": {
+          "density": 11.286090164,
+          "momentum-x": 10.885913944,
+          "momentum-z": 10.613128012,
+          "energy": 11.240925327
+        }
+      },
+      "difference": {
+        "cl": 0.01958908558855957,
+        "cd": 0.0062535058770345625,
+        "cmy": -0.0008350491281586371
+      },
+      "cp": {
+        "faces": 64,
+        "all": {
+          "max_abs": 0.5981496084139366,
+          "rms": 0.1546057395673347
+        },
+        "shock_upper": {
+          "autan": 0.957291362325,
+          "su2": 0.957291362325
+        },
+        "shock_lower": {
+          "autan": 0.957291362325,
+          "su2": 0.957291362325
+        },
+        "outside_shocks": {
+          "max_abs": 0.30903247667896716,
+          "rms": 0.07880865643452854
+        },
+        "body": {
+          "max_abs": 0.30903247667896716,
+          "rms": 0.07880865643452854,
+          "faces": 50
+        }
+      }
+    },
+    {
+      "n": 128,
+      "autan": {
+        "run": "run-20261106T120237Z-2d452196",
+        "chain": [
+          "run-20261106T120237Z-2d452196"
+        ],
+        "condition": "m050-a125",
+        "n": 128,
+        "cells": 16384,
+        "h": 0.0078125,
+        "mesh_sha256": "84b0ab13728c949fe52397251f2291303d93ff5baa8ba2fe554112ed18443bc1",
+        "commit": "17fbb95ac554d46ac0228d05a84f481ab0b56d4e",
+        "backend": "cpu",
+        "precision": "fp64",
+        "status": "completed",
+        "last_iteration": 3000,
+        "cl": 0.17680769656429898,
+        "cd": 0.001043436030223795,
+        "cmy": -0.0018353042135774791,
+        "converged": true,
+        "iterations": 546,
+        "epsilon": 1.1063129011734482e-12,
+        "drop": {
+          "density": 11.50867744975883,
+          "momentum-x": 11.221090518638615,
+          "momentum-y": -11.512167061889409,
+          "momentum-z": 11.41039782251532,
+          "energy": 11.43120178195719
+        }
+      },
+      "su2": {
+        "condition": "m050-a125",
+        "n": 128,
+        "scheme": "roe",
+        "mesh_sha256": "84b0ab13728c949fe52397251f2291303d93ff5baa8ba2fe554112ed18443bc1",
+        "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+        "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+        "last_iteration": 2553,
+        "cl": 0.1692382753,
+        "cd": 0.002933230995,
+        "cmy": -0.001795067508,
+        "converged": true,
+        "iterations": 693,
+        "epsilon": 6.035982664563013e-11,
+        "drop": {
+          "density": 11.104520827,
+          "momentum-x": 10.705389593,
+          "momentum-z": 10.437682918,
+          "energy": 11.05729962
+        }
+      },
+      "difference": {
+        "cl": 0.007569421264298992,
+        "cd": -0.001889794964776205,
+        "cmy": -4.023670557747917e-05
+      },
+      "cp": {
+        "faces": 128,
+        "all": {
+          "max_abs": 0.617408300580593,
+          "rms": 0.10679356295414712
+        },
+        "shock_upper": {
+          "autan": 0.9458679398425,
+          "su2": 0.9458679398425
+        },
+        "shock_lower": {
+          "autan": 0.9458679398425,
+          "su2": 0.9458679398425
+        },
+        "outside_shocks": {
+          "max_abs": 0.617408300580593,
+          "rms": 0.11314034103081161
+        },
+        "body": {
+          "max_abs": 0.13507694842272566,
+          "rms": 0.037995375335353215,
+          "faces": 104
+        }
+      }
+    },
+    {
+      "n": 256,
+      "autan": {
+        "run": "run-20261106T125309Z-e709209a",
+        "chain": [
+          "run-20261106T125309Z-e709209a"
+        ],
+        "condition": "m050-a125",
+        "n": 256,
+        "cells": 65536,
+        "h": 0.00390625,
+        "mesh_sha256": "6e0747590b3403036de3352b4f3dff76884ba9727c99bdbedfec392a031d9f7e",
+        "commit": "17fbb95ac554d46ac0228d05a84f481ab0b56d4e",
+        "backend": "cpu",
+        "precision": "fp64",
+        "status": "completed",
+        "last_iteration": 3000,
+        "cl": 0.17882954115499897,
+        "cd": 0.00020266944948446342,
+        "cmy": -0.0020930365279824507,
+        "converged": true,
+        "iterations": 599,
+        "epsilon": 1.256763856342039e-10,
+        "drop": {
+          "density": 11.368613692383224,
+          "momentum-x": 11.103788377022529,
+          "momentum-y": -11.448807392849236,
+          "momentum-z": 11.254065799554471,
+          "energy": 11.306611146729214
+        }
+      },
+      "su2": {
+        "condition": "m050-a125",
+        "n": 256,
+        "scheme": "roe",
+        "mesh_sha256": "6e0747590b3403036de3352b4f3dff76884ba9727c99bdbedfec392a031d9f7e",
+        "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+        "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+        "last_iteration": 2590,
+        "cl": 0.1754349107,
+        "cd": 0.002505446162,
+        "cmy": -0.002153990901,
+        "converged": true,
+        "iterations": 809,
+        "epsilon": 2.3360709230260018e-11,
+        "drop": {
+          "density": 10.961711591,
+          "momentum-x": 10.554023909000001,
+          "momentum-z": 10.299198633,
+          "energy": 10.903113103999999
+        }
+      },
+      "difference": {
+        "cl": 0.0033946304549989648,
+        "cd": -0.0023027767125155365,
+        "cmy": 6.095437301754936e-05
+      },
+      "cp": {
+        "faces": 256,
+        "all": {
+          "max_abs": 0.5747386210918198,
+          "rms": 0.06940572401165405
+        },
+        "shock_upper": {
+          "autan": null,
+          "su2": null
+        },
+        "shock_lower": {
+          "autan": null,
+          "su2": null
+        },
+        "outside_shocks": {
+          "max_abs": 0.5747386210918198,
+          "rms": 0.06940572401165405
+        },
+        "body": {
+          "max_abs": 0.08217066831277292,
+          "rms": 0.019606755466742842,
+          "faces": 224
+        }
+      }
+    },
+    {
+      "n": 512,
+      "autan": {
+        "run": "run-20261106T164319Z-57b77234",
+        "chain": [
+          "run-20261106T164319Z-57b77234"
+        ],
+        "condition": "m050-a125",
+        "n": 512,
+        "cells": 262144,
+        "h": 0.001953125,
+        "mesh_sha256": "59ea37cfd8bb89d1a4176747ae80f89d4f98cc274237002ae7d890d82215f5a7",
+        "commit": "17fbb95ac554d46ac0228d05a84f481ab0b56d4e",
+        "backend": "cpu",
+        "precision": "fp64",
+        "status": "completed",
+        "last_iteration": 3000,
+        "cl": 0.1794818243994894,
+        "cd": 4.657904526084167e-05,
+        "cmy": -0.00220341053802037,
+        "converged": true,
+        "iterations": 707,
+        "epsilon": 1.712545254835585e-11,
+        "drop": {
+          "density": 11.219406759708916,
+          "momentum-x": 10.969825932888675,
+          "momentum-y": -12.138892206218665,
+          "momentum-z": 11.112636791952495,
+          "energy": 11.156640470956859
+        }
+      },
+      "su2": {
+        "condition": "m050-a125",
+        "n": 512,
+        "scheme": "roe",
+        "mesh_sha256": "59ea37cfd8bb89d1a4176747ae80f89d4f98cc274237002ae7d890d82215f5a7",
+        "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+        "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+        "last_iteration": 3364,
+        "cl": 0.1779116102,
+        "cd": 0.0015170982,
+        "cmy": -0.002259773658,
+        "converged": true,
+        "iterations": 1325,
+        "epsilon": 4.2551549932324e-12,
+        "drop": {
+          "density": 10.816715448,
+          "momentum-x": 10.408715685,
+          "momentum-z": 10.157298752,
+          "energy": 10.761287901000001
+        }
+      },
+      "difference": {
+        "cl": 0.0015702141994894114,
+        "cd": -0.0014705191547391583,
+        "cmy": 5.636311997963021e-05
+      },
+      "cp": {
+        "faces": 512,
+        "all": {
+          "max_abs": 0.5235857956917684,
+          "rms": 0.04405381111559768
+        },
+        "shock_upper": {
+          "autan": null,
+          "su2": null
+        },
+        "shock_lower": {
+          "autan": null,
+          "su2": null
+        },
+        "outside_shocks": {
+          "max_abs": 0.5235857956917684,
+          "rms": 0.04405381111559768
+        },
+        "body": {
+          "max_abs": 0.04401576819010107,
+          "rms": 0.010221310338551566,
+          "faces": 448
+        }
+      }
+    },
+    {
+      "n": 1024,
+      "autan": {
+        "run": "run-20261107T183556Z-24a6c8db",
+        "chain": [
+          "run-20261107T040916Z-b23bb7f3",
+          "run-20261107T063509Z-edb4acc6",
+          "run-20261107T093517Z-a0548e84",
+          "run-20261107T123530Z-a3296a92",
+          "run-20261107T153542Z-04b7dcbc",
+          "run-20261107T183556Z-24a6c8db"
+        ],
+        "condition": "m050-a125",
+        "n": 1024,
+        "cells": 1048576,
+        "h": 0.0009765625,
+        "mesh_sha256": "3f5fcf7b23071296335430f1389acf38080132166754365af20ec9cb19f93ed1",
+        "commit": "17fbb95ac554d46ac0228d05a84f481ab0b56d4e",
+        "backend": "cpu",
+        "precision": "fp64",
+        "status": "completed",
+        "last_iteration": 3000,
+        "cl": 0.17968147418139443,
+        "cd": 1.88883218927797e-05,
+        "cmy": -0.0022418089023763725,
+        "converged": true,
+        "iterations": 810,
+        "epsilon": 7.214993631872771e-11,
+        "drop": {
+          "density": 11.063322407028188,
+          "momentum-x": 10.823942873206521,
+          "momentum-y": -12.880975001638603,
+          "momentum-z": 10.89879706072312,
+          "energy": 10.98997651365382
+        }
+      },
+      "su2": {
+        "condition": "m050-a125",
+        "n": 1024,
+        "scheme": "roe",
+        "mesh_sha256": "3f5fcf7b23071296335430f1389acf38080132166754365af20ec9cb19f93ed1",
+        "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+        "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+        "last_iteration": 5131,
+        "cl": 0.1789593306,
+        "cd": 0.00083051515,
+        "cmy": -0.002283084949,
+        "converged": true,
+        "iterations": 2537,
+        "epsilon": 6.612160149040446e-13,
+        "drop": {
+          "density": 10.67030178,
+          "momentum-x": 10.2618681,
+          "momentum-z": 10.013334373,
+          "energy": 10.614633513
+        }
+      },
+      "difference": {
+        "cl": 0.000722143581394441,
+        "cd": -0.0008116268281072204,
+        "cmy": 4.1276046623627514e-05
+      },
+      "cp": {
+        "faces": 1024,
+        "all": {
+          "max_abs": 0.488577048766594,
+          "rms": 0.028459604636065425
+        },
+        "shock_upper": {
+          "autan": null,
+          "su2": null
+        },
+        "shock_lower": {
+          "autan": null,
+          "su2": null
+        },
+        "outside_shocks": {
+          "max_abs": 0.488577048766594,
+          "rms": 0.028459604636065425
+        },
+        "body": {
+          "max_abs": 0.022437760077532065,
+          "rms": 0.005213293157489764,
+          "faces": 896
+        }
+      }
+    }
+  ],
+  "continuum": {
+    "autan": {
+      "cl": {
+        "estimate": 0.17976953668385956,
+        "order": 1.7080270738147902,
+        "gci": 0.00011007812808141853,
+        "order_if_zero": -0.0016039154394348752
+      },
+      "cd": {
+        "estimate": 1.2916530097525162e-05,
+        "order": 2.494907202262409,
+        "gci": 7.464739744068173e-06,
+        "order_if_zero": 1.3021865355246494
+      },
+      "cmy": {
+        "estimate": -0.002262294086930775,
+        "order": 1.5232837348647115,
+        "gci": 2.5606480693002985e-05,
+        "order_if_zero": -0.02492498221921912
+      },
+      "levels": [
+        256,
+        512,
+        1024
+      ]
+    },
+    "su2": {
+      "cl": {
+        "estimate": 0.17972751400910386,
+        "order": 1.2411650725243324,
+        "gci": 0.0009602292613798487,
+        "order_if_zero": -0.008471103669719168
+      },
+      "cd": {
+        "estimate": -0.000731615720096993,
+        "order": 0.5255848113713557,
+        "gci": 0.0019526635876212413,
+        "order_if_zero": 0.8692360818413495
+      },
+      "cmy": {
+        "estimate": -0.0022896740920629677,
+        "order": 2.1820036721999605,
+        "gci": 8.23642882870966e-06,
+        "order_if_zero": -0.014806262761489705
+      },
+      "levels": [
+        256,
+        512,
+        1024
+      ]
+    }
+  }
+}
