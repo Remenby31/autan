@@ -18,6 +18,7 @@ struct Slab {
   double angle = 0.0;     // turned about z (radians)
   double shear = 0.0;     // x shifted by shear y
   double warp = 0.0;      // the nodes of y = 0 at y = warp (2 z - 1) x: the wall's faces warped
+  bool periodic = false;  // xmin and xmax a periodic pair (translation (1, 0, 0))
 };
 
 // Hexahedra over [0,1]^3, 8 along x, 12 along y with the spacing growing geometrically from
@@ -107,9 +108,14 @@ inline autan::Mesh stretched_slab(const Slab& slab = {}) {
   }
   in.cell_zone.assign(static_cast<std::size_t>(nx * ny * nz), 0);
   for (const char* name : {"xmin", "xmax", "ymin", "ymax", "sides"}) {
-    in.face_zones.push_back(autan::FaceZone{
-        .name = name, .bc_type = "", .kind = autan::BcKind::unspecified, .provenance = {}});
+    const bool pair = slab.periodic && name[0] == 'x';
+    in.face_zones.push_back(
+        autan::FaceZone{.name = name,
+                        .bc_type = "",
+                        .kind = pair ? autan::BcKind::periodic : autan::BcKind::unspecified,
+                        .provenance = {}});
   }
+  if (slab.periodic) in.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1, 0, 0}});
   in.face_zones.push_back(autan::FaceZone{.name = "interior",
                                           .bc_type = "",
                                           .kind = autan::BcKind::unspecified,

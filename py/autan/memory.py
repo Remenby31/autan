@@ -461,6 +461,11 @@ def _rank(
         )
         add(name, persistent)
         add(f"{name} setup", solver_setup, transient=True)
+        # The steady operator's derivative of the boundary values a cell's fit keeps
+        # (Euler::gradient_tangent): d(prim_b)/d(prim) of every face, the boundary values'
+        # tangents and a discarded increment. Allocated only where some cell keeps its boundary
+        # faces (a one-cell-thick slab: every cell), counted on every mesh.
+        add("boundary state tangent", 25 * s * f + 40 * (f - fi) + 40 * c)
 
     # The peak holds every persistent component and the largest transient one: transients
     # are freed in turn, and later allocations reuse their memory.

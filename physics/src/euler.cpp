@@ -48,8 +48,8 @@ struct Euler<P>::Impl {
   std::vector<kernels::offset_t> band_offsets;
   std::vector<index_t> band_entries;
   kernels::Topology band_topo{};
-  std::size_t linear_cells = 0;     // band cells that keep the linear fit
-  std::size_t kept_boundaries = 0;  // cells whose linear fit keeps every boundary face
+  std::size_t linear_cells = 0;              // band cells that keep the linear fit
+  std::vector<std::size_t> kept_boundaries;  // cells whose linear fit keeps every boundary face
   index_t first_linear = -1;
   std::vector<double> bc_kind;
   std::vector<State> bc, prim_b, prim, wmin, wmax, phi, source, prim_tan, zero_state;
@@ -234,6 +234,10 @@ struct Euler<P>::Impl {
     data.bnd_state_jac = bnd_state_jac.data();
     std::fill(discarded.begin(), discarded.end(), Res(0));
     data.res = discarded.data();
+    // Every boundary face, a ghost's included (the fits of the owned cells next to it keep its
+    // face too): the increment's order does not matter, it is discarded.
+    data.topo.n_owned_faces = data.topo.n_faces;
+    data.topo.rank_independent = false;
     ek::cpu::boundary_states_jacobian(data);
     for (std::size_t f = ni; f < nf; ++f) {
       const auto o = static_cast<std::size_t>(topo.owner[f]);
@@ -247,7 +251,7 @@ struct Euler<P>::Impl {
       }
     }
     const bool quadratic = scheme.gradient_fit == GradientFit::quadratic;
-    for (std::size_t c = 0; c + 1 < stencil.offsets.size(); ++c) {
+    for (const std::size_t c : kept_boundaries) {
       if (quadratic && band[c] > 0.5) continue;
       for (auto k = static_cast<std::size_t>(stencil.offsets[c]);
            k < static_cast<std::size_t>(stencil.offsets[c + 1]); ++k) {
@@ -278,7 +282,7 @@ struct Euler<P>::Impl {
     const auto nst = stencil.entries.size();
     // Written into the stored weights entry by entry: no FP64 copy of the whole stencil.
     stencil_lsq_weight.assign(3 * nst, typename decltype(stencil_lsq_weight)::value_type(0));
-    kept_boundaries = 0;
+    kept_boundaries.clear();
     auto& w = stencil_lsq_weight;
     constexpr double coordinate_eps =
         std::numeric_limits<typename decltype(cell_centroid)::value_type>::epsilon();
@@ -341,7 +345,7 @@ struct Euler<P>::Impl {
       };
       if (!weights(false)) {
         weights(true);
-        ++kept_boundaries;
+        kept_boundaries.push_back(c);
       }
     }
     d.stencil_lsq_weight = stencil_lsq_weight.data();
@@ -945,7 +949,7 @@ void Euler<P>::gradient_tangent(std::span<const State> s, std::span<const State>
   } else {
     ek::cpu::gradients_tangent(d);
   }
-  if (m.kept_boundaries > 0) m.kept_boundaries_tangent(d);
+  if (!m.kept_boundaries.empty()) m.kept_boundaries_tangent(d);
   m.fill_ghosts(m.grad_tan, 15);
   // The fluxes with only the gradients moving: dW and the limiter held.
   d.prim_tan = m.zero_state.data();
