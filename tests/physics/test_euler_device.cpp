@@ -87,7 +87,7 @@ TEMPLATE_TEST_CASE("one device residual equals the host's to round-off, cell by 
   s.scale = {ref[0], 100.0, 100.0, 100.0, ref[4]};
   s.reference = conserved(ref);
   // A limiter that clips enough of this flow for its effect to exceed the tolerance (below).
-  s.venkat_k = 0.1;
+  s.limiter_k = 0.1;
   Euler<P> host(mesh, g, air, s);
   // Every condition: farfield on x, slip walls on y, the flow's state on z.
   std::vector<BoundaryKind> kind(nb);
@@ -194,7 +194,7 @@ TEMPLATE_TEST_CASE("the device's planar loops give its full loops' residual", "[
   s.mach_ref = std::hypot(ref[1], ref[2], ref[3]) / std::sqrt(air.gamma * ref[4] / ref[0]);
   s.scale = {ref[0], 100.0, 100.0, 100.0, ref[4]};
   s.reference = conserved(ref);
-  s.venkat_k = 0.1;
+  s.limiter_k = 0.1;
   std::vector<BoundaryKind> kind(nb);
   std::vector<double> data(5 * nb, 0.0);
   for (std::size_t b = 0; b < nb; ++b) {

@@ -254,7 +254,7 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
     weights = std::move(w);
   }
   auto st_weight = conv(D{}.stencil_lsq_weight, weights);
-  std::vector<double> bc_kind(nf, 0.0);
+  std::vector<double> bc_kind(nf, -1.0);  // interior faces: kernels/euler.py BC_INTERIOR
   std::vector<S> bc(5 * nf, S(0));
   for (std::size_t b = 0; b < nb; ++b) {
     bc_kind[ni + b] = static_cast<double>(kind[b]);
@@ -308,7 +308,7 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   d.mach_ref[0] = typename P::param(0.5);
   for (std::size_t c = 0; c < 5; ++c) d.u_ref[c] = typename P::param(scheme.reference[c]);
   d.p_ref[0] = typename P::param(p);
-  const double k3 = std::pow(scheme.venkat_k / scheme.length, 3);
+  const double k3 = std::pow(scheme.limiter_k / scheme.length, 3);
   for (std::size_t c = 0; c < 5; ++c)
     d.limiter_scale[c] = typename P::param(k3 * scheme.scale[c] * scheme.scale[c]);
   gpu::Schedule sched;

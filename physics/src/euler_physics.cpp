@@ -79,7 +79,7 @@ constexpr double min_step = 1e-6;
 constexpr double nt_max_decrease = 0.5;
 constexpr double nt_max_increase = 2.0;
 constexpr int nt_sweeps = 4;
-constexpr double venkatakrishnan_k = 10.0;
+constexpr double limiter_k_default = 10.0;
 // Steady cases on a device: SSP-RK3 in pseudo-time with local time steps CFL V / lambda.
 constexpr double device_steady_cfl = 0.8;
 
@@ -514,7 +514,7 @@ class EulerPhysics final : public runtime::Physics {
     // A manufactured solution is smooth by construction: verification measures the design
     // order of the unlimited scheme (docs/design/euler.md, Limiter and verification).
     s.limiter = !in.verification.has_value();
-    s.venkat_k = venkatakrishnan_k;
+    s.limiter_k = limiter_k_default;
     s.length = f.ref_length.value_or(1.0);
     s.scale = {f.density, speed, speed, speed, f.pressure};
     s.mach_ref = f.speed / c;

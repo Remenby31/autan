@@ -156,7 +156,8 @@ struct Euler<P>::Impl {
     fill(cell_volume, packed.cell_volume);
     const auto nc = static_cast<std::size_t>(topo.n_cells);
     const auto nf = static_cast<std::size_t>(topo.n_faces);
-    bc_kind.assign(nf, 0.0);
+    // Interior faces carry kernels/euler.py's BC_INTERIOR, which the limiter reads.
+    bc_kind.assign(nf, -1.0);
     bc.assign(5 * nf, State(0));
     prim_b.assign(5 * nf, State(0));
     prim.assign(5 * nc, State(0));
@@ -207,9 +208,9 @@ struct Euler<P>::Impl {
     for (std::size_t c = 0; c < 5; ++c) d.u_ref[c] = typename P::param(r[c]);
     d.p_ref[0] = typename P::param((gas.gamma - 1.0) *
                                    (r[4] - 0.5 * (r[1] * r[1] + r[2] * r[2] + r[3] * r[3]) / r[0]));
-    // Venkatakrishnan (1995), eq. 5, threshold eps^2 = (K h)^3 made dimensional:
-    // eps_k^2 = (K / L)^3 V q_k^2.
-    const double k3 = std::pow(scheme.venkat_k / scheme.length, 3);
+    // Michalak and Ollivier-Gooch (2009), section 4.3, eq. 10: the threshold (K dx)^3 made
+    // dimensional per component, (K / L)^3 V q_k^2 with dx^3 = V.
+    const double k3 = std::pow(scheme.limiter_k / scheme.length, 3);
     for (std::size_t c = 0; c < 5; ++c) {
       d.limiter_scale[c] = typename P::param(k3 * scheme.scale[c] * scheme.scale[c]);
     }

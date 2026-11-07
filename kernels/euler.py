@@ -5,8 +5,9 @@ variables W = (rho, u, v, w, p), ideal gas with ratio of specific heats `gamma`.
 
 Residual R_c = sum over the faces of c of F(W_L, W_R) . S - s_c V_c, with
 - gradients of W by weighted least squares over face neighbours and boundary states,
-- the Venkatakrishnan (1995) limiter with bounds over the gradient stencil, J. Comput. Phys. 118:120-130, eq. 5, with the per-component
-  threshold eps^2 = scale_k V_c (scale_k = K^3 q_k^2 / L^3, set by the caller),
+- the limiter of Michalak and Ollivier-Gooch (2009), J. Comput. Phys. 228:8693-8711, with bounds over
+  the gradient stencil and the per-component threshold (K dx)^3 = scale_k V_c (scale_k = K^3 q_k^2 /
+  L^3, set by the caller),
 - face states W_f = W_c + phi (grad W) (x_f - x_c),
 - one of three numerical fluxes: Roe with Harten's entropy fix, HLLC, AUSM+-up,
 - boundary states per face from its condition code (`BC_*` below) and the face data `bc`.
@@ -52,6 +53,7 @@ from autan_codegen.dsl import (
 )
 
 # Boundary condition codes of the face dataset `bc_kind`.
+BC_INTERIOR = -1.0  # an interior face (bc_kind is defined on every face)
 BC_STATE = 0.0  # boundary state given in `bc` as W (manufactured solutions, exact data)
 BC_FARFIELD = 1.0  # `bc` = freestream W; Riemann invariants normal to the face
 BC_SLIP = 2.0  # slip wall and symmetry plane: no flux but pressure
@@ -545,10 +547,13 @@ quadratic_gradients = cell_reduce(
 
 
 @pointwise
-def venkat(d: State, dmax: State, dmin: State, eps2: State) -> State:
-    # Venkatakrishnan (1995), eq. 5: smooth limiter of the extrapolated increment d.
-    dp = dmax if d > 0.0 else dmin
-    return (dp * dp + eps2 + 2.0 * d * dp) / (dp * dp + 2.0 * d * d + d * dp + eps2)
+def smooth_min(d: State, dmax: State, dmin: State) -> State:
+    # Michalak and Ollivier-Gooch (2009), section 3, step 3 (preprint p. 4) with their smooth
+    # min(1, y) of section 4.2 (p. 8): P(y) = y - 4 y^3 / 27 below y_t = 1.5, 1 above; 1 where the
+    # face increment d is zero. The denominator is guarded: both branches are evaluated.
+    nonzero = d > 0.0 or d < 0.0
+    y = (dmax if d > 0.0 else dmin) / (d if nonzero else 1.0)
+    return y - (4.0 / 27.0) * y * y * y if nonzero and y < 1.5 else 1.0
 
 
 @pointwise
@@ -557,24 +562,46 @@ def limiter_term(
     gc: Grad.Mat53,
     lo: State.Vec5,
     hi: State.Vec5,
-    vol: Geom,
+    kind: Geom,
     xf: Geom.Vec3,
     xc: Geom.Vec3,
-    scale: Param.Vec5,
 ) -> State.Vec5:
+    # Interior faces only (section 4.4, p. 10): an extremum at a boundary face does not limit.
     d = gc @ rel(xf, xc)
-    return Vec5(
-        venkat(d[0], hi[0] - wc[0], lo[0] - wc[0], scale[0] * vol),
-        venkat(d[1], hi[1] - wc[1], lo[1] - wc[1], scale[1] * vol),
-        venkat(d[2], hi[2] - wc[2], lo[2] - wc[2], scale[2] * vol),
-        venkat(d[3], hi[3] - wc[3], lo[3] - wc[3], scale[3] * vol),
-        venkat(d[4], hi[4] - wc[4], lo[4] - wc[4], scale[4] * vol),
+    phi_f = Vec5(
+        smooth_min(d[0], hi[0] - wc[0], lo[0] - wc[0]),
+        smooth_min(d[1], hi[1] - wc[1], lo[1] - wc[1]),
+        smooth_min(d[2], hi[2] - wc[2], lo[2] - wc[2]),
+        smooth_min(d[3], hi[3] - wc[3], lo[3] - wc[3]),
+        smooth_min(d[4], hi[4] - wc[4], lo[4] - wc[4]),
     )
+    return phi_f if kind < BC_INTERIOR + 0.5 else Vec5(1.0, 1.0, 1.0, 1.0, 1.0)
 
 
 @pointwise
-def at_most_one(p: Residual.Vec5) -> State.Vec5:
-    return Vec5(min(p[0], 1.0), min(p[1], 1.0), min(p[2], 1.0), min(p[3], 1.0), min(p[4], 1.0))
+def uniform_blend(p: Residual, lo: State, hi: State, e: State) -> State:
+    # Michalak and Ollivier-Gooch (2009), section 4.3, eqs. 9-11 (p. 9): Phi~ = sigma + (1 - sigma)
+    # Phi, sigma = 1 for dU^2 <= e, s((dU^2 - e) / e) up to 2 e, 0 above, s(y) = 2 y^3 - 3 y^2 + 1,
+    # dU = max - min over the stencil and e = (K dx)^3. The ratio's denominator is guarded: e = 0
+    # takes the outer branches.
+    du2 = (hi - lo) * (hi - lo)
+    r = (du2 - e) / (e if e > 0.0 else 1.0)
+    sigma = 1.0 if du2 <= e else (0.0 if du2 >= 2.0 * e else 2.0 * r * r * r - 3.0 * r * r + 1.0)
+    phi = min(p, 1.0)
+    return sigma + (1.0 - sigma) * phi
+
+
+@pointwise
+def limiter_finalise(
+    p: Residual.Vec5, lo: State.Vec5, hi: State.Vec5, vol: Geom, scale: Param.Vec5
+) -> State.Vec5:
+    return Vec5(
+        uniform_blend(p[0], lo[0], hi[0], scale[0] * vol),
+        uniform_blend(p[1], lo[1], hi[1], scale[1] * vol),
+        uniform_blend(p[2], lo[2], hi[2], scale[2] * vol),
+        uniform_blend(p[3], lo[3], hi[3], scale[3] * vol),
+        uniform_blend(p[4], lo[4], hi[4], scale[4] * vol),
+    )
 
 
 limiter = cell_reduce(
@@ -583,12 +610,12 @@ limiter = cell_reduce(
     gc=grad.self_,
     lo=wmin.self_,
     hi=wmax.self_,
-    vol=geometry.cell_volume.self_,
+    kind=bc_kind,
     xf=geometry.face_centroid,
     xc=geometry.cell_centroid.self_,
-    scale=limiter_scale,
     acc=Min(phi),
-    finalise=at_most_one,
+    finalise=limiter_finalise,
+    finalise_args={"lo": wmin, "hi": wmax, "vol": geometry.cell_volume, "scale": limiter_scale},
 )
 
 
@@ -605,7 +632,7 @@ def reconstruct(
     w: State.Vec5, gw: Grad.Mat53, lim: State.Vec5, r: Geom.Vec3, pref: Param
 ) -> State.Vec5:
     # Falls back to the cell value where the linear reconstruction would make the density or the
-    # (absolute) pressure non-positive: the Venkatakrishnan limiter does not preserve positivity.
+    # (absolute) pressure non-positive: the limiter does not preserve positivity.
     d = gw @ r
     wf = w + Vec5(lim[0] * d[0], lim[1] * d[1], lim[2] * d[2], lim[3] * d[3], lim[4] * d[4])
     return wf if wf[0] > 0.0 and wf[4] + pref > 0.0 else w
