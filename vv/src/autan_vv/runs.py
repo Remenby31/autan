@@ -321,7 +321,12 @@ def write_run(
     }
     if spec.initial_state is not None:
         states[spec.initial_state.sha256] = case.resolve(spec.initial_state.path).read_bytes()
-    writer = RunWriter(runs, run, spec, info, states=states)
+    manufactured = (
+        case.resolve(spec.verification.manufactured.path).read_bytes()
+        if spec.verification is not None
+        else None
+    )
+    writer = RunWriter(runs, run, spec, info, manufactured=manufactured, states=states)
     if residuals is None:
         ones = dict.fromkeys(residual_names(spec), 1.0)
         residuals = [ones]
