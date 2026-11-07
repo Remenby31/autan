@@ -319,6 +319,7 @@ def write_run(
     }
     if spec.initial_state is not None:
         states[spec.initial_state.sha256] = case.resolve(spec.initial_state.path).read_bytes()
+    # A verified run keeps its manufactured solution beside it, as autan-run writes it (E0701).
     manufactured = (
         case.resolve(spec.verification.manufactured.path).read_bytes()
         if spec.verification is not None
