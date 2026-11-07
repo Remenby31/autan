@@ -872,7 +872,8 @@ void NavierStokes<P>::wall_state(std::span<double> pressure, std::span<double> t
 
 double viscosity(const Transport& transport, double t) {
   if (!transport.sutherland) return transport.mu_ref;
-  // Sutherland (1893): mu = mu_ref (T / T_ref)^(3/2) (T_ref + S) / (T + S)
+  // Sutherland (1893): mu = mu_ref (T / T_ref)^(3/2) (T_ref + S) / (T + S), the law of
+  // kernels/navier_stokes.py `viscosity` that the viscous fluxes use.
   return transport.mu_ref * std::pow(t / transport.t_ref, 1.5) * (transport.t_ref + transport.s) /
          (t + transport.s);
 }

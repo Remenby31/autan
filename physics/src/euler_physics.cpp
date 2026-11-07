@@ -427,7 +427,8 @@ class EulerPhysics final : public runtime::Physics {
                                {.name = "WallShearStressY", .values = {}},
                                {.name = "WallShearStressZ", .values = {}}};
     // results.md, WallSolution YPlus, for viscous physics: from the wall state of the viscous
-    // wall flux (p_w, T_w) and the first-cell height of the face's owner.
+    // wall flux (p_w, T_w) and the first-cell height of the face's owner. face_traction() above
+    // evaluated the residual of the current state, so the wall state is that state's.
     std::vector<double> p_wall, t_wall;
     Transport transport;
     if constexpr (is_viscous) {

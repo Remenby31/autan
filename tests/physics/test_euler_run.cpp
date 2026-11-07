@@ -531,8 +531,9 @@ TEST_CASE("the multigrid builds the levels autan-mesh-info publishes", "[euler]"
 TEST_CASE("a viscous run writes the y+ of its wall faces from the wall state", "[navier-stokes]") {
   // results.md, WallSolution YPlus: y+ = y1 sqrt(|tau_w| rho_w) / mu(T_w). On an isothermal wall
   // T_w is the wall's temperature and p_w the owner cell's pressure (zero normal gradient), so
-  // every term comes from the written fields, the case and the geometry computed here. Two walls
-  // at different temperatures, normal to y and to x. An inviscid run writes no YPlus.
+  // every term comes from the written fields, the case and the geometry computed here:
+  // wall_fields evaluates the residual of the state FlowSolution holds. Two walls at different
+  // temperatures, normal to y and to x. An inviscid run writes no YPlus.
   const char* precision = GENERATE("fp64", "fp32+acc64");
   INFO(precision);
   const std::map<std::string, double> t_walls{{"ymin", 300.0}, {"xmin", 350.0}};
