@@ -52,8 +52,9 @@ struct Euler<P>::Impl {
   index_t first_linear = -1;
   std::vector<double> bc_kind;
   std::vector<State> bc, prim_b, prim, wmin, wmax, phi, source, prim_tan, zero_state;
+  std::vector<State> wmin_tan, wmax_tan;  // gradient_tangent's
   std::vector<typename P::jac> face_jac, bnd_jac, dwdu;
-  std::vector<Gr> grad, grad_band, zero_grad;
+  std::vector<Gr> grad, grad_band, zero_grad, grad_tan, grad_band_tan;
   ek::Data<P> d{};
   GhostFill* ghosts = nullptr;
   // Under global keys: each cell's faces in global order, their twins and the faces that run
@@ -542,19 +543,25 @@ struct Euler<P>::Impl {
     }
   }
 
-  void faces_tangent() {
+  void faces_tangent(bool interior = true, bool boundary = true) {
     switch (scheme.flux) {
       case Flux::roe:
-        run([&](auto... strategy) { ek::cpu::roe_faces_tangent(d, strategy...); });
-        run([&](auto... strategy) { ek::cpu::roe_boundaries_tangent(d, strategy...); });
+        if (interior) run([&](auto... strategy) { ek::cpu::roe_faces_tangent(d, strategy...); });
+        if (boundary) {
+          run([&](auto... strategy) { ek::cpu::roe_boundaries_tangent(d, strategy...); });
+        }
         break;
       case Flux::hllc:
-        run([&](auto... strategy) { ek::cpu::hllc_faces_tangent(d, strategy...); });
-        run([&](auto... strategy) { ek::cpu::hllc_boundaries_tangent(d, strategy...); });
+        if (interior) run([&](auto... strategy) { ek::cpu::hllc_faces_tangent(d, strategy...); });
+        if (boundary) {
+          run([&](auto... strategy) { ek::cpu::hllc_boundaries_tangent(d, strategy...); });
+        }
         break;
       case Flux::ausm_up:
-        run([&](auto... strategy) { ek::cpu::ausm_faces_tangent(d, strategy...); });
-        run([&](auto... strategy) { ek::cpu::ausm_boundaries_tangent(d, strategy...); });
+        if (interior) run([&](auto... strategy) { ek::cpu::ausm_faces_tangent(d, strategy...); });
+        if (boundary) {
+          run([&](auto... strategy) { ek::cpu::ausm_boundaries_tangent(d, strategy...); });
+        }
         break;
     }
   }
@@ -799,6 +806,53 @@ void Euler<P>::first_order_tangent(std::span<const State> u, std::span<const Sta
   auto saved = m.d;
   m.d = d;
   m.faces_tangent();
+  m.d = saved;
+}
+
+template <class P>
+void Euler<P>::gradient_tangent(std::span<const State> s, std::span<const State> du,
+                                std::span<Res> dres, Faces faces) {
+  auto& m = *impl_;
+  if (!m.scheme.second_order) return;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  if (m.grad_tan.empty()) {
+    m.prim_tan.assign(5 * nc, State(0));
+    m.zero_state.assign(5 * nc, State(0));
+    m.zero_grad.assign(15 * nc, typename P::grad(0));
+    m.grad_tan.assign(15 * nc, typename P::grad(0));
+    m.grad_band_tan.assign(15 * nc, typename P::grad(0));
+    m.wmin_tan.assign(5 * nc, State(0));
+    m.wmax_tan.assign(5 * nc, State(0));
+  }
+  // dW = dW/dU du, then the gradients' tangent: a weighted sum of dW over each stencil, whose
+  // boundary values are frozen (boundary_states) as in the generated adjoint.
+  auto d = m.d;
+  d.u = const_cast<State*>(s.data());
+  d.u_tan = const_cast<State*>(du.data());
+  d.prim_tan = m.prim_tan.data();
+  d.source_tan = m.zero_state.data();
+  ek::cpu::primitives_tangent(d);
+  m.fill_ghosts(m.prim_tan, 5);
+  d.grad_tan = m.grad_tan.data();
+  d.wmin_tan = m.wmin_tan.data();
+  d.wmax_tan = m.wmax_tan.data();
+  if (m.scheme.gradient_fit == GradientFit::quadratic) {
+    d.grad_band_tan = m.grad_band_tan.data();
+    auto b = d;
+    b.topo = m.band_topo;
+    ek::cpu::band_gradients_tangent(b);
+    ek::cpu::quadratic_gradients_tangent(d);
+  } else {
+    ek::cpu::gradients_tangent(d);
+  }
+  m.fill_ghosts(m.grad_tan, 15);
+  // The fluxes with only the gradients moving: dW and the limiter held.
+  d.prim_tan = m.zero_state.data();
+  d.phi_tan = m.zero_state.data();
+  d.res_tan = dres.data();
+  auto saved = m.d;
+  m.d = d;
+  m.faces_tangent(faces == Faces::interior, faces == Faces::boundary);
   m.d = saved;
 }
 

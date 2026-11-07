@@ -153,6 +153,14 @@ class Euler {
   /// First-order residual's tangent dR/dU du (no reconstruction): the preconditioning operator.
   void first_order_tangent(std::span<const State> u, std::span<const State> du,
                            std::span<Res> dres);
+  /// The faces a gradient tangent covers.
+  enum class Faces { boundary, interior };
+  /// After residual(s) or residual_and_jacobian(s): adds to dres the derivative of the chosen
+  /// faces' fluxes through the reconstruction's gradients, (dF/d grad W)(d grad W/dU) du, the
+  /// limiter held fixed: the term the approximate Jacobian drops (docs/design/euler.md, Time
+  /// stepping). Nothing for a first-order scheme.
+  void gradient_tangent(std::span<const State> s, std::span<const State> du, std::span<Res> dres,
+                        Faces faces);
 
   /// After residual(u): sum over each cell's faces of (|v . n| + c) A (n_cells), so that
   /// CFL V / lambda is the cell's convective time step.
