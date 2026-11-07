@@ -181,6 +181,9 @@ TEMPLATE_TEST_CASE("one device residual equals the host's, cell by cell", "[eule
   std::vector<double> r_device(5 * n);
   device->residual(u, r_device);
   if (keyed) {
+    REQUIRE(
+        std::ranges::all_of(r_host, [](auto x) { return std::isfinite(static_cast<double>(x)); }));
+    REQUIRE(std::ranges::all_of(r_device, [](double x) { return std::isfinite(x); }));
     // Distance in units in the last place of the residual's type, from the ordered bit patterns.
     std::size_t differ = 0;
     std::uint64_t ulps = 0;

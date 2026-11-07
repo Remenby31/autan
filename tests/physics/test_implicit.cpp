@@ -585,16 +585,24 @@ TEMPLATE_TEST_CASE("under global keys, renumbered cells have the residual and Ja
   flow_a.set_boundary(no_fit(kind_a), data_a);
   flow_b.set_boundary(no_fit(kind_b), data_b);
   REQUIRE(flow_a.data().topo.n_stencil == 0);
+  // The same problem without viscosity: the viscous terms change nearly every momentum and energy
+  // residual, so the comparison below covers them.
+  Euler<P> inviscid_a(a, ga, {1.4, 287.0}, s, &keys_a);
+  inviscid_a.set_boundary(no_fit(kind_a), data_a);
   std::vector<typename P::residual> va(5 * nc), vb(5 * nc), inviscid(5 * nc);
   flow_a.residual(sa, va);
   flow_b.residual(sb, vb);
-  ea.residual(sa, inviscid);
-  REQUIRE(std::ranges::all_of(va, [](auto x) { return std::isfinite(static_cast<double>(x)); }));
+  inviscid_a.residual(sa, inviscid);
+  auto finite = [](const auto& r) {
+    return std::ranges::all_of(r, [](auto x) { return std::isfinite(static_cast<double>(x)); });
+  };
+  REQUIRE(finite(va));
+  REQUIRE(finite(inviscid));
   std::size_t viscous_differs = 0, viscous_terms = 0;
   for (std::size_t c = 0; c < nc; ++c) {
     for (std::size_t k = 0; k < 5; ++k) {
       viscous_differs += bits_differ(vb[k * nc + c], va[k * nc + cell(c)]);
-      viscous_terms += bits_differ(va[k * nc + c], inviscid[k * nc + c]);
+      if (k > 0) viscous_terms += bits_differ(va[k * nc + c], inviscid[k * nc + c]);
     }
   }
   REQUIRE(viscous_terms >= 4 * nc * 9 / 10);

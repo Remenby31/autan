@@ -148,8 +148,33 @@ TEMPLATE_TEST_CASE("the device's Navier-Stokes residual has the host's bits",
   host.set_second_order(true);
   std::vector<typename P::state> stored(5 * n);
   host.state(u, stored);
-  std::vector<typename P::residual> r_host(5 * n);
+  auto finite = [](const auto& r) {
+    return std::ranges::all_of(r, [](auto x) { return std::isfinite(static_cast<double>(x)); });
+  };
+  // The fraction of momentum and energy residuals two evaluations give different values.
+  auto changed = [&](const auto& x, const auto& y) {
+    std::size_t m = 0;
+    for (std::size_t i = n; i < 5 * n; ++i) m += x[i] != y[i] ? 1 : 0;
+    return static_cast<double>(m) / static_cast<double>(4 * n);
+  };
+  std::vector<typename P::residual> r_laminar(5 * n), r_host(5 * n);
+  host.residual(stored, r_laminar);
+  // An eddy viscosity of the order of the laminar one, different in every cell and boundary
+  // face, so that a device reading it wrongly or not at all could not pass.
+  std::vector<double> mu_t(n), mu_t_b(nb);
+  for (std::size_t c = 0; c < n; ++c) {
+    mu_t[c] = 0.3 * (1.0 + std::sin(5.0 * g.cell_centroid_x[c] + 3.0 * g.cell_centroid_y[c]) *
+                               std::cos(4.0 * g.cell_centroid_z[c]));
+  }
+  for (std::size_t b = 0; b < nb; ++b) {
+    const auto f = ni + b;
+    mu_t_b[b] = 0.2 * (1.0 + std::cos(3.0 * g.face_centroid_x[f] - 2.0 * g.face_centroid_z[f]));
+  }
+  host.set_eddy_viscosity(mu_t, mu_t_b);
   host.residual(stored, r_host);
+  REQUIRE(finite(r_laminar));
+  REQUIRE(finite(r_host));
+  REQUIRE(changed(r_host, r_laminar) >= 0.9);
 
   // The viscous fluxes change nearly every momentum and energy residual: a device that left them
   // out, or the boundary fit, could not pass.
@@ -158,9 +183,8 @@ TEMPLATE_TEST_CASE("the device's Navier-Stokes residual has the host's bits",
   inviscid.set_second_order(true);
   std::vector<typename P::residual> r_euler(5 * n);
   inviscid.residual(stored, r_euler);
-  std::size_t viscous = 0;
-  for (std::size_t i = n; i < 5 * n; ++i) viscous += r_host[i] != r_euler[i] ? 1 : 0;
-  REQUIRE(viscous >= 4 * n * 9 / 10);
+  REQUIRE(finite(r_euler));
+  REQUIRE(changed(r_laminar, r_euler) >= 0.9);
 
   autan::runtime::OneRank rank;
   NoGhosts ghosts;
@@ -168,6 +192,7 @@ TEMPLATE_TEST_CASE("the device's Navier-Stokes residual has the host's bits",
                                                        nullptr, &keys);
   std::vector<double> r_device(5 * n);
   device->residual(u, r_device);
+  REQUIRE(finite(r_device));
   // Distance in units in the last place of a double, from the ordered bit patterns.
   auto ordered = [](std::int64_t v) {
     return v < 0 ? std::numeric_limits<std::int64_t>::min() - v : v;
