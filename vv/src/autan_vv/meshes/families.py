@@ -563,7 +563,6 @@ def generate_level(
         if perturbation > 0.0:
             msg = f"{kind} is a 1D family: its levels refine along x only, without perturbation"
             raise VVError(msg, code="V0309")
-        # Written as Fluent ASCII, without Gmsh: the version is empty.
         points, cells = tube.grid(n)
         points = np.array([float(f"{v:.16g}") for v in points.ravel()]).reshape(-1, 3)
         mesh = _to_facemesh(points, cells, _box_boundary(points, cells))

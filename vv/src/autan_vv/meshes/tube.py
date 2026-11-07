@@ -24,9 +24,10 @@ WIDTH = 0.01
 
 
 def grid(n: int) -> tuple[FloatArray, dict[str, IntArray]]:
-    """Points and hexahedra (Gmsh node order) of the level with `n` cells along x."""
-    if n < 1:
-        msg = f"{KIND} needs n >= 1, got n = {n}"
+    """Points and hexahedra (Gmsh node order) of the level with `n` cells along x, n even so
+    that the diaphragm x = 0.5 is a face."""
+    if n < 2 or n % 2:
+        msg = f"{KIND} needs an even n >= 2, so that the diaphragm x = 0.5 is a face, got n = {n}"
         raise VVError(msg, code="V0309")
     x = LENGTH * np.arange(n + 1) / n
     # Node (i, j, k): x index i, y and z indices j, k in {0, 1}.
