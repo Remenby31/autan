@@ -157,8 +157,9 @@ class Euler {
   enum class Faces { boundary, interior };
   /// After residual(s) or residual_and_jacobian(s): adds to dres the derivative of the chosen
   /// faces' fluxes through the reconstruction's gradients, (dF/d grad W)(d grad W/dU) du, the
-  /// limiter held fixed: the term the approximate Jacobian drops (docs/design/euler.md, Time
-  /// stepping). Nothing for a first-order scheme.
+  /// limiter and the gradient fit's boundary values held fixed (docs/design/euler.md, Boundary
+  /// values): the term the approximate Jacobian drops (Time stepping). Nothing for a first-order
+  /// scheme.
   void gradient_tangent(std::span<const State> s, std::span<const State> du, std::span<Res> dres,
                         Faces faces);
 

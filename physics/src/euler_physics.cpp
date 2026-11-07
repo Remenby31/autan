@@ -937,6 +937,7 @@ class EulerPhysics final : public runtime::Physics {
       euler_.set_second_order(false);
     }
     euler_.residual_and_jacobian(state_, res_);
+    jacobian_second_order_ = second_order_;
     measure_circulation();
     std::vector<double> norms = report.residuals;
     record_norms(report);
@@ -1130,6 +1131,8 @@ class EulerPhysics final : public runtime::Physics {
   // numbers the SER reaches (ONERA M6, #244). The inviscid flow only.
   void add_boundary_gradient_term(std::span<const double> v, std::span<double> y) {
     if constexpr (!is_viscous) {
+      // The step that switches to second order solves the first-order system it assembled.
+      if (!jacobian_second_order_) return;
       if (dv_.size() != 5 * n_) {
         dv_.assign(5 * n_, State(0));
         dres_.assign(5 * n_, Res(0));
@@ -1462,6 +1465,7 @@ class EulerPhysics final : public runtime::Physics {
   bool shortened_ = false;
   double mean_weight_ = 0.0;
   std::vector<State> state_, lambda_, dv_;
+  bool jacobian_second_order_ = false;  // the order of the last assembled Jacobian
   std::vector<Res> res_, dres_;
   std::vector<double> boundary_data_;  // set_boundary's data, before any vortex
   std::vector<Vortex> vortices_;

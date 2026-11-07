@@ -151,11 +151,14 @@ TEST_CASE(
   // The assembled blocks hold the reconstruction's gradients fixed; the gradient tangents of the
   // interior and boundary faces add the rest, so without a limiter (phi = 1, a differentiable
   // residual) A v + T_interior v + T_boundary v = dR/dU v (docs/design/euler.md, Time stepping).
-  // A v alone misses the gradient term, by far more than the differences' error.
+  // A v alone misses the gradient term, by far more than the differences' error. The boundary
+  // faces' tangent changes only the rows of cells with a boundary face.
   using P = autan::kernels::fp64;
   const char* file = GENERATE(from_range(meshes));
   const Flux flux = GENERATE(Flux::roe, Flux::hllc, Flux::ausm_up);
-  INFO(file << " flux " << static_cast<int>(flux));
+  const auto fit =
+      GENERATE(autan::physics::GradientFit::linear, autan::physics::GradientFit::quadratic);
+  INFO(file << " flux " << static_cast<int>(flux) << " fit " << static_cast<int>(fit));
   const auto mesh = autan::io::read_mesh(mesh_dir / file);
   const auto geometry = autan::compute_geometry(mesh);
   const auto nc = static_cast<std::size_t>(mesh.n_cells());
@@ -167,8 +170,9 @@ TEST_CASE(
   // enters (where it leaves, its clamped normal velocity is a kink central differences straddle).
   std::vector<BoundaryKind> kind(nb);
   std::vector<double> data(5 * nb);
-  const std::array<BoundaryKind, 4> kinds = {BoundaryKind::farfield, BoundaryKind::slip,
-                                             BoundaryKind::outlet, BoundaryKind::inlet};
+  const std::array<BoundaryKind, 5> kinds = {BoundaryKind::farfield, BoundaryKind::slip,
+                                             BoundaryKind::outlet, BoundaryKind::state,
+                                             BoundaryKind::inlet};
   for (std::size_t b = 0; b < nb; ++b) {
     kind[b] = kinds[b % kinds.size()];
     const auto f = ni + b;
@@ -183,6 +187,7 @@ TEST_CASE(
   s.flux = flux;
   s.second_order = true;
   s.limiter = false;
+  s.gradient_fit = fit;
   s.mach_ref = 1.0;
   s.reference = conserved(1.1, {10.0, 5.0, 0.0}, 0.95e5);
   Euler<P> e(mesh, geometry, {1.4, 287.0}, s);
@@ -205,8 +210,37 @@ TEST_CASE(
   e.assemble(std::vector<double>(nc, 0.0), m);
   m.multiply(v, av);
   // The stored state is u minus a constant reference: its tangent is v.
+  std::vector<double> boundary(5 * nc, 0.0);
+  e.gradient_tangent(state, v, boundary, Euler<P>::Faces::boundary);
   e.gradient_tangent(state, v, tan, Euler<P>::Faces::interior);
-  e.gradient_tangent(state, v, tan, Euler<P>::Faces::boundary);
+  std::vector<bool> on_boundary(nc, false);
+  for (std::size_t b = 0; b < nb; ++b) {
+    on_boundary[static_cast<std::size_t>(mesh.owner()[ni + b])] = true;
+  }
+  for (std::size_t k = 0; k < 5; ++k) {
+    for (std::size_t c = 0; c < nc; ++c) {
+      if (!on_boundary[c]) REQUIRE(boundary[k * nc + c] == 0.0);
+    }
+  }
+  for (std::size_t i = 0; i < tan.size(); ++i) tan[i] += boundary[i];
+  // The boundary tangent in fp32+acc64, at the same state: FP32 tangents, so it agrees with
+  // FP64's to FP32 rounding of the largest term.
+  using Q = autan::kernels::fp32_acc64;
+  Euler<Q> e32(mesh, geometry, {1.4, 287.0}, s);
+  e32.set_boundary(kind, data);
+  std::vector<float> state32(5 * nc), v32(v.begin(), v.end());
+  std::vector<double> res32(5 * nc), boundary32(5 * nc, 0.0);
+  e32.state(u, state32);
+  e32.residual_and_jacobian(state32, res32);
+  e32.gradient_tangent(state32, v32, boundary32, Euler<Q>::Faces::boundary);
+  double scale = 0.0, diff32 = 0.0;
+  for (std::size_t i = 0; i < boundary.size(); ++i) {
+    REQUIRE(std::isfinite(boundary32[i]));
+    scale = std::max(scale, std::abs(boundary[i]));
+    diff32 = std::max(diff32, std::abs(boundary32[i] - boundary[i]));
+  }
+  REQUIRE(scale > 0.0);
+  CHECK(diff32 <= 1024 * std::numeric_limits<float>::epsilon() * scale);
   const double h = 1e-6;
   std::vector<double> up(u), um(u);
   for (std::size_t i = 0; i < u.size(); ++i) {
@@ -221,6 +255,7 @@ TEST_CASE(
   for (std::size_t i = 0; i < u.size(); ++i) {
     const double fd = (rp[i] - rm[i]) / (2.0 * h);
     REQUIRE(std::isfinite(fd));
+    REQUIRE(std::isfinite(av[i]));
     REQUIRE(std::isfinite(tan[i]));
     diff = std::max(diff, std::abs(fd - av[i] - tan[i]));
     without = std::max(without, std::abs(fd - av[i]));
