@@ -43,7 +43,7 @@ struct Euler<P>::Impl {
   // Quadratic gradient: its fit's stencil (two vertex rings) and weights, as a topology of its own
   // for band_gradients (empty under GradientFit::linear).
   kernels::CellStencil vertex;
-  stored<decltype(D::band)> band;
+  stored<decltype(D::band)> band, band_tan;  // band_tan: gradient_tangent's, zero
   stored<decltype(D::band_weight)> band_weight;
   std::vector<kernels::offset_t> band_offsets;
   std::vector<index_t> band_entries;
@@ -865,6 +865,7 @@ void Euler<P>::gradient_tangent(std::span<const State> s, std::span<const State>
     m.grad_band_tan.assign(15 * nc, typename P::grad(0));
     m.wmin_tan.assign(5 * nc, State(0));
     m.wmax_tan.assign(5 * nc, State(0));
+    m.band_tan.assign(nc, typename decltype(m.band_tan)::value_type(0));
   }
   // dW = dW/dU du, then the gradients' tangent: a weighted sum of dW over each stencil, whose
   // boundary values are frozen (boundary_states) as in the generated adjoint.
@@ -880,6 +881,7 @@ void Euler<P>::gradient_tangent(std::span<const State> s, std::span<const State>
   d.wmax_tan = m.wmax_tan.data();
   if (m.scheme.gradient_fit == GradientFit::quadratic) {
     d.grad_band_tan = m.grad_band_tan.data();
+    d.band_tan = m.band_tan.data();
     auto b = d;
     b.topo = m.band_topo;
     ek::cpu::band_gradients_tangent(b);
