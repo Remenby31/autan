@@ -1658,6 +1658,7 @@ class Run final : public Log {
         {"solver",
          {{"version", build.version},
           {"commit", build.commit},
+          {"dirty", build.dirty},
           {"backend", backend},
           {"binary_sha256", binary}}},
         {"precision", in.precision},

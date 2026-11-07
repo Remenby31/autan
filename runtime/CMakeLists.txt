@@ -53,7 +53,8 @@ add_custom_target(
   autan_build_info
   COMMAND
     ${CMAKE_COMMAND} -DSOURCE=${PROJECT_SOURCE_DIR} -DOUT=${build_info} -DVERSION=${AUTAN_VERSION}
-    "-DAUTAN_COMMIT=${AUTAN_COMMIT}" -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_info.cmake
+    "-DAUTAN_COMMIT=${AUTAN_COMMIT}" "-DAUTAN_DIRTY=${AUTAN_DIRTY}" -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_info.cmake
   BYPRODUCTS ${build_info}
   VERBATIM
 )
