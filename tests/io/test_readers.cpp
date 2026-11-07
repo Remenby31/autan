@@ -199,6 +199,10 @@ TEST_CASE("Hand-written files from the format specifications read as specified",
     REQUIRE(mesh.cell_zones().size() == 1);
     CHECK(mesh.cell_zones()[0].name == "tet-cell");
     CHECK(mesh.cell_zones()[0].kind == autan::CellKind::fluid);
+    const std::string solid_tet =
+        replace(fluent_tet, "(45 (2 fluid tet-cell)())", "(45 (2 solid tet-cell)())");
+    const autan::Mesh solid = autan::io::read_mesh(write_temp("solid.msh", solid_tet));
+    CHECK(solid.cell_zones()[0].kind == autan::CellKind::solid);
   }
   SECTION("Gmsh") {
     const autan::Mesh mesh = autan::io::read_mesh(write_temp("tet-gmsh.msh", gmsh_tet));
@@ -215,6 +219,11 @@ TEST_CASE("Hand-written files from the format specifications read as specified",
     }
     CHECK(zone_named(mesh, "base").provenance.source_id == 7);
     CHECK(mesh.cell_zones()[0].name == "solid-block");
+    const autan::Mesh ungrouped = autan::io::read_mesh(
+        write_temp("ungrouped.msh", replace(gmsh_tet, "1 0 0 0 1 1 1 1 9 0", "1 0 0 0 1 1 1 0 0")));
+    REQUIRE(ungrouped.cell_zones().size() == 1);
+    CHECK(ungrouped.cell_zones()[0].name == "fluid");
+    CHECK(ungrouped.cell_zones()[0].provenance.source_id == -1);
   }
 }
 
@@ -234,6 +243,11 @@ TEST_CASE("Readers reject what the formats forbid or the core does not support",
     require_error(
         ErrorCode::io_malformed,
         write_temp("hex.msh", replace(fluent_tet, "(12 (2 1 1 1 2))", "(12 (2 1 1 1 4))")));
+  }
+  SECTION("E0132 Fluent node declared without coordinates") {
+    require_error(
+        ErrorCode::io_malformed,
+        write_temp("node5.msh", replace(fluent_tet, "(10 (0 1 4 0 3))", "(10 (0 1 5 0 3))")));
   }
   SECTION("E0133 Fluent periodic shadow faces") {
     require_error(
@@ -288,8 +302,9 @@ std::string foam_header(const char* format, const char* object_class, const char
 }
 
 // One unit hexahedron as an OpenFOAM polyMesh using legal but less common
-// forms: comments everywhere, ASCII faceCompactList with nested faces, a
-// binary neighbour list holding a bare 0, an unsized label list and the
+// forms: comments everywhere, one right after a word, ASCII faceCompactList
+// with nested faces, a binary neighbour list holding a bare 0, a
+// sub-dictionary holding a quoted brace, an unsized label list and the
 // Foundation class name of cellZones.
 fs::path single_hex_polymesh() {
   const fs::path dir = temp_dir() / "single-hex";
@@ -306,9 +321,9 @@ fs::path single_hex_polymesh() {
   write_temp("single-hex/neighbour", foam_header("ascii", "labelList", "neighbour") + "0{}\n");
   write_temp("single-hex/boundary",
              foam_header("ascii", "polyBoundaryMesh", "boundary") +
-                 "1\n(\n    walls // the only patch\n    {\n        type wall /* no slip */;\n"
-                 "        inGroups List<word> 1(wall);\n        nFaces 6;\n        startFace 0;\n  "
-                 "  }\n)\n");
+                 "1\n(\n    walls // the only patch\n    {\n        type wall/* no slip */;\n"
+                 "        inGroups List<word> 1(wall);\n        meta { note \"} not the end\"; }\n"
+                 "        nFaces 6;\n        startFace 0;\n    }\n)\n");
   write_temp("single-hex/cellZones",
              foam_header("ascii", "cellZoneList", "cellZones") +
                  "1\n(\nblock\n{\n    type cellZone;\n    cellLabels List<label> (0);\n}\n)\n");
@@ -330,15 +345,27 @@ TEST_CASE("Legal variants of each format read as specified", "[io]") {
     // OpenFOAM writes an empty binary list as a bare size.
     write_temp("single-hex/neighbour", foam_header("binary", "labelList", "neighbour") + "0\n");
     CHECK(autan::io::read_mesh(temp_dir() / "single-hex").n_cells() == 1);
+    // arch label=64: binary labels take 8 bytes.
+    write_temp("single-hex/owner", replace(foam_header("binary", "labelList", "owner"), "    class",
+                                           "    arch \"LSB;label=64;scalar=64\";\n    class") +
+                                       "6(" + std::string(48, '\0') + ")\n");
+    CHECK(autan::io::read_mesh(temp_dir() / "single-hex").n_cells() == 1);
+    // A directory holding `points` is the polyMesh, even beside a constant/polyMesh.
+    fs::create_directories(temp_dir() / "single-hex" / "constant");
+    fs::copy(data_dir / "hex" / "polyMesh", temp_dir() / "single-hex" / "constant" / "polyMesh");
+    CHECK(autan::io::read_mesh(temp_dir() / "single-hex").n_cells() == 1);
+    fs::remove_all(temp_dir() / "single-hex" / "constant");
   }
-  SECTION("Gmsh $PhysicalNames after $Elements, and a group without elements") {
+  SECTION("Gmsh $PhysicalNames after $Elements, groups without elements, an empty name") {
     std::string text = replace(
         gmsh_tet, "$PhysicalNames\n2\n2 7 \"base\"\n3 9 \"solid-block\"\n$EndPhysicalNames\n", "");
     text +=
-        "$PhysicalNames\n3\n2 7 \"base\"\n2 8 \"spare\"\n3 9 \"solid-block\"\n$EndPhysicalNames\n";
+        "$PhysicalNames\n4\n2 6 \"\"\n2 7 \"base\"\n2 8 \"spare\"\n3 9 "
+        "\"solid-block\"\n$EndPhysicalNames\n";
     const autan::Mesh mesh = autan::io::read_mesh(write_temp("late-names.msh", text));
     CHECK(mesh.cell_zones()[0].name == "solid-block");
     CHECK(zone_named(mesh, "base").provenance.source_id == 7);
+    CHECK(zone_named(mesh, "6").provenance.source_id == 6);
     const auto zones = mesh.face_zones();
     const auto spare = static_cast<std::size_t>(
         std::find_if(zones.begin(), zones.end(),
@@ -376,6 +403,9 @@ TEST_CASE("Hostile or contradictory sizes are coded errors, not crashes", "[io]"
     require_error(ErrorCode::io_malformed,
                   write_temp("negative.msh",
                              replace(gmsh_tet, "1 0 0 0 1 1 1 1 9 0", "1 0 0 0 1 1 1 1 -9 0")));
+    require_error(
+        ErrorCode::io_malformed,
+        write_temp("zero.msh", replace(gmsh_tet, "1 0 0 0 1 1 1 1 9 0", "1 0 0 0 1 1 1 1 0 0")));
   }
   SECTION("Fluent node range") {
     require_error(ErrorCode::io_malformed,
@@ -435,6 +465,19 @@ TEST_CASE("Gmsh $Periodic surface links become periodic pairs", "[io][periodic]"
   require_error(autan::ErrorCode::io_malformed, edited("58\n5 1\n6 2\n", "58\n5 2\n6 1\n"));
   // A link of a dimension the format does not have.
   require_error(autan::ErrorCode::io_malformed, edited("2 2 1\n16 1 0 0 1", "4 2 1\n16 1 0 0 1"));
+  // A curve link to entity tag 0: entity tags are positive.
+  require_error(autan::ErrorCode::io_malformed, edited("\n1 3 1\n", "\n1 0 1\n"));
+  // The xmin -> xmax link without its affine transform.
+  require_error(autan::ErrorCode::io_unsupported,
+                edited("2 2 1\n16 1 0 0 1 0 1 0 0 0 0 1 0 0 0 0 1\n", "2 2 1\n0\n"));
+  // A first link between the same groups, by (2, 0, 0) and without node pairs.
+  require_error(
+      autan::ErrorCode::io_malformed,
+      edited("$Periodic\n15\n", "$Periodic\n16\n2 2 1\n16 1 0 0 2 0 1 0 0 0 0 1 0 0 0 0 1\n0\n"));
+  // Node pairs off the translation by exactly the tolerance, 1e-9 of its length.
+  const autan::Mesh shifted =
+      autan::io::read_mesh(edited("2 2 1\n16 1 0 0 1 0 1 0 0", "2 2 1\n16 1 0 0 1 0 1 0 1e-09"));
+  CHECK(shifted.periodic_pairs().size() == 2);
 }
 
 TEST_CASE("A Gmsh section name longer than 4096 bytes is E0122 before it is copied", "[io]") {
