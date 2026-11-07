@@ -46,3 +46,40 @@ jobs:
           n=$(for f in sha-*.txt; do grep '^nc' "$f" | cut -d' ' -f1-6; done | sort -u | wc -l)
           echo "distinct (level, sha) lines: $n (3 expected, one per level)"
           test "$n" -eq 3
+  # TEMPORARY: where test_naca0012.py hangs at #532's commit b4885b28 (two V&V jobs cancelled at
+  # 20 min). Every test is bounded; faulthandler prints the stack of one that runs past 120 s.
+  hang-532:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: vv
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: b4885b287a1195d59606b239f59f9708da54cd4d
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.6"
+          enable-cache: false
+      - name: Install libGLU for Gmsh
+        timeout-minutes: 5
+        run: |
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install --yes --no-install-recommends libglu1-mesa
+      - name: Install from the lock file, Gmsh included
+        run: uv sync --locked --all-groups
+      - name: test_naca0012.py, one test at a time, each bounded
+        timeout-minutes: 15
+        run: |
+          uv run --locked --no-sync pytest --collect-only -q tests/test_naca0012.py | grep '::' > ids.txt
+          while read -r id; do
+            start=$(date +%s)
+            timeout 150 uv run --locked --no-sync pytest -q -p no:cacheprovider -o faulthandler_timeout=120 "$id" > out.txt 2>&1
+            rc=$?
+            echo "rc=$rc $(( $(date +%s) - start ))s $id"
+            if [ "$rc" -ne 0 ]; then grep -E '^E |File "|Timeout|Thread|passed|failed' out.txt | head -40; fi
+          done < ids.txt
