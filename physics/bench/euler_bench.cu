@@ -254,7 +254,7 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
     weights = std::move(w);
   }
   auto st_weight = conv(D{}.stencil_lsq_weight, weights);
-  std::vector<double> bc_kind(nf, -1.0);  // interior faces: kernels/euler.py BC_INTERIOR
+  std::vector<double> bc_kind(nf, 0.0);
   std::vector<S> bc(5 * nf, S(0));
   for (std::size_t b = 0; b < nb; ++b) {
     bc_kind[ni + b] = static_cast<double>(kind[b]);

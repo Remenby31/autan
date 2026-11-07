@@ -53,7 +53,6 @@ from autan_codegen.dsl import (
 )
 
 # Boundary condition codes of the face dataset `bc_kind`.
-BC_INTERIOR = -1.0  # an interior face (bc_kind is defined on every face)
 BC_STATE = 0.0  # boundary state given in `bc` as W (manufactured solutions, exact data)
 BC_FARFIELD = 1.0  # `bc` = freestream W; Riemann invariants normal to the face
 BC_SLIP = 2.0  # slip wall and symmetry plane: no flux but pressure
@@ -562,20 +561,22 @@ def limiter_term(
     gc: Grad.Mat53,
     lo: State.Vec5,
     hi: State.Vec5,
-    kind: Geom,
     xf: Geom.Vec3,
     xc: Geom.Vec3,
 ) -> State.Vec5:
-    # Interior faces only (section 4.4, p. 10): an extremum at a boundary face does not limit.
+    # Every face of the cell, boundary faces included. This departs from the paper's first measure
+    # of section 4.4 (p. 10), which leaves boundary faces out of step 3 in a scheme that also has
+    # wall ghost volumes (sections 4.4.1-4.4.2) bounding the near-wall cells. Without those ghosts,
+    # leaving the boundary faces out made ONERA M6 leave the admissible states at its wall cells
+    # (#244, diagnosis D-L1).
     d = gc @ rel(xf, xc)
-    phi_f = Vec5(
+    return Vec5(
         smooth_min(d[0], hi[0] - wc[0], lo[0] - wc[0]),
         smooth_min(d[1], hi[1] - wc[1], lo[1] - wc[1]),
         smooth_min(d[2], hi[2] - wc[2], lo[2] - wc[2]),
         smooth_min(d[3], hi[3] - wc[3], lo[3] - wc[3]),
         smooth_min(d[4], hi[4] - wc[4], lo[4] - wc[4]),
     )
-    return phi_f if kind < BC_INTERIOR + 0.5 else Vec5(1.0, 1.0, 1.0, 1.0, 1.0)
 
 
 @pointwise
@@ -610,7 +611,6 @@ limiter = cell_reduce(
     gc=grad.self_,
     lo=wmin.self_,
     hi=wmax.self_,
-    kind=bc_kind,
     xf=geometry.face_centroid,
     xc=geometry.cell_centroid.self_,
     acc=Min(phi),

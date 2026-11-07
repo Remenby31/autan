@@ -913,16 +913,18 @@ TEMPLATE_TEST_CASE("the limiter is Michalak and Ollivier-Gooch's by hand on a un
       CHECK(std::abs(phi[k * nc + centre] - 25.0 / 27.0) <= tol(k));
     }
   }
-  // f = t, exact boundary states: every interior face has y >= 2 > y_t, so phi = 1 everywhere.
-  // The boundary faces do not enter the minimum (preprint p. 10): the cell at x = 0.9 sees the
-  // xmax face state f(2.5) as its stencil's maximum, so that face has y = 0.5 / 0.5 = 1 and,
-  // counted, would give Phi = 23/27.
+  // f = t, exact boundary states: every interior face has y >= 2 > y_t. Boundary faces enter the
+  // minimum too (a departure from the paper's section 4.4, kernels/euler.py): the cells at x = 0.1
+  // and 0.9 see their xmin or xmax face state f(-2.5) or f(2.5) as the stencil's extremum, so that
+  // face has y = 0.5 / 0.5 = 1 and Phi = 23/27 there; every other cell keeps Phi = 1.
   const auto line = [](double t) { return t; };
   {
     const auto phi = limiter(line, 1.0);
     for (std::size_t j = 0; j < phi.size(); ++j) {
-      INFO("component " << j / nc << " cell " << j % nc);
-      CHECK(std::abs(phi[j] - 1.0) <= tol(j / nc));
+      const double x = g.cell_centroid_x[j % nc];
+      const bool end = std::abs(x - 0.1) < 1e-9 || std::abs(x - 0.9) < 1e-9;
+      INFO("component " << j / nc << " cell " << j % nc << " x " << x);
+      CHECK(std::abs(phi[j] - (end ? 23.0 / 27.0 : 1.0)) <= tol(j / nc));
     }
   }
 }

@@ -156,8 +156,7 @@ struct Euler<P>::Impl {
     fill(cell_volume, packed.cell_volume);
     const auto nc = static_cast<std::size_t>(topo.n_cells);
     const auto nf = static_cast<std::size_t>(topo.n_faces);
-    // Interior faces carry kernels/euler.py's BC_INTERIOR, which the limiter reads.
-    bc_kind.assign(nf, -1.0);
+    bc_kind.assign(nf, 0.0);
     bc.assign(5 * nf, State(0));
     prim_b.assign(5 * nf, State(0));
     prim.assign(5 * nc, State(0));

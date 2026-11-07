@@ -209,7 +209,7 @@ std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Schem
   sched.face_scratch = buf.zeros<typename M::compute>(5 * nf);
   sched.face_scratch_width = 5;
 
-  std::vector<double> kind(nf, -1.0), bc(5 * nf, 0.0);  // interior faces: BC_INTERIOR
+  std::vector<double> kind(nf, 0.0), bc(5 * nf, 0.0);
   for (std::size_t i = 0; i < nb; ++i) {
     kind[ni + i] = static_cast<double>(b.kind[i]);
     for (std::size_t k = 0; k < 5; ++k) bc[k * nf + ni + i] = b.data[k * nb + i];
