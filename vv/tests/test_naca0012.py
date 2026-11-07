@@ -324,7 +324,7 @@ def assert_same_file(ours: Path, theirs: Path, shown: int = 3) -> None:
     a, b = ours.read_bytes(), theirs.read_bytes()
     if a == b:
         return
-    lines_a, lines_b = a.splitlines(), b.splitlines()
+    lines_a, lines_b = a.splitlines(keepends=True), b.splitlines(keepends=True)
     differ = [
         k
         for k in range(max(len(lines_a), len(lines_b)))
