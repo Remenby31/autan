@@ -315,9 +315,32 @@ def test_python_writer_writes_the_file_gmsh_writes(nc: int, tmp_path: Path) -> N
     assert_same_file(ours, theirs)
 
 
-def assert_same_file(ours: Path, theirs: Path) -> None:
-    """Fail unless the two files hold the same bytes."""
-    assert ours.read_bytes() == theirs.read_bytes()
+def assert_same_file(ours: Path, theirs: Path, shown: int = 3) -> None:
+    """Fail unless the two files hold the same bytes, naming their sha256 and first differing lines.
+
+    The bytes are never compared in an assert: pytest would explain the mismatch with difflib,
+    which takes minutes on files of this size when CI=true turns its truncation off.
+    """
+    a, b = ours.read_bytes(), theirs.read_bytes()
+    if a == b:
+        return
+    lines_a, lines_b = a.splitlines(), b.splitlines()
+    differ = [
+        k
+        for k in range(max(len(lines_a), len(lines_b)))
+        if k >= len(lines_a) or k >= len(lines_b) or lines_a[k] != lines_b[k]
+    ]
+    first = [
+        f"  line {k + 1}: {lines_a[k] if k < len(lines_a) else b'<none>'!r}"
+        f" != {lines_b[k] if k < len(lines_b) else b'<none>'!r}"
+        for k in differ[:shown]
+    ]
+    msg = (
+        f"{ours.name} (sha256 {hashlib.sha256(a).hexdigest()}, {len(lines_a)} lines) and "
+        f"{theirs.name} (sha256 {hashlib.sha256(b).hexdigest()}, {len(lines_b)} lines) "
+        f"differ on {len(differ)} lines, first:\n" + "\n".join(first)
+    )
+    raise AssertionError(msg)
 
 
 def test_a_different_file_is_reported_in_seconds(tmp_path: Path) -> None:
