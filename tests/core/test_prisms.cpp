@@ -167,6 +167,32 @@ TEST_CASE("A column stops at its first prism beyond the planarity tolerance", "[
   CHECK(r.not_planar + r.not_aligned + r.not_layer + r.invalid == columns);
   CHECK(r.no_candidate + r.ambiguous + r.across_zones + r.not_tetrahedron == 0);
   CHECK(r.layers == g.layers);
+
+  // Three tetrahedra on the wall cap (0,0,0) (1,0,0) (0,1,0) with tops (0,0,1) (2,0,0) (0,2,0):
+  // two pillars lie along the cap's edges, so two sides have a straight corner, which is convex.
+  // With the pillar tolerance open, the set is refused only at its corners.
+  autan::CellwiseMesh flat;
+  for (const auto& [x, y, z] : {std::array<double, 3>{0, 0, 0}, std::array<double, 3>{1, 0, 0},
+                                std::array<double, 3>{0, 1, 0}, std::array<double, 3>{0, 0, 1},
+                                std::array<double, 3>{2, 0, 0}, std::array<double, 3>{0, 2, 0}}) {
+    flat.x.push_back(x);
+    flat.y.push_back(y);
+    flat.z.push_back(z);
+  }
+  flat.face_zones.push_back(autan::FaceZone{
+      .name = "wall", .bc_type = "", .kind = autan::BcKind::wall, .provenance = {}});
+  flat.cell_zones.push_back(autan::CellZone{
+      .name = "fluid", .type = "", .kind = autan::CellKind::unspecified, .provenance = {}});
+  for (const auto& t : {std::array<index_t, 4>{0, 1, 2, 3}, std::array<index_t, 4>{1, 2, 3, 4},
+                        std::array<index_t, 4>{2, 3, 4, 5}})
+    flat.add_cell(autan::CellShape::tetra, t, 0);
+  flat.add_labelled_face(std::array<index_t, 3>{0, 1, 2}, 0);
+  const auto straight =
+      autan::merge_layer_prisms(autan::assemble(autan::to_face_based(std::move(flat))),
+                                {.planarity_deg = 5.0, .aspect = 2.0, .pillar_deg = 120.0});
+  CHECK(straight.report.prisms == 0);
+  CHECK(straight.report.invalid == 1);
+  CHECK(straight.report.not_planar == 0);
 }
 
 TEST_CASE("Tolerances decide which layers merge", "[prisms]") {
@@ -179,6 +205,29 @@ TEST_CASE("Tolerances decide which layers merge", "[prisms]") {
       autan::merge_layer_prisms(mesh, {.planarity_deg = 5.0, .aspect = 4.0, .pillar_deg = 20.0});
   CHECK(wide.report.prisms == 2 * g.n * g.n * (g.layers + 1));
   CHECK(wide.report.tetrahedra == 0);
+  // Tolerances are inclusive. Vertical pillars are exactly along the cap's normal, so a pillar
+  // tolerance of 0 still merges the thin layers.
+  const auto upright =
+      autan::merge_layer_prisms(mesh, {.planarity_deg = 5.0, .aspect = 1.0, .pillar_deg = 0.0});
+  CHECK(upright.report.prisms == 2 * g.n * g.n * g.layers);
+  // n = 4, one layer 0.5 high on cap legs of 0.25: the height, three thirds of 0.5 summed, rounds
+  // to 0.5 exactly, twice the shortest cap edge.
+  const auto tall =
+      autan::merge_layer_prisms(assembled({.n = 4, .layers = 0, .moved = std::nullopt}),
+                                {.planarity_deg = 5.0, .aspect = 2.0, .pillar_deg = 20.0});
+  CHECK(tall.report.prisms == 32);
+  // n = 1, one layer, every other boundary face a second wall zone, after the first: each of its
+  // fronts lies on a merged tetrahedron.
+  auto walled = autan::to_face_based(layered({.n = 1, .layers = 0, .moved = std::nullopt}));
+  for (auto& zone : walled.face_zones) {
+    if (zone.name == "unassigned") zone.kind = autan::BcKind::wall;
+  }
+  const auto fronts =
+      autan::merge_layer_prisms(autan::assemble(std::move(walled)),
+                                {.planarity_deg = 5.0, .aspect = 4.0, .pillar_deg = 20.0});
+  CHECK(fronts.report.prisms == 2);
+  CHECK(fronts.report.not_tetrahedron == 10);
+  CHECK(fronts.report.no_candidate == 0);
   // A mesh without wall zone merges nothing.
   auto bare = layered(g);
   bare.face_zones[0].kind = autan::BcKind::unspecified;

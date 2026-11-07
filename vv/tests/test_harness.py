@@ -7,6 +7,7 @@
   p = 1, and refuse families or runs that do not fit.
 """
 
+import hashlib
 import itertools
 import json
 import re
@@ -26,6 +27,7 @@ from autan_vv.initial_state import write_initial_state
 from autan_vv.meshes.facemesh import FaceMesh
 from autan_vv.meshes.families import cartesian, generate_family
 from autan_vv.meshes.fluent import write_fluent
+from autan_vv.mms import CATALOG, dump_json
 from autan_vv.oracles.registry import get_oracle
 from autan_vv.runs import mesh_info, write_run
 
@@ -52,6 +54,7 @@ def _case(
     precision: str = "fp64",
     time: float | None = None,
     edit: Callable[[autan.Case], None] | None = None,
+    manufactured: autan.Manufactured | None = None,
 ) -> autan.Case:
     oracle = get_oracle(oracle_name)
     case = autan.Case(f"verify-{oracle_name}", mesh=path)
@@ -64,7 +67,10 @@ def _case(
     case.freestream(mach=mach, pressure=1e5 * Pa, temperature=300 * K)
     if time is not None:
         case.time = autan.Unsteady(steps=1, dt=time * s)
-    case.boundary("*").farfield()
+    if manufactured is not None:
+        case.verification = manufactured
+    else:
+        case.boundary("*").farfield()
     if edit is not None:
         edit(case)
     return case
@@ -324,6 +330,24 @@ def test_runs_that_do_not_fit_the_oracle_or_each_other_are_rejected(tmp_path: Pa
         with pytest.raises(VVError) as err:
             call()
         assert err.value.code == code
+
+    def solution(directory: Path, text: str) -> autan.Manufactured:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "euler.mms.json").write_text(text)
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        return autan.Manufactured(path=str(directory / "euler.mms.json"), sha256=digest)
+
+    text = dump_json(CATALOG["euler"]())
+    same = solution(tmp_path / "one", text)
+    moved = solution(tmp_path / "two", text)
+    different = solution(tmp_path / "three", text + "\n")
+    one = _runs(tmp_path / "one", meshes[:2], "mms-euler", 2.0, manufactured=same)
+    two = _runs(tmp_path / "two", meshes[2:], "mms-euler", 2.0, manufactured=moved)
+    assert verify([*one, *two], "mms-euler")["oracle"]["name"] == "mms-euler"
+    three = _runs(tmp_path / "three", meshes[2:], "mms-euler", 2.0, manufactured=different)
+    with pytest.raises(VVError) as err:
+        verify([*one, *three], "mms-euler")
+    assert err.value.code == "V0727"
 
 
 def test_viscous_oracles_check_the_material_law(tmp_path: Path) -> None:

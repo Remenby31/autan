@@ -13,8 +13,9 @@ namespace autan::runtime {
 /// case-schema.md#time: an equation whose residual at iteration 1 of the original run is below
 /// 1e-12 of the largest residual there is identically zero (the spanwise momentum of a
 /// one-cell-thick slab); it is exempt while it stays at or below that floor, and once above it
-/// must drop like the others. The runtime's convergence decision and a physics' pseudo-time
-/// step use this one rule: fed the same reported residuals, they decide the same.
+/// must drop like the others from a reference of its kind (woken_reference()). The runtime's
+/// convergence decision and a physics' pseudo-time step use this one rule: fed the same reported
+/// residuals, they decide the same.
 class RoundOffExemption {
  public:
   /// `names` are the equations; `woken`, those that left their floor earlier in a continued
@@ -26,10 +27,26 @@ class RoundOffExemption {
   /// residual_reference` in a continuation), unless already set.
   void reference(std::span<const double> first) {
     if (!exempt_.empty()) return;
+    first_.assign(first.begin(), first.end());
     floor_ = 1e-12 * *std::ranges::max_element(first);
     for (std::size_t e = 0; e < first.size(); ++e) {
-      exempt_.push_back(first[e] < floor_ && std::ranges::find(woken_, names_[e]) == woken_.end());
+      zero_.push_back(first[e] < floor_);
+      exempt_.push_back(zero_[e] && std::ranges::find(woken_, names_[e]) == woken_.end());
     }
+  }
+
+  /// Whether equation `e` was identically zero at iteration 1 and has left its floor.
+  [[nodiscard]] bool woken(std::size_t e) const { return zero_[e] && !exempt_[e]; }
+
+  /// The value a woken equation drops from: the largest residual at iteration 1 of the momentum
+  /// components for a momentum component, which share units, of every equation otherwise.
+  [[nodiscard]] double woken_reference(std::size_t e) const {
+    const bool momentum = names_[e].starts_with("momentum-");
+    double largest = 0.0;
+    for (std::size_t k = 0; k < first_.size(); ++k) {
+      if (!momentum || names_[k].starts_with("momentum-")) largest = std::max(largest, first_[k]);
+    }
+    return largest;
   }
 
   /// This iteration's residuals: the equations that leave their floor now, no longer exempt.
@@ -51,7 +68,8 @@ class RoundOffExemption {
 
  private:
   std::vector<std::string> names_, woken_;
-  std::vector<bool> exempt_;
+  std::vector<bool> exempt_, zero_;
+  std::vector<double> first_;
   double floor_ = 0.0;
 };
 
