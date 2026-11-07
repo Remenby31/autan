@@ -15,6 +15,7 @@
 #include "autan/core/geometry.hpp"
 #include "autan/io/mesh_counts.hpp"
 #include "autan/io/read_mesh.hpp"
+#include "autan/kernels/geometry.hpp"
 #include "autan/partition/partition.hpp"
 #include "fixtures.hpp"
 
@@ -175,6 +176,11 @@ TEST_CASE("MeshInfo counts the vertex rings of the quadratic gradient and the bo
     const auto c = autan::io::run_counts(mesh, 1.0, CellOrder::input);
     const Rings expected = counted_rings(mesh);
     CHECK(c.vertex_stencil_entries == expected.vertex);
+    // The runtime's own vertex stencil, the one the quadratic gradient walks.
+    const auto runtime_stencil = autan::kernels::cell_stencil(
+        mesh, autan::kernels::pack_geometry(mesh, autan::compute_geometry(mesh)),
+        autan::kernels::StencilKind::vertex);
+    CHECK(c.vertex_stencil_entries == static_cast<std::int64_t>(runtime_stencil.entries.size()));
     CHECK(c.band_entries == expected.band);
     CHECK(c.boundary_fit_entries == expected.boundary_fit);
     REQUIRE(c.partition);

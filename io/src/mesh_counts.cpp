@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -19,73 +20,170 @@ struct Stencils {
   std::int64_t face2 = 0, vertex = 0, band = 0, boundary_fit = 0;
 };
 
+// Each cell's nodes and each node's cells and boundary faces (CSR): the vertex cell stencil
+// (kernels::cell_stencil, StencilKind::vertex) without materialising it. A cell's vertex
+// stencil is the other cells at its nodes and the boundary faces with one of its nodes.
+struct Incidence {
+  std::vector<std::int64_t> cell_off, node_off, bface_off;
+  std::vector<index_t> cell_nodes, node_cells, node_bfaces;
+};
+
+Incidence incidence(const Mesh& mesh) {
+  const auto nc = static_cast<std::size_t>(mesh.n_cells());
+  const auto nn = static_cast<std::size_t>(mesh.n_points());
+  const auto nf = static_cast<std::size_t>(mesh.n_faces());
+  const auto nint = static_cast<std::size_t>(mesh.n_interior_faces());
+  const auto owner = mesh.owner();
+  const auto neighbour = mesh.neighbour();
+  std::vector<std::int64_t> face_off(nc + 1, 0);
+  for (std::size_t f = 0; f < nf; ++f) {
+    ++face_off[static_cast<std::size_t>(owner[f]) + 1];
+    if (f < nint) ++face_off[static_cast<std::size_t>(neighbour[f]) + 1];
+  }
+  for (std::size_t c = 0; c < nc; ++c) face_off[c + 1] += face_off[c];
+  std::vector<index_t> faces(static_cast<std::size_t>(face_off[nc]));
+  {
+    std::vector<std::int64_t> at(face_off.begin(), face_off.end() - 1);
+    for (std::size_t f = 0; f < nf; ++f) {
+      faces[static_cast<std::size_t>(at[static_cast<std::size_t>(owner[f])]++)] =
+          static_cast<index_t>(f);
+      if (f < nint)
+        faces[static_cast<std::size_t>(at[static_cast<std::size_t>(neighbour[f])]++)] =
+            static_cast<index_t>(f);
+    }
+  }
+  Incidence in;
+  constexpr auto unseen = static_cast<std::size_t>(-1);
+  std::vector<std::size_t> stamp(nn, unseen);
+  // A cell's distinct nodes, counted, then listed.
+  const auto each_node = [&](std::size_t c, auto&& visit) {
+    for (auto k = face_off[c]; k < face_off[c + 1]; ++k) {
+      for (const index_t v : mesh.face_nodes(faces[static_cast<std::size_t>(k)])) {
+        if (stamp[static_cast<std::size_t>(v)] != c) {
+          stamp[static_cast<std::size_t>(v)] = c;
+          visit(v);
+        }
+      }
+    }
+  };
+  in.cell_off.assign(nc + 1, 0);
+  in.node_off.assign(nn + 1, 0);
+  for (std::size_t c = 0; c < nc; ++c) {
+    each_node(c, [&](index_t v) {
+      ++in.cell_off[c + 1];
+      ++in.node_off[static_cast<std::size_t>(v) + 1];
+    });
+  }
+  for (std::size_t c = 0; c < nc; ++c) in.cell_off[c + 1] += in.cell_off[c];
+  for (std::size_t v = 0; v < nn; ++v) in.node_off[v + 1] += in.node_off[v];
+  in.cell_nodes.resize(static_cast<std::size_t>(in.cell_off[nc]));
+  in.node_cells.resize(static_cast<std::size_t>(in.node_off[nn]));
+  std::ranges::fill(stamp, unseen);
+  std::vector<std::int64_t> at(in.node_off.begin(), in.node_off.end() - 1);
+  for (std::size_t c = 0; c < nc; ++c) {
+    auto k = in.cell_off[c];
+    each_node(c, [&](index_t v) {
+      in.cell_nodes[static_cast<std::size_t>(k++)] = v;
+      in.node_cells[static_cast<std::size_t>(at[static_cast<std::size_t>(v)]++)] =
+          static_cast<index_t>(c);
+    });
+  }
+  in.bface_off.assign(nn + 1, 0);
+  for (std::size_t f = nint; f < nf; ++f) {
+    for (const index_t v : mesh.face_nodes(static_cast<index_t>(f)))
+      ++in.bface_off[static_cast<std::size_t>(v) + 1];
+  }
+  for (std::size_t v = 0; v < nn; ++v) in.bface_off[v + 1] += in.bface_off[v];
+  in.node_bfaces.resize(static_cast<std::size_t>(in.bface_off[nn]));
+  std::ranges::copy(in.bface_off.begin(), in.bface_off.end() - 1, at.begin());
+  for (std::size_t f = nint; f < nf; ++f) {
+    for (const index_t v : mesh.face_nodes(static_cast<index_t>(f)))
+      in.node_bfaces[static_cast<std::size_t>(at[static_cast<std::size_t>(v)]++)] =
+          static_cast<index_t>(f - nint);
+  }
+  return in;
+}
+
 // The cells within `rings` vertex rings of c, c excluded, and the boundary faces in the vertex
 // stencils of those within rings - 1: what the quadratic gradient's band (two rings) and the
 // viscous boundary fit (two, or three where two leave it undetermined) gather when every
 // boundary face gives a value (physics/src/euler.cpp band_weights, navier_stokes.cpp
-// fit_weights). `mark` and `bmark` hold the last cell that listed each cell and boundary face.
-std::int64_t gathered(const kernels::CellStencil& vertex, index_t c, int rings,
-                      std::vector<index_t>& mark, std::vector<index_t>& bmark, index_t nint,
-                      std::vector<index_t>& layer, std::vector<index_t>& next) {
+// fit_weights). `mark`, `nmark` and `bmark` hold the last cell that listed each cell, node and
+// boundary face: a node's cells and faces are listed once.
+struct Walk {
+  std::vector<index_t> mark, nmark, bmark, layer, next;
+};
+
+std::int64_t gathered(const Incidence& in, index_t c, int rings, Walk& w) {
   std::int64_t count = 0;
-  layer.assign(1, c);
-  mark[static_cast<std::size_t>(c)] = c;
+  w.layer.assign(1, c);
+  w.mark[static_cast<std::size_t>(c)] = c;
   for (int r = 0; r < rings; ++r) {
-    next.clear();
-    for (const index_t e : layer) {
+    w.next.clear();
+    for (const index_t e : w.layer) {
       const auto i = static_cast<std::size_t>(e);
-      for (auto k = vertex.offsets[i]; k < vertex.offsets[i + 1]; ++k) {
-        const index_t x = vertex.entries[static_cast<std::size_t>(k)];
-        if (x >= 0) {
-          if (mark[static_cast<std::size_t>(x)] != c) {
-            mark[static_cast<std::size_t>(x)] = c;
-            next.push_back(x);
+      for (auto k = in.cell_off[i]; k < in.cell_off[i + 1]; ++k) {
+        const auto v = static_cast<std::size_t>(in.cell_nodes[static_cast<std::size_t>(k)]);
+        if (w.nmark[v] == c) continue;
+        w.nmark[v] = c;
+        for (auto j = in.node_off[v]; j < in.node_off[v + 1]; ++j) {
+          const index_t x = in.node_cells[static_cast<std::size_t>(j)];
+          if (w.mark[static_cast<std::size_t>(x)] != c) {
+            w.mark[static_cast<std::size_t>(x)] = c;
+            w.next.push_back(x);
             ++count;
           }
-        } else if (auto& m = bmark[static_cast<std::size_t>(-1 - x - nint)]; m != c) {
-          m = c;
-          ++count;
+        }
+        for (auto j = in.bface_off[v]; j < in.bface_off[v + 1]; ++j) {
+          auto& m = w.bmark[static_cast<std::size_t>(in.node_bfaces[static_cast<std::size_t>(j)])];
+          if (m != c) {
+            m = c;
+            ++count;
+          }
         }
       }
     }
-    layer.swap(next);
+    w.layer.swap(w.next);
   }
   return count;
 }
 
 Stencils stencils(const Mesh& mesh, const Geometry& geometry) {
-  const auto packed = kernels::pack_geometry(mesh, geometry);
   Stencils out;
-  out.face2 = static_cast<std::int64_t>(
-      kernels::cell_stencil(mesh, packed, kernels::StencilKind::face2).entries.size());
-  const auto vertex = kernels::cell_stencil(mesh, packed, kernels::StencilKind::vertex);
-  out.vertex = static_cast<std::int64_t>(vertex.entries.size());
+  out.face2 =
+      static_cast<std::int64_t>(kernels::cell_stencil(mesh, kernels::pack_geometry(mesh, geometry),
+                                                      kernels::StencilKind::face2)
+                                    .entries.size());
+  const Incidence in = incidence(mesh);
   const auto nc = static_cast<std::size_t>(mesh.n_cells());
-  const index_t nint = mesh.n_interior_faces();
+  const auto nint = static_cast<std::size_t>(mesh.n_interior_faces());
   const auto owner = mesh.owner();
   const auto neighbour = mesh.neighbour();
-  // The cells the boundary fit serves when every boundary face is a wall: their owners and
-  // the owners' face neighbours.
+  // The cells the boundary fit serves when every boundary face gives the temperature and the
+  // velocity: their owners and the owners' face neighbours.
   std::vector<char> fitted(nc, 0);
-  for (auto f = static_cast<std::size_t>(nint); f < owner.size(); ++f)
-    fitted[static_cast<std::size_t>(owner[f])] = 1;
+  for (auto f = nint; f < owner.size(); ++f) fitted[static_cast<std::size_t>(owner[f])] = 1;
   for (std::size_t f = 0; f < neighbour.size(); ++f) {
     const auto a = static_cast<std::size_t>(owner[f]), b = static_cast<std::size_t>(neighbour[f]);
     if (fitted[a] == 1 && fitted[b] == 0) fitted[b] = 2;
     if (fitted[b] == 1 && fitted[a] == 0) fitted[a] = 2;
   }
-  std::vector<index_t> mark(nc, -1), bmark(owner.size() - static_cast<std::size_t>(nint), -1);
-  std::vector<index_t> layer, next;
+  const auto fresh = [&] {
+    return Walk{.mark = std::vector<index_t>(nc, -1),
+                .nmark = std::vector<index_t>(static_cast<std::size_t>(mesh.n_points()), -1),
+                .bmark = std::vector<index_t>(owner.size() - nint, -1),
+                .layer = {},
+                .next = {}};
+  };
+  Walk w = fresh();
   for (std::size_t c = 0; c < nc; ++c) {
-    const auto cell = static_cast<index_t>(c);
-    out.band += gathered(vertex, cell, 2, mark, bmark, nint, layer, next);
+    out.vertex += gathered(in, static_cast<index_t>(c), 1, w);
   }
-  std::ranges::fill(mark, -1);
-  std::ranges::fill(bmark, -1);
+  w = fresh();
+  for (std::size_t c = 0; c < nc; ++c) out.band += gathered(in, static_cast<index_t>(c), 2, w);
+  w = fresh();
   for (std::size_t c = 0; c < nc; ++c) {
-    if (fitted[c] != 0)
-      out.boundary_fit +=
-          gathered(vertex, static_cast<index_t>(c), 3, mark, bmark, nint, layer, next);
+    if (fitted[c] != 0) out.boundary_fit += gathered(in, static_cast<index_t>(c), 3, w);
   }
   return out;
 }
