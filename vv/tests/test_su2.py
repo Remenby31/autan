@@ -1136,9 +1136,11 @@ def test_accuracy_study_compares_both_codes_each_its_own_baseline(tmp_path: Path
     report = accuracy.study(autan_runs, su2_cases)
     assert report["condition"] == "m080-a125"
     assert report["outputs"] == ["cl", "cd", "cmy"]
+    drop = math.log10((1e-2 + 1e-14) / (1e-2 * 0.97 ** (rows - 1) + 1e-14))
     for row, lv in zip(report["levels"], family.levels, strict=True):
         assert row["autan"]["iterations"] == 804
         assert row["su2"]["iterations"] == 804
+        assert row["autan"]["drop"]["density"] == pytest.approx(drop, rel=1e-12)
         settled = 1.0 + 1e-3 * 0.97 ** (rows - 1)
         assert row["difference"]["cd"] == pytest.approx(1e-4 * settled, rel=1e-9)
         assert row["cp"]["faces"] == lv.n
@@ -1148,6 +1150,18 @@ def test_accuracy_study_compares_both_codes_each_its_own_baseline(tmp_path: Path
         for k in ("cl", "cd"):
             expected = (f0[k] + offset) * (1.0 + 1e-3 * 0.97 ** (rows - 1))
             assert continuum[k]["estimate"] == pytest.approx(expected, rel=1e-6)
+    # Two runs of one level, or a level from another binary, are not one family.
+    with pytest.raises(VVError) as err:
+        accuracy.study([*autan_runs, autan_runs[0]], su2_cases)
+    assert err.value.code == "V0905"
+    original = (autan_runs[0] / "run.json").read_text()
+    info = json.loads(original)
+    info["solver"]["binary_sha256"] = "0" * 64
+    (autan_runs[0] / "run.json").write_text(json.dumps(info))
+    with pytest.raises(VVError) as err:
+        accuracy.study(autan_runs, su2_cases)
+    assert err.value.code == "V0905"
+    (autan_runs[0] / "run.json").write_text(original)
     # Another mesh file on one side is another problem.
     level = json.loads((su2_cases[0] / "level.json").read_text())
     level["mesh"]["source_sha256"] = "0" * 64
@@ -1176,7 +1190,21 @@ def test_accuracy_reads_a_run_continued_in_chunks_as_one_history(tmp_path: Path)
     level = accuracy.autan_level(second.path)
     assert level["chain"] == [first.run.run_id, second.run.run_id]
     assert level["last_iteration"] == whole.run.iterations
+    # A continued run is the uninterrupted one (results.md): the same forces, the same convergence
+    # iteration and level, and the residual drop from the first chunk's first iteration.
     reference = accuracy.autan_level(whole.path)
-    assert (level["cl"], level["cd"], level["converged"]) == (
-        reference["cl"], reference["cd"], reference["converged"],
-    )  # fmt: skip
+    for key in ("cl", "cd", "cmy", "converged", "iterations", "epsilon", "drop"):
+        assert level[key] == reference[key], key
+    # A chain with a run missing, a run without history, or a gap is refused.
+    original = (first.path / "history.jsonl").read_text()
+    kept = original.splitlines()
+    for broken in ("", "\n".join(kept[:3] + kept[4:]) + "\n"):
+        (first.path / "history.jsonl").write_text(broken)
+        with pytest.raises(VVError) as err:
+            accuracy.autan_level(second.path)
+        assert err.value.code == "V0904"
+    (first.path / "history.jsonl").write_text(original)
+    first.path.rename(first.path.with_name("elsewhere"))
+    with pytest.raises(VVError) as err:
+        accuracy.autan_level(second.path)
+    assert err.value.code == "V0904"

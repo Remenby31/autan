@@ -10,6 +10,7 @@ the last iteration; continua come from the three finest levels when all three co
 
 from __future__ import annotations
 
+import itertools
 import json
 import math
 import tomllib
@@ -34,7 +35,8 @@ OUTPUTS = {"m080-a000": ("cd",), "m080-a125": ("cl", "cd", "cmy"), "m050-a125": 
 def _own_baseline(
     runs: history.History, scales: dict[str, float], outputs: tuple[str, ...]
 ) -> dict[str, Any]:
-    drop = {eq: float(np.log10(r[0] / r[-1])) for eq, r in runs.residuals.items()}
+    drop = {eq: float(np.log10(r[0] / r[-1])) if r[0] > 0.0 and r[-1] > 0.0 else None
+            for eq, r in runs.residuals.items()}  # fmt: skip
     scales = {eq: scales[eq] for eq in runs.residuals}
     try:
         eps = history.epsilon(runs, scales, outputs)
@@ -68,9 +70,18 @@ def _autan_scales(case: dict[str, Any]) -> dict[str, float]:
 def _chain(run: Path) -> tuple[str, list[str]]:
     """The history of `run` and of the runs it continues (`start`, results.md), each up to the
     iteration its successor starts from, as one history.jsonl text; and the runs' ids, oldest
-    first. V0904 unless the chain is one case on one mesh by one solver build, its iterations
-    contiguous. The case is compared by name: a continuation may change the iteration budget, and
-    the runtime refuses any other change (E0708)."""
+    first. V0904 unless every run of the chain is there, with one case on one mesh by one solver
+    build, and every run contributes iterations that follow on without a gap. The case is compared
+    by name: a continuation may change the iteration budget, and the runtime refuses any other
+    change (E0708)."""
+    try:
+        return _stitch(run)
+    except FileNotFoundError as err:
+        msg = f"{run}: {err.filename} of its chain is missing"
+        raise VVError(msg, code="V0904") from None
+
+
+def _stitch(run: Path) -> tuple[str, list[str]]:
     chunks = [run]
     while (start := json.loads((chunks[0] / "run.json").read_text())["start"]) is not None:
         if start["mode"] != "continue":
@@ -91,10 +102,15 @@ def _chain(run: Path) -> tuple[str, list[str]]:
         own = [json.loads(x) for x in (c / "history.jsonl").read_text().splitlines() if x.strip()]
         stop = nxt["start"]["iterations"] if nxt is not None else own[-1]["iteration"]
         own = [x for x in own if x["iteration"] <= stop]
-        if lines and own and own[0]["iteration"] != lines[-1]["iteration"] + 1:
-            msg = f"{c}: iterations {lines[-1]['iteration']} then {own[0]['iteration']}"
+        if not own:
+            msg = f"{c}: no history line up to iteration {stop}"
             raise VVError(msg, code="V0904")
         lines += own
+    iterations = [x["iteration"] for x in lines]
+    if iterations != list(range(iterations[0], iterations[0] + len(iterations))):
+        gap = next(a for a, b in itertools.pairwise(iterations) if b != a + 1)
+        msg = f"{run}: its chain's iterations do not follow on after {gap}"
+        raise VVError(msg, code="V0904")
     return "\n".join(json.dumps(x) for x in lines), [i["run_id"] for i in infos]
 
 
@@ -117,7 +133,8 @@ def autan_level(run: Path) -> dict[str, Any]:
         "run": info["run_id"], "chain": chain, "condition": condition, "n": n, "cells": cells,
         "h": 1.0 / n,
         "mesh_sha256": info["mesh"]["sha256"], "commit": info["solver"]["commit"],
-        "backend": info["solver"]["backend"], "precision": info["precision"],
+        "binary_sha256": info["solver"]["binary_sha256"], "backend": info["solver"]["backend"],
+        "precision": info["precision"],
         "status": info["status"], "last_iteration": int(runs.iterations[-1]),
         "cl": float(runs.cl[-1]), "cd": float(runs.cd[-1]), "cmy": float(runs.cmy[-1]),
         **_own_baseline(runs, _autan_scales(case), OUTPUTS[condition]),
@@ -128,13 +145,18 @@ def su2_level(run: Path) -> dict[str, Any]:
     """One SU2 case directory (`autan-vv su2 prepare`, run by vv/su2/run.sh): its condition, level,
     source mesh SHA-256, build, forces at the last iteration and its own-baseline convergence.
     V0904 if a file is missing or SU2 failed."""
-    level = json.loads((run / "level.json").read_text())
     prov: dict[str, Any] = history.provenance(run)["provenance"]  # type: ignore[assignment]
     if prov["exit_status"] != 0:
         msg = f"{run}: SU2 exited with {prov['exit_status']}"
         raise VVError(msg, code="V0904")
-    runs = history.read_su2(run / "history.csv")
-    scales = history.flux_scales(history.su2_freestream((run / "log.txt").read_text()), 1.0)
+    try:
+        level = json.loads((run / "level.json").read_text())
+        runs = history.read_su2(run / "history.csv")
+        log = (run / "log.txt").read_text()
+    except FileNotFoundError as err:
+        msg = f"{run}: {err.filename} is missing"
+        raise VVError(msg, code="V0904") from None
+    scales = history.flux_scales(history.su2_freestream(log), 1.0)
     return {
         "condition": level["condition"], "n": level["n"], "scheme": level["scheme"],
         "mesh_sha256": level["mesh"]["source_sha256"], "su2": prov["su2"],
@@ -159,14 +181,24 @@ def study(autan_runs: list[Path], su2_cases: list[Path]) -> dict[str, Any]:
     """The report (autan.su2-accuracy/1) of one condition: per level both codes' forces and
     convergence, their difference, and wall Cp face by face (`compare.compare_cp`); per code the
     continuum from its three finest levels. V0905 unless the runs are one condition, one Autan
-    build, one SU2 scheme and build, and each level the same mesh file on both sides."""
-    autan = {lv["n"]: lv for lv in map(autan_level, autan_runs)}
-    su2 = {lv["n"]: lv for lv in map(su2_level, su2_cases)}
+    build, one SU2 scheme and build, one run per level and code, and each level the same mesh file
+    on both sides."""
+    autan_levels, su2_levels = list(map(autan_level, autan_runs)), list(map(su2_level, su2_cases))
+    for code, found in (("Autan", autan_levels), ("SU2", su2_levels)):
+        ns = [lv["n"] for lv in found]
+        if len(set(ns)) != len(ns):
+            msg = f"{code} has more than one run of a level: {sorted(ns)}"
+            raise VVError(msg, code="V0905")
+    autan = {lv["n"]: lv for lv in autan_levels}
+    su2 = {lv["n"]: lv for lv in su2_levels}
     su2_dirs = {json.loads((d / "level.json").read_text())["n"]: d for d in su2_cases}
     autan_dirs = {math.isqrt(json.loads((d / "mesh-info.json").read_text())["counts"]["cells"]): d
                   for d in autan_runs}  # fmt: skip
     keys = (
-        {(lv["condition"], lv["commit"], lv["backend"], lv["precision"]) for lv in autan.values()},
+        {
+            (lv["condition"], lv["commit"], lv["binary_sha256"], lv["backend"], lv["precision"])
+            for lv in autan.values()
+        },
         {(lv["condition"], lv["scheme"], lv["su2"], lv["image_id"]) for lv in su2.values()},
         {lv["condition"] for lv in (*autan.values(), *su2.values())},
     )
