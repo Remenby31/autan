@@ -53,7 +53,25 @@ Spectrum of the dense Jacobian (finite differences) at the manufactured solution
 
 Face neighbours stay stable on the hexahedral, prismatic, hybrid and polyhedral families (no eigenvalue with Re < 0 at n = 5–6). Cost on GB10 (tetrahedra n = 96, 3.9 M cells, `fp32`, measured by CFD - Générateur kernels): face neighbours 0.50 ns/cell (93 % of peak bandwidth), face2 1.82 ns/cell (58 %), vertex 20 ns/cell (25 %). face2 is the default: stable, second order, 11× cheaper than vertex. Both stencils give order 2 ([MMS](#manufactured-solution)). The limiter's bounds use the same stencil: bounds over the four face neighbours of a tetrahedron are narrower than the values the face2 gradient extrapolates, so the limiter clips smooth solutions and the limited scheme falls to first order on tetrahedra (measured: finest-pair order 0.58–1.20).
 
-Next to `state` boundaries the face2 fit is one-sided: a cell whose stencil reaches a boundary face takes the exact value at the face centroid, half a cell away, and its gradient carries an O(h) error. The truncation R_h(u)/V − S at the exact MMS state, on the `hex` family 32–96 (Roe, unlimited), therefore falls in the band of cells reconstructing with those gradients. Excluding two rings of cells from the boundary, continuity converges at 1.86, 1.69 and 1.62 between levels (1.2 × 10⁻⁴ at 96³, about h^1.5 in L2 for an O(h) error one cell thick). Excluding three rings, it converges at 2.18, 1.97 and 1.91 (5.8 × 10⁻⁵), and deeper sets give the same level. The Euler MMS solution still converges at order 2 ([Manufactured solution](#manufactured-solution)).
+Next to `state` boundaries the face2 fit is one-sided: a cell whose stencil reaches a boundary face takes the exact value at the face centroid, half a cell away, and its gradient carries an O(h) error. The truncation R_h(u)/V − S at the exact MMS state, on the `hex` family 32–96 (Roe, unlimited), therefore falls in the band of cells reconstructing with those gradients. Excluding two rings of cells from the boundary, continuity converges at 1.86, 1.69 and 1.62 between levels (1.2 × 10⁻⁴ at 96³, about h^1.5 in L2 for an O(h) error one cell thick). Excluding three rings, it converges at 2.18, 1.97 and 1.91 (5.8 × 10⁻⁵), and deeper sets give the same level.
+
+### Quadratic gradient
+
+The Navier-Stokes physics reconstructs its convective face states with the gradient of a quadratic least-squares fit in every cell (`GradientFit::quadratic`, `band_gradients`). Its viscous terms keep the linear face2 gradient (`linear_gradient`), and the wall shear stress has its own fit ([ns-sa.md](ns-sa.md)). The Euler physics keeps the linear gradient: a quadratic fit near the boundary lowered the coarse levels' errors but cost the `euler-mms-order` gate (hex 12–32, ρu fit/finest pair 1.85/1.90 with Roe against 2.06/1.99).
+
+Why every cell ([#137](https://github.com/Remenby31/autan/issues/137), `ns-mms-order`, μ = 10): the linear fit is first order in the cells whose stencil reaches the boundary (above). With the quadratic fit in face rings 1 and 2 only, the tetrahedral family fails the gate (ρ 1.876, ρE 1.845 on the finest pair), and so does the exact gradient in face rings 1–3: the switch in accuracy at the edge of the fitted cells limits the order. With the fit in every cell, there is no switch and the gate passes on every family ([ns-sa.md](ns-sa.md#verification)).
+
+The fit is over two vertex rings, with weights 1/|d|² in coordinates scaled per direction by the stencil's extent. It is fitted to the values of those cells, each taken as the point value at its centroid, and to the states of their boundary faces that give one, also as point values. The fit to cell averages (each cell's second moment about its centroid added, since the average of a quadratic over a cell adds H : M/2) was measured and not kept (#490). It makes the boundary-face normal derivative second order on exact averages, but it lowers the hexahedral family's momentum orders (ρv's finest pair 1.849 on hex 32–128, against 1.934 with the point fit) and changes nothing on tetrahedra. Directions where no entry extends (a one-cell-thick slab) are left out. A cell with fewer than 1.5 entries per unknown keeps the linear fit, and the run logs how many such cells there are (none on the MMS families or the TMR grids).
+
+The cell's own boundary faces are weighted entries, not equality constraints as Ollivier-Gooch and Van Altena (2002) recommend. As constraints, they make the scheme linearly unstable. Spectrum of the dense Jacobian at the MMS, Roe, unlimited, as above:
+
+| Gradient | tet n = 5: Re < 0, min Re | hybrid n = 5: Re < 0, min Re |
+|---|---|---|
+| face2 only | 0, +0.87 | 0, +0.56 |
+| quadratic, faces weighted | 0, +0.87 | 0, +0.55 |
+| quadratic, own faces as constraints | 49, −1.56 | 20, −2.73 |
+
+The constrained fit diverges on the hybrid Euler MMS (n = 16) as reconstruction; the weighted fit converges there in 41 implicit steps.
 
 ## Warped faces
 
