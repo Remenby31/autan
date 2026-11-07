@@ -11,6 +11,7 @@
 #include <functional>
 #include <initializer_list>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <optional>
 #include <random>
@@ -51,6 +52,7 @@
 #include "autan/partition/partition.hpp"
 #include "autan/physics/euler_physics.hpp"
 #include "autan/runtime/input.hpp"
+#include "autan/runtime/round_off.hpp"
 #include "autan/runtime/run.hpp"
 #include "planned.hpp"
 #include "relaxation.hpp"
@@ -68,7 +70,8 @@ const fs::path data_dir{AUTAN_TEST_DATA_DIR};
 const fs::path mesh_path = data_dir / "mesh" / "hybrid" / "polyMesh";
 // The Euler manufactured solution autan-vv exported for the SDK's tests.
 const fs::path mms_path = data_dir / ".." / ".." / "py" / "tests" / "fixtures" / "euler.mms.json";
-const autan::runtime::SolverBuild build{.version = "0.0.0", .commit = std::string(40, 'a')};
+const autan::runtime::SolverBuild build{
+    .version = "0.0.0", .commit = std::string(40, 'a'), .dirty = true};
 
 std::string read(const fs::path& path) {
   std::ifstream in(path, std::ios::binary);
@@ -685,13 +688,15 @@ TEST_CASE("A checkpoint names its iteration, and a start checks it", "[runtime]"
   CHECK(off.err.find("E0707") != std::string::npos);
 }
 
+// `s` quoted for the shell.
+std::string quoted(const std::string& s) {
+  std::string q = "'";
+  for (const char c : s) q += c == '\'' ? std::string("'\\''") : std::string(1, c);
+  return q + "'";
+}
+
 // The SHA-256 of `file` by CMake's implementation, independent of the runtime's.
 std::string sha256_of(const std::string& file) {
-  const auto quoted = [](const std::string& s) {
-    std::string q = "'";
-    for (const char c : s) q += c == '\'' ? std::string("'\\''") : std::string(1, c);
-    return q + "'";
-  };
   const std::string command = quoted(AUTAN_TEST_CMAKE) + " -E sha256sum " + quoted(file);
   std::FILE* pipe = popen(command.c_str(), "r");
   REQUIRE(pipe != nullptr);
@@ -782,6 +787,99 @@ TEST_CASE("An executable's cached hash serves only that unchanged file", "[runti
   CHECK(logged);
 }
 
+// The exit status and standard output of `command` run by the shell.
+std::pair<int, std::string> shell(const std::string& command) {
+  std::FILE* pipe = popen(command.c_str(), "r");
+  REQUIRE(pipe != nullptr);
+  std::string out;
+  std::array<char, 4096> chunk{};
+  std::size_t got = 0;
+  while ((got = std::fread(chunk.data(), 1, chunk.size(), pipe)) > 0) out.append(chunk.data(), got);
+  const int status = pclose(pipe);
+  return {WIFEXITED(status) ? WEXITSTATUS(status) : -1, out};
+}
+
+TEST_CASE("solver.dirty is the SDK's rule in a checkout and the build's own flag in an export",
+          "[runtime]") {
+  const fs::path dir = fresh_dir();
+  const fs::path out = dir / "autan_build_info.hpp";
+  const auto build_info = [&](const fs::path& source, const std::string& defines) {
+    fs::remove(out);
+    return shell(quoted(AUTAN_TEST_CMAKE) + " -DSOURCE=" + quoted(source.string()) +
+                 " -DOUT=" + quoted(out.string()) + " -DVERSION=0.0.0 " + defines + " -P " +
+                 quoted(AUTAN_TEST_BUILD_INFO) + " >/dev/null 2>&1")
+        .first;
+  };
+  const auto recorded = [&] {
+    std::smatch m;
+    const std::string text = read(out);
+    REQUIRE(std::regex_search(text, m,
+                              std::regex("AUTAN_BUILD_COMMIT \"([0-9a-f]*)\"\n#define "
+                                         "AUTAN_BUILD_DIRTY (true|false)\n")));
+    return std::pair<std::string, bool>{m[1].str(), m[2].str() == "true"};
+  };
+  const auto git = [](const fs::path& repo, const std::string& args) {
+    const auto [status, text] =
+        shell("git -C " + quoted(repo.string()) +
+              " -c user.name=t -c user.email=t@t -c commit.gpgsign=false " + args + " 2>/dev/null");
+    REQUIRE(status == 0);
+    return text;
+  };
+  // A checkout, unpacked inside another repository: its own HEAD, dirty when a tracked file
+  // differs from it (results.md). py/build_hook.py reads the same `git status` for the SDK.
+  const fs::path outer = dir / "outer";
+  const fs::path source = outer / "autan";
+  fs::create_directories(source);
+  git(outer, "init -q");
+  git(outer, "commit -q --allow-empty -m outer");
+  std::ofstream(source / "f") << "a";
+  git(source, "init -q");
+  git(source, "add f");
+  git(source, "commit -q -m c");
+  const std::string head = git(source, "rev-parse HEAD").substr(0, 40);
+  const std::string other(40, 'b');
+  struct Step {
+    std::string what;
+    std::function<void()> change;
+    bool dirty;
+  };
+  const std::vector<Step> steps{
+      {"clean", [] {}, false},
+      {"untracked file only", [&] { std::ofstream(source / "new") << "x"; }, false},
+      {"tracked file edited", [&] { std::ofstream(source / "f") << "b"; }, true},
+      {"edit staged", [&] { git(source, "add f"); }, true},
+  };
+  for (const Step& step : steps) {
+    INFO(step.what);
+    step.change();
+    REQUIRE(build_info(source, "-DAUTAN_COMMIT=" + other + " -DAUTAN_DIRTY=OFF") == 0);
+    CHECK(recorded() == std::pair<std::string, bool>{head, step.dirty});
+    CHECK(step.dirty == !git(source, "status --porcelain --untracked-files=no").empty());
+  }
+  // An export (no .git) states both, even inside another repository; missing or malformed, the
+  // build stops.
+  const fs::path exported = outer / "export";
+  fs::create_directories(exported);
+  REQUIRE(build_info(exported, "-DAUTAN_COMMIT=" + other + " -DAUTAN_DIRTY=ON") == 0);
+  CHECK(recorded() == std::pair<std::string, bool>{other, true});
+  REQUIRE(build_info(exported, "-DAUTAN_COMMIT=" + other + " -DAUTAN_DIRTY=OFF") == 0);
+  CHECK(recorded() == std::pair<std::string, bool>{other, false});
+  const std::vector<std::string> refused{
+      "",
+      "-DAUTAN_DIRTY=OFF",
+      "-DAUTAN_COMMIT=" + other,
+      "-DAUTAN_COMMIT=" + other + " -DAUTAN_DIRTY=",
+      "-DAUTAN_COMMIT=" + other + " -DAUTAN_DIRTY=yes",
+      "-DAUTAN_COMMIT=deadbeef -DAUTAN_DIRTY=OFF",
+  };
+  for (const std::string& defines : refused) {
+    INFO(defines);
+    CHECK(build_info(exported, defines) != 0);
+    CHECK_FALSE(fs::exists(out));
+  }
+  fs::remove_all(dir);
+}
+
 TEST_CASE("A converging run writes the run directory of results.md", "[runtime]") {
   // Residuals 0.5^(k-1) drop 8 orders at k = 28 (0.5^27 < 1e-8 < 0.5^26).
   const Json doc = input();
@@ -821,6 +919,7 @@ TEST_CASE("A converging run writes the run directory of results.md", "[runtime]"
   CHECK(info["mesh"]["path"] == fs::absolute(mesh_path).lexically_normal().string());
   CHECK(info["solver"] == Json{{"version", "0.0.0"},
                                {"commit", build.commit},
+                               {"dirty", build.dirty},
                                {"backend", "cpu"},
                                {"binary_sha256", info["solver"]["binary_sha256"]}});
   // The executable that ran, hashed once per process: a second run records the same.
@@ -1211,6 +1310,7 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
         [](Json& m) { m.erase("counts"); },
         [](Json& m) { m["unknown"] = 1; },
         [](Json& m) { m["counts"]["stencil_entries"] = -1; },
+        [](Json& m) { m["counts"].erase("band_entries"); },
         [](Json& m) {
           m["counts"]["cells_by_type"]["hexa"] =
               m["counts"]["cells_by_type"]["hexa"].get<int>() + 1;
@@ -1233,6 +1333,9 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
                             {"faces_by_rank", {0, 0}},
                             {"interior_faces_by_rank", {0, 0}},
                             {"stencil_entries_by_rank", {0, 0}},
+                            {"vertex_stencil_entries_by_rank", {0, 0}},
+                            {"band_entries_by_rank", {0, 0}},
+                            {"boundary_fit_entries_by_rank", {0, 0}},
                             {"nodes_by_rank", {0, 0}},
                             {"face_nodes_by_rank", {0, 0}},
                             {"sent_cells_by_rank", {0, 0}}};
@@ -2077,14 +2180,15 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
   SECTION("the previous run has no solution") {
     require_error(from([&](Json& d) { d["start"]["run"] = fresh_dir().string(); }), "E0707");
   }
-#if defined(__linux__)
-  SECTION("the previous run's solution cannot be read") {
-    // A directory in its place: opened, then each read fails (EISDIR).
-    const fs::path previous = fresh_dir();
-    fs::create_directory(previous / "solution.cgns");
-    require_error(from([&](Json& d) { d["start"]["run"] = previous.string(); }), "E0707");
+  SECTION("the previous run's solution is not a regular file") {
+    // A directory reads nothing without an error on libc++; a named pipe blocks its reader.
+    const fs::path directory = fresh_dir();
+    fs::create_directory(directory / "solution.cgns");
+    require_error(from([&](Json& d) { d["start"]["run"] = directory.string(); }), "E0707");
+    const fs::path pipe = fresh_dir();
+    REQUIRE(::mkfifo((pipe / "solution.cgns").c_str(), 0600) == 0);
+    require_error(from([&](Json& d) { d["start"]["run"] = pipe.string(); }), "E0707");
   }
-#endif
   SECTION("the previous run used another precision") {
     require_error(from([](Json& d) { d["precision"] = "fp64"; }), "E0708");
   }
@@ -2713,11 +2817,41 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
   CHECK(chain == lines_of(whole.run / "history.jsonl"));
 }
 
+TEST_CASE("A residual's plateau follows its level, not its lowest value", "[runtime]") {
+  // case-schema.md#time: the level is the median of the last 100 counted residuals, its first
+  // value (counted step 100) the reference; with no level below 0.9 times it, the residual is on a
+  // plateau at counted step 200. Stationary round-off with a coefficient of variation of 0.2
+  // (#557's largest), uniform on 0.65 to 1.35 times p along the golden-ratio sequence, with one
+  // draw at 0.85 times its lowest value at step 150 that does not move the level; then the same
+  // noise falling 15 % every 100 steps, whose level sets a new reference within every 100 steps.
+  const double p = 1e-6;
+  const auto noise = [p](int k) {
+    return p * (1.0 + 0.35 * (2.0 * std::fmod(k * 0.6180339887498949, 1.0) - 1.0));
+  };
+  for (const bool low_draw : {false, true}) {
+    CAPTURE(low_draw);
+    autan::runtime::ResidualPlateau plateau;
+    double lowest = std::numeric_limits<double>::infinity();
+    int at = 0;
+    for (int k = 1; k <= 1000 && at == 0; ++k) {
+      const double r = low_draw && k == 150 ? 0.85 * lowest : noise(k);
+      lowest = std::min(lowest, r);
+      if (plateau.add(r)) at = k;
+    }
+    CHECK(at == 200);
+  }
+  autan::runtime::ResidualPlateau falling;
+  bool flat = false;
+  for (int k = 1; k <= 1000; ++k) flat = flat || falling.add(noise(k) * std::pow(0.85, k / 100.0));
+  CHECK_FALSE(flat);
+}
+
 TEST_CASE("In fp32+acc64 an equation converges on a round-off plateau near its floor",
           "[runtime]") {
   // case-schema.md#time. Residuals (e + 1) max(0.5^(k-1), p) and scales 1e4 (e + 1) give floors
-  // f_e = 0.5 2^-23 1e4 (e + 1) = 5.96e-4 (e + 1). A plateau is 100 steps without a value below
-  // 0.9 times the least before; an equation converges on one at most 10 f_e high.
+  // f_e = 0.5 2^-23 1e4 (e + 1) = 5.96e-4 (e + 1). A plateau is 100 counted steps without a level
+  // (median of the last 100) below 0.9 times the reference; an equation converges on one at most
+  // 10 f_e high.
   const std::vector<std::string> equations{"density",    "momentum-x", "momentum-y",
                                            "momentum-z", "energy",     "nu-tilde"};
   autan_test::RelaxationOptions scaled;
@@ -2756,19 +2890,43 @@ TEST_CASE("In fp32+acc64 an equation converges on a round-off plateau near its f
 
   SECTION("a plateau above the floor and within the band converges, every equation on it") {
     // p = 1.5 f_0 (the NS manufactured solution's plateau of #467): 0.5^10 = 9.8e-4 > p >
-    // 0.5^11, so the values fall to k = 11 and are p from k = 12, which is not below 0.9 x 9.8e-4:
-    // the last new least value is at k = 11, the plateau holds at k = 111.
+    // 0.5^11, so the values fall to k = 11 and are p from k = 12. The level, the median of the
+    // last 100, is p from its first value at k = 100, the reference: the plateau holds at k = 200.
     autan_test::RelaxationOptions flat = scaled;
     flat.plateau = 1.5 * floor;
-    const Json info = run_json(flat, "fp32+acc64");
+    const Outcome converged = run(input([&](Json& d) {
+                                    d["precision"] = "fp32+acc64";
+                                    d["time"]["max_iterations"] = 10000;
+                                  }),
+                                  flat);
+    REQUIRE(converged.status == ExitStatus::finished);
+    const Json info = Json::parse(read(converged.run / "run.json"));
     CHECK(info["status"] == "converged");
-    CHECK(info["iterations"] == 111);
+    CHECK(info["iterations"] == 200);
     CHECK(info["convergence"]["plateau"] == Json(equations));
+    // results.md, RunMetadata: the solution carries run.json's convergence, plateau included.
+    int fn = 0;
+    REQUIRE(cg_open((converged.run / "solution.cgns").string().c_str(), CG_MODE_READ, &fn) ==
+            CG_OK);
+    REQUIRE(cg_goto(fn, 1, "end") == CG_OK);
+    int count = 0;
+    REQUIRE(cg_ndescriptors(&count) == CG_OK);
+    Json metadata;
+    for (int d = 1; d <= count; ++d) {
+      char name[33];
+      char* text = nullptr;
+      REQUIRE(cg_descriptor_read(d, name, &text) == CG_OK);
+      if (std::string_view(name) == "RunMetadata") metadata = Json::parse(text);
+      cg_free(text);
+    }
+    cg_close(fn);
+    REQUIRE(metadata.is_object());
+    CHECK(metadata["convergence"] == info["convergence"]);
 
-    // Provisional steps (a first-order start) do not count: from k = 50 the plateau needs 100
-    // counted steps, k = 50 to 149, and holds at k = 150.
+    // Provisional steps (a first-order start) do not count: counted from k = 50, the first level
+    // is at k = 149 and the plateau holds 100 counted steps later, at k = 249.
     flat.provisional_until = 50;
-    CHECK(run_json(flat, "fp32+acc64")["iterations"] == 150);
+    CHECK(run_json(flat, "fp32+acc64")["iterations"] == 249);
 
     // A run that converges on its plateau and then fails to write its solution lists none.
     flat.provisional_until = 0;

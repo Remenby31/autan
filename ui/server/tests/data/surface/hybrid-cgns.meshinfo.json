@@ -26,6 +26,9 @@
       "polyhedron": 0
     },
     "stencil_entries": 3268,
+    "vertex_stencil_entries": 8862,
+    "band_entries": 31922,
+    "boundary_fit_entries": 48489,
     "periodic_ghosts": 0
   },
   "bounds": {
@@ -123,5 +126,42 @@
         87
       ]
     }
+  },
+  "partition": {
+    "ranks": 1,
+    "groups": "none",
+    "cells_by_rank": [
+      216
+    ],
+    "ghosts_by_rank": [
+      0
+    ],
+    "faces_by_rank": [
+      564
+    ],
+    "interior_faces_by_rank": [
+      428
+    ],
+    "stencil_entries_by_rank": [
+      3268
+    ],
+    "vertex_stencil_entries_by_rank": [
+      8862
+    ],
+    "band_entries_by_rank": [
+      31922
+    ],
+    "boundary_fit_entries_by_rank": [
+      48489
+    ],
+    "nodes_by_rank": [
+      133
+    ],
+    "face_nodes_by_rank": [
+      1864
+    ],
+    "sent_cells_by_rank": [
+      0
+    ]
   }
 }

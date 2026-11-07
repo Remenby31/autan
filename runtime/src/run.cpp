@@ -412,6 +412,11 @@ class SnapshotFile {
     std::random_device random;
     path_ = fs::temp_directory_path() /
             ("autan-start-" + std::to_string(random()) + "-" + std::to_string(random()) + ".cgns");
+    // A directory opens on some standard libraries and reads nothing without an error: anything
+    // but a regular file is refused before it is opened, alike on every platform.
+    std::error_code ec;
+    if (!fs::is_regular_file(from, ec))
+      throw Error(ErrorCode::io_cannot_open, "'" + from.string() + "' is not a regular file");
     std::ifstream in(from, std::ios::binary);
     std::ofstream out(path_, std::ios::binary | std::ios::trunc);
     if (!in || !out) throw Error(ErrorCode::io_cannot_open, "cannot read '" + from.string() + "'");
@@ -1658,6 +1663,7 @@ class Run final : public Log {
         {"solver",
          {{"version", build.version},
           {"commit", build.commit},
+          {"dirty", build.dirty},
           {"backend", backend},
           {"binary_sha256", binary}}},
         {"precision", in.precision},
@@ -2154,7 +2160,7 @@ class Run final : public Log {
     RoundOffExemption exempt(
         equations, continued() && in.start->woken ? *in.start->woken : std::vector<std::string>{});
     // One round-off plateau per equation, counted from this run's first step.
-    std::vector<Plateau> plateaus(equations.size());
+    std::vector<ResidualPlateau> plateaus(equations.size());
     double time = 0.0, average_start = 0.0;
     std::int64_t from = 1;
     if (continued()) {
@@ -2619,6 +2625,10 @@ class Run final : public Log {
         status = "failed";
       }
     }
+    // The plateau belongs to a run that ends converged (results.md), in run.json and in the
+    // solution's RunMetadata alike: set before the solution is written.
+    if (info_["convergence"].is_object())
+      info_["convergence"]["plateau"] = status == "converged" ? plateau_ : Json::array();
     // results.md: the solution is required unless the run diverged (written
     // if possible) or failed (optional).
     if (physics_ && status != "failed") {
@@ -2641,9 +2651,9 @@ class Run final : public Log {
     // A failed run is not timed (results.md).
     info_["timing"] = status == "failed" ? Json(nullptr) : timing(done);
     if (status == "failed") info_["monitors"] = nullptr;
-    // The plateau belongs to a run that ends converged (results.md).
-    if (info_["convergence"].is_object())
-      info_["convergence"]["plateau"] = status == "converged" ? plateau_ : Json::array();
+    // A run that fails to write its solution lists no plateau.
+    if (info_["convergence"].is_object() && status != "converged")
+      info_["convergence"]["plateau"] = Json::array();
     info_["status"] = status;
     info_["finished"] = utc(std::chrono::system_clock::now(), "%Y-%m-%dT%H:%M:%SZ");
     note(status == "failed" ? "error" : "info", "solver", "run finished: " + status, "",

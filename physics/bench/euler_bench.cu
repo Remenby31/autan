@@ -406,16 +406,44 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   auto residual = [&](gpu::Strategy s) {
     for (const auto& l : loops) l.launch(s);
   };
+  // Where every face is planar (production then runs these): the face loops without the
+  // warped-face terms, which read no face moments.
+  const bool planar = host.all_planar();
+  const std::vector<Loop> planar_loops = {
+      {"faces_planar", loops[5].bytes - is * 9 * sM,
+       [&](gpu::Strategy s) {
+         if (scheme.flux == autan::physics::Flux::hllc) {
+           ek::gpu_loops::hllc_faces_planar(d, s, sched);
+         } else if (scheme.flux == autan::physics::Flux::ausm_up) {
+           ek::gpu_loops::ausm_faces_planar(d, s, sched);
+         } else {
+           ek::gpu_loops::roe_faces_planar(d, s, sched);
+         }
+       }},
+      {"boundaries_planar", loops[6].bytes - bs * 9 * sM,
+       [&](gpu::Strategy s) {
+         if (scheme.flux == autan::physics::Flux::hllc) {
+           ek::gpu_loops::hllc_boundaries_planar(d, s, sched);
+         } else if (scheme.flux == autan::physics::Flux::ausm_up) {
+           ek::gpu_loops::ausm_boundaries_planar(d, s, sched);
+         } else {
+           ek::gpu_loops::roe_boundaries_planar(d, s, sched);
+         }
+       }},
+  };
+  auto residual_planar = [&](gpu::Strategy s) {
+    for (std::size_t i = 0; i < 5; ++i) loops[i].launch(s);
+    for (const auto& l : planar_loops) l.launch(s);
+  };
+  const double planar_bytes = bytes - (is + bs) * 9 * sM;
 
   Run out;
-  for (auto s : {gpu::Strategy::atomic, gpu::Strategy::warp_aggregated, gpu::Strategy::store_gather,
-                 gpu::Strategy::gather_recompute}) {
-    residual(s);
+  // Same loops on host and device: only the order of floating-point operations differs. Each
+  // equation against its own scale: allow 1024 eps of the compute type.
+  out.tolerance = 1024.0 * std::numeric_limits<typename P::compute>::epsilon();
+  auto check_against_host = [&] {
     gpu::check(cudaDeviceSynchronize(), "residual");
     const auto r = d_res.download();
-    // Same loops on host and device: only the order of floating-point operations differs. Each
-    // equation against its own scale: allow 1024 eps of the compute type.
-    out.tolerance = 1024.0 * std::numeric_limits<typename P::compute>::epsilon();
     double diff = 0.0;
     for (std::size_t k = 0; k < 5; ++k) {
       double num = 0.0, den = 0.0;
@@ -430,6 +458,15 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
     }
     out.difference = std::max(out.difference, diff);
     out.verified = out.verified && diff <= out.tolerance;
+  };
+  for (auto s : {gpu::Strategy::atomic, gpu::Strategy::warp_aggregated, gpu::Strategy::store_gather,
+                 gpu::Strategy::gather_recompute}) {
+    residual(s);
+    check_against_host();
+    if (planar) {
+      residual_planar(s);
+      check_against_host();
+    }
     std::string tag = gpu::name(s);
     std::replace(tag.begin(), tag.end(), '-', '_');
     out.timed.push_back(
@@ -446,6 +483,14 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
       if (!by_strategy && s != gpu::Strategy::atomic) continue;
       out.timed.push_back({std::string(l.name) + (by_strategy ? "_" + o.flux + "_" + tag : ""),
                            gpu::name(s), l.bytes, time_it(o, [&] { l.launch(s); })});
+    }
+    if (planar) {
+      out.timed.push_back({"residual_planar_" + o.flux + "_" + tag, gpu::name(s), planar_bytes,
+                           time_it(o, [&] { residual_planar(s); })});
+      for (const auto& l : planar_loops) {
+        out.timed.push_back({std::string(l.name) + "_" + o.flux + "_" + tag, gpu::name(s), l.bytes,
+                             time_it(o, [&] { l.launch(s); })});
+      }
     }
   }
   return out;
