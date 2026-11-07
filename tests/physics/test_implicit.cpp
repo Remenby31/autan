@@ -24,6 +24,7 @@
 #include "autan/partition/partition.hpp"
 #include "autan/physics/block_matrix.hpp"
 #include "autan/physics/euler.hpp"
+#include "stretched_slab.hpp"
 
 namespace {
 
@@ -152,14 +153,17 @@ TEST_CASE(
   // interior and boundary faces add the rest, so without a limiter (phi = 1, a differentiable
   // residual) A v + T_interior v + T_boundary v = dR/dU v (docs/design/euler.md, Time stepping).
   // A v alone misses the gradient term, by far more than the differences' error. The boundary
-  // faces' tangent changes only the rows of cells with a boundary face.
+  // faces' tangent changes only the rows of cells with a boundary face. Across the one-cell-thick
+  // slab of the 2D cases, only boundary values determine a cell's gradient.
   using P = autan::kernels::fp64;
-  const char* file = GENERATE(from_range(meshes));
+  const std::size_t which = GENERATE(range(std::size_t{0}, meshes.size() + 1));
   const Flux flux = GENERATE(Flux::roe, Flux::hllc, Flux::ausm_up);
   const auto fit =
       GENERATE(autan::physics::GradientFit::linear, autan::physics::GradientFit::quadratic);
+  const char* file = which < meshes.size() ? meshes[which] : "one-cell-thick slab";
   INFO(file << " flux " << static_cast<int>(flux) << " fit " << static_cast<int>(fit));
-  const auto mesh = autan::io::read_mesh(mesh_dir / file);
+  const auto mesh = which < meshes.size() ? autan::io::read_mesh(mesh_dir / file)
+                                          : autan::test::stretched_slab({.first = 0.02});
   const auto geometry = autan::compute_geometry(mesh);
   const auto nc = static_cast<std::size_t>(mesh.n_cells());
   const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
@@ -179,6 +183,13 @@ TEST_CASE(
     const double vn = w[1] * geometry.face_area_x[f] + w[2] * geometry.face_area_y[f] +
                       w[3] * geometry.face_area_z[f];
     if (kind[b] == BoundaryKind::inlet && vn >= 0.0) kind[b] = BoundaryKind::farfield;
+    // The slab's faces across the layer are symmetry planes, as in the 2D cases: no cell there
+    // has a boundary value that the fit could take without its condition's state.
+    if (which == meshes.size() &&
+        std::abs(geometry.face_area_z[f]) >
+            std::abs(geometry.face_area_x[f]) + std::abs(geometry.face_area_y[f])) {
+      kind[b] = BoundaryKind::slip;
+    }
     const std::array<double, 5> v =
         kind[b] == BoundaryKind::inlet ? std::array<double, 5>{1.3e5, 320.0, 0.0, 0.0, 0.0} : w;
     for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = v[j];
