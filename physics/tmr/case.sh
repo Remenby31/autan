@@ -7,9 +7,12 @@
 #   bump       2DBC: M 0.2, Re 3e6 per metre; same inflow and outflow, symmetry on top and on
 #              y = 0 outside the adiabatic wall (x 0 to 1.5); forces over the wall.
 #   naca0012   2DN00: M 0.15, Re 6e6 per chord, farfield 500 chords away, adiabatic airfoil.
+#   rae2822    RAE 2822 case 9 (Cook, McDonald and Firmin, 1981 tape file 1122): M 0.730,
+#              alpha 2.79 deg (corrected) unless ALPHA_DEG is given, Re 6.5e6 per chord, fully
+#              turbulent; the C-grids of autan_vv.meshes.construct2d, farfield 500 to 707 chords away.
 # T = 300 K throughout; the meshes are one layer of thickness $SPAN (default 1) between `sides`.
 set -euo pipefail
-kind=$1 meshes=$2 out=$3 precision=${4:-fp64} iterations=${5:-20000} alpha=${6:-0}
+kind=$1 meshes=$2 out=$3 precision=${4:-fp64} iterations=${5:-20000}
 turbulence=${TURBULENCE:-"{ model = \"sa\", nu_tilde_ratio = 3.0 }"}
 span=${SPAN:-1.0}
 top=$(git rev-parse --show-toplevel)
@@ -19,8 +22,10 @@ case $kind in
   flatplate) mach=0.2 re=5.0e6 wall=plate length=2.0 ;;
   bump) mach=0.2 re=3.0e6 wall=wall length=1.0 ;;
   naca0012) mach=0.15 re=6.0e6 wall=airfoil length=1.0 ;;
+  rae2822) mach=0.730 re=6.5e6 wall=airfoil length=1.0 ;;
   *) echo "unknown case $kind" >&2; exit 2 ;;
 esac
+if [ "$kind" = rae2822 ]; then alpha=${6:-2.79}; else alpha=${6:-0}; fi
 # p and T of the freestream from Re, M and Sutherland's law (case-schema.md closure), then totals.
 read -r p0 t0 pinf <<<"$(python3 -c "
 g, R, T, M, Re = 1.4, 8.314462618 / 0.0289647, 300.0, $mach, $re
@@ -34,7 +39,7 @@ boundaries() {
   rule sides '{ kind = "symmetry" }'
   rule "$wall" "{ kind = \"${WALL_KIND:-wall}\" }"
   case $kind in
-    naca0012) rule farfield '{ kind = "farfield" }' ;;
+    naca0012 | rae2822) rule farfield '{ kind = "farfield" }' ;;
     *)
       rule symmetry '{ kind = "symmetry" }'
       rule inflow "{ kind = \"inlet\", total_pressure = \"$p0 Pa\", total_temperature = \"$t0 K\" }"
