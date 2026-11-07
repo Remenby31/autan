@@ -13,14 +13,22 @@ away. The grid is exactly symmetric about y = 0 (eqs. 15-16): the lower half mir
 Level NC has NC x NC cells. R1, the radius of eq. 13, is computed from the finest grid of the
 paper's family (NC = 4096), so that every level is the finest one with every other line removed,
 as the paper builds its family. The slab is one hexahedron thick in z.
+
+The same command writes the same bytes on every IEEE CPU (#536). The elementary functions whose
+last bit belongs to the C library (the map's complex powers, angles and moduli, exp, cos, sin, atan)
+are evaluated in mpmath at 120 bits, software arithmetic on integers, and each result is rounded
+once to double; the sum giving R1 is math.fsum. Everything else is +, -, *, / and sqrt, which IEEE
+rounds exactly, one NumPy operation at a time.
 """
 
 from __future__ import annotations
 
+import functools
 import math
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+import mpmath
 import numpy as np
 import numpy.typing as npt
 
@@ -38,6 +46,8 @@ SPAN = 1.0
 ZONES = ("airfoil", "farfield", "back", "front")
 ComplexArray = npt.NDArray[np.complex128]
 _A = (0.2969, -0.1260, -0.3516, 0.2843, -0.1015)  # eq. 1, Abbott and von Doenhoff
+_MP = mpmath.MPContext()
+_MP.prec = 120
 
 
 def half_thickness(x: FloatArray) -> FloatArray:
@@ -74,24 +84,45 @@ class KarmanTrefftz:
 
     def __init__(self) -> None:
         self.x_te = trailing_edge()
-        tau = 2.0 * math.atan(abs(_slope(self.x_te)))  # eq. 6
-        self.power = 2.0 - tau / math.pi
+        tau = 2 * _MP.atan(abs(_slope(self.x_te)))  # eq. 6
+        self.power = float(2 - tau / _MP.pi)
         self.z1 = complex(self.x_te, 0.0)
-        self.z2 = complex(0.5 * 1.1019 * THICKNESS**2, 0.0)  # eqs. 7 and 10
+        self.z2 = complex(0.5 * 1.1019 * (THICKNESS * THICKNESS), 0.0)  # eqs. 7 and 10
+
+    def circle_point(self, z: complex) -> Any:
+        """The mapped point of z, unrounded (an mpmath complex at 120 bits)."""
+        w = _MP.power((_MP.mpc(z) - self.z1) / (_MP.mpc(z) - self.z2), 1 / _MP.mpf(self.power))
+        return 1 / (1 - w)
 
     def to_circle(self, z: ComplexArray) -> ComplexArray:
-        w = np.power((z - self.z1) / (z - self.z2), 1.0 / self.power)
-        return np.asarray(1.0 / (1.0 - w), dtype=np.complex128)
+        z = np.asarray(z, dtype=np.complex128)
+        out = [complex(self.circle_point(v)) for v in z.ravel().tolist()]
+        return np.array(out, dtype=np.complex128).reshape(z.shape)
 
     def to_airfoil(self, zeta: ComplexArray) -> ComplexArray:
-        v = np.power((zeta - 1.0) / zeta, self.power)
-        return (self.z1 - self.z2 * v) / (1.0 - v)
+        def one(v: complex) -> complex:
+            w = _MP.mpc(v)
+            p = _MP.power((w - 1) / w, self.power)
+            return complex((self.z1 - self.z2 * p) / (1 - p))
+
+        zeta = np.asarray(zeta, dtype=np.complex128)
+        out = [one(v) for v in zeta.ravel().tolist()]
+        return np.array(out, dtype=np.complex128).reshape(zeta.shape)
+
+    def about(self, z: ComplexArray, centre: float) -> tuple[FloatArray, FloatArray]:
+        """Angle and distance about `centre` of the mapped points of z, each rounded once."""
+        mapped = [self.circle_point(v) - centre for v in z.ravel().tolist()]
+        angle = np.array([float(_MP.arg(w)) for w in mapped]).reshape(z.shape)
+        distance = np.array([float(abs(w)) for w in mapped]).reshape(z.shape)
+        return angle, distance
 
 
 def _upper_surface(kt: KarmanTrefftz, u: FloatArray) -> ComplexArray:
     """Upper surface point at parameter u in [0, 1]: x = x_TE u^2, smooth through the leading edge."""
     x = kt.x_te * u * u
-    return x + 1j * half_thickness(x)
+    z = np.empty(x.shape, dtype=np.complex128)
+    z.real, z.imag = x, half_thickness(x)
+    return z
 
 
 def _surface_nodes(kt: KarmanTrefftz, centre: float, theta: FloatArray) -> FloatArray:
@@ -104,7 +135,7 @@ def _surface_nodes(kt: KarmanTrefftz, centre: float, theta: FloatArray) -> Float
     hi = np.ones_like(theta)
     for _ in range(80):
         mid = 0.5 * (lo + hi)
-        angle = np.angle(kt.to_circle(_upper_surface(kt, mid)) - centre)
+        angle, _ = kt.about(_upper_surface(kt, mid), centre)
         # angle(mid) > theta means mid is too close to the leading edge.
         above = angle > theta
         lo = np.where(above, mid, lo)
@@ -115,6 +146,28 @@ def _surface_nodes(kt: KarmanTrefftz, centre: float, theta: FloatArray) -> Float
     return u
 
 
+def _quasi_circle(kt: KarmanTrefftz, centre: float, n: int) -> tuple[FloatArray, ComplexArray]:
+    """Angles theta and surface nodes z of the n surface points, about `centre`."""
+    theta = 2.0 * math.pi * np.arange(n // 2 + 1) / n
+    u = _surface_nodes(kt, centre, theta)
+    upper = _upper_surface(kt, u)
+    z = np.concatenate([upper, np.conj(upper[-2:0:-1])])
+    return np.concatenate([theta, 2.0 * math.pi - theta[-2:0:-1]]), z
+
+
+@functools.cache
+def _construction() -> tuple[float, float]:
+    """The centre of eq. 12 and R1 of eq. 13, common to every level, computed once."""
+    kt = KarmanTrefftz()
+    zeta_le = complex(kt.circle_point(0j))
+    centre = 0.5 * (zeta_le.real + 1.0)  # eq. 12, zeta_TE = zeta1 = 1
+    _, z_finest = _quasi_circle(kt, centre, FINEST)
+    zeta_finest = kt.to_circle(z_finest)
+    step = (np.roll(zeta_finest, -1) - zeta_finest).tolist()
+    r1 = math.fsum(float(abs(_MP.mpc(d))) for d in step) / (2.0 * math.pi)
+    return centre, r1
+
+
 def plane_grid(nc: int) -> tuple[ComplexArray, KarmanTrefftz]:
     """Nodes z[i, j] of the NC x NC O-mesh, i = 0..NC-1 around from the trailing edge through the
     upper surface, j = 0..NC from the airfoil to the far field."""
@@ -122,22 +175,11 @@ def plane_grid(nc: int) -> tuple[ComplexArray, KarmanTrefftz]:
         msg = f"NC must be a multiple of 4 dividing {FINEST}, got {nc}"
         raise VVError(msg, code="V0309")
     kt = KarmanTrefftz()
-    zeta_le = complex(kt.to_circle(np.array(0j)))
-    centre = 0.5 * (zeta_le.real + 1.0)  # eq. 12, zeta_TE = zeta1 = 1
-
-    def quasi_circle(n: int) -> tuple[FloatArray, ComplexArray]:
-        theta = 2.0 * math.pi * np.arange(n // 2 + 1) / n
-        u = _surface_nodes(kt, centre, theta)
-        upper = _upper_surface(kt, u)
-        z = np.concatenate([upper, np.conj(upper[-2:0:-1])])
-        return np.concatenate([theta, 2.0 * math.pi - theta[-2:0:-1]]), z
-
-    _, z_finest = quasi_circle(FINEST)
-    zeta_finest = kt.to_circle(z_finest)
-    r1 = float(np.abs(np.roll(zeta_finest, -1) - zeta_finest).sum()) / (2.0 * math.pi)
-    theta, z_surface = quasi_circle(nc)
-    r_surface = np.abs(kt.to_circle(z_surface) - centre)
-    radii = r1 * np.exp(2.0 * math.pi * np.arange(nc + 1) / nc)  # eq. 13
+    centre, r1 = _construction()
+    theta, z_surface = _quasi_circle(kt, centre, nc)
+    _, r_surface = kt.about(z_surface, centre)
+    growth = 2.0 * math.pi * np.arange(nc + 1) / nc
+    radii = r1 * np.array([float(_MP.exp(g)) for g in growth.tolist()])  # eq. 13
     r_far = radii[-1]
     # eq. 14, with r_i1 (R_far - R_j) where the paper prints r_i1 (R_far - R_1): as printed, the
     # far field would be r_i1 + R_far, not a circle, and a perfect circle would not give back the
@@ -145,11 +187,17 @@ def plane_grid(nc: int) -> tuple[ComplexArray, KarmanTrefftz]:
     r = (r_surface[:, None] * (r_far - radii[None, :]) + r_far * (radii[None, :] - r1)) / (
         r_far - r1
     )
-    zeta = centre + r * np.exp(1j * theta)[:, None]
-    z = kt.to_airfoil(zeta)
+    # Rows 0..NC/2 are mapped; the others mirror them (eqs. 15-16, below).
+    half = nc // 2
+    cos = np.array([float(_MP.cos(t)) for t in theta[: half + 1].tolist()])
+    sin = np.array([float(_MP.sin(t)) for t in theta[: half + 1].tolist()])
+    zeta = np.empty((half + 1, nc + 1), dtype=np.complex128)
+    zeta.real = centre + r[: half + 1] * cos[:, None]
+    zeta.imag = r[: half + 1] * sin[:, None]
+    z = np.empty((nc, nc + 1), dtype=np.complex128)
+    z[: half + 1] = kt.to_airfoil(zeta)
     z[:, 0] = z_surface
     # Exact symmetry about y = 0 (eqs. 15-16): row NC - i mirrors row i.
-    half = nc // 2
     z[half + 1 :] = np.conj(z[1:half][::-1])
     z[0].imag = 0.0
     z[half].imag = 0.0
