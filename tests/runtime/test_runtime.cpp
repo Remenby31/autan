@@ -2635,8 +2635,9 @@ TEST_CASE("An equation at round-off from iteration 1 does not hold back converge
   CHECK(info["status"] == "converged");
   CHECK(info["iterations"] == 28);
 
-  // From iteration 10 it is 1e-3, above the floor: W0710 once, and the run
-  // cannot converge on it any more.
+  // From iteration 10 it is 1e-3, above the floor: W0710 once. It then drops from the largest
+  // momentum residual at iteration 1, momentum-z's 4 (#432): 1e-3 is above 4e-8, so the run
+  // cannot converge.
   autan_test::RelaxationOptions waking = quiet;
   waking.wake_at = 10;
   const Outcome w = run(input([](Json& d) { d["time"]["max_iterations"] = 100; }), waking);
@@ -2658,13 +2659,26 @@ TEST_CASE("An equation at round-off from iteration 1 does not hold back converge
   CHECK(warnings[0]["data"]["iteration"] == 10);
   CHECK(warnings[0]["data"]["residual"] == 1e-3);
   CHECK(warnings[0]["data"]["floor"] == 1e-12 * 6.0);
+
+  // Just below that target the run converges with the other equations; just above it does not.
+  waking.awake_value = 3.9e-8;
+  const Outcome below = run(input([](Json& d) { d["time"]["max_iterations"] = 100; }), waking);
+  REQUIRE(below.status == ExitStatus::finished);
+  const Json info_below = Json::parse(read(below.run / "run.json"));
+  CHECK(info_below["status"] == "converged");
+  CHECK(info_below["iterations"] == 28);
+  waking.awake_value = 4.1e-8;
+  const Outcome above = run(input([](Json& d) { d["time"]["max_iterations"] = 100; }), waking);
+  REQUIRE(above.status == ExitStatus::finished);
+  CHECK(Json::parse(read(above.run / "run.json"))["status"] == "completed");
 }
 
 TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]") {
-  // momentum-x leaves its floor at iterations 10-14, then falls back: it is
-  // no longer exempt, so the run cannot converge (budget 40). A run
-  // continued from iteration 20 must do the same, through start.woken. At round-off or
-  // identically zero, which its reference then holds (results.md, `start`).
+  // momentum-x leaves its floor at iterations 10-14, then falls back to round-off or to exactly
+  // zero, which its reference then holds (results.md, `start`): woken, it drops from momentum-z's
+  // 4 at iteration 1, and the run converges with the others at k = 28. A run continued from
+  // iteration 12, while it is still above its floor, must do the same through start.woken:
+  // without it, iteration 13 would report a second W0710.
   const double silent = GENERATE(1e-15, 0.0);
   CAPTURE(silent);
   autan_test::RelaxationOptions options;
@@ -2679,7 +2693,7 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
     });
   };
   const Outcome whole = run(doc(40), options);
-  const Outcome a = run(doc(20), options);
+  const Outcome a = run(doc(12), options);
   Json next = doc(40);
   next["start"] = start_from(a.run, "continue");
   CHECK(next["start"]["woken"] == Json::array({"momentum-x"}));
@@ -2688,10 +2702,8 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
   INFO(b.err);
   REQUIRE(b.status == ExitStatus::finished);
   const Json info = Json::parse(read(b.run / "run.json"));
-  // The continuation ends as the uninterrupted run does; at round-off, that run cannot converge.
-  const Json full = Json::parse(read(whole.run / "run.json"));
-  CHECK(info["status"] == full["status"]);
-  if (silent > 0.0) CHECK(full["status"] == "completed");
+  CHECK(info["status"] == "converged");
+  CHECK(info["iterations"] == 28);
   CHECK(info["start"]["woken"] == Json::array({"momentum-x"}));
   // The equation woke in the first run: no new W0710 in the continuation.
   CHECK(info["diagnostics"].empty());
