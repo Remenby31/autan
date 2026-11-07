@@ -666,6 +666,43 @@ void Euler<P>::linear_gradient(std::span<typename P::grad> out) {
 }
 
 template <class P>
+void Euler<P>::linear_gradient_tangent(std::span<const State> s, std::span<const State> du,
+                                       std::span<typename P::grad> out) {
+  auto& m = *impl_;
+  if (out.size() != m.grad.size()) throw std::invalid_argument("gradient array size");
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  if (m.prim_tan.size() != 5 * nc) m.prim_tan.assign(5 * nc, State(0));
+  if (m.zero_state.size() != 5 * nc) m.zero_state.assign(5 * nc, State(0));
+  std::vector<State> lo(5 * nc), hi(5 * nc);
+  auto d = m.d;
+  d.u = const_cast<State*>(s.data());
+  d.u_tan = const_cast<State*>(du.data());
+  d.prim_tan = m.prim_tan.data();
+  d.source_tan = m.zero_state.data();
+  ek::cpu::primitives_tangent(d);
+  m.fill_ghosts(m.prim_tan, 5);
+  d.grad_tan = out.data();
+  d.wmin_tan = lo.data();
+  d.wmax_tan = hi.data();
+  ek::cpu::gradients_tangent(d);
+}
+
+template <class P>
+void Euler<P>::primitive_tangent(std::span<const State> s, std::span<const State> du,
+                                 std::span<State> out) {
+  auto& m = *impl_;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  if (out.size() != 5 * nc) throw std::invalid_argument("primitive array size");
+  if (m.zero_state.size() != 5 * nc) m.zero_state.assign(5 * nc, State(0));
+  auto d = m.d;
+  d.u = const_cast<State*>(s.data());
+  d.u_tan = const_cast<State*>(du.data());
+  d.prim_tan = out.data();
+  d.source_tan = m.zero_state.data();
+  ek::cpu::primitives_tangent(d);
+}
+
+template <class P>
 typename Euler<P>::QuadraticGradient Euler<P>::quadratic_gradient() const {
   const auto& m = *impl_;
   return {{m.band.begin(), m.band.end()},

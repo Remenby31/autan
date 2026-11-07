@@ -20,6 +20,7 @@
 #include "autan/core/mesh.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/kernels/runtime.hpp"
+#include "autan/physics/block_matrix.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/navier_stokes.hpp"
 #include "autan/physics/spalart_allmaras.hpp"
@@ -29,8 +30,10 @@ namespace {
 namespace fs = std::filesystem;
 using autan::index_t;
 using autan::offset_t;
+using autan::physics::BlockMatrix;
 using autan::physics::BoundaryKind;
 using autan::physics::Euler;
+using autan::physics::Flux;
 using autan::physics::Gas;
 using autan::physics::NavierStokes;
 using autan::physics::Scheme;
@@ -786,4 +789,146 @@ TEMPLATE_TEST_CASE("negative nt is destroyed and gives no eddy viscosity", "[spa
   ns.residual(s, r);
   laminar.residual(s, r_laminar);
   CHECK(r == r_laminar);
+}
+
+TEST_CASE(
+    "the viscous Jacobian and its gradient tangents match the second-order residual's central "
+    "differences",
+    "[navier-stokes][implicit]") {
+  // As for Euler (test_implicit.cpp): the assembled blocks hold the gradients fixed, the gradient
+  // tangents of the interior and boundary faces add the rest, convective and viscous, so without a
+  // limiter A v + T_interior v + T_boundary v = dR/dU v (docs/design/euler.md, Time stepping),
+  // with or without an eddy viscosity (SA's mean flow holds mu_t). The boundary faces' tangent
+  // changes only the rows of cells with a boundary face.
+  using P = autan::kernels::fp64;
+  const char* file = GENERATE(from_range(meshes));
+  const Flux flux = GENERATE(Flux::roe, Flux::hllc, Flux::ausm_up);
+  const bool eddy = GENERATE(false, true);
+  const bool adiabatic = GENERATE(false, true);
+  INFO(file << " flux " << static_cast<int>(flux) << (eddy ? " eddy viscosity" : "")
+            << (adiabatic ? " adiabatic walls" : " isothermal walls"));
+  const auto mesh = autan::io::read_mesh(mesh_dir / file);
+  const auto geometry = autan::compute_geometry(mesh);
+  const auto nc = static_cast<std::size_t>(mesh.n_cells());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+  const double c = std::sqrt(air.gamma * 1e5 / rho);
+  const std::array<double, 3> v0{0.6 * c, 0.2 * c, -0.1 * c};
+  // No-slip walls on ymin, isothermal or adiabatic; the conditions whose fluxes read the
+  // reconstructed face state elsewhere, the inlet only where the flow enters.
+  std::vector<BoundaryKind> kind(nb);
+  std::vector<double> data(5 * nb);
+  const std::array<BoundaryKind, 5> kinds = {BoundaryKind::farfield, BoundaryKind::slip,
+                                             BoundaryKind::outlet, BoundaryKind::state,
+                                             BoundaryKind::inlet};
+  for (std::size_t b = 0; b < nb; ++b) {
+    const auto f = ni + b;
+    const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[f])].name;
+    kind[b] = zone == "ymin" ? BoundaryKind::wall : kinds[b % kinds.size()];
+    const double vn = v0[0] * geometry.face_area_x[f] + v0[1] * geometry.face_area_y[f] +
+                      v0[2] * geometry.face_area_z[f];
+    if (kind[b] == BoundaryKind::inlet && vn >= 0.0) kind[b] = BoundaryKind::farfield;
+    const std::array<double, 5> value =
+        kind[b] == BoundaryKind::wall
+            ? std::array<double, 5>{adiabatic ? 0.0 : 320.0, 0.0, 0.0, 0.0, 0.0}
+        : kind[b] == BoundaryKind::inlet ? std::array<double, 5>{1.3e5, 320.0, 0.0, 0.0, 0.0}
+                                         : std::array<double, 5>{rho, v0[0], v0[1], v0[2], 1e5};
+    for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = value[j];
+  }
+  Scheme scheme;
+  scheme.flux = flux;
+  scheme.limiter = false;
+  scheme.mach_ref = 1.0;
+  scheme.reference = {rho, rho * v0[0], rho * v0[1], rho * v0[2], 1e5 / (air.gamma - 1.0)};
+  Transport t;
+  t.sutherland = false;
+  t.mu_ref = mu;
+  t.prandtl = prandtl;
+  NavierStokes<P> ns(mesh, geometry, air, scheme, t);
+  ns.set_boundary(kind, data);
+  if (eddy) {
+    std::vector<double> cells(nc), faces(nb);
+    for (std::size_t i = 0; i < nc; ++i) cells[i] = 0.3 * mu * (1.0 + geometry.cell_centroid_y[i]);
+    for (std::size_t b = 0; b < nb; ++b) faces[b] = kind[b] == BoundaryKind::wall ? 0.0 : 0.3 * mu;
+    ns.set_eddy_viscosity(cells, faces);
+  }
+  std::vector<double> u(5 * nc), v(5 * nc);
+  for (std::size_t i = 0; i < nc; ++i) {
+    const double x = geometry.cell_centroid_x[i], y = geometry.cell_centroid_y[i];
+    const double z = geometry.cell_centroid_z[i];
+    const double r = rho * (1.0 + 0.1 * std::sin(3.0 * x) * std::cos(2.0 * y));
+    const std::array<double, 3> w{v0[0] * (1.0 + 0.2 * std::sin(2.0 * y + z)),
+                                  v0[1] * (1.0 + 0.2 * std::cos(3.0 * x)), v0[2] * (1.0 + y)};
+    const double pr = 1e5 * (1.0 + 0.05 * std::cos(x + 2.0 * z));
+    u[i] = r;
+    for (std::size_t k = 0; k < 3; ++k) u[(1 + k) * nc + i] = r * w[k];
+    u[4 * nc + i] = pr / (air.gamma - 1.0) + 0.5 * r * (w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+    for (std::size_t k = 0; k < 5; ++k) {
+      v[k * nc + i] = u[k * nc + i] * std::cos(5.0 * x + 2.0 * y + static_cast<double>(k));
+    }
+  }
+  std::vector<double> state(5 * nc), res(5 * nc), av(5 * nc), tan(5 * nc, 0.0), rp(5 * nc),
+      rm(5 * nc), boundary(5 * nc, 0.0);
+  ns.state(u, state);
+  ns.residual_and_jacobian(state, res);
+  BlockMatrix m(mesh);
+  ns.assemble(std::vector<double>(nc, 0.0), m);
+  m.multiply(v, av);
+  ns.gradient_tangent(state, v, boundary, Euler<P>::Faces::boundary);
+  ns.gradient_tangent(state, v, tan, Euler<P>::Faces::interior);
+  std::vector<bool> on_boundary(nc, false);
+  for (std::size_t b = 0; b < nb; ++b) {
+    on_boundary[static_cast<std::size_t>(mesh.owner()[ni + b])] = true;
+  }
+  for (std::size_t k = 0; k < 5; ++k) {
+    for (std::size_t i = 0; i < nc; ++i) {
+      if (!on_boundary[i]) REQUIRE(boundary[k * nc + i] == 0.0);
+    }
+  }
+  for (std::size_t i = 0; i < tan.size(); ++i) tan[i] += boundary[i];
+  // The boundary tangent in fp32+acc64 agrees with FP64's to FP32 rounding of the largest term.
+  using Q = autan::kernels::fp32_acc64;
+  NavierStokes<Q> ns32(mesh, geometry, air, scheme, t);
+  ns32.set_boundary(kind, data);
+  if (eddy) {
+    std::vector<double> cells(nc), faces(nb);
+    for (std::size_t i = 0; i < nc; ++i) cells[i] = 0.3 * mu * (1.0 + geometry.cell_centroid_y[i]);
+    for (std::size_t b = 0; b < nb; ++b) faces[b] = kind[b] == BoundaryKind::wall ? 0.0 : 0.3 * mu;
+    ns32.set_eddy_viscosity(cells, faces);
+  }
+  std::vector<float> state32(5 * nc), v32(v.begin(), v.end());
+  std::vector<double> res32(5 * nc), boundary32(5 * nc, 0.0);
+  ns32.state(u, state32);
+  ns32.residual_and_jacobian(state32, res32);
+  ns32.gradient_tangent(state32, v32, boundary32, Euler<Q>::Faces::boundary);
+  double scale = 0.0, diff32 = 0.0;
+  for (std::size_t i = 0; i < boundary.size(); ++i) {
+    REQUIRE(std::isfinite(boundary32[i]));
+    scale = std::max(scale, std::abs(boundary[i]));
+    diff32 = std::max(diff32, std::abs(boundary32[i] - boundary[i]));
+  }
+  REQUIRE(scale > 0.0);
+  CHECK(diff32 <= 1024 * std::numeric_limits<float>::epsilon() * scale);
+  const double h = 1e-6;
+  std::vector<double> up(u), um(u);
+  for (std::size_t i = 0; i < u.size(); ++i) {
+    up[i] += h * v[i];
+    um[i] -= h * v[i];
+  }
+  ns.state(up, state);
+  ns.residual(state, rp);
+  ns.state(um, state);
+  ns.residual(state, rm);
+  double diff = 0.0, without = 0.0, norm = 0.0;
+  for (std::size_t i = 0; i < u.size(); ++i) {
+    const double fd = (rp[i] - rm[i]) / (2.0 * h);
+    REQUIRE(std::isfinite(fd));
+    diff = std::max(diff, std::abs(fd - av[i] - tan[i]));
+    without = std::max(without, std::abs(fd - av[i]));
+    norm = std::max(norm, std::abs(fd));
+  }
+  INFO("diff " << diff / norm << " without the gradient tangents " << without / norm);
+  // Central differences: O(h^2) truncation and O(eps / h) round-off, relative.
+  CHECK(diff <= 1e-6 * norm);
+  CHECK(without >= 1e3 * diff);
 }

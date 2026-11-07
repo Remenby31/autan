@@ -461,6 +461,10 @@ def _rank(
         )
         add(name, persistent)
         add(f"{name} setup", solver_setup, transient=True)
+        # The steady operator's boundary gradient term (Euler::gradient_tangent): the primitives',
+        # the gradients' (linear and the band's) and the limiter bounds' tangents, zero tangents of
+        # the other inputs, the band flag's.
+        add("gradient tangent", c * (65 * s + 8))
 
     # The peak holds every persistent component and the largest transient one: transients
     # are freed in turn, and later allocations reuse their memory.
@@ -504,6 +508,9 @@ def _viscous(add: Callable[..., None], mesh: MeshInfo, share: _Share, s: int, *,
         "viscous",
         c * (128 * s + 88) + f * (99 * s + 24) + 64 * fi + 40 * v + q * (8 + 21 * s) + 10 * c * s,
     )
+    # Its steady operator's viscous term (NavierStokes::gradient_tangent): the viscous gradients',
+    # the primitives', T and u's and the seven fits' tangents, zero tangents and a flag.
+    add("viscous tangent", c * (135 * s + 8))
     # Its own packed geometry with a vertex stencil's node lists, or the fit's coefficients
     # (152 B an entry) and entries (4 B) while they grow, whichever is larger.
     packed = 8 * (25 * f + 4 * c + 4 * k) + 16 * counts.nodes + 8 * counts.face_nodes
@@ -532,7 +539,10 @@ def _linear_solver(
     scale = block / 200
     graph = 300 * cells + 60 * interior
     if solver == "gauss-seidel":
-        return "gauss-seidel", block * cells + 8 * cells, 0
+        # The inverse diagonal blocks, and the GCR around the sweeps: 10 directions and their
+        # images, its residual and a vector with ghosts, n values of 8 B a cell each.
+        n = round((block / 8) ** 0.5)
+        return "gauss-seidel", block * cells + 8 * cells + 22 * 8 * n * cells, 0
     if solver == "lines":
         # Persistent 1 700 n0 + 8 E0, and the lines built on the whole mesh at setup.
         return "lines", scale * 1700 * cells + 8 * interior, graph
