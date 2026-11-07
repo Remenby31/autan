@@ -222,9 +222,10 @@ _CODES = [
     Code(
         "E0134",
         "File refers to another file",
-        "A CGNS file the code reads (a mesh, a `start` solution, a run's solution) has data in another file: a CGNS link, an HDF5 external link, a dataset with external storage or a virtual dataset (`data.node` names the first). Files must be self-contained.",
-        "Export a self-contained file: no links to other files, no external storage or virtual "
-        "datasets.",
+        "A CGNS file the code reads (a mesh, a `start` solution, a run's solution) has data in another file: a CGNS link, an HDF5 link of a user-defined class (64 to 255, 64 being the external link; refused whatever its target, which is never resolved), a dataset with external storage or a virtual dataset (`data.node` names the first). Files must be self-contained.",
+        "Export a self-contained file: no links to other files, no user-defined HDF5 links, no "
+        "external storage or virtual datasets. Remove each such link or replace it with the data "
+        "it refers to.",
     ),
     Code(
         "E0135",
