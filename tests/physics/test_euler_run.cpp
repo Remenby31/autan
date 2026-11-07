@@ -471,6 +471,68 @@ TEST_CASE("the history marks provisional exactly the steps of the first-order st
   for (const auto& line : history(steps.run)) CHECK_FALSE(line.contains("provisional"));
 }
 
+TEST_CASE("a NACA 0012 slab from the freestream converges within a bounded number of steps",
+          "[euler]") {
+  // #211: the steady CFL law (euler.md#time-stepping) on an airfoil, M 0.8, alpha 0, fp64, ten
+  // orders, the 32^2 O-grid slab of autan-vv (tests/data/mesh/README.md). Each bound is the
+  // count measured when it was set, times 1.2 for round-off across platforms, rounded up:
+  // - from the freestream: 136 steps, bound 164; with the CFL number held at its start, 170. The
+  //   spanwise momentum is exactly zero here, so the exemption plays no part.
+  // - from a uniform state 1e-4 slower than the freestream with a spanwise velocity of 1e-20 times
+  //   the speed (the device of "an equation at the round-off floor does not set the steady CFL
+  //   number"), the spanwise momentum is round-off: 43 steps, bound 52; without the exemption, 137.
+  //   This case does not catch a fixed CFL number (48 steps), which the first does: keep both.
+  const double w = GENERATE(0.0, 1e-20);
+  CAPTURE(w);
+  const fs::path mesh = data_dir / "mesh" / "naca0012" / "naca0012-n0032.msh";
+  const auto out = run(input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, "fp64");
+    d["mesh"]["path"] = fs::absolute(mesh).string();
+    d["mesh"]["sha256"] = autan::io::mesh_hash(mesh);
+    auto& f = d["freestream"];
+    const auto& gas = d["cell_zones"][0]["medium"];
+    const double gamma = gas["gamma"].get<double>(), r = gas["gas_constant"].get<double>();
+    const double p = 1e5, temperature = 300.0, rho = p / (r * temperature);
+    const double speed = 0.8 * std::sqrt(gamma * p / rho);
+    f["pressure"] = p;
+    f["temperature"] = temperature;
+    f["density"] = rho;
+    f["speed"] = speed;
+    f["velocity"] = {speed, 0.0, 0.0};
+    f["mach"] = 0.8;
+    Json zone = d["cell_zones"][0];
+    zone["zone"] = "fluid";
+    zone["initial"]["pressure"] = p;
+    zone["initial"]["temperature"] = temperature;
+    zone["initial"]["density"] = rho;
+    zone["initial"]["velocity"] = {(w > 0.0 ? 1.0 - 1e-4 : 1.0) * speed, w * speed, 0.0};
+    d["cell_zones"] = Json::array({zone});
+    Json boundaries = Json::array();
+    for (const auto& [name, kind] :
+         std::vector<std::pair<const char*, const char*>>{{"airfoil", "slip"},
+                                                          {"farfield", "farfield"},
+                                                          {"back", "symmetry"},
+                                                          {"front", "symmetry"}}) {
+      Json b = d["boundaries"][0];
+      for (auto& [key, value] : b.items()) {
+        if (key != "zone" && key != "kind") value = nullptr;
+      }
+      b["zone"] = name;
+      b["kind"] = kind;
+      boundaries.push_back(b);
+    }
+    d["boundaries"] = boundaries;
+    d["monitors"] = Json::array();
+    d["time"]["residual_orders"] = 10.0;
+    d["time"]["max_iterations"] = 1000;
+  }));
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  const Json info = Json::parse(read(out.run / "run.json"));
+  CHECK(info["status"] == "converged");
+  CHECK(info["iterations"].get<int>() <= (w == 0.0 ? 164 : 52));
+}
+
 TEST_CASE("checkpoints change no Euler result", "[euler]") {
   const char* precision = GENERATE("fp64", "fp32+acc64");
   const bool steady = GENERATE(true, false);
