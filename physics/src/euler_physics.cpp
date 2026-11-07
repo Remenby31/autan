@@ -54,6 +54,12 @@ constexpr std::array<const char*, 5> conserved_names = {"Density", "MomentumX", 
 constexpr double cfl_start = 1000.0;
 constexpr double cfl_min = 1.0;
 constexpr double cfl_max = 1e6;
+// The penalty also halves after a step whose largest relative residual rose by more than this
+// factor over the step before's: the defect correction's approximate Jacobian stops converging
+// above a case-dependent CFL number, which no constant bound tracks (TMR flat plate, #185: a
+// bound of 2000 converges, 5000 diverges, none stalls at 1.5e4). A margin of 10 % lets the small
+// rises of a converging run recover; halving on every rise ratchets the penalty down and stalls.
+constexpr double cfl_rise = 1.1;
 // Each step's linear system is solved to this relative residual (inexact Newton), with at most
 // this many multigrid-preconditioned iterations.
 constexpr double linear_tolerance = 0.1;
@@ -156,6 +162,18 @@ class EulerPhysics final : public runtime::Physics {
         reference_(scheme(ctx.input).reference) {
     // On every rank: the exchange is collective, even for a part without ghosts.
     euler_.set_ghosts(&ghost_fill_);
+    // The loops without the warped-face terms where every face of every rank is planar: one
+    // choice for the run, so that ranks evaluate their faces alike (#412). Inviscid only: the
+    // planar boundary loops have no no-slip wall flux (#540).
+    if constexpr (!is_viscous) {
+      if (ctx.ranks.min(euler_.all_planar() ? 1.0 : 0.0) > 0.0) {
+        euler_.set_planar(true);
+        ctx.log.write("info", "solver",
+                      "every face is planar: residual loops without the "
+                      "warped-face terms",
+                      {}, "{}");
+      }
+    }
     const auto& mesh = ctx.mesh;
     const auto& in = ctx.input;
     std::optional<Manufactured> mms;
@@ -573,6 +591,7 @@ class EulerPhysics final : public runtime::Physics {
                    std::isinf(plateau.reference) ? -1.0 : plateau.reference);
     v.emplace_back("SolverFirstOrderPlateauCount", static_cast<double>(plateau.count));
     v.emplace_back("SolverFirstOrderPlateauSince", static_cast<double>(plateau.since));
+    v.emplace_back("SolverPreviousDrop", previous_drop_);
     return v;
   }
 
@@ -593,6 +612,7 @@ class EulerPhysics final : public runtime::Physics {
                                                      : v[10].second,
                      .count = static_cast<std::size_t>(v[11].second),
                      .since = static_cast<std::size_t>(v[12].second)}});
+    previous_drop_ = v[13].second;
   }
 
   // SA-neg: rho nt from the zones' initial nt, the freestream nt at farfield faces and the ratio
@@ -956,8 +976,11 @@ class EulerPhysics final : public runtime::Physics {
     const double drop = relative_drop(norms.empty() ? report.residuals : norms, report.residuals);
     switch_order(drop);
     // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
-    // after each step the admissibility check shortened and recovering by half otherwise.
-    penalty_ = shortened_ ? 0.5 * penalty_ : std::min(1.0, 1.5 * penalty_);
+    // after each step the admissibility check shortened or whose relative residual rose, and
+    // recovering by half otherwise.
+    const bool rose = previous_drop_ > 0.0 && drop > cfl_rise * previous_drop_;
+    penalty_ = (shortened_ || rose) ? 0.5 * penalty_ : std::min(1.0, 1.5 * penalty_);
+    previous_drop_ = drop;
     if (drop > 0.0) {
       cfl_ = std::clamp(std::min(penalty_ * cfl_start / drop, cfl_cap_), cfl_min, cfl_max);
     }
@@ -1426,6 +1449,7 @@ class EulerPhysics final : public runtime::Physics {
   double cfl_cap_ = cfl_max;  // after a shortened or rejected step: half its CFL number
   double cfl_ = cfl_start;
   double penalty_ = 1.0;
+  double previous_drop_ = 0.0;  // the last step's largest relative residual; 0: none yet
   bool second_order_ = false;
   bool shortened_ = false;
   double mean_weight_ = 0.0;
@@ -1701,7 +1725,7 @@ std::vector<std::string> euler_restart_names(const runtime::SolverInput& in, boo
     }
     out.emplace_back("SolverCflCap");
     out.insert(out.end(), {"SolverFirstOrderPlateauReference", "SolverFirstOrderPlateauCount",
-                           "SolverFirstOrderPlateauSince"});
+                           "SolverFirstOrderPlateauSince", "SolverPreviousDrop"});
   }
   std::size_t vortices = 0;
   for (const auto& bc : in.boundaries) {

@@ -10,6 +10,7 @@
 #include <numbers>
 #include <random>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -255,6 +256,69 @@ TEMPLATE_TEST_CASE("slip walls keep a gauge pressure finer than FP32 resolves p_
   e.residual(std::span<const typename P::state>(u), r);
   const double surface = c.cell_surface()[0];
   for (const auto v : r) CHECK(std::abs(static_cast<double>(v)) <= 64 * eps<P>() * gauge * surface);
+}
+
+TEMPLATE_TEST_CASE("the planar loops give the full loops' residual where every face is planar",
+                   "[euler]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // Where every face moment is an exact zero (kernels::PackedGeometry::all_planar), the
+  // warped-face terms are signed zeros for a finite state, and x + (+-0) == x: the loops without
+  // them give the same values (== also equates -0 and +0). Tetrahedra and the axis-aligned
+  // hexahedra are planar; a mesh with a face not proven planar refuses the planar loops.
+  using P = TestType;
+  const char* file = GENERATE(from_range(meshes));
+  const Flux flux = GENERATE(Flux::roe, Flux::hllc, Flux::ausm_up);
+  const bool limiter = GENERATE(false, true);
+  CAPTURE(file, static_cast<int>(flux), limiter);
+  const Case c(file);
+  const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
+  const auto ni = static_cast<std::size_t>(c.mesh.n_interior_faces());
+  const auto nc = static_cast<std::size_t>(c.mesh.n_cells());
+  auto flow = [](double x, double y, double z) {
+    return Prim{1.2 + 0.1 * std::sin(2.0 * x + y),
+                {80.0 + 15.0 * std::cos(x + 2.0 * z), -20.0 + 10.0 * std::sin(y + z),
+                 5.0 * std::cos(3.0 * x)},
+                1.0e5 + 4.0e3 * std::sin(x + y + z)};
+  };
+  Scheme s = second_order(flux, 0.3);
+  s.limiter = limiter;
+  s.venkat_k = 0.1;
+  Euler<P> e(c.mesh, c.geometry, air, s);
+  const std::string name(file);
+  if (name.starts_with("tet") || name.starts_with("hex")) REQUIRE(e.all_planar());
+  if (!e.all_planar()) {
+    CHECK_THROWS_AS(e.set_planar(true), std::invalid_argument);
+    return;
+  }
+  // Farfield on x and z, slip walls on y: the wall's branch and the flux's both run.
+  std::vector<BoundaryKind> kind(nb);
+  std::vector<double> data(5 * nb, 0.0);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const auto f = ni + b;
+    const auto w = flow(c.geometry.face_centroid_x[f], c.geometry.face_centroid_y[f],
+                        c.geometry.face_centroid_z[f]);
+    kind[b] = c.zone(b)[0] == 'y' ? BoundaryKind::slip : BoundaryKind::farfield;
+    const std::array<double, 5> v{w.rho, w.v[0], w.v[1], w.v[2], w.p};
+    for (std::size_t k = 0; k < 5; ++k) data[k * nb + b] = v[k];
+  }
+  e.set_boundary(kind, data);
+  std::vector<double> u(5 * nc);
+  for (std::size_t i = 0; i < nc; ++i) {
+    const auto uc = conserved(flow(c.geometry.cell_centroid_x[i], c.geometry.cell_centroid_y[i],
+                                   c.geometry.cell_centroid_z[i]));
+    for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = uc[k];
+  }
+  const auto stored_u = stored(e, u);
+  std::vector<typename P::residual> full(5 * nc), planar(5 * nc);
+  e.residual(stored_u, full);
+  e.set_planar(true);
+  REQUIRE(e.planar());
+  e.residual(stored_u, planar);
+  std::size_t differ = 0;
+  for (std::size_t i = 0; i < full.size(); ++i) {
+    REQUIRE(std::isfinite(static_cast<double>(full[i])));
+    if (!(planar[i] == full[i])) ++differ;
+  }
+  CHECK(differ == 0);
 }
 
 TEST_CASE("the first-order tangent matches central differences of the first-order residual",

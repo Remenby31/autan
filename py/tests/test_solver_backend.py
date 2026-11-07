@@ -99,6 +99,7 @@ def test_a_real_run_reads_back_through_the_results_contract(
     run = result.run
     assert run.status in ("converged", "completed")
     assert run.solver.backend == "cpu"
+    assert isinstance(run.solver.dirty, bool)
     assert RELAXATION is not None
     assert run.solver.binary_sha256 == hashlib.sha256(RELAXATION.read_bytes()).hexdigest()
     assert run.case.sha256 == case.spec.hash()
@@ -118,6 +119,11 @@ def test_a_real_run_reads_back_through_the_results_contract(
     ):
         assert autan.results.check_run_json(
             document | {"timing": broken}, result.case, result.mesh_info
+        )
+    unflagged = {k: v for k, v in document["solver"].items() if k != "dirty"}
+    for solver in (unflagged, unflagged | {"dirty": "false"}, unflagged | {"dirty": 0}):
+        assert autan.results.check_run_json(
+            document | {"solver": solver}, result.case, result.mesh_info
         )
 
 
