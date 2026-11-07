@@ -33,9 +33,13 @@ struct RanksRequest {
 /// - stencil_entries, periodic_ghosts: the face2 cell stencil's entries and the
 ///   ghost cells of a single-rank run's mesh (its one-part partition when the
 ///   mesh has periodic pairs, the mesh otherwise);
+/// - vertex_stencil_entries, band_entries, boundary_fit_entries on that mesh: the vertex cell
+///   stencil's entries, and the vertex-ring entries the quadratic gradient's band (two rings)
+///   and the viscous boundary fit (three rings, in the cells owning a boundary face and their
+///   face neighbours) gather when every boundary face gives a value (mesh-info.md);
 /// - with `ranks`, the partition of a run on that many ranks: the run's METIS
 ///   partition (cell_cost_weights, its groups kept whole), and each rank's owned
-///   cells, ghost cells, faces, interior faces and face2 stencil entries.
+///   cells, ghost cells, faces, interior faces, face2 stencil entries and the three ring counts.
 /// Throws as partition_cells for an invalid rank count (E0140 to E0143).
 MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
                        std::optional<RanksRequest> ranks = std::nullopt);

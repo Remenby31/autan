@@ -4,6 +4,7 @@ The histories are written so that their verdict follows from that text by hand: 
 at iteration 1 and exact powers of ten after it, floors of 1e-8, plateaus of constant values.
 """
 
+import math
 from collections.abc import Callable
 from pathlib import Path
 
@@ -161,7 +162,9 @@ def test_an_fp32_run_may_converge_on_a_round_off_plateau_within_ten_floors(
     floors = dict.fromkeys(EQUATIONS, 1e-8)
 
     def run(stop: int, value: float, plateau: list[str], provisional: int = 0) -> Path:
-        # A new reference at iteration 2, then the same value: on a plateau from iteration 102.
+        # 1.0, then the same value: the level (median of the last 100 counted residuals) is that
+        # value from the 100th counted iteration, its first and so its reference; on a plateau
+        # 100 counted iterations later.
         return freestream_run(
             precision="fp32+acc64",
             residuals=lines(1.0, *[value] * (stop - 1)),
@@ -169,23 +172,65 @@ def test_an_fp32_run_may_converge_on_a_round_off_plateau_within_ten_floors(
             provisional=provisional,
         )
 
-    verify([run(102, 5e-8, EQUATIONS)], "freestream")
-    # 49 provisional lines: the first counted one, iteration 50, is the reference, and the
-    # plateau holds 100 counted iterations later, at 150, not before; unmarked, at 102.
-    verify([run(150, 5e-8, EQUATIONS, provisional=49)], "freestream")
-    assert refused(run(149, 5e-8, EQUATIONS, provisional=49)) == {
-        "iteration": 149,
+    verify([run(200, 5e-8, EQUATIONS)], "freestream")
+    # 49 provisional lines: counting starts at iteration 50, the first level is at 149 and the
+    # plateau holds at 249, not before; unmarked, at 200.
+    verify([run(249, 5e-8, EQUATIONS, provisional=49)], "freestream")
+    assert refused(run(248, 5e-8, EQUATIONS, provisional=49)) == {
+        "iteration": 248,
         "equation": "density",
     }
-    assert refused(run(150, 5e-8, EQUATIONS)) == {"iteration": 102, "equation": None}
-    assert refused(run(102, 5e-8, [])) == {"iteration": 102, "equation": None}
-    # Above ten floors, or before 100 iterations without a new reference.
-    assert refused(run(102, 2e-7, EQUATIONS)) == {"iteration": 102, "equation": "density"}
-    assert refused(run(60, 5e-8, EQUATIONS)) == {"iteration": 60, "equation": "density"}
+    assert refused(run(249, 5e-8, EQUATIONS)) == {"iteration": 200, "equation": None}
+    assert refused(run(200, 5e-8, [])) == {"iteration": 200, "equation": None}
+    # Above ten floors, or before 100 counted iterations without a new reference of the level.
+    assert refused(run(200, 2e-7, EQUATIONS)) == {"iteration": 200, "equation": "density"}
+    assert refused(run(199, 5e-8, EQUATIONS)) == {"iteration": 199, "equation": "density"}
     # Density sits in its band, energy above it: energy is the one that fails.
     mixed = freestream_run(
         precision="fp32+acc64",
-        residuals=lines(1.0, *[{"density": 5e-8, "energy": 2e-7}] * 101),
+        residuals=lines(1.0, *[{"density": 5e-8, "energy": 2e-7}] * 199),
         convergence=Convergence(floor=floors, plateau=["density"]),
     )
-    assert refused(mixed) == {"iteration": 102, "equation": "energy"}
+    assert refused(mixed) == {"iteration": 200, "equation": "energy"}
+
+
+def test_a_plateau_follows_the_residual_level_not_its_lowest_draw(
+    freestream_run: Callable[..., Path],
+) -> None:
+    # The sequences of the runtime's test (test_runtime.cpp): stationary noise uniform on 0.65 to
+    # 1.35 times p (coefficient of variation 0.2) along the golden-ratio sequence, with one draw
+    # at 0.85 times its lowest value at iteration 150, whose level (median of the last 100) is the
+    # reference from iteration 100, so the run converges at 200; then the same noise falling 15 %
+    # every 100 iterations, which never reaches a plateau.
+    floors = dict.fromkeys(EQUATIONS, 1e-8)
+    p = 5e-8
+
+    def noise(k: int) -> float:
+        return p * (1.0 + 0.35 * (2.0 * math.fmod(k * 0.6180339887498949, 1.0) - 1.0))
+
+    series = [noise(k) for k in range(1, 201)]
+    series[149] = 0.85 * min(series[:149])
+
+    def stationary(stop: int) -> Path:
+        return freestream_run(
+            precision="fp32+acc64",
+            residuals=lines(*series[:stop]),
+            convergence=Convergence(floor=floors, plateau=EQUATIONS),
+        )
+
+    verify([stationary(200)], "freestream")
+    # The value rule stopped this sequence at 105; the level rule refuses it there.
+    assert refused(stationary(105)) == {"iteration": 105, "equation": "density"}
+    falling = [noise(k) * 0.85 ** (k / 100.0) for k in range(1, 1001)]
+    verify(
+        [
+            freestream_run(
+                precision="fp32+acc64",
+                max_iterations=1000,
+                status="completed",
+                residuals=lines(*falling),
+                convergence=Convergence(floor=floors, plateau=[]),
+            )
+        ],
+        "freestream",
+    )

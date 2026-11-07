@@ -86,9 +86,9 @@ fs::path cgns_file(const std::string& name, Edit edit) {
   return path;
 }
 
-void unstructured_tet(int fn, int base, const char* zone_name, cgsize_t cells = 1) {
+int tet_nodes(int fn, int base, const char* zone_name, cgsize_t cells) {
   cgsize_t size[3] = {4, cells, 0};
-  int zone = 0, coord = 0, section = 0;
+  int zone = 0, coord = 0;
   REQUIRE(cg_zone_write(fn, base, zone_name, size, CGNS_ENUMV(Unstructured), &zone) == CG_OK);
   const std::array<double, 4> x{0, 1, 0, 0}, y{0, 0, 1, 0}, z{0, 0, 0, 1};
   REQUIRE(cg_coord_write(fn, base, zone, CGNS_ENUMV(RealDouble), "CoordinateX", x.data(), &coord) ==
@@ -97,6 +97,12 @@ void unstructured_tet(int fn, int base, const char* zone_name, cgsize_t cells = 
           CG_OK);
   REQUIRE(cg_coord_write(fn, base, zone, CGNS_ENUMV(RealDouble), "CoordinateZ", z.data(), &coord) ==
           CG_OK);
+  return zone;
+}
+
+void unstructured_tet(int fn, int base, const char* zone_name, cgsize_t cells = 1) {
+  const int zone = tet_nodes(fn, base, zone_name, cells);
+  int section = 0;
   const std::array<cgsize_t, 4> tet{1, 2, 3, 4};
   REQUIRE(cg_section_write(fn, base, zone, "Cells", CGNS_ENUMV(TETRA_4), 1, 1, 0, tet.data(),
                            &section) == CG_OK);
@@ -105,9 +111,12 @@ void unstructured_tet(int fn, int base, const char* zone_name, cgsize_t cells = 
 }  // namespace
 
 TEST_CASE("solution.cgns round-trips the mesh and passes cgnscheck", "[cgns]") {
-  const std::string name = GENERATE("hybrid", "poly", "hanging");
+  const std::string name = GENERATE("hybrid", "poly", "hanging", "one-cell");
   CAPTURE(name);
-  const autan::Mesh mesh = autan::io::read_mesh(data_dir / name / "polyMesh");
+  const autan::Mesh mesh =
+      name == "one-cell"
+          ? autan::assemble(autan::to_face_based(autan::test::box(1, autan::test::BoxFill::hexa)))
+          : autan::io::read_mesh(data_dir / name / "polyMesh");
   autan::io::Solution solution = solution_for(mesh);
   solution.mean_fields.push_back(solution.fields[0]);
   autan::io::Field previous{.name = "DensityPreviousLevel", .values = {}};
@@ -160,13 +169,14 @@ TEST_CASE("solution.cgns round-trips the mesh and passes cgnscheck", "[cgns]") {
 }
 
 TEST_CASE("Zone node names follow the results.md rule", "[cgns]") {
-  const auto names =
-      autan::io::zone_node_names({"wall", "shared", "Zone", std::string(33, 'a'), "a/b",
-                                  "boundary-0005", ".", "ZoneBC", "z\xc3\xb4ne"},
-                                 {"shared", "fluid", "ZoneBC-cells", "FlowSolution"});
-  const std::vector<std::string> boundary{"wall",          "boundary-0001", "boundary-0002",
-                                          "boundary-0003", "boundary-0004", "boundary-0005",
-                                          "boundary-0006", "ZoneBC",        "boundary-0008"};
+  const auto names = autan::io::zone_node_names(
+      {"wall", "shared", "Zone", std::string(33, 'a'), "a/b", "boundary-0005", ".", "ZoneBC",
+       "z\xc3\xb4ne", "inlet 1", std::string(32, 'b')},
+      {"shared", "fluid", "ZoneBC-cells", "FlowSolution"});
+  const std::vector<std::string> boundary{
+      "wall",          "boundary-0001", "boundary-0002",     "boundary-0003",
+      "boundary-0004", "boundary-0005", "boundary-0006",     "ZoneBC",
+      "boundary-0008", "inlet 1",       std::string(32, 'b')};
   CHECK(names.boundary == boundary);
   CHECK(names.cell ==
         std::vector<std::string>{"cell-zone-0000", "fluid", "ZoneBC-cells", "cell-zone-0003"});
@@ -202,36 +212,86 @@ TEST_CASE("CGNS files outside the supported layout are coded errors", "[cgns]") 
                                           "/Base/Zone/GridCoordinates") == CG_OK);
                   }));
   }
+  SECTION("a BC given by vertices") {
+    require_error(
+        ErrorCode::io_unsupported, cgns_file("vertex-bc.cgns", [](int fn, int base) {
+          unstructured_tet(fn, base, "Zone");
+          const std::array<cgsize_t, 3> tri{1, 3, 2};
+          int section = 0, bc = 0;
+          REQUIRE(cg_section_write(fn, base, 1, "Wall", CGNS_ENUMV(TRI_3), 2, 2, 0, tri.data(),
+                                   &section) == CG_OK);
+          const cgsize_t face = 2;
+          REQUIRE(cg_boco_write(fn, base, 1, "wall", CGNS_ENUMV(BCWall), CGNS_ENUMV(PointList), 1,
+                                &face, &bc) == CG_OK);
+          REQUIRE(cg_boco_gridlocation_write(fn, base, 1, bc, CGNS_ENUMV(Vertex)) == CG_OK);
+        }));
+  }
   SECTION("a tetrahedron reads") {
-    const autan::Mesh mesh = autan::io::read_mesh(
-        cgns_file("tet.cgns", [](int fn, int base) { unstructured_tet(fn, base, "Zone"); }));
+    const autan::Mesh mesh = autan::io::read_mesh(cgns_file("tet.cgns", [](int fn, int base) {
+      unstructured_tet(fn, base, "Zone");
+      const cgsize_t cell = 1;
+      int region = 0;
+      REQUIRE(cg_subreg_ptset_write(fn, base, 1, "block", 3, CGNS_ENUMV(CellCenter),
+                                    CGNS_ENUMV(PointList), 1, &cell, &region) == CG_OK);
+    }));
     CHECK(mesh.n_cells() == 1);
     CHECK(zone_named(mesh, "unassigned").boundary);
+    REQUIRE(mesh.cell_zones().size() == 1);
+    CHECK(mesh.cell_zones()[0].name == "block");
+
+    // As NGON_n faces and an NFACE_n cell that lists its x = 0 face with a negative id, that face's
+    // nodes in inward order (SIDS: a negative id, the face normal points into the cell).
+    const autan::Mesh poly = autan::io::read_mesh(cgns_file("tet-nface.cgns", [](int fn, int base) {
+      const int zone = tet_nodes(fn, base, "Zone", 1);
+      const std::array<cgsize_t, 12> faces{1, 3, 2, 1, 2, 4, 2, 3, 4, 1, 3, 4};
+      const std::array<cgsize_t, 5> face_offsets{0, 3, 6, 9, 12};
+      const std::array<cgsize_t, 4> cell{1, 2, 3, -4};
+      const std::array<cgsize_t, 2> cell_offsets{0, 4};
+      int section = 0;
+      REQUIRE(cg_poly_section_write(fn, base, zone, "Faces", CGNS_ENUMV(NGON_n), 1, 4, 0,
+                                    faces.data(), face_offsets.data(), &section) == CG_OK);
+      REQUIRE(cg_poly_section_write(fn, base, zone, "Cells", CGNS_ENUMV(NFACE_n), 5, 5, 0,
+                                    cell.data(), cell_offsets.data(), &section) == CG_OK);
+    }));
+    REQUIRE(poly.n_cells() == 1);
+    REQUIRE(poly.n_faces() == 4);
+    const autan::Geometry g = autan::compute_geometry(poly);
+    CHECK_THAT(g.cell_volume[0], Catch::Matchers::WithinRel(1.0 / 6.0, 1e-12));
+    for (index_t f = 0; f < poly.n_faces(); ++f) {
+      CAPTURE(f);
+      const auto i = at(f);
+      CHECK(g.face_area_x[i] * (g.face_centroid_x[i] - g.cell_centroid_x[0]) +
+                g.face_area_y[i] * (g.face_centroid_y[i] - g.cell_centroid_y[0]) +
+                g.face_area_z[i] * (g.face_centroid_z[i] - g.cell_centroid_z[0]) >
+            0);
+    }
   }
 }
 
 TEST_CASE("CGNS BC types normalise as mesh-info.md says", "[cgns]") {
-  // A BC typed BCOutflow without a family, and a FamilySpecified BC whose
-  // family carries BCWallViscous.
+  // BCs typed BCOutflow, BCGeneral and BCTunnelOutflow without a family, and a FamilySpecified
+  // BC whose family, named by its path, carries BCWallViscous.
   const autan::Mesh mesh = autan::io::read_mesh(cgns_file("bc-types.cgns", [](int fn, int base) {
     unstructured_tet(fn, base, "Zone");
-    const std::array<cgsize_t, 6> tris{1, 3, 2, 1, 2, 4};
+    const std::array<cgsize_t, 12> tris{1, 3, 2, 1, 2, 4, 2, 3, 4, 1, 4, 3};
     int section = 0, family = 0, fambc = 0;
-    REQUIRE(cg_section_write(fn, base, 1, "Faces", CGNS_ENUMV(TRI_3), 2, 3, 0, tris.data(),
+    REQUIRE(cg_section_write(fn, base, 1, "Faces", CGNS_ENUMV(TRI_3), 2, 5, 0, tris.data(),
                              &section) == CG_OK);
     REQUIRE(cg_family_write(fn, base, "Walls", &family) == CG_OK);
     REQUIRE(cg_fambc_write(fn, base, family, "FamilyBC", CGNS_ENUMV(BCWallViscous), &fambc) ==
             CG_OK);
     for (const auto& [name, type, face] :
          {std::tuple{"outlet", CGNS_ENUMV(BCOutflow), cgsize_t{2}},
-          std::tuple{"wall", CGNS_ENUMV(FamilySpecified), cgsize_t{3}}}) {
+          std::tuple{"wall", CGNS_ENUMV(FamilySpecified), cgsize_t{3}},
+          std::tuple{"general", CGNS_ENUMV(BCGeneral), cgsize_t{4}},
+          std::tuple{"tunnel", CGNS_ENUMV(BCTunnelOutflow), cgsize_t{5}}}) {
       int bc = 0;
       REQUIRE(cg_boco_write(fn, base, 1, name, type, CGNS_ENUMV(PointList), 1, &face, &bc) ==
               CG_OK);
       REQUIRE(cg_boco_gridlocation_write(fn, base, 1, bc, CGNS_ENUMV(FaceCenter)) == CG_OK);
       if (type == CGNS_ENUMV(FamilySpecified)) {
         REQUIRE(cg_goto(fn, base, "Zone_t", 1, "ZoneBC_t", 1, "BC_t", bc, "end") == CG_OK);
-        REQUIRE(cg_famname_write("Walls") == CG_OK);
+        REQUIRE(cg_famname_write("/Base/Walls") == CG_OK);
       }
     }
   }));
@@ -239,6 +299,8 @@ TEST_CASE("CGNS BC types normalise as mesh-info.md says", "[cgns]") {
   CHECK(zone_named(mesh, "outlet").kind == autan::BcKind::outlet);
   CHECK(zone_named(mesh, "Walls").bc_type == "BCWallViscous");
   CHECK(zone_named(mesh, "Walls").kind == autan::BcKind::wall);
+  CHECK(zone_named(mesh, "general").kind == autan::BcKind::unspecified);
+  CHECK(zone_named(mesh, "tunnel").kind == autan::BcKind::outlet);
 }
 
 TEST_CASE("A CGNS file whose data lives in another file is refused before any read", "[cgns]") {
@@ -281,6 +343,64 @@ TEST_CASE("The writer rejects arrays that do not match the mesh", "[cgns]") {
     FAIL("expected E0101");
   } catch (const autan::Error& e) {
     CHECK(e.code() == autan::ErrorCode::mesh_inconsistent_sizes);
+  }
+  autan::CellwiseMesh cells = autan::test::box(2, autan::test::BoxFill::hexa);
+  cells.face_zones[0].name = "walls";
+  const autan::Mesh walled = autan::assemble(autan::to_face_based(std::move(cells)));
+  autan::io::Solution walls = solution_for(walled);
+  REQUIRE(walls.wall_faces.front() == walled.n_interior_faces());
+  std::vector<cgsize_t> expected;
+  for (const index_t f : walls.wall_faces) expected.push_back(f + 1);
+  fs::create_directories(temp_dir());
+  const fs::path file = temp_dir() / "first-wall.cgns";
+  autan::io::write_solution(file, walled, walls);
+  {
+    int fn = 0, regions = 0, wall = 0;
+    REQUIRE(cg_open(file.string().c_str(), CG_MODE_READ, &fn) == CG_OK);
+    REQUIRE(cg_nsubregs(fn, 1, 1, &regions) == CG_OK);
+    for (int s = 1; s <= regions; ++s) {
+      char name[33];
+      int dimension = 0, bc_name_length = 0, gc_name_length = 0;
+      CGNS_ENUMT(GridLocation_t) location{};
+      CGNS_ENUMT(PointSetType_t) set{};
+      cgsize_t points = 0;
+      REQUIRE(cg_subreg_info(fn, 1, 1, s, name, &dimension, &location, &set, &points,
+                             &bc_name_length, &gc_name_length) == CG_OK);
+      if (std::string_view(name) != "WallSolution") continue;
+      wall = s;
+      CHECK(location == CGNS_ENUMV(FaceCenter));
+      CHECK(set == CGNS_ENUMV(PointList));
+      REQUIRE(points == static_cast<cgsize_t>(expected.size()));
+    }
+    REQUIRE(wall != 0);
+    std::vector<cgsize_t> points(expected.size());
+    REQUIRE(cg_subreg_ptset_read(fn, 1, 1, wall, points.data()) == CG_OK);
+    CHECK(points == expected);
+    REQUIRE(cg_goto(fn, 1, "Zone_t", 1, "ZoneSubRegion_t", wall, "end") == CG_OK);
+    int arrays = 0;
+    REQUIRE(cg_narrays(&arrays) == CG_OK);
+    REQUIRE(arrays == 1);
+    char array[33];
+    CGNS_ENUMT(DataType_t) type{};
+    int dims = 0;
+    cgsize_t extent[12];
+    REQUIRE(cg_array_info(1, array, &type, &dims, extent) == CG_OK);
+    CHECK(std::string_view(array) == "Pressure");
+    std::vector<double> pressure(expected.size());
+    REQUIRE(cg_array_read_as(1, CGNS_ENUMV(RealDouble), pressure.data()) == CG_OK);
+    CHECK(pressure == walls.wall_fields[0].values);
+    cg_close(fn);
+  }
+  walls.wall_fields[0].values = {1e5};
+  for (const index_t face : {walled.n_interior_faces() - 1, walled.n_faces()}) {
+    CAPTURE(face);
+    walls.wall_faces = {face};
+    try {
+      autan::io::write_solution(temp_dir() / "outside-wall.cgns", walled, walls);
+      FAIL("expected E0102");
+    } catch (const autan::Error& e) {
+      CHECK(e.code() == autan::ErrorCode::mesh_index_out_of_range);
+    }
   }
 }
 
@@ -410,7 +530,8 @@ namespace {
 // x = 1 quads 5-6, joined by a periodic connection and its reciprocal.
 // `reverse`: the reciprocal lists its pairs in the other order; `cross`:
 // both connections pair face 3 with 6 and 4 with 5; `rotate`: a non-zero
-// RotationAngle; `one_pair`: faces 3 and 5 alone are paired.
+// RotationAngle; `one_pair`: faces 3 and 5 alone are paired; `descriptor`: the
+// PeriodicTranslation of "left", "right" then holding the exact [-1, 0, 0].
 fs::path periodic_slab(const std::string& name, bool reverse, bool cross, bool rotate,
                        const std::string& descriptor = "", bool duplicate = false,
                        bool one_pair = false) {
@@ -482,9 +603,11 @@ fs::path periodic_slab(const std::string& name, bool reverse, bool cross, bool r
       REQUIRE(cg_conn_periodic_write(fn, base, zone, conn, zero.data(), angle.data(), t.data()) ==
               CG_OK);
       if (!descriptor.empty()) {
+        const std::string text =
+            std::string_view(name_) == "left" ? descriptor : std::string("[-1.0, 0.0, 0.0]");
         REQUIRE(cg_goto(fn, base, "Zone_t", zone, "ZoneGridConnectivity_t", 1, "GridConnectivity_t",
                         conn, "end") == CG_OK);
-        REQUIRE(cg_descriptor_write("PeriodicTranslation", descriptor.c_str()) == CG_OK);
+        REQUIRE(cg_descriptor_write("PeriodicTranslation", text.c_str()) == CG_OK);
       }
     }
   });
@@ -520,6 +643,11 @@ TEST_CASE("A connectivity CGNS cannot express as a periodic pair is a coded erro
   // A descriptor that is not three numbers, and a face listed twice.
   require_error(ErrorCode::io_malformed,
                 periodic_slab("four.cgns", false, false, false, "[1.0, 0.0, 0.0, 123]"));
+  require_error(ErrorCode::io_malformed,
+                periodic_slab("text.cgns", false, false, false, R"(["1", 0, 0])"));
+  CHECK(autan::io::read_mesh(periodic_slab("number.cgns", false, false, false, "[1, 0, 0]"))
+            .periodic_pairs()
+            .size() == 1);
   require_error(ErrorCode::io_malformed,
                 periodic_slab("twice.cgns", false, false, false, "", true));
   // A one-sided periodic connection.

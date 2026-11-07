@@ -63,7 +63,8 @@ int run_main(int argc, char* const* argv, const PhysicsRegistry& registry) {
     std::fputs(usage, stderr);
     return static_cast<int>(ExitStatus::invalid_input);
   }
-  const SolverBuild build{.version = AUTAN_BUILD_VERSION, .commit = AUTAN_BUILD_COMMIT};
+  const SolverBuild build{
+      .version = AUTAN_BUILD_VERSION, .commit = AUTAN_BUILD_COMMIT, .dirty = AUTAN_BUILD_DIRTY};
 #ifdef AUTAN_HAVE_MPI
   // MPI starts only under a launcher: a plain autan-run is one rank.
   int argc_mpi = argc;

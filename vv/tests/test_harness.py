@@ -609,3 +609,103 @@ def test_fp32_agreement_measures_the_relative_difference_in_units_of_eps32(tmp_p
             assert pair["fields"]["Density"] == pytest.approx(delta / EPS32, rel=1e-9)
             assert pair["fields"]["Pressure"] == 0.0
         assert report["pass"] is (delta / EPS32 <= 500.0)
+
+
+def test_fp32_agreement_pairs_studies_that_keep_their_own_copies_of_the_mesh(
+    tmp_path: Path,
+) -> None:
+    # Each study keeps its own copy of the mesh: the fp32 cases name another path, the same file.
+    # The pair is the same problem (#524): the mesh is paired by its sha256, not by its path.
+    import shutil  # noqa: PLC0415
+
+    from autan_vv.agreement import agreement  # noqa: PLC0415
+
+    meshes = _family(tmp_path, "hex", (4, 6))
+    double = _runs(tmp_path / "fp64", meshes, "mms-euler", 2.0)
+    copies = []
+    for mesh, path, fmt in meshes:
+        copy = tmp_path / "fp32-study" / path.name
+        copy.parent.mkdir(exist_ok=True)
+        shutil.copy(path, copy)
+        copies.append((mesh, copy, fmt))
+    single = _runs(tmp_path / "fp32", copies, "mms-euler", 2.0, precision="fp32+acc64")
+    report = agreement(double, single)
+    assert report["pass"]
+    assert [p["n_cells"] for p in report["pairs"]] == [64, 216]
+
+
+@pytest.mark.parametrize("same_solution", [True, False])
+def test_fp32_agreement_compares_the_manufactured_solution_by_its_sha256(
+    tmp_path: Path, same_solution: bool
+) -> None:
+    # The case records the manufactured solution's path and sha256: each study keeps its own copy,
+    # so two copies of one solution differ only by their path and pair; another file has another
+    # sha256 and is refused.
+    import hashlib  # noqa: PLC0415
+    import json  # noqa: PLC0415
+
+    from autan_vv.agreement import agreement  # noqa: PLC0415
+    from autan_vv.mms import CATALOG, dump_json  # noqa: PLC0415
+
+    meshes = _family(tmp_path, "hex", (4, 6))
+    text = dump_json(CATALOG["euler"]())
+
+    def runs(out: Path, precision: str, content: str) -> list[Path]:
+        solution = out / "euler.json"
+        solution.parent.mkdir(parents=True, exist_ok=True)
+        solution.write_text(content)
+        sha = hashlib.sha256(solution.read_bytes()).hexdigest()
+        manufactured = autan.Manufactured(path=str(solution), sha256=sha)
+        return _runs(out, meshes, "mms-euler", 2.0, precision=precision, manufactured=manufactured)
+
+    double = runs(tmp_path / "fp64", "fp64", text)
+    other = text if same_solution else json.dumps(json.loads(text), indent=4)
+    single = runs(tmp_path / "fp32", "fp32+acc64", other)
+    if same_solution:
+        assert agreement(double, single)["pass"]
+    else:
+        with pytest.raises(VVError) as refused:
+            agreement(double, single)
+        assert refused.value.code == "V0727"
+
+
+@pytest.mark.parametrize("same_state", [True, False])
+def test_fp32_agreement_compares_the_initial_state_by_its_sha256(
+    tmp_path: Path, same_state: bool
+) -> None:
+    # Each study writes its own copy of every level's initial state: the same state at another path
+    # pairs, a state at another time has another sha256 and is refused.
+    from autan_vv.agreement import agreement  # noqa: PLC0415
+
+    meshes = _family(tmp_path, "vortex-hex", (8, 16))
+
+    def runs(out: Path, precision: str, start: float) -> list[Path]:
+        levels = iter(meshes)
+
+        def own_state(case: autan.Case) -> None:
+            mesh, path, _ = next(levels)
+            state = out / "states" / f"{path.stem}.initial.json"
+            state.parent.mkdir(parents=True, exist_ok=True)
+            vortex = get_oracle("isentropic-vortex")
+            digest = write_initial_state(vortex, mesh, path, state, start)
+            case.initial_state = autan.StateFile(path=str(state), sha256=digest)
+
+        return _runs(
+            out,
+            meshes,
+            "isentropic-vortex",
+            2.0,
+            amplitude=0.005,
+            time=40.0,
+            precision=precision,
+            edit=own_state,
+        )
+
+    double = runs(tmp_path / "fp64", "fp64", 0.0)
+    single = runs(tmp_path / "fp32", "fp32+acc64", 0.0 if same_state else 1.0)
+    if same_state:
+        assert agreement(double, single)["pass"]
+    else:
+        with pytest.raises(VVError) as refused:
+            agreement(double, single)
+        assert refused.value.code == "V0727"

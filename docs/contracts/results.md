@@ -57,6 +57,7 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
 | `case.sha256` | Case hash as defined in [case-schema.md](case-schema.md#case-hash). |
 | `mesh.path`, `mesh.sha256`, `mesh.groups_sha256` | Absolute path of the mesh read, `source.sha256` of its MeshInfo, and `groups_source.sha256` of its MeshInfo, null without zone groups: the zones a case's `group` selected. |
 | `solver.version`, `solver.commit` | Version and full 40-character git commit of the solver build. |
+| `solver.dirty` | Whether tracked source files of the build differed from `solver.commit`, which is then only the base it was built from: `git status --porcelain --untracked-files=no` lists a change, the rule of the SDK's own `DIRTY`. A build outside a git checkout states it with `-DAUTAN_DIRTY=ON` or `OFF`. |
 | `solver.backend` | `cuda` · `hip` · `cpu` · `fake`. Results of the `fake` backend are synthetic and must never be used as reference data. |
 | `solver.binary_sha256` | SHA-256 of the `autan-run` executable that ran, into which the build links every library of the solver statically (it refuses `BUILD_SHARED_LIBS`), hashed at its start; `null` exactly for the `fake` backend. Outside the [identity](#identity). A `continue` whose executable is not the one of the state it starts from warns `W0715`. |
 | `precision` | Precision as run, from the case. |
