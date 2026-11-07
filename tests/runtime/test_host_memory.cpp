@@ -105,6 +105,10 @@ TEST_CASE("The memory a host can still give is the least of MemAvailable and its
     write(cg / "job" / "memory.max", std::to_string(6 * gib) + "\n");
     write(cg / "job" / "memory.stat", "inactive_file " + std::to_string(8 * gib) + "\n");
     CHECK(autan::runtime::host_memory(proc).available == 6 * gib);
+    // Above its limit, a group keeps its deficit: 8 GiB used of 6, 3 GiB of it reclaimable.
+    write(cg / "job" / "memory.current", std::to_string(8 * gib) + "\n");
+    write(cg / "job" / "memory.stat", "inactive_file " + std::to_string(3 * gib) + "\n");
+    CHECK(autan::runtime::host_memory(proc).available == gib);
     // A limit near the largest count: the credit saturates at the limit instead of overflowing.
     write(cg / "job" / "memory.max",
           std::to_string(std::numeric_limits<std::int64_t>::max() - 8191) + "\n");
@@ -177,6 +181,10 @@ TEST_CASE("The memory a host can still give is the least of MemAvailable and its
     CHECK(memory.available == 3 * gib);
     CHECK(memory.unseen_cgroups.empty());
     CHECK(memory.cgroup_scope == "namespace_root");
+    // The namespace root is the process's own cgroup, the container's: its cache counts.
+    write(cg / "memory.stat", "inactive_file " + std::to_string(gib / 2) + "\n");
+    CHECK(autan::runtime::host_memory(proc).available == 3 * gib + gib / 2);
+    fs::remove(cg / "memory.stat");
     // No limit in sight: what is above the namespace root is unseen.
     write(cg / "memory.max", "max\n");
     memory = autan::runtime::host_memory(proc);

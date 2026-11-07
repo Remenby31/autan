@@ -167,13 +167,15 @@ std::optional<std::int64_t> cgroup_available(const fs::path& proc, const fs::pat
       if (limit && (v2 || *limit < (std::int64_t{1} << 62))) {
         const auto used = number_in(dir / (v2 ? "memory.current" : "memory.usage_in_bytes"));
         if (!used) throw std::runtime_error("no memory usage beside the limit in " + dir.string());
-        std::int64_t left = std::clamp<std::int64_t>(*limit - *used, 0, *limit);
+        // Usage less the reclaimable cache, then the limit less that: a group above its limit
+        // keeps its deficit, and the result never exceeds the limit.
+        std::int64_t usage = std::max<std::int64_t>(0, *used);
         if (cg == own) {
           const auto cache =
               stat_in(dir / "memory.stat", v2 ? "inactive_file" : "total_inactive_file");
-          const std::int64_t credit = std::max<std::int64_t>(0, cache.value_or(0));
-          left = credit > *limit - left ? *limit : left + credit;
+          usage = std::max<std::int64_t>(0, usage - std::max<std::int64_t>(0, cache.value_or(0)));
         }
+        const std::int64_t left = std::max<std::int64_t>(0, *limit - usage);
         available = std::min(available.value_or(left), left);
       }
     }
