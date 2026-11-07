@@ -1,4 +1,5 @@
-"""`python -m autan_codegen KERNEL.py --out DIR [--backends cpu,gpu,metal] [--source-root DIR]`."""
+"""`python -m autan_codegen KERNEL.py --out DIR [--backends cpu,gpu,metal] [--source-root DIR]
+[--face-values]`."""
 
 from __future__ import annotations
 
@@ -31,6 +32,11 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="policies to instantiate (default: every policy the backends support)",
     )
+    ap.add_argument(
+        "--face-values",
+        action="store_true",
+        help="also write <module>_values_cpu.hpp: each face loop's outputs per face (measurements)",
+    )
     ns = ap.parse_args(argv)
     try:
         for path in ns.kernels:
@@ -41,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
                 line_directives=not ns.no_line,
                 policies=ns.policies.split(",") if ns.policies else None,
                 source_root=ns.source_root,
+                face_values=ns.face_values,
             )
     except CodegenError as exc:
         sys.stderr.write(f"error: {exc}\n")

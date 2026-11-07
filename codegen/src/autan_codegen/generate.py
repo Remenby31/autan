@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from autan_codegen import model
 from autan_codegen.derive import derive
 from autan_codegen.emit_cpp import emit_common_header
-from autan_codegen.emit_cpu import emit_cpu_header
+from autan_codegen.emit_cpu import emit_cpu_header, emit_values_header
 from autan_codegen.emit_gpu import POLICIES, emit_gpu_header, emit_gpu_instances
 from autan_codegen.emit_metal import POLICIES as METAL_POLICIES
 from autan_codegen.emit_metal import emit_metal_header
@@ -26,13 +26,17 @@ def generate(
     line_directives: bool = True,
     policies: list[str] | None = None,
     source_root: Path | None = None,
+    face_values: bool = False,
 ) -> list[Path]:
     """Write `<module>.hpp` and the files of each backend into `out`; return the paths written.
 
     For the GPU backend, `<module>_gpu.cu` instantiates every loop for `policies` (default: all);
     the Metal backend instantiates the policies Metal has among them, and refuses an explicit
     `fp64`, which Metal cannot run. With `source_root`, `#line` directives name the DSL sources
-    under it relative to it, so that two checkouts generate the same text.
+    under it relative to it, so that two checkouts generate the same text. With `face_values`
+    (CPU backend), `<module>_values_cpu.hpp` also gives each face and boundary loop a
+    `<loop>_values` that writes its body's outputs per face, for measurements; no other file
+    changes.
     """
     for b in backends:
         if b not in BACKENDS:
@@ -52,6 +56,8 @@ def generate(
     files = {f"{m.name}.hpp": emit_common_header(m, line_directives, source_root)}
     if "cpu" in backends:
         files[f"{m.name}_cpu.hpp"] = emit_cpu_header(m)
+        if face_values:
+            files[f"{m.name}_values_cpu.hpp"] = emit_values_header(m)
     if "gpu" in backends:
         files[f"{m.name}_gpu.cuh"] = emit_gpu_header(m)
         files[f"{m.name}_gpu.cu"] = emit_gpu_instances(m, policies)
