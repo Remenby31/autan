@@ -2174,14 +2174,15 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
   SECTION("the previous run has no solution") {
     require_error(from([&](Json& d) { d["start"]["run"] = fresh_dir().string(); }), "E0707");
   }
-#if defined(__linux__)
-  SECTION("the previous run's solution cannot be read") {
-    // A directory in its place: opened, then each read fails (EISDIR).
-    const fs::path previous = fresh_dir();
-    fs::create_directory(previous / "solution.cgns");
-    require_error(from([&](Json& d) { d["start"]["run"] = previous.string(); }), "E0707");
+  SECTION("the previous run's solution is not a regular file") {
+    // A directory reads nothing without an error on libc++; a named pipe blocks its reader.
+    const fs::path directory = fresh_dir();
+    fs::create_directory(directory / "solution.cgns");
+    require_error(from([&](Json& d) { d["start"]["run"] = directory.string(); }), "E0707");
+    const fs::path pipe = fresh_dir();
+    REQUIRE(::mkfifo((pipe / "solution.cgns").c_str(), 0600) == 0);
+    require_error(from([&](Json& d) { d["start"]["run"] = pipe.string(); }), "E0707");
   }
-#endif
   SECTION("the previous run used another precision") {
     require_error(from([](Json& d) { d["precision"] = "fp64"; }), "E0708");
   }
