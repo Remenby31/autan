@@ -15,6 +15,7 @@
 #include "autan/core/geometry.hpp"
 #include "autan/io/mesh_counts.hpp"
 #include "autan/io/read_mesh.hpp"
+#include "autan/partition/partition.hpp"
 #include "fixtures.hpp"
 
 namespace {
@@ -250,8 +251,21 @@ TEST_CASE("MeshInfo counts a single-rank run's stencil entries and periodic ghos
   CHECK(images.face_nodes[0] == 4 * images.faces[0]);
   CHECK(images.nodes[0] > (n + 1) * (n + 1) * (n + 1));
   CHECK(images.stencil_entries == std::vector<std::int64_t>{periodic.stencil_entries});
-  CHECK(images.band_entries == std::vector<std::int64_t>{periodic.band_entries});
-  CHECK(periodic.band_entries > plain.band_entries);
+  // The rings over the image ghosts too: the counts of the one part's local mesh.
+  auto pw = box(n, 1.0);
+  pw.face_zones[0].kind = autan::BcKind::periodic;
+  pw.face_zones[1].kind = autan::BcKind::periodic;
+  pw.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(std::move(pw)));
+  const std::vector<std::int32_t> rank0(static_cast<std::size_t>(mesh.n_cells()), 0);
+  const Rings ring = counted_rings(
+      autan::extract_partition(mesh, autan::compute_geometry(mesh), rank0, 1, 0).mesh);
+  CHECK(periodic.vertex_stencil_entries == ring.vertex);
+  CHECK(periodic.band_entries == ring.band);
+  CHECK(periodic.boundary_fit_entries == ring.boundary_fit);
+  CHECK(images.vertex_stencil_entries == std::vector<std::int64_t>{ring.vertex});
+  CHECK(images.band_entries == std::vector<std::int64_t>{ring.band});
+  CHECK(images.boundary_fit_entries == std::vector<std::int64_t>{ring.boundary_fit});
   CHECK(periodic.stencil_entries > plain.stencil_entries);
 }
 
@@ -280,15 +294,28 @@ TEST_CASE("MeshInfo counts each rank of a partitioned run", "[mesh-info]") {
     CHECK(p.ghosts[r] > 0);
     CHECK(p.interior_faces[r] < p.faces[r]);
     CHECK(p.stencil_entries[r] > 0);
-    CHECK(p.vertex_stencil_entries[r] > p.stencil_entries[r]);
-    CHECK(p.band_entries[r] > p.vertex_stencil_entries[r]);
-    CHECK(p.boundary_fit_entries[r] > 0);
     // The lines are the box's columns: kept whole, each rank owns whole columns.
     if (groups == autan::io::RankGroups::lines) CHECK(p.cells[r] % n == 0);
   }
   CHECK(owned == n * n * n);
   // Each ghost is one cell its owner sends.
   CHECK(sent == ghosts);
+  // Each rank's rings over its local mesh, ghosts included, as the run partitions it.
+  if (groups == autan::io::RankGroups::none) {
+    const autan::Mesh mesh = autan::assemble(autan::to_face_based(box(n, 10.0)));
+    const auto geometry = autan::compute_geometry(mesh);
+    const auto parts = autan::partition_cells(
+        mesh, 3,
+        {.cell_weights = autan::cell_cost_weights(mesh), .group_offsets = {}, .group_cells = {}});
+    for (std::int32_t r = 0; r < 3; ++r) {
+      CAPTURE(r);
+      const Rings ring = counted_rings(autan::extract_partition(mesh, geometry, parts, 3, r).mesh);
+      const auto i = static_cast<std::size_t>(r);
+      CHECK(p.vertex_stencil_entries[i] == ring.vertex);
+      CHECK(p.band_entries[i] == ring.band);
+      CHECK(p.boundary_fit_entries[i] == ring.boundary_fit);
+    }
+  }
   // More ranks than cells: the partitioner's refusal (E0140).
   try {
     (void)counts(box(2, 1.0), CellOrder::rcm, autan::io::RanksRequest{.ranks = 9, .groups = {}});
