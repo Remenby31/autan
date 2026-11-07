@@ -7,18 +7,30 @@ import json
 import math
 import re
 import secrets
+import tempfile
 import tomllib
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NoReturn, Self
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+import rfc8785
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    ValidationError,
+    model_validator,
+)
 
 from autan import cgns
 from autan.errors import CaseError, Diagnostic, Location, diagnostic
 from autan.meshinfo import MeshInfo
-from autan.schema import DDES, SA, SST, CaseSpec, Compressible, Steady
+from autan.schema import DDES, SA, SST, CaseSpec, Compressible, Steady, Unsteady
+from autan.texts import load_json
+from autan.units import metres_per
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -43,12 +55,15 @@ class CaseIdentity(_Strict):
 class MeshIdentity(_Strict):
     path: str
     sha256: Hex
+    groups_sha256: Hex | None
 
 
 class Solver(_Strict):
     version: str
     commit: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
+    dirty: StrictBool
     backend: Literal["cuda", "hip", "cpu", "fake"]
+    binary_sha256: Hex | None
 
 
 class Devices(_Strict):
@@ -98,6 +113,7 @@ class StartInfo(_Strict):
     iterations: Annotated[int, Field(strict=True, ge=1)]
     time: float | None
     solution_sha256: Hex
+    file: Literal["solution", "checkpoint"]
     residual_reference: dict[str, float] | None
     woken: Annotated[
         list[str] | None, Field(json_schema_extra={"anyOf": [WOKEN_SCHEMA, {"type": "null"}]})
@@ -111,10 +127,45 @@ class StartInfo(_Strict):
         return self
 
 
+@dataclass(frozen=True)
+class ResumePoint:
+    """The state a run can be continued from, read once: the iteration it holds, its physical
+    time (``None`` when steady), its averaging, the SHA-256 of the file read and, for a
+    checkpoint of a steady run, the convergence reference and woken equations at that iteration
+    (``None`` otherwise: a final solution's come from the history)."""
+
+    iteration: int
+    time: float | None
+    averaging: Averaging | None
+    sha256: str
+    residual_reference: dict[str, float] | None = None
+    woken: list[str] | None = None
+
+
+def _is_averaging(value: object) -> bool:
+    if value is None:
+        return True
+    try:
+        Averaging.model_validate(value)
+    except ValidationError:
+        return False
+    return True
+
+
+class CheckpointRecord(_Strict):
+    """The last checkpoint of a run (results.md#runjson, ``checkpoint``)."""
+
+    iteration: Annotated[int, Field(strict=True, ge=1)]
+    time: float | None
+    write_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)]
+
+
 class Convergence(_Strict):
-    """The round-off floor of each equation of an fp32+acc64 steady run (case-schema.md#time)."""
+    """The round-off floor of each equation of an fp32+acc64 steady run, and the equations a
+    converged run counted converged on a round-off plateau (case-schema.md#time)."""
 
     floor: dict[str, Annotated[float, Field(ge=0, allow_inf_nan=False)]]
+    plateau: list[str]
 
 
 class FinalMonitor(BaseModel):
@@ -123,6 +174,16 @@ class FinalMonitor(BaseModel):
     model_config = ConfigDict(extra="allow", frozen=True)
     iteration: Annotated[int, Field(strict=True, ge=0)]
     __pydantic_extra__: dict[str, Annotated[float, Field(strict=True, allow_inf_nan=False)]]
+
+
+class Timing(_Strict):
+    """Wall and solve time of a run (results.md#runjson, ``timing``): information, not a
+    benchmark."""
+
+    wall_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)]
+    solve_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)]
+    iterations: Annotated[int, Field(strict=True, ge=1)]
+    ns_per_cell_iteration: Annotated[float, Field(ge=0, allow_inf_nan=False)]
 
 
 class RunInfo(_Strict):
@@ -136,8 +197,8 @@ class RunInfo(_Strict):
     mesh: MeshIdentity
     solver: Solver
     precision: Literal["fp32+acc64", "fp64"]
-    deterministic: bool
     devices: Devices
+    cell_order: Literal["rcm", "input"]
     started: str
     finished: str | None
     iterations: Annotated[int, Field(ge=0)]
@@ -145,7 +206,9 @@ class RunInfo(_Strict):
     averaging: Averaging | None
     start: StartInfo | None = None
     convergence: Convergence | None = None
+    checkpoint: CheckpointRecord | None = None
     monitors: dict[str, FinalMonitor] | None = None
+    timing: Timing | None = None
     diagnostics: tuple[Diagnostic, ...]
 
     model_config = ConfigDict(populate_by_name=True)
@@ -162,19 +225,78 @@ def iso(moment: datetime) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def identity(
-    case: str,
-    mesh: str,
-    solver: Solver,
-    precision: str,
-    devices: Devices,
-    start: StartInfo | None = None,
-) -> str:
-    """The reproducibility fingerprint of a run (results.md, ``identity``)."""
-    parts = [case, mesh, solver.commit, precision, solver.backend, devices.kind, str(devices.count)]
-    if start is not None:
-        parts += [start.identity, start.mode, str(start.iterations), start.solution_sha256]
+# results.md#identity, line for line.
+IDENTITY = (
+    "case.sha256",
+    "mesh.sha256",
+    "mesh.groups_sha256",
+    "solver.commit",
+    "precision",
+    "solver.backend",
+    "devices.kind",
+    "devices.count",
+    "cell_order",
+    "start.identity",
+    "start.mode",
+    "start.iterations",
+    "start.solution_sha256",
+)
+
+
+def run_identity(run: RunInfo | dict[str, Any]) -> str:
+    """The ``identity`` of a run from its ``run.json`` fields (results.md#identity): ``run`` is a
+    ``RunInfo`` or the ``run.json`` document, which is validated as a ``RunInfo`` first
+    (pydantic ``ValidationError`` otherwise). Its own ``identity`` field is not read, so a
+    writer computes the value to record and a reader the value to compare."""
+    if not isinstance(run, RunInfo):
+        run = RunInfo.model_validate({**run, "identity": "0" * 64})
+    document = run.document()
+    parts = []
+    for path in IDENTITY:
+        if path.startswith("start.") and document.get("start") is None:
+            continue
+        value: Any = document
+        for key in path.split("."):
+            value = value[key]
+        parts.append("" if value is None else str(value))
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
+
+# results.md#studies: what runs of one study may differ in, besides the freestream state.
+STUDY_EXCLUDED = ("name", "freestream")
+
+
+class IdentityParts(BaseModel):
+    """What a run's identity is made of (results.md#studies)."""
+
+    model_config = ConfigDict(frozen=True)
+    fields: dict[str, str | int | None]
+    case_without_freestream: Hex
+    freestream: dict[str, Any]
+
+
+def run_identity_parts(run: RunInfo | dict[str, Any], case: CaseSpec) -> IdentityParts:
+    """The fields of ``run``'s identity one by one, in the order of results.md#identity (the
+    ``start.`` fields only for a run with a start), the SHA-256 of ``case`` without its
+    name and freestream, and that freestream as the case document writes it (results.md#studies).
+    ``case`` is the run's ``case.toml``; ``run`` a ``RunInfo`` or a ``run.json`` document."""
+    if not isinstance(run, RunInfo):
+        run = RunInfo.model_validate({**run, "identity": "0" * 64})
+    document = run.document()
+    fields: dict[str, str | int | None] = {}
+    for path in IDENTITY:
+        if path.startswith("start.") and document["start"] is None:
+            continue
+        value: Any = document
+        for key in path.split("."):
+            value = value[key]
+        fields[path] = value
+    rest = {key: value for key, value in case.document().items() if key not in STUDY_EXCLUDED}
+    return IdentityParts(
+        fields=fields,
+        case_without_freestream=hashlib.sha256(rfc8785.dumps(rest)).hexdigest(),
+        freestream=case.document()["freestream"],
+    )
 
 
 class LogLine(_Strict):
@@ -420,6 +542,7 @@ class Results:
             history,
         )
         self._solution: cgns.Node | None = None
+        self._checkpoint: cgns.Node | None = None
 
     @classmethod
     def open(cls, path: str | Path) -> Results:
@@ -431,12 +554,12 @@ class Results:
             raise CaseError([diagnostic("E0701", message, location=where)])
 
         try:
-            document = json.loads((path / "run.json").read_text())
+            document = load_json((path / "run.json").read_text())
         except (OSError, ValueError) as error:
             broken(f"cannot read run.json: {error}", "run.json")
         if not isinstance(document, dict) or document.get("schema") != SCHEMA_ID:
             broken(f"run.json schema is not {SCHEMA_ID!r}", "run.json")
-        for key in ("start", "convergence", "monitors"):
+        for key in RUN_KEYS:
             if key not in document:
                 broken(f"run.json has no {key} key (null when it does not apply)", "run.json")
         try:
@@ -446,7 +569,7 @@ class Results:
             broken(f"run.json: {first['msg']} at {first['loc']}", "run.json")
         try:
             case_document = tomllib.loads((path / "case.toml").read_text())
-            mesh_document = json.loads((path / "mesh-info.json").read_text())
+            mesh_document = load_json((path / "mesh-info.json").read_text())
         except (OSError, ValueError) as error:
             broken(str(error))
         try:
@@ -456,23 +579,18 @@ class Results:
             )
         except CaseError as error:
             broken(f"stored case or MeshInfo is invalid: {error.codes}")
-        if run.convergence is not None and (
-            run.precision != "fp32+acc64"
-            or not isinstance(case.time, Steady)
-            or set(run.convergence.floor) != set(residual_names(case))
-        ):
-            broken(
-                "convergence floors exist only for a steady fp32+acc64 run, one per equation",
-                "run.json",
-            )
-        for rule in case.boundaries:
-            if rule.condition.kind == "oracle-state":
-                archived = path / "states" / f"{rule.condition.sha256}.json"
-                if (
-                    not archived.is_file()
-                    or hashlib.sha256(archived.read_bytes()).hexdigest() != rule.condition.sha256
-                ):
-                    broken(f"{archived.name} is missing or differs from the case", "states")
+        digests = [
+            r.condition.sha256 for r in case.boundaries if r.condition.kind == "oracle-state"
+        ]
+        if case.initial_state is not None:
+            digests.append(case.initial_state.sha256)
+        for digest in digests:
+            archived = path / "states" / f"{digest}.json"
+            if (
+                not archived.is_file()
+                or hashlib.sha256(archived.read_bytes()).hexdigest() != digest
+            ):
+                broken(f"{archived.name} is missing or differs from the case", "states")
         if case.verification is not None:
             archived = path / "manufactured.json"
             if (
@@ -481,7 +599,9 @@ class Results:
                 != case.verification.manufactured.sha256
             ):
                 broken("manufactured.json is missing or differs from the case", "manufactured.json")
-        for problem in run_problems(path, run, case, mesh_info):
+        if path.name != run.run_id:
+            broken(f"directory {path.name!r} is not named after run_id {run.run_id!r}", "run.json")
+        for problem in run_problems(run, case, mesh_info):
             broken(problem, "run.json")
         records = _read_history(path / "history.jsonl", run.status == "running", broken)
         if not (path / "log.jsonl").is_file():
@@ -491,7 +611,7 @@ class Results:
             broken(problem, "log.jsonl")
         for problem in history_problems(records, run, case):
             broken(problem, "history.jsonl")
-        for problem in final_monitor_problems(records, run, case):
+        for problem in final_monitor_history_problems(records, run):
             broken(problem, "run.json")
         results = cls(
             path,
@@ -531,16 +651,62 @@ class Results:
             reason = "is still running" if self.run.status == "running" else "has no solution"
             message = f"run {self.run.run_id} ({self.run.status}) {reason}"
             raise CaseError([diagnostic("E0703", message, location=where)])
+        self._solution = self._read(path, checkpoint=False)
+        return self._solution
+
+    def _read(self, path: Path, *, checkpoint: bool, shown: Path | None = None) -> cgns.Node:
+        where = Location(file=str(shown or path))
         try:
             tree = cgns.read(path)
+        except cgns.OutsideFileError as error:
+            diagnosed = diagnostic("E0134", str(error), location=where, node=error.nodes[0])
+            raise CaseError([diagnosed]) from None
         except (OSError, ValueError, KeyError) as error:
-            message = f"cannot read solution.cgns: {error}"
+            message = f"cannot read {path.name}: {error}"
             raise CaseError([diagnostic("E0701", message, location=where)]) from None
-        problems = solution_problems(tree, self.run, self.case, self.mesh_info)
+        problems = solution_problems(
+            tree, self.run, self.case, self.mesh_info, checkpoint=checkpoint
+        )
         if problems:
             raise CaseError(diagnostic("E0701", p, location=where) for p in problems)
-        self._solution = tree
         return tree
+
+    def checkpoint(self) -> ResumePoint:
+        """The restart checkpoint a run wrote while running (results.md#checkpointcgns), read
+        and checked from one copy of the file, so that its state and its SHA-256 agree even if
+        the run replaces it meanwhile. ``E0703`` when the run has none."""
+        path = self.path / "checkpoint.cgns"
+        if not path.is_file():
+            message = f"run {self.run.run_id} ({self.run.status}) has no checkpoint"
+            raise CaseError([diagnostic("E0703", message, location=Location(file=str(path)))])
+        with tempfile.TemporaryDirectory() as scratch:
+            copy = Path(scratch) / "checkpoint.cgns"
+            data = path.read_bytes()
+            copy.write_bytes(data)
+            tree = self._read(copy, checkpoint=True, shown=path)
+        self._checkpoint = tree
+        metadata = json.loads(tree.child("Base").child("RunMetadata").text())
+        mark = metadata["checkpoint"]
+        averaging = metadata["averaging"]
+        return ResumePoint(
+            iteration=int(mark["iteration"]),
+            time=metadata["time"],
+            averaging=None if averaging is None else Averaging.model_validate(averaging),
+            sha256=hashlib.sha256(data).hexdigest(),
+            residual_reference=mark["residual_reference"],
+            woken=mark["woken"],
+        )
+
+    def checkpoint_field(self, name: str) -> NDArray[np.float64]:
+        """Cell-centred field ``name`` of the checkpoint ``checkpoint()`` read last."""
+        tree = self._checkpoint
+        if tree is None:
+            self.checkpoint()
+            tree = self._checkpoint
+        if tree is None:  # checkpoint() raises or sets it
+            raise CaseError([diagnostic("E0703", f"run {self.run.run_id} has no checkpoint")])
+        solution = tree.child("Base").child("Zone").child("FlowSolution")
+        return np.asarray(solution.child(name).data, dtype=np.float64)
 
     def _zone(self) -> cgns.Node:
         return self._tree().child("Base").child("Zone")
@@ -624,11 +790,29 @@ def _base(spec: CaseSpec) -> object:
 _TIMESTAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ")
 
 
-def run_problems(path: Path, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo) -> list[str]:
-    """Invariants of run.json against its directory, case and MeshInfo."""
+RUN_KEYS = ("start", "convergence", "checkpoint", "monitors", "timing")
+
+
+def check_run_json(document: object, case: CaseSpec, mesh_info: MeshInfo) -> list[str]:
+    """Why a run.json document is not valid for its case and MeshInfo: the checks of
+    ``Results.open`` on run.json, without its directory, history, log or solution
+    (results.md#runjson). Empty when it is valid."""
+    if not isinstance(document, dict) or document.get("schema") != SCHEMA_ID:
+        return [f"run.json schema is not {SCHEMA_ID!r}"]
+    missing = [key for key in RUN_KEYS if key not in document]
+    if missing:
+        return [f"run.json has no {', '.join(missing)} key (null when it does not apply)"]
+    try:
+        run = RunInfo.model_validate(document)
+    except ValidationError as error:
+        first = error.errors(include_url=False)[0]
+        return [f"run.json: {first['msg']} at {first['loc']}"]
+    return run_problems(run, case, mesh_info)
+
+
+def run_problems(run: RunInfo, case: CaseSpec, mesh_info: MeshInfo) -> list[str]:
+    """Invariants of run.json against its case and MeshInfo."""
     found = []
-    if path.name != run.run_id:
-        found.append(f"directory {path.name!r} is not named after run_id {run.run_id!r}")
     if not _TIMESTAMP.fullmatch(run.started):
         found.append(f"started {run.started!r} is not a UTC ISO 8601 timestamp")
     elif run.run_id[4:20] != run.started.replace("-", "").replace(":", ""):
@@ -637,15 +821,15 @@ def run_problems(path: Path, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo) 
         found.append("finished must be null exactly while running")
     if run.finished is not None and not _TIMESTAMP.fullmatch(run.finished):
         found.append(f"finished {run.finished!r} is not a UTC ISO 8601 timestamp")
-    expected = identity(
-        case.hash(), mesh_info.source.sha256, run.solver, run.precision, run.devices, run.start
-    )
-    if run.identity != expected:
+    if run.identity != run_identity(run):
         found.append("identity does not match its definition")
     if case.hash() != run.case.sha256 or case.name != run.case.name:
         found.append("case.toml does not match run.json case")
     if mesh_info.source.sha256 != run.mesh.sha256:
         found.append("mesh-info.json does not match run.json mesh.sha256")
+    groups = mesh_info.groups_source.sha256 if mesh_info.groups_source else None
+    if groups != run.mesh.groups_sha256:
+        found.append("mesh-info.json groups_source does not match run.json mesh.groups_sha256")
     if not Path(run.mesh.path).is_absolute():
         found.append("mesh.path must be absolute")
     if run.precision != case.physics.precision:
@@ -657,6 +841,11 @@ def run_problems(path: Path, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo) 
         found.append("averaging is only for unsteady runs")
     if run.status == "diverged" and not any(d.code.startswith("D") for d in run.diagnostics):
         found.append("a diverged run must carry a D diagnostic")
+    if (run.solver.backend == "fake") != (run.solver.binary_sha256 is None):
+        found.append("solver.binary_sha256 must be null exactly for the fake backend")
+    found += convergence_problems(run, case)
+    found += final_monitor_problems(run, case)
+    found += timing_problems(run, mesh_info)
     return found
 
 
@@ -672,7 +861,7 @@ def _read_history(path: Path, live: bool, broken: Any) -> list[dict[str, Any]]:
     records = []
     for number, raw in enumerate(complete.split(b"\n") if complete else [], start=1):
         try:
-            record = json.loads(raw.decode("utf-8"), parse_constant=_reject_constant)
+            record = load_json(raw.decode("utf-8"), parse_constant=_reject_constant)
         except ValueError as error:
             broken(f"line {number}: {error}", path.name)
         if not isinstance(record, dict):
@@ -757,7 +946,17 @@ def history_problems(records: list[dict[str, Any]], run: RunInfo, case: CaseSpec
 FINAL = frozenset({"converged", "completed", "stopped"})
 # run.json keys solution.cgns RunMetadata leaves out (results.md#solutioncgns): they change
 # after the solution is written, or name its final state.
-NOT_IN_METADATA = ("status", "finished", "iterations", "monitors", "diagnostics")
+NOT_IN_METADATA = (
+    "status",
+    "finished",
+    "iterations",
+    "checkpoint",
+    "monitors",
+    "timing",
+    "diagnostics",
+)
+# A checkpoint's RunMetadata gives the state at its own iteration (results.md#checkpointcgns).
+CHECKPOINT_STATE = ("time", "averaging", "checkpoint")
 
 
 def run_metadata(info: RunInfo) -> dict[str, Any]:
@@ -765,11 +964,9 @@ def run_metadata(info: RunInfo) -> dict[str, Any]:
     return {k: v for k, v in info.document().items() if k not in NOT_IN_METADATA}
 
 
-def final_monitor_problems(
-    records: list[dict[str, Any]], run: RunInfo, case: CaseSpec
-) -> list[str]:
-    """run.json ``monitors``: each monitor on the final state of a finished run, equal to the
-    last history line when that line carries it (results.md#runjson)."""
+def final_monitor_problems(run: RunInfo, case: CaseSpec) -> list[str]:
+    """run.json ``monitors``: each monitor of the case on the final state of a finished run
+    (results.md#runjson)."""
     final = run.monitors
     if (final is None) != (run.status not in FINAL):
         return ["monitors must be given exactly for converged, completed and stopped runs"]
@@ -779,18 +976,71 @@ def final_monitor_problems(
     if set(final) != set(monitors):
         return [f"monitors must be exactly {sorted(monitors)}"]
     found = []
-    last = records[-1] if records and records[-1]["iteration"] == run.iterations else None
     for name, monitor in final.items():
         values = dict(monitor.model_extra or {})
-        iteration = monitor.iteration
-        if iteration != run.iterations:
+        if monitor.iteration != run.iterations:
             found.append(f"monitor {name!r}: iteration must be {run.iterations}")
         elif set(values) != force_keys(monitors[name], case) or not all(
             _finite(v) for v in values.values()
         ):
             found.append(f"monitor {name!r} has the wrong or non-finite quantities")
-        elif last is not None and name in last["monitors"] and last["monitors"][name] != values:
-            found.append(f"monitor {name!r} differs from the last history line")
+    return found
+
+
+def final_monitor_history_problems(records: list[dict[str, Any]], run: RunInfo) -> list[str]:
+    """The final monitors equal the last history line when that line carries them."""
+    last = records[-1] if records and records[-1]["iteration"] == run.iterations else None
+    if last is None or run.monitors is None:
+        return []
+    return [
+        f"monitor {name!r} differs from the last history line"
+        for name, monitor in run.monitors.items()
+        if name in last["monitors"] and last["monitors"][name] != dict(monitor.model_extra or {})
+    ]
+
+
+def convergence_problems(run: RunInfo, case: CaseSpec) -> list[str]:
+    """run.json ``convergence``: the floors of a steady fp32+acc64 run, one per equation, and
+    the equations of a converged run that converged on a plateau, in history order."""
+    if run.convergence is None:
+        return []
+    names = residual_names(case)
+    if (
+        run.precision != "fp32+acc64"
+        or not isinstance(case.time, Steady)
+        or set(run.convergence.floor) != set(names)
+    ):
+        return ["convergence floors exist only for a steady fp32+acc64 run, one per equation"]
+    plateau = run.convergence.plateau
+    if plateau != [n for n in names if n in plateau] or (plateau and run.status != "converged"):
+        return ["convergence plateau lists equations of the run, in history order, once converged"]
+    return []
+
+
+def timing_problems(run: RunInfo, mesh_info: MeshInfo) -> list[str]:
+    """run.json ``timing``: given exactly when the run measured one, consistent with it."""
+    timing = run.timing
+    continued = run.start is not None and run.start.mode == "continue"
+    done = run.iterations - (run.start.iterations if run.start is not None and continued else 0)
+    measured = run.solver.backend != "fake" and run.status not in ("running", "failed") and done > 0
+    if (timing is not None) != measured:
+        message = (
+            "timing is given exactly for a run of the solver that ended other than failed, "
+            "after at least one iteration of its own"
+        )
+        return [message]
+    if timing is None:
+        return []
+    found = []
+    if timing.iterations != done:
+        found.append(f"timing.iterations must be the {done} iterations of this run")
+    expected = timing.solve_seconds * 1e9 / (mesh_info.counts.cells * timing.iterations)
+    if not math.isclose(timing.ns_per_cell_iteration, expected, rel_tol=1e-9, abs_tol=0.0):
+        found.append(
+            "timing.ns_per_cell_iteration must be solve_seconds * 1e9 / (cells * iterations)"
+        )
+    if timing.solve_seconds > timing.wall_seconds:
+        found.append("timing.solve_seconds cannot exceed wall_seconds")
     return found
 
 
@@ -838,17 +1088,19 @@ SIDS_BC_TYPES = frozenset(
 
 
 def solution_problems(
-    tree: cgns.Node, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo
+    tree: cgns.Node, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo, *, checkpoint: bool = False
 ) -> list[str]:
-    """The solution.cgns layout of results.md: labels, sizes, connectivity, fields, names."""
+    """The solution.cgns layout of results.md: labels, sizes, connectivity, fields, names; with
+    ``checkpoint``, that of checkpoint.cgns, whose RunMetadata gives its own iteration, time and
+    averaging."""
     try:
-        return _solution_problems(tree, run, case, mesh_info)
+        return _solution_problems(tree, run, case, mesh_info, checkpoint)
     except (KeyError, IndexError, TypeError, ValueError) as error:
         return [f"missing or malformed node: {type(error).__name__}: {error}"]
 
 
 def _solution_problems(
-    tree: cgns.Node, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo
+    tree: cgns.Node, run: RunInfo, case: CaseSpec, mesh_info: MeshInfo, checkpoint: bool
 ) -> list[str]:
     found: list[str] = []
     base = tree.child("Base")
@@ -858,7 +1110,18 @@ def _solution_problems(
             found.append(f"{node.name} is not a {label}")
     if base.child("DimensionalUnits").text_rows() != list(UNITS):
         found.append(f"DimensionalUnits must be {list(UNITS)}")
-    if json.loads(base.child("RunMetadata").text()) != run_metadata(run):
+    metadata = json.loads(base.child("RunMetadata").text())
+    expected = run_metadata(run)
+    if checkpoint:
+        found += _checkpoint_state_problems(metadata, case)
+        metadata = {k: v for k, v in metadata.items() if k not in CHECKPOINT_STATE}
+        expected = {k: v for k, v in expected.items() if k not in CHECKPOINT_STATE}
+    averaged = (
+        run.averaging is not None
+        if not checkpoint
+        else json.loads(base.child("RunMetadata").text()).get("averaging") is not None
+    )
+    if metadata != expected:
         found.append("RunMetadata does not match run.json")
     names = json.loads(base.child("ZoneNames").text())
     if sorted(names["boundary"].values()) != sorted(z.name for z in mesh_info.boundary_zones):
@@ -887,7 +1150,7 @@ def _solution_problems(
         values = np.asarray(solution.children[name].data) if name in solution.children else None
         if values is None or values.size != cells or not np.all(np.isfinite(values)):
             found.append(f"FlowSolution {name} must hold {cells} finite values")
-    if ("FlowSolutionMean" in zone.children) != (run.averaging is not None):
+    if ("FlowSolutionMean" in zone.children) != averaged:
         found.append("FlowSolutionMean must exist exactly when run.json has averaging")
     periodic = {name for pair in mesh_info.periodic for name in pair.zones}
     zone_bc = zone.children.get("ZoneBC")
@@ -912,11 +1175,89 @@ def _solution_problems(
     used = np.abs(np.asarray(nface.child("ElementConnectivity").data)).ravel()
     counts = np.bincount(used, minlength=faces + 1)
     exterior = set(np.flatnonzero(counts == 1).tolist())
-    found += _periodic_problems(zone, mesh_info, nodes_of, exterior, bc_faces)
+    scale = metres_per(case.mesh_unit)
+    found += _periodic_problems(zone, mesh_info, scale, nodes_of, exterior, bc_faces)
     for region in zone.with_label("ZoneSubRegion_t"):
         low, high = (1, faces) if region.name == "WallSolution" else (faces + 1, faces + cells)
         if not _ids_in(region.child("PointList").data, low, high):
             found.append(f"ZoneSubRegion {region.name} PointList is out of range")
+    return found
+
+
+def _checkpoint_state_problems(metadata: dict[str, Any], case: CaseSpec) -> list[str]:
+    """A checkpoint's own state in its RunMetadata (results.md#checkpointcgns): its iteration,
+    the time and averaging of that iteration, and the steady convergence reference and woken
+    equations, exactly for a steady run."""
+    found = []
+    steady = isinstance(case.time, Steady)
+    mark = metadata.get("checkpoint")
+    if not isinstance(mark, dict) or set(mark) != {"iteration", "residual_reference", "woken"}:
+        return ["RunMetadata checkpoint must be {iteration, residual_reference, woken}"]
+    iteration = mark["iteration"]
+    if type(iteration) is not int or iteration < 1:
+        found.append("RunMetadata checkpoint.iteration must be an integer >= 1")
+    time, averaging = metadata.get("time", False), metadata.get("averaging", False)
+    if steady:
+        if time is not None:
+            found.append("RunMetadata time of a steady checkpoint must be null")
+        if averaging is not None:
+            found.append("RunMetadata averaging of a steady checkpoint must be null")
+    elif isinstance(case.time, Unsteady) and type(iteration) is int and iteration >= 1:
+        found += _unsteady_state_problems(iteration, time, averaging, case.time)
+    reference, woken = mark["residual_reference"], mark["woken"]
+    if steady:
+        equations = residual_names(case)
+        if (
+            not isinstance(reference, dict)
+            or sorted(reference) != sorted(equations)
+            or not all(
+                type(v) in (int, float) and _finite(v) and v >= 0 for v in reference.values()
+            )
+        ):
+            found.append("RunMetadata checkpoint.residual_reference must give every equation")
+        elif not isinstance(woken, list) or woken_problem(reference, woken):
+            found.append("RunMetadata checkpoint.woken must list sorted equations")
+    elif reference is not None or woken is not None:
+        found.append("RunMetadata checkpoint residual_reference and woken must be null")
+    return found
+
+
+def _unsteady_state_problems(
+    iteration: int, time: object, averaging: object, spec: Unsteady
+) -> list[str]:
+    """The time and averaging of an unsteady run after ``iteration`` steps (results.md#runjson):
+    a positive time, and the interval from step ``average_from`` + 1 to ``iteration`` once past
+    ``average_from``, ending at that time; with a fixed ``dt``, both times are their steps x ``dt``
+    up to the round-off of their sums."""
+    if not isinstance(time, (int, float)) or type(time) is bool or not _finite(time) or time <= 0:
+        return ["RunMetadata time of an unsteady checkpoint must be a number > 0"]
+    found = []
+    dt = None if spec.dt is None else spec.dt.to("s").magnitude
+
+    def steps_of_dt(value: float, steps: int) -> bool:
+        return (
+            dt is None
+            or abs(value - steps * dt) <= 4 * steps * np.finfo(np.float64).eps * dt * steps
+        )
+
+    if not steps_of_dt(time, iteration):
+        found.append(f"RunMetadata time must be {iteration} steps of dt")
+    if spec.average_from is None or iteration <= spec.average_from:
+        if averaging is not None:
+            found.append("RunMetadata averaging must be null up to average_from")
+        return found
+    try:
+        interval = Averaging.model_validate(averaging)
+    except ValidationError:
+        return [*found, "RunMetadata averaging must be an interval past average_from"]
+    if (
+        interval.from_step != spec.average_from + 1
+        or interval.to_step != iteration
+        or interval.to_time != time
+        or not (_finite(interval.from_time) and 0 <= interval.from_time < interval.to_time)
+        or not steps_of_dt(interval.from_time, spec.average_from)
+    ):
+        found.append("RunMetadata averaging must run from step average_from + 1 to the checkpoint")
     return found
 
 
@@ -940,6 +1281,7 @@ def _exact(text: str) -> list[float] | None:
 def _periodic_problems(
     zone: cgns.Node,
     mesh_info: MeshInfo,
+    scale: float,
     nodes_of: dict[str, str],
     exterior: set[int],
     bc_faces: set[int],
@@ -958,7 +1300,7 @@ def _periodic_problems(
     claimed: set[int] = set()
     for pair in mesh_info.periodic:
         a, b = pair.zones
-        vector = np.array(pair.transform.vector)
+        vector = np.array(pair.transform.vector) * scale
         matches = {}
         for side, shift in ((a, vector), (b, -vector)):
             gc = connectivity.child(nodes_of[side])

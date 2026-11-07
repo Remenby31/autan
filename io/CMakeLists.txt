@@ -16,6 +16,7 @@ FetchContent_MakeAvailable(nlohmann_json picosha2)
 add_library(
   autan_io
   src/read_mesh.cpp
+  src/polymesh_write.cpp
   src/gmsh.cpp
   src/fluent.cpp
   src/polymesh.cpp
@@ -38,7 +39,40 @@ if(AUTAN_ENABLE_CGNS)
   else()
     target_link_libraries(autan_cgns INTERFACE ${CGNS_LIBRARY})
   endif()
-  target_sources(autan_io PRIVATE src/cgns_read.cpp src/cgns_write.cpp src/cgns_solution.cpp)
+  # The self-containment scan reads the HDF5 structure directly (mesh.md, E0134): the HDF5 that
+  # CGNS is built on, its imported target when the static branch found its package, or found
+  # beside CGNS (or under HDF5_ROOT / HDF5_DIR) otherwise.
+  # HDF5's package names its targets hdf5::hdf5-* or, in other versions, hdf5-*.
+  set(_autan_hdf5_target "")
+  foreach(_target hdf5::hdf5-static hdf5-static hdf5::hdf5-shared hdf5-shared)
+    if(NOT _autan_hdf5_target AND TARGET ${_target})
+      set(_autan_hdf5_target ${_target})
+    endif()
+  endforeach()
+  if(_autan_hdf5_target)
+    target_link_libraries(autan_cgns INTERFACE ${_autan_hdf5_target})
+  else()
+    find_path(
+      AUTAN_HDF5_INCLUDE_DIR
+      H5Lpublic.h
+      HINTS ${CGNS_INCLUDE_DIR} ${HDF5_ROOT} $ENV{HDF5_ROOT} ${HDF5_DIR} $ENV{HDF5_DIR}
+      PATH_SUFFIXES include
+      REQUIRED
+    )
+    find_library(
+      AUTAN_HDF5_LIBRARY
+      hdf5
+      HINTS ${HDF5_ROOT} $ENV{HDF5_ROOT} ${HDF5_DIR} $ENV{HDF5_DIR}
+      PATH_SUFFIXES lib
+      REQUIRED
+    )
+    target_include_directories(autan_cgns SYSTEM INTERFACE ${AUTAN_HDF5_INCLUDE_DIR})
+    target_link_libraries(autan_cgns INTERFACE ${AUTAN_HDF5_LIBRARY})
+  endif()
+  target_sources(
+    autan_io
+    PRIVATE src/cgns_read.cpp src/cgns_write.cpp src/cgns_solution.cpp src/self_contained.cpp
+  )
   target_link_libraries(autan_io PRIVATE autan_cgns)
   target_compile_definitions(autan_io PRIVATE AUTAN_HAVE_CGNS)
 endif()
@@ -51,5 +85,21 @@ target_link_libraries(
   PRIVATE autan_compile_options nlohmann_json::nlohmann_json
 )
 
+# What a mesh costs the solver (MeshInfo's run counts): io stays free of the kernels and the
+# partitioner, which only this library and its users link.
+add_library(autan_mesh_counts src/mesh_counts.cpp)
+add_library(autan::mesh_counts ALIAS autan_mesh_counts)
+target_link_libraries(
+  autan_mesh_counts
+  PUBLIC autan::io autan::core
+  PRIVATE autan::kernels autan::partition autan::solvers autan_compile_options
+)
+
 add_executable(autan-mesh-info tools/autan_mesh_info.cpp)
-target_link_libraries(autan-mesh-info PRIVATE autan::io autan_compile_options)
+target_link_libraries(autan-mesh-info PRIVATE autan::io autan::mesh_counts autan_compile_options)
+
+add_executable(autan-mesh-prisms tools/autan_mesh_prisms.cpp)
+target_link_libraries(
+  autan-mesh-prisms
+  PRIVATE autan::io nlohmann_json::nlohmann_json autan_compile_options
+)

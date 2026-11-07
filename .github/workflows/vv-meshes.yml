@@ -1,0 +1,143 @@
+# Generates V&V mesh families on a GitHub-hosted x86-64 runner (Gmsh has no aarch64 wheel) and
+# publishes each family, with its manifest and a SHA256SUMS of every file, as an artifact.
+# Defaults: the families of the ns-mms-order gate, perturbed as docs/validation/acceptance.md says
+# (`--perturbation 0.3 --seed 2026`, at each family's gate levels). Fetch with
+# `gh run download RUN -n meshes-KIND-pPERTURBATION-sSEED`, then `sha256sum -c SHA256SUMS`.
+name: vv-meshes
+
+on:
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: "Family: all (tet, hex, poly, hybrid), one of the unit cube's families, or onera-m6 (levels required, perturbation 0)"
+        type: choice
+        default: all
+        options: [all, tet, hex, poly, hybrid, prism, agglomerated, onera-m6]
+      levels:
+        description: "Comma-separated levels; empty: the family's gate levels (one kind only otherwise)"
+        type: string
+        default: ""
+      perturbation:
+        description: "Node perturbation, as a fraction of the shortest incident edge"
+        type: string
+        default: "0.3"
+      seed:
+        description: "Seed of the perturbation and of Gmsh"
+        type: string
+        default: "2026"
+  # A change to this workflow runs it with its defaults: the pull request gets the artifacts.
+  pull_request:
+    paths:
+      - .github/workflows/vv-meshes.yml
+
+permissions: {}
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: The families and their levels
+        id: plan
+        env:
+          KIND: ${{ inputs.kind || 'all' }}
+          LEVELS: ${{ inputs.levels }}
+          PERTURBATION: ${{ inputs.perturbation || '0.3' }}
+          SEED: ${{ inputs.seed || '2026' }}
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          [[ $PERTURBATION =~ ^[0-9]+(\.[0-9]+)?$ ]] || fail "perturbation: a number, not '$PERTURBATION'"
+          [[ $SEED =~ ^[0-9]+$ ]] || fail "seed: an integer, not '$SEED'"
+          [[ -z $LEVELS || $LEVELS =~ ^[0-9]+(,[0-9]+)*$ ]] || fail "levels: comma-separated integers, not '$LEVELS'"
+          # The bounds autan-vv meshes enforces, checked before four runners install anything.
+          awk -v p="$PERTURBATION" 'BEGIN { exit !(p >= 0 && p < 1) }' || fail "perturbation: from 0 up to, not including, 1"
+          IFS=, read -ra given <<< "$LEVELS"
+          for n in "${given[@]}"; do ((10#$n >= 1)) || fail "levels: positive integers, not '$LEVELS'"; done
+          # The ns-mms-order gate's levels (docs/validation/acceptance.md).
+          declare -A gate=([tet]="16,24,32,48" [hex]="32,48,64,96,128" [poly]="16,24,32,48,64" [hybrid]="16,24,32,48")
+          if [[ $KIND == all ]]; then
+            [[ -z $LEVELS ]] || fail "levels apply to one kind; with kind 'all' each family takes its gate levels"
+            kinds=(tet hex poly hybrid)
+          else
+            kinds=("$KIND")
+          fi
+          items=()
+          # The ONERA M6 wing is never perturbed: its generator takes no perturbation, and an
+          # artifact named for one would hold the unperturbed mesh.
+          if [[ $KIND == onera-m6 ]]; then
+            [[ -n $LEVELS ]] || fail "onera-m6 has no gate levels: give levels"
+            awk -v p="$PERTURBATION" 'BEGIN { exit !(p == 0) }' || fail "onera-m6 is not perturbed: give perturbation 0"
+          fi
+          for kind in "${kinds[@]}"; do
+            levels=${LEVELS:-${gate[$kind]:-}}
+            [[ -n $levels ]] || fail "$kind has no gate levels: give levels"
+            items+=("{\"kind\":\"$kind\",\"levels\":\"$levels\",\"perturbation\":\"$PERTURBATION\",\"seed\":\"$SEED\"}")
+          done
+          echo "matrix=[$(IFS=,; echo "${items[*]}")]" >> "$GITHUB_OUTPUT"
+
+  generate:
+    needs: plan
+    name: ${{ matrix.kind }} ${{ matrix.levels }}
+    runs-on: ubuntu-24.04
+    # hex at n = 128 (2.1 M cells) takes minutes; 6 h is GitHub's limit for a hosted job.
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      KIND: ${{ matrix.kind }}
+      LEVELS: ${{ matrix.levels }}
+      PERTURBATION: ${{ matrix.perturbation }}
+      SEED: ${{ matrix.seed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.6"
+          enable-cache: false
+      - name: Install the libraries the Gmsh wheel loads, and GNU time
+        timeout-minutes: 5
+        run: >-
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update -q &&
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y -q
+          --no-install-recommends libglu1-mesa libxcursor1 libxft2 libxinerama1 libxrender1 time
+      - name: Generate the family
+        run: |
+          out="$RUNNER_TEMP/meshes-$KIND"
+          echo "OUT=$out" >> "$GITHUB_ENV"
+          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" \
+            uv run --project vv --locked autan-vv meshes "$KIND" \
+            --levels "$LEVELS" --perturbation "$PERTURBATION" --seed "$SEED" --out "$out"
+          (cd "$out" && sha256sum -- * > SHA256SUMS)
+      # Also after a failure: an out-of-memory kill or a full disk reads here.
+      - name: Resources used
+        if: always()
+        run: |
+          peak="" wall=""
+          if [[ -f $RUNNER_TEMP/time.txt ]]; then
+            peak=$(awk -F': ' '/Maximum resident/ {printf "%.2f GiB", $2 / 1048576}' "$RUNNER_TEMP/time.txt")
+            wall=$(awk -F': ' '/Elapsed \(wall clock\)/ {print $2}' "$RUNNER_TEMP/time.txt")
+          fi
+          size=$( { du -sh "${OUT:-/nonexistent}" 2>/dev/null || true; } | cut -f1)
+          {
+            echo "### $KIND, levels $LEVELS, perturbation $PERTURBATION, seed $SEED"
+            echo "Peak memory ${peak:-unknown} of $(free -g | awk '/^Mem:/ {print $2}') GiB, wall ${wall:-unknown}, output ${size:-none}, disk left $(df -h "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')."
+            if [[ -f ${OUT:-}/SHA256SUMS ]]; then
+              echo '```'
+              cat "$OUT/SHA256SUMS"
+              echo '```'
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: meshes-${{ matrix.kind }}-p${{ matrix.perturbation }}-s${{ matrix.seed }}
+          path: ${{ env.OUT }}
+          if-no-files-found: error
+          retention-days: 90

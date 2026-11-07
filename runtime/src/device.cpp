@@ -2,6 +2,8 @@
 
 #include <stdexcept>
 
+#include "autan/core/device_memory.hpp"
+
 #ifdef AUTAN_HAVE_CUDA
 #include <cuda_runtime.h>
 #endif
@@ -27,6 +29,20 @@ int visible_gpus() {
   return count;
 }
 
+bool device_integrated(int local_rank) {
+  int integrated = 0;
+  check(cudaDeviceGetAttribute(&integrated, cudaDevAttrIntegrated, local_rank % visible_gpus()),
+        "cudaDeviceGetAttribute");
+  return integrated != 0;
+}
+
+std::int64_t device_free_bytes(int local_rank) {
+  check(cudaSetDevice(local_rank % visible_gpus()), "cudaSetDevice");
+  std::size_t free = 0, total = 0;
+  check(cudaMemGetInfo(&free, &total), "cudaMemGetInfo");
+  return static_cast<std::int64_t>(free);
+}
+
 Gpu::Gpu(int local_rank) : index_(local_rank % visible_gpus()) {
   check(cudaSetDevice(index_), "cudaSetDevice");
   cudaDeviceProp properties{};
@@ -35,6 +51,7 @@ Gpu::Gpu(int local_rank) : index_(local_rank % visible_gpus()) {
   cudaStream_t stream = nullptr;
   check(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), "cudaStreamCreateWithFlags");
   stream_ = stream;
+  device_memory::reset_peak();
 }
 
 Gpu::~Gpu() {
@@ -45,10 +62,22 @@ Gpu::~Gpu() {
 
 int visible_gpus() { return 0; }
 
+bool device_integrated(int /*local_rank*/) {
+  throw std::runtime_error("this build of autan-run has no CUDA");
+}
+
+std::int64_t device_free_bytes(int /*local_rank*/) {
+  throw std::runtime_error("this build of autan-run has no CUDA");
+}
+
 Gpu::Gpu(int /*local_rank*/) { throw std::runtime_error("this build of autan-run has no CUDA"); }
 
 Gpu::~Gpu() = default;
 
 #endif
+
+std::int64_t Gpu::sample() const noexcept { return device_memory::current(); }
+
+std::int64_t Gpu::peak() const noexcept { return device_memory::peak(); }
 
 }  // namespace autan::runtime

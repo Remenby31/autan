@@ -45,13 +45,26 @@ struct BoundaryStates {
   std::string sha256;  ///< its expected SHA-256
 };
 
+/// The point vortex a farfield condition adds to the freestream (case-schema.md, Boundaries).
+struct PointVortex {
+  std::vector<std::string> zones;  ///< the wall or slip zones whose lift gives the circulation
+  std::array<double, 3> center{};  ///< the vortex position (m)
+};
+
+/// The initial-state file of a case (docs/contracts/initial-state.md).
+struct InitialStateFile {
+  std::string path;    ///< absolute path of the autan.initial-state/1 file
+  std::string sha256;  ///< its expected SHA-256
+};
+
 struct BoundaryInput {
   std::string zone;
   std::string kind;  ///< wall, slip, symmetry, farfield, inlet, velocity-inlet, outlet,
                      ///< manufactured, oracle-state
   std::optional<double> temperature, total_pressure, total_temperature, static_pressure;
-  std::optional<double> velocity;        ///< velocity-inlet: speed normal to the face (m/s)
-  std::optional<BoundaryStates> states;  ///< oracle-state only
+  std::optional<double> velocity;           ///< velocity-inlet: speed normal to the face (m/s)
+  std::optional<BoundaryStates> states;     ///< oracle-state only
+  std::optional<PointVortex> point_vortex;  ///< farfield only
 };
 
 struct Turbulence {
@@ -74,9 +87,17 @@ struct TimeInput {
   std::string kind;  ///< "steady" or "unsteady"
   std::int64_t max_iterations = 0;
   double residual_orders = 0.0;
+  std::string linear_solver;  ///< steady: "multigrid" or "gauss-seidel" (global colours)
+  bool coupled_turbulence =
+      false;                 ///< steady: the flow and SA solved together (case-schema.md#time)
+  bool matrix_free = false;  ///< steady laminar: the matrix-free step (case-schema.md#time)
   std::int64_t steps = 0;
   std::optional<double> dt, cfl;
   std::optional<std::int64_t> average_from;
+  /// Checkpoint cadence (case-schema.md#time): wall-clock seconds between two checkpoints, or
+  /// every that many iterations; exactly one is set.
+  std::optional<double> checkpoint_seconds;
+  std::optional<std::int64_t> checkpoint_iterations;
 };
 
 struct ForcesMonitor {
@@ -102,6 +123,8 @@ struct Start {
   std::int64_t iterations = 0;
   std::optional<double> time;
   std::string solution_sha256;
+  /// The file of `run` to read: "solution" (solution.cgns) or "checkpoint" (checkpoint.cgns).
+  std::string file;
   /// Residuals at iteration 1 of the original run, in residual_names order;
   /// set exactly for a steady `continue`.
   std::optional<std::vector<double>> residual_reference;
@@ -120,10 +143,21 @@ struct PeriodicInput {
 struct SolverInput {
   std::string case_name, case_sha256, case_toml;
   std::string mesh_path, mesh_sha256;
-  std::string precision;  ///< "fp32+acc64" or "fp64"
-  bool deterministic = false;
+  double mesh_scale = 1.0;  ///< metres per mesh unit (solver-input.md, mesh.scale)
+  /// SHA-256 of the zone-groups sidecar the SDK resolved the case with; none without one.
+  std::optional<std::string> mesh_groups_sha256;
+  /// The MeshInfo the input was planned with (solver-input.md, mesh_info), as JSON text, and
+  /// the cell order and scale its quality.lines were counted in.
+  std::string mesh_info, mesh_info_order;
+  double mesh_info_scale = 1.0;
+  std::int64_t mesh_info_bytes = 0;  ///< its source.bytes: the size of what the mesh hash covers
+  std::string precision;             ///< "fp32+acc64" or "fp64"
+  /// "none", "run" or "ranks" (solver-input.md): which runs repeat the same bits.
+  std::string reproducibility = "run";
   std::string device_kind;  ///< cpu, cuda, hip
   std::int64_t device_count = 1;
+  /// `memory`: what one rank allocates at its peak, on the host and on its device.
+  std::int64_t memory_bytes_host = 0, memory_bytes_device = 0;
   std::string physics_kind;  ///< compressible, incompressible
   Turbulence turbulence;
   Freestream freestream;
@@ -134,6 +168,7 @@ struct SolverInput {
   /// Present for verification cases: every boundary is then "manufactured".
   std::optional<Verification> verification;
   std::optional<Start> start;
+  std::optional<InitialStateFile> initial_state;  ///< never with start
   std::vector<PeriodicInput> periodic;
 };
 

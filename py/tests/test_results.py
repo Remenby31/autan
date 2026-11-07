@@ -4,7 +4,6 @@ Expected values come from docs/contracts/results.md and case-schema.md (ideal-ga
 law, Sutherland's law, the force projections), recomputed here independently.
 """
 
-import hashlib
 import json
 import math
 import re
@@ -25,8 +24,9 @@ import numpy as np
 import pytest
 from autan import cgns
 from autan.cli import json_schema, main
+from pydantic import ValidationError
 
-from tests.conftest import CRM_HL, EXAMPLES, FIXTURES
+from tests.conftest import CRM_HL, EXAMPLES, FIXTURES, identity_fields, identity_of
 
 R_UNIVERSAL = 8.314462618
 CGNSCHECK = shutil.which("cgnscheck")
@@ -62,19 +62,18 @@ def test_run_directory_and_metadata_follow_the_contract(crm_run: autan.Results) 
     assert path.name == run["run_id"]
     assert run["status"] == "converged"
     assert run["solver"]["backend"] == "fake"
+    assert run["solver"]["binary_sha256"] is None
     assert re.fullmatch(r"[0-9a-f]{40}", run["solver"]["commit"])
     assert run["case"]["sha256"] == autan.load(path / "case.toml").spec.hash()
     assert run["mesh"]["path"] == str((EXAMPLES / "crm-hl.cgns").resolve())
-    parts = [
-        run["case"]["sha256"],
-        run["mesh"]["sha256"],
-        run["solver"]["commit"],
-        run["precision"],
-        "fake",
-        run["devices"]["kind"],
-        str(run["devices"]["count"]),
-    ]
-    assert run["identity"] == hashlib.sha256("\n".join(parts).encode()).hexdigest()
+    assert run["identity"] == identity_of(run)
+    assert tuple(identity_fields()) == autan.results.IDENTITY
+    assert autan.results.run_identity(run) == run["identity"]
+    # A count the schema allows as 1.0 is the integer 1; a list is no count.
+    as_float = run | {"devices": run["devices"] | {"count": 1.0}}
+    assert autan.results.run_identity(as_float) == run["identity"]
+    with pytest.raises(ValidationError):
+        autan.results.run_identity(run | {"devices": run["devices"] | {"count": [1]}})
     assert run["iterations"] == 100
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", run["finished"])
 
@@ -244,7 +243,7 @@ def test_unsteady_run_records_time_and_average(
     np.testing.assert_array_equal(result.field("Density", mean=True), result.field("Density"))
 
 
-def test_deterministic_runs_produce_identical_data(
+def test_runs_of_one_identity_produce_identical_data(
     tmp_path: Path, crm_mesh: autan.MeshInfo
 ) -> None:
     case = autan.load(EXAMPLES / "crm_hl.py")
@@ -806,23 +805,186 @@ def test_convergence_floors_belong_to_a_steady_fp32_run(
     crm_run: autan.Results, write_case: Callable[..., Path], crm_mesh: autan.MeshInfo
 ) -> None:
     names = autan.results.residual_names(crm_run.case)
-    floors = {"floor": dict.fromkeys(names, 1e-6) | {names[0]: 0.0}}  # a zero scale: no floor
+    floor = dict.fromkeys(names, 1e-6) | {names[0]: 0.0}  # a zero scale: no floor
+    floors = {"floor": floor, "plateau": []}
     _set_convergence(crm_run.path, floors)
     assert autan.Results.open(crm_run.path).run.convergence is not None
+    # A converged run lists the equations it counted converged on a plateau, in history order.
+    assert crm_run.run.status == "converged"
+    _set_convergence(crm_run.path, {"floor": floor, "plateau": [names[1], names[3]]})
+    convergence = autan.Results.open(crm_run.path).run.convergence
+    assert convergence is not None
+    assert convergence.plateau == [names[1], names[3]]
+    for plateau in ([names[3], names[1]], ["bogus"], [names[1], names[1]]):
+        _set_convergence(crm_run.path, {"floor": floor, "plateau": plateau})
+        with pytest.raises(autan.CaseError) as error:
+            autan.Results.open(crm_run.path)
+        assert error.value.codes == ["E0701"]
+    short = autan.load(EXAMPLES / "crm_hl.py").run(
+        crm_mesh, backend=autan.FakeBackend(iterations=2), runs=crm_run.path.parent
+    )
+    assert short.run.status != "converged"
+    _set_convergence(short.path, {"floor": floor, "plateau": [names[1]]})
+    with pytest.raises(autan.CaseError) as error:
+        autan.Results.open(short.path)
+    assert error.value.codes == ["E0701"]
+    _set_convergence(crm_run.path, floors)
     run_json = json.loads((crm_run.path / "run.json").read_text())
     del run_json["convergence"]
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.Draft202012Validator(json_schema("results")).validate(run_json)
-    for value in ("absent", {"floor": dict.fromkeys(names[:-1], 1e-6)}):
+    for value in ("absent", {"floor": dict.fromkeys(names[:-1], 1e-6), "plateau": []}):
         _set_convergence(crm_run.path, value)
         with pytest.raises(autan.CaseError) as error:
             autan.Results.open(crm_run.path)
         assert error.value.codes == ["E0701"]
 
-    fp64 = autan.load(write_case(CRM_HL.replace('"fp32+acc64"', '"fp64"'), name="fp64.py"))
+    fp64 = autan.load(
+        write_case(CRM_HL.replace("autan.SA())", 'autan.SA(), precision="fp64")'), name="fp64.py")
+    )
     result = fp64.run(crm_mesh, backend=autan.FakeBackend(iterations=2), runs=crm_run.path.parent)
     assert result.run.convergence is None
     _set_convergence(result.path, floors)
     with pytest.raises(autan.CaseError) as error:
         autan.Results.open(result.path)
     assert error.value.codes == ["E0701"]
+
+
+def test_a_fake_run_measures_no_timing(crm_run: autan.Results) -> None:
+    assert crm_run.run.timing is None
+    cells, iterations = crm_run.mesh_info.counts.cells, crm_run.run.iterations
+    fabricated = {
+        "wall_seconds": 12.0,
+        "solve_seconds": 10.0,
+        "iterations": iterations,
+        "ns_per_cell_iteration": 10.0 * 1e9 / (cells * iterations),
+    }
+    document = json.loads((crm_run.path / "run.json").read_text())
+    assert autan.results.check_run_json(document, crm_run.case, crm_run.mesh_info) == []
+    for change in ({"timing": fabricated}, {"timing": "absent"}):
+        broken = dict(document) | change
+        if broken["timing"] == "absent":
+            del broken["timing"]
+        assert autan.results.check_run_json(broken, crm_run.case, crm_run.mesh_info)
+        (crm_run.path / "run.json").write_text(json.dumps(broken))
+        with pytest.raises(autan.CaseError) as error:
+            autan.Results.open(crm_run.path)
+        assert error.value.codes == ["E0701"]
+        if "timing" not in broken:
+            with pytest.raises(jsonschema.ValidationError):
+                jsonschema.Draft202012Validator(json_schema("results")).validate(broken)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        lambda d: d.update(convergence={"floor": {}, "plateau": []}),
+        lambda d: d.update(convergence={"floor": {"bogus": 1e-6}, "plateau": []}),
+        lambda d: d.update(monitors=None),
+        lambda d: d["monitors"]["forces"].update(iteration=d["iterations"] - 1),
+        lambda d: d.update(
+            timing={
+                "wall_seconds": 1.0,
+                "solve_seconds": 1.0,
+                "iterations": 1,
+                "ns_per_cell_iteration": 1.0,
+            }
+        ),
+    ],
+)
+def test_check_run_json_refuses_what_results_open_refuses(
+    damage: Callable[[dict[str, Any]], object], crm_run: autan.Results
+) -> None:
+    document = json.loads((crm_run.path / "run.json").read_text())
+    damage(document)
+    assert autan.results.check_run_json(document, crm_run.case, crm_run.mesh_info)
+    (crm_run.path / "run.json").write_text(json.dumps(document))
+    with pytest.raises(autan.CaseError) as error:
+        autan.Results.open(crm_run.path)
+    assert error.value.codes == ["E0701"]
+
+
+def test_runs_of_one_study_differ_only_in_their_freestream(
+    write_case: Callable[..., Path], crm_mesh: autan.MeshInfo, tmp_path: Path
+) -> None:
+    # results.md#studies: a study is one problem at several freestream states.
+    def parts(body: str, name: str, mesh: str | None = None) -> autan.results.IdentityParts:
+        case = autan.load(write_case(body, name))
+        result = case.run(
+            crm_mesh, backend=autan.FakeBackend(iterations=2), runs=tmp_path / "runs" / name
+        )
+        document = result.run.document()
+        if mesh is not None:
+            document["mesh"]["sha256"] = mesh
+        return autan.results.run_identity_parts(document, result.case)
+
+    base = parts(CRM_HL, "base.py")
+    # A sweep names each case after its state: the name is no part of the problem.
+    alpha = parts(
+        CRM_HL.replace("19.57 * deg", "21.47 * deg").replace('"crm-hl",', '"crm-hl-a2147",'),
+        "alpha.py",
+    )
+    other = parts(CRM_HL.replace("autan.SA()", "autan.SST()"), "other.py")
+    assert alpha.case_without_freestream == base.case_without_freestream
+    assert alpha.fields["case.sha256"] != base.fields["case.sha256"]
+    assert {k: v for k, v in alpha.fields.items() if k != "case.sha256"} == {
+        k: v for k, v in base.fields.items() if k != "case.sha256"
+    }
+    assert (base.freestream["aoa"], alpha.freestream["aoa"]) == ("19.57 deg", "21.47 deg")
+    assert other.case_without_freestream != base.case_without_freestream
+    moved = parts(CRM_HL, "moved.py", mesh="1" * 64)
+    assert moved.fields["mesh.sha256"] != base.fields["mesh.sha256"]
+    # No start: the start fields are absent.
+    assert list(base.fields) == [f for f in identity_fields() if not f.startswith("start.")]
+
+
+def _outside_storage(tree: h5py.File, outside: Path) -> None:
+    density = tree["Base/Zone/FlowSolution/Density"]
+    values = density[" data"][()]
+    outside.write_bytes(values.tobytes())
+    del density[" data"]
+    density.create_dataset(
+        " data", shape=values.shape, dtype=values.dtype, external=[(str(outside), 0, values.nbytes)]
+    )
+
+
+def _outside_link(tree: h5py.File, outside: Path) -> None:
+    with h5py.File(outside, "w") as other:
+        other["x"] = np.zeros(3)
+    tree["Base/Zone/FlowSolution/Elsewhere"] = h5py.ExternalLink(str(outside), "/x")
+
+
+def _outside_virtual(tree: h5py.File, outside: Path) -> None:
+    density = tree["Base/Zone/FlowSolution/Density"]
+    values = density[" data"][()]
+    with h5py.File(outside, "w") as other:
+        other["x"] = values
+    layout = h5py.VirtualLayout(shape=values.shape, dtype=values.dtype)
+    layout[:] = h5py.VirtualSource(str(outside), "x", shape=values.shape)
+    del density[" data"]
+    density.create_virtual_dataset(" data", layout)
+
+
+@pytest.mark.parametrize("alter", [_outside_storage, _outside_link, _outside_virtual])
+def test_a_solution_with_data_in_another_file_is_refused_before_any_read(
+    alter: Callable[[h5py.File, Path], None], crm_run: autan.Results, tmp_path: Path
+) -> None:
+    # mesh.md, E0134: files must be self-contained, start solutions included.
+    outside = tmp_path / "outside.bin"
+    with h5py.File(crm_run.path / "solution.cgns", "r+") as tree:
+        alter(tree, outside)
+    outside.unlink()
+    with pytest.raises(autan.CaseError) as error:
+        autan.Results.open(crm_run.path).field("Density")
+    assert error.value.codes == ["E0134"]
+    assert error.value.diagnostics[0].data["node"].startswith("Base/Zone/FlowSolution/")
+    case = autan.load(EXAMPLES / "crm_hl.py")
+    with pytest.raises(autan.CaseError) as error:
+        case.run(crm_run.mesh_info, backend=autan.FakeBackend(), runs=tmp_path, start=crm_run)
+    assert error.value.codes == ["E0134"]
+    with (
+        (crm_run.path / "solution.cgns").open("rb") as file,
+        pytest.raises(cgns.OutsideFileError),
+        cgns.open_file(file),
+    ):
+        pass

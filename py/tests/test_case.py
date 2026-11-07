@@ -76,6 +76,19 @@ def test_contract_example_toml_is_the_crm_hl_example() -> None:
         ("case.freestream(mach=0.2, re=float('nan'), ref_length=7 * m)", "E0304"),
         ("case.boundary('w').wall(temperature=300 * Pa)", "E0301"),
         ("case.boundary('w').outlet(static_pressure=101325)", "E0302"),
+        # Its document would write the exponent as 1: a length.
+        (
+            "case.freestream(mach=0.2, re=5e6, ref_length=autan.units.Quantity(1, 'm ** 1.000001'))",
+            "E0301",
+        ),
+        # Its document would write each exponent 1/3 as 0.333333: [length] ** 0.999999.
+        (
+            (
+                "case.freestream(mach=0.2, re=5e6, "
+                "ref_length=autan.units.Quantity(1, 'm ** (1/3) * mm ** (1/3) * cm ** (1/3)'))"
+            ),
+            "E0301",
+        ),
     ],
 )
 def test_builder_rejects_invalid_values_at_the_calling_line(
@@ -144,6 +157,29 @@ def test_document_errors_have_codes(
     assert sorted(codes(error)) == codes_expected
 
 
+@pytest.mark.parametrize(
+    "put",
+    [
+        lambda d, text: d.update(name=text),
+        lambda d, text: d["physics"]["gas"].update(name=text),
+        lambda d, text: d["boundaries"][0].update(zones=text),
+    ],
+)
+def test_free_texts_are_bounded(put: Callable[[dict[str, Any], str], None], tmp_path: Path) -> None:
+    # case-schema.md#free-texts: at most 4096 bytes in UTF-8, whatever the characters.
+    def load(text: str) -> autan.Case:
+        document = autan.load(EXAMPLES / "crm_hl.py").spec.document()
+        put(document, text)
+        path = tmp_path / "case.json"
+        path.write_text(json.dumps(document))
+        return autan.load(path)
+
+    load("é" * 2048)
+    with pytest.raises(autan.CaseError) as error:
+        load("é" * 2048 + "x")
+    assert codes(error) == ["E0003"]
+
+
 def test_incompressible_freestream_rules(write_case: Callable[[str], Path]) -> None:
     head = (
         "import autan\nfrom autan.units import K, Pa, kg, m, s\n"
@@ -186,6 +222,21 @@ def test_missing_physics_is_reported_at_the_case_constructor(
         autan.load(path)
     assert codes(error) == ["E0003", "E0003"]
     assert {d.location.line for d in error.value.diagnostics if d.location} == {3}
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        ("case.json", "[" * 100_000 + "]" * 100_000),
+        ("case.toml", "a = [[["),
+        ("case.toml", "a = " + "[" * 2_000 + "]" * 2_000),
+    ],
+)
+def test_an_unreadable_case_document_is_e0001(name: str, text: str, tmp_path: Path) -> None:
+    (tmp_path / name).write_text(text)
+    with pytest.raises(autan.CaseError) as error:
+        autan.load(tmp_path / name)
+    assert codes(error) == ["E0001"]
 
 
 def test_missing_case_file() -> None:
@@ -253,6 +304,13 @@ def test_defaults_are_materialized_before_hashing(tmp_path: Path) -> None:
         lambda d: d["physics"].update(
             turbulence={"model": "ddes", "base": {"model": "sa", "intensity": 0.1}}
         ),
+        lambda d: d["time"].update(matrix_free=True),  # an SA case
+        lambda d: d["time"].update(checkpoint={}),
+        lambda d: d["time"].update(checkpoint={"seconds": "100 s", "iterations": 5}),
+        lambda d: (
+            d["time"].update(coupled_turbulence=True),
+            d["physics"].update(turbulence={"model": "laminar"}),
+        ),
     ],
 )
 def test_published_json_schema_and_reader_reject_contract_violations(
@@ -295,6 +353,32 @@ def test_integers_are_strict_and_canonicalizable(
     assert codes(error) == [code]
 
 
+def test_the_checkpoint_cadence_defaults_to_half_an_hour_and_is_bounded(tmp_path: Path) -> None:
+    # case-schema.md#time: exactly one of seconds, in [60 s, 86400 s], or iterations >= 1.
+    document = autan.load(EXAMPLES / "crm_hl.py").spec.document()
+    assert document["time"]["checkpoint"] == {"seconds": "1800.0 s"}
+    edits: list[tuple[dict[str, Any], str | None]] = [
+        ({"seconds": "60 s"}, None),
+        ({"seconds": "1 d"}, None),
+        ({"iterations": 1}, None),
+        ({"seconds": "59 s"}, "E0304"),
+        ({"seconds": "86401 s"}, "E0304"),
+        ({"seconds": "100 s", "iterations": 5}, "E0003"),
+        ({}, "E0003"),
+        ({"iterations": 0}, "E0304"),
+    ]
+    for checkpoint, code in edits:
+        document["time"]["checkpoint"] = checkpoint
+        path = tmp_path / "case.json"
+        path.write_text(json.dumps(document))
+        if code is None:
+            autan.load(path)
+            continue
+        with pytest.raises(autan.CaseError) as error:
+            autan.load(path)
+        assert codes(error) == [code], checkpoint
+
+
 def test_error_paths_are_document_paths(tmp_path: Path) -> None:
     document = autan.load(EXAMPLES / "crm_hl.py").spec.document()
     document["boundaries"][0]["condition"]["temperature"] = "3 Pa"
@@ -305,3 +389,33 @@ def test_error_paths_are_document_paths(tmp_path: Path) -> None:
         autan.load(path)
     paths = sorted(d.location.path or "" for d in error.value.diagnostics if d.location)
     assert paths == ["boundaries[0].condition.temperature", "physics.turbulence.nu_tilde_ratio"]
+
+
+@pytest.mark.parametrize(
+    ("unit", "code"),
+    [
+        ("Pa", "E0301"),
+        ("m**2", "E0301"),
+        ("2 m", "E0303"),
+        ("cubit_x", "E0303"),
+        ("m*dB", "E0301"),  # a length, but logarithmic: no factor to metres
+        ("km**200/m**199", "E0301"),  # a length whose factor overflows
+        # A length whose text, with exponents to 6 digits, is [length] ** 0.999999.
+        ("m**0.3333333333333333 * cm**0.3333333333333333 * mm**0.3333333333333334", "E0301"),
+    ],
+)
+def test_mesh_unit_must_be_a_unit_of_length(
+    unit: str, code: str, write_case: Callable[[str], Path]
+) -> None:
+    path = write_case(
+        "import autan\nfrom autan.units import m\n"
+        f"case = autan.Case('c', mesh='m.cgns', mesh_unit={unit!r})\n"
+        "case.physics = autan.Compressible(turbulence=autan.Inviscid())\n"
+        "case.freestream(mach=0.2, re=5e6, ref_length=7 * m)\n"
+    )
+    with pytest.raises(autan.CaseError) as error:
+        autan.load(path)
+    [found] = error.value.diagnostics
+    assert found.code == code
+    assert found.location is not None
+    assert (found.location.file, found.location.line) == (str(path), 3)

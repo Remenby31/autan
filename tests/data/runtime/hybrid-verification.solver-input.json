@@ -2,18 +2,154 @@
   "schema": "autan.solver-input/1",
   "case": {
     "name": "mms",
-    "sha256": "c52ab2f48601ee25ae4a71939fd20687dd909b70fc6f0f23e00f475bc3523f62",
-    "toml": "schema = \"autan.case/1\"\nname = \"mms\"\nmesh = \"../mesh/hybrid/polyMesh\"\nboundaries = []\ncell_zones = []\nmonitors = []\n\n[physics]\nkind = \"compressible\"\nprecision = \"fp32+acc64\"\n\n[physics.turbulence]\nmodel = \"inviscid\"\n\n[physics.gas]\nkind = \"ideal-gas\"\nname = \"mms\"\nmolar_mass = \"0.028970253024390245 kg / mol\"\ngamma = 1.4\nprandtl = 0.72\n\n[physics.gas.viscosity]\nlaw = \"constant\"\nmu = \"0.001 Pa * s\"\n\n[freestream]\nmach = 0.3\naoa = \"0.0 deg\"\nsideslip = \"0.0 deg\"\ntemperature = \"300.0 K\"\npressure = \"101325.0 Pa\"\n\n[time]\nkind = \"steady\"\nmax_iterations = 10000\nresidual_orders = 8.0\n\n[verification.manufactured]\npath = \"euler.mms.json\"\nsha256 = \"7555af6d04b90046c676c6f9c15e26507ff96f0cf763d877ba5f30c63788bf7e\"\n"
+    "sha256": "b66a1f359cdd9b79ed67b0b6b2dd73f640f4b5a17e369540a5c1848c24decc94",
+    "toml": "schema = \"autan.case/1\"\nname = \"mms\"\nmesh = \"../mesh/hybrid/polyMesh\"\nmesh_unit = \"m\"\nboundaries = []\ncell_zones = []\nmonitors = []\n\n[physics]\nkind = \"compressible\"\nprecision = \"fp32+acc64\"\nreproducibility = \"run\"\n\n[physics.turbulence]\nmodel = \"inviscid\"\n\n[physics.gas]\nkind = \"ideal-gas\"\nname = \"mms\"\nmolar_mass = \"0.028970253024390245 kg / mol\"\ngamma = 1.4\nprandtl = 0.72\n\n[physics.gas.viscosity]\nlaw = \"constant\"\nmu = \"0.001 Pa * s\"\n\n[freestream]\nmach = 0.3\naoa = \"0.0 deg\"\nsideslip = \"0.0 deg\"\ntemperature = \"300.0 K\"\npressure = \"101325.0 Pa\"\n\n[time]\nkind = \"steady\"\nmax_iterations = 10000\nresidual_orders = 8.0\nlinear_solver = \"multigrid\"\ncoupled_turbulence = false\nmatrix_free = false\n\n[time.checkpoint]\nseconds = \"1800.0 s\"\n\n[verification.manufactured]\npath = \"euler.mms.json\"\nsha256 = \"7555af6d04b90046c676c6f9c15e26507ff96f0cf763d877ba5f30c63788bf7e\"\n"
   },
   "mesh": {
     "path": "@MESH@",
-    "sha256": "0edcff657743a2a039ab7814e7f9f276bc5631530bc3adf519abe6dcb290ebe6"
+    "sha256": "0edcff657743a2a039ab7814e7f9f276bc5631530bc3adf519abe6dcb290ebe6",
+    "scale": 1.0,
+    "groups_sha256": null
+  },
+  "mesh_info": {
+    "schema": "autan.mesh-info/1",
+    "source": {
+      "path": "tests/data/mesh/hybrid/polyMesh",
+      "format": "polymesh",
+      "sha256": "0edcff657743a2a039ab7814e7f9f276bc5631530bc3adf519abe6dcb290ebe6",
+      "bytes": 20388,
+      "logical_bytes": 20388,
+      "descriptor_bytes": 0,
+      "zone_names_bytes": 0,
+      "filtered_bytes": 0,
+      "cgns_nodes": 0,
+      "point_list_ids": 0
+    },
+    "counts": {
+      "cells": 216,
+      "faces": 564,
+      "nodes": 133,
+      "source_nodes": 133,
+      "face_nodes": 1864,
+      "cells_by_type": {
+        "tetra": 96,
+        "pyramid": 48,
+        "prism": 64,
+        "hexa": 8,
+        "polyhedron": 0
+      },
+      "stencil_entries": 3268,
+      "vertex_stencil_entries": 8862,
+      "band_entries": 31922,
+      "boundary_fit_entries": 48489,
+      "periodic_ghosts": 0
+    },
+    "bounds": {
+      "min": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "max": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "boundary_zones": [
+      {
+        "name": "xmin",
+        "type": null,
+        "native_type": "patch",
+        "faces": 24
+      },
+      {
+        "name": "xmax",
+        "type": null,
+        "native_type": "patch",
+        "faces": 24
+      },
+      {
+        "name": "ymin",
+        "type": "wall",
+        "native_type": "wall",
+        "faces": 20
+      },
+      {
+        "name": "ymax",
+        "type": null,
+        "native_type": "patch",
+        "faces": 20
+      },
+      {
+        "name": "zmin",
+        "type": null,
+        "native_type": "patch",
+        "faces": 24
+      },
+      {
+        "name": "zmax",
+        "type": "symmetry",
+        "native_type": "symmetryPlane",
+        "faces": 24
+      }
+    ],
+    "cell_zones": [
+      {
+        "name": "upper",
+        "type": null,
+        "native_type": null,
+        "cells": 128
+      },
+      {
+        "name": "lower",
+        "type": null,
+        "native_type": null,
+        "cells": 88
+      }
+    ],
+    "interfaces": [
+      {
+        "zones": [
+          "lower",
+          "upper"
+        ],
+        "faces": 24
+      }
+    ],
+    "periodic": [],
+    "groups": [],
+    "groups_source": null,
+    "quality": {
+      "max_non_orthogonality_deg": 36.6992252004899,
+      "max_faces_per_cell": 6,
+      "lines": {
+        "order": "rcm",
+        "scale": 1.0,
+        "cells": 64,
+        "long_cells": 0
+      },
+      "multigrid": {
+        "cells_by_level": [
+          216,
+          29
+        ],
+        "edges_by_level": [
+          428,
+          87
+        ]
+      }
+    }
   },
   "precision": "fp32+acc64",
-  "deterministic": false,
+  "reproducibility": "run",
   "devices": {
     "kind": "cpu",
     "count": 1
+  },
+  "memory": {
+    "bytes_host": 2138796,
+    "bytes_device": 0
   },
   "physics": {
     "kind": "compressible",
@@ -49,63 +185,75 @@
   "boundaries": [
     {
       "zone": "xmin",
+      "rule": null,
       "kind": "manufactured",
       "temperature": null,
       "total_pressure": null,
       "total_temperature": null,
       "velocity": null,
       "static_pressure": null,
-      "states": null
+      "states": null,
+      "point_vortex": null
     },
     {
       "zone": "xmax",
+      "rule": null,
       "kind": "manufactured",
       "temperature": null,
       "total_pressure": null,
       "total_temperature": null,
       "velocity": null,
       "static_pressure": null,
-      "states": null
+      "states": null,
+      "point_vortex": null
     },
     {
       "zone": "ymin",
+      "rule": null,
       "kind": "manufactured",
       "temperature": null,
       "total_pressure": null,
       "total_temperature": null,
       "velocity": null,
       "static_pressure": null,
-      "states": null
+      "states": null,
+      "point_vortex": null
     },
     {
       "zone": "ymax",
+      "rule": null,
       "kind": "manufactured",
       "temperature": null,
       "total_pressure": null,
       "total_temperature": null,
       "velocity": null,
       "static_pressure": null,
-      "states": null
+      "states": null,
+      "point_vortex": null
     },
     {
       "zone": "zmin",
+      "rule": null,
       "kind": "manufactured",
       "temperature": null,
       "total_pressure": null,
       "total_temperature": null,
       "velocity": null,
       "static_pressure": null,
-      "states": null
+      "states": null,
+      "point_vortex": null
     },
     {
       "zone": "zmax",
+      "rule": null,
       "kind": "manufactured",
       "temperature": null,
       "total_pressure": null,
       "total_temperature": null,
       "velocity": null,
       "static_pressure": null,
-      "states": null
+      "states": null,
+      "point_vortex": null
     }
   ],
   "cell_zones": [
@@ -169,10 +317,17 @@
   "time": {
     "kind": "steady",
     "max_iterations": 10000,
-    "residual_orders": 8.0
+    "residual_orders": 8.0,
+    "linear_solver": "multigrid",
+    "coupled_turbulence": false,
+    "matrix_free": false,
+    "checkpoint": {
+      "seconds": 1800.0
+    }
   },
   "monitors": [],
   "start": null,
+  "initial_state": null,
   "periodic": [],
   "verification": {
     "path": "@MMS@",

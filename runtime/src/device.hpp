@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 namespace autan::runtime {
@@ -7,6 +8,14 @@ namespace autan::runtime {
 /// The number of CUDA devices this process sees: 0 in a build without CUDA,
 /// or when the driver reports none or fails.
 int visible_gpus();
+
+/// Whether the device a rank with `local_rank` runs on (as Gpu chooses it)
+/// is integrated, its memory the host's (GB10); creates no context.
+bool device_integrated(int local_rank);
+/// The free memory of that device; makes it current, creating its context.
+/// Both throw std::runtime_error when CUDA fails; the caller has checked that
+/// visible_gpus() > 0.
+std::int64_t device_free_bytes(int local_rank);
 
 /// The GPU a rank runs on for devices.kind = cuda: device `local_rank`
 /// modulo the visible devices, made current, with a non-blocking stream of
@@ -22,6 +31,11 @@ class Gpu {
   [[nodiscard]] int index() const noexcept { return index_; }
   [[nodiscard]] void* stream() const noexcept { return stream_; }
   [[nodiscard]] const std::string& name() const noexcept { return name_; }
+  /// The device memory this process's allocators hold now (autan::device_memory): not the
+  /// driver's free memory, which on a unified-memory device (GB10) is the whole host's (#411).
+  [[nodiscard]] std::int64_t sample() const noexcept;
+  /// The most device memory those allocators held at once since this Gpu was made.
+  [[nodiscard]] std::int64_t peak() const noexcept;
 
  private:
   int index_ = -1;

@@ -30,12 +30,17 @@ enum class ErrorCode : std::uint16_t {
   mesh_periodic_unmatched = 119,
   geometry_degenerate_face = 120,
   geometry_non_positive_volume = 121,
+  mesh_text_too_long = 122,
   io_cannot_open = 130,
   io_unknown_format = 131,
   io_malformed = 132,
   io_unsupported = 133,
   io_external_reference = 134,
   io_ambiguous_zone = 135,
+  zone_groups_invalid = 136,
+  zone_groups_other_mesh = 137,
+  zone_groups_bad_group = 138,
+  zone_groups_duplicate_name = 139,
   partition_invalid_request = 140,
   partition_input_has_ghosts = 141,
   partition_backend_failed = 142,
@@ -53,11 +58,14 @@ std::string error_code_string(ErrorCode code);
 /// contract.
 class Error : public std::runtime_error {
  public:
-  Error(ErrorCode code, std::string_view message);
+  /// `data_json`: the diagnostic's `data`, a JSON object (case-schema.md#diagnostics).
+  Error(ErrorCode code, std::string_view message, std::string data_json = "{}");
   [[nodiscard]] ErrorCode code() const noexcept { return code_; }
+  [[nodiscard]] const std::string& data_json() const noexcept { return data_json_; }
 
  private:
   ErrorCode code_;
+  std::string data_json_;
 };
 
 }  // namespace autan

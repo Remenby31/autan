@@ -35,6 +35,13 @@ struct Topology {
   device const offset_t* stencil_offsets;
   device const index_t* stencil;
   device const offset_t* stencil_twin;
+  offset_t stencil_stride;
+  device const index_t* stencil_length;
+  device const uchar* face_reversed;
+  bool rank_independent;
+  offset_t incidence_stride;
+  device const index_t* incidence_length;
+  device const index_t* incidence_cell;
 };
 
 // Double-float: x = hi + lo with |lo| <= ulp(hi) / 2, about 48 significant bits.
@@ -147,6 +154,7 @@ struct fp32 {
   typedef float geom;
   typedef float geom_value;
   typedef float jac;
+  typedef uchar flag;
   typedef float param;
   typedef float compute;
   typedef float accum;
@@ -159,6 +167,7 @@ struct fp32_acc64 {
   typedef df64 geom;
   typedef float geom_value;
   typedef float jac;
+  typedef uchar flag;
   typedef df64 param;
   typedef float compute;
   typedef df64 accum;

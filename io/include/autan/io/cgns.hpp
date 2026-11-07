@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -14,6 +16,30 @@ namespace autan::io {
 /// ZoneSubRegion_t or the families of element sections; supported layouts
 /// and rejections are listed in docs/contracts/mesh.md, "Readers".
 Mesh read_cgns(const std::filesystem::path& file);
+
+/// What reading a mesh file costs beyond its arrays' counts, in bytes at their stored element count
+/// times element size whatever the compression (mesh-info.md, source): `total` the datasets the
+/// reader reads and every descriptor, `descriptors` every Descriptor_t (the CGNS library loads them
+/// all at cg_open), `zone_names` the ZoneNames descriptor the reader parses. 0 descriptors and zone
+/// names for a format without them.
+struct LogicalBytes {
+  std::int64_t total = 0;
+  std::int64_t descriptors = 0;
+  std::int64_t zone_names = 0;
+  /// Of the filtered (compressed) datasets, the largest twice-chunk-logical plus stored size: what
+  /// HDF5 holds beside the destination while it reads one. 0 for an unfiltered file.
+  std::int64_t filtered = 0;
+  /// Every node of the file's tree, for each of which the CGNS library allocates at cg_open.
+  std::int64_t nodes = 0;
+  /// The entries of every IndexArray_t under the zone's BCs, subregions and connectivities, for
+  /// whose ids the reader holds 8 bytes each to know which faces they name. 0 for other formats.
+  std::int64_t point_list_ids = 0;
+  /// The data cg_open reads beyond descriptors (mesh.md, Memory of a CGNS read): at most 1 MiB.
+  std::int64_t eager = 0;
+};
+
+/// LogicalBytes of a CGNS file, from its node metadata only, through cgio (no cg_open).
+LogicalBytes cgns_logical_bytes(const std::filesystem::path& file);
 
 struct Field {
   std::string name;  ///< SIDS name, e.g. "Density"
@@ -41,8 +67,9 @@ struct Solution {
 
 /// Cell fields of a solution.cgns written by write_solution, to restart from:
 /// the zone's cell count, the RunMetadata text, and FlowSolution,
-/// FlowSolutionMean and RestartState (each empty when absent). Throws E0130
-/// to E0133 for a file outside that layout.
+/// FlowSolutionMean and RestartState (each empty when absent, the last two
+/// not read without `whole_state`: a warm start needs only FlowSolution).
+/// Throws E0130 to E0133 for a file outside that layout.
 struct StoredSolution {
   index_t cells = 0;
   std::string run_metadata;
@@ -50,11 +77,38 @@ struct StoredSolution {
   std::vector<Field> mean_fields;
   std::vector<Field> restart_fields;
 };
-StoredSolution read_solution(const std::filesystem::path& file);
+StoredSolution read_solution(const std::filesystem::path& file, bool whole_state = true);
+
+/// The arrays of each FlowSolution_t of the zone of start solution `file`, by solution name, read
+/// through cgio without their values (after check_start_solution: the walk is bounded).
+std::map<std::string, std::vector<std::string>> solution_field_names(
+    const std::filesystem::path& file);
+
+/// The run's mesh a start solution was written for: its boundary and cell zones and its periodic
+/// pairs (results.md, Sizes a reader accepts).
+struct StartLimits {
+  std::int64_t zones = 0;
+  std::int64_t periodic_pairs = 0;
+};
+
+/// Checks through cgio alone, before the CGNS library loads anything, that `file` holds no
+/// descriptor or family beyond what results.md's writer writes for a mesh of `limits`:
+/// RunMetadata of at most 64 KiB and ZoneNames of at most (zones + 1) × 25 600 bytes in the base,
+/// at most 2 × periodic_pairs PeriodicTranslation of at most 4096 bytes, no other descriptor,
+/// at most `zones` Family_t, no filtered (compressed) dataset, at most 16 384 nodes. Throws E0132
+/// otherwise.
+void check_start_solution(const std::filesystem::path& file, const StartLimits& limits);
+
+/// The cells of a solution's zone, through cgio alone (no cg_open).
+std::int64_t solution_cells(const std::filesystem::path& file);
 
 /// Writes `solution` and `mesh` (unpartitioned) as solution.cgns with the
-/// layout of docs/contracts/results.md. Throws E0101 when the arrays do not
-/// match the mesh and E0130 when the file cannot be written.
+/// layout of docs/contracts/results.md. Throws E0101 when the mesh has ghost
+/// cells, an array's size does not match the mesh, a BC type is unknown or set
+/// on a periodic zone, or a non-periodic boundary zone with faces has an empty
+/// BC type; E0102 when `wall_faces` is not ascending and distinct or holds an
+/// index outside the boundary faces [n_interior_faces, n_faces); E0130 when
+/// the file cannot be written.
 void write_solution(const std::filesystem::path& file, const Mesh& mesh, const Solution& solution);
 
 /// Node names of the MeshInfo boundary and cell zones by the rule of

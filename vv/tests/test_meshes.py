@@ -1,5 +1,7 @@
 """Mesh families: validity, reproducibility, and files read back by independent consumers."""
 
+import hashlib
+import itertools
 import json
 import re
 from pathlib import Path
@@ -268,3 +270,109 @@ def test_ringleb_family_carries_the_exact_states_of_its_boundary(tmp_path: Path)
                 # Streamlines: the flow runs along the side, to the chord's O(h).
                 tangential = np.abs(np.einsum("ij,ij->i", vel, normal)) / speed
                 assert tangential.max() < 4.0 * h
+
+
+def _zone_faces(
+    mesh: FaceMesh, name: str, axis: int, shift: float
+) -> set[tuple[tuple[float, ...], ...]]:
+    """The faces of zone `name`, each its sorted nodes moved by `shift` along `axis`."""
+    zone = next(z for z in mesh.zones if z.name == name)
+    out: set[tuple[tuple[float, ...], ...]] = set()
+    for f in range(zone.start, zone.start + zone.count):
+        p = mesh.points[mesh.face(f)].copy()
+        p[:, axis] += shift
+        out.add(tuple(sorted(map(tuple, p.round(12).tolist()))))
+    return out
+
+
+def _zone_polygons(mesh: FaceMesh, name: str) -> list[np.ndarray]:
+    """The node coordinates of each face of zone `name`."""
+    zone = next(z for z in mesh.zones if z.name == name)
+    return [mesh.points[mesh.face(f)] for f in range(zone.start, zone.start + zone.count)]
+
+
+def _polygon_key(corners: np.ndarray) -> frozenset[tuple[float, ...]]:
+    """A polygon as the set of its corners, rounded off the 16 digits the files keep."""
+    return frozenset(map(tuple, corners.round(9).tolist()))
+
+
+@pytest.mark.parametrize("kind", ["vortex-hex", "vortex-prism"])
+def test_vortex_families_are_periodic_and_nested(kind: str, tmp_path: Path) -> None:
+    # The square [-10, 10]^2 of the isentropic vortex, one layer of thickness 20/n: each face of
+    # xmax (ymax) is a face of xmin (ymin) moved by 20 along x (y), the file declares both links,
+    # and each level holds the nodes of the coarser one in the plane, with four times its cells.
+    family, meshes = generate_family(kind, (8, 16, 32), tmp_path, seed=5)
+    for level, mesh in zip(family.levels, meshes, strict=True):
+        g = mesh.geometry
+        side = 20.0
+        assert g.cell_volume.min() > 0.0
+        assert g.cell_volume.sum() == pytest.approx(side * side, rel=1e-13)
+        # One layer of thickness 1 at every level; n^2 squares, two triangles each for prisms.
+        np.testing.assert_array_equal(np.unique(mesh.points[:, 2]), [0.0, 1.0])
+        assert mesh.n_cells == level.n**2 * (1 if kind == "vortex-hex" else 2)
+        for a, b, axis in (("xmin", "xmax", 0), ("ymin", "ymax", 1)):
+            moved = _zone_faces(mesh, a, axis, side)
+            assert moved
+            assert moved == _zone_faces(mesh, b, axis, 0.0)
+        text = (tmp_path / level.file).read_text()
+        links = re.search(r"\$Periodic\n(\d+)\n", text)
+        assert links is not None
+        assert int(links.group(1)) == 2
+    # Nested: the faces of zmin at the finer level are exactly the four children of each coarser
+    # face, at its edge midpoints (and, for a quadrilateral, its centre).
+    for coarse, fine in itertools.pairwise(meshes):
+        children = set()
+        for corners in _zone_polygons(coarse, "zmin"):
+            k = len(corners)
+            mid = [0.5 * (corners[i] + corners[(i + 1) % k]) for i in range(k)]
+            parts: list[tuple[np.ndarray, ...]]
+            if k == 3:
+                parts = [
+                    (corners[0], mid[0], mid[2]),
+                    (mid[0], corners[1], mid[1]),
+                    (mid[2], mid[1], corners[2]),
+                    (mid[0], mid[1], mid[2]),
+                ]
+            else:
+                centre = corners.mean(axis=0)
+                parts = [(corners[i], mid[i], centre, mid[(i - 1) % 4]) for i in range(4)]
+            children |= {_polygon_key(np.array(q)) for q in parts}
+        assert {_polygon_key(q) for q in _zone_polygons(fine, "zmin")} == children
+    again, _ = generate_family(kind, (8,), tmp_path / "again", seed=5)
+    assert again.levels[0].file_sha256 == family.levels[0].file_sha256
+    # Read back through Gmsh: the nodes are the arrays bit for bit, and each link makes the max
+    # zone the translate of the min zone.
+    gmsh.initialize(readConfigFiles=False)
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.open(str(tmp_path / family.levels[0].file))
+        node_tags, coords, _ = gmsh.model.mesh.getNodes()
+        xyz = np.asarray(coords).reshape(-1, 3)[np.argsort(node_tags)]
+        np.testing.assert_array_equal(xyz, meshes[0].points)
+        entity = {
+            gmsh.model.getPhysicalName(d, t): gmsh.model.getEntitiesForPhysicalGroup(d, t)[0]
+            for d, t in gmsh.model.getPhysicalGroups(2)
+        }
+        for a, b, shift in (("xmin", "xmax", (20.0, 0.0, 0.0)), ("ymin", "ymax", (0.0, 20.0, 0.0))):
+            master, _, _, affine = gmsh.model.mesh.getPeriodicNodes(2, entity[b])
+            assert master == entity[a]
+            np.testing.assert_array_equal(np.asarray(affine).reshape(4, 4)[:3, 3], shift)
+    finally:
+        gmsh.finalize()
+
+
+# Perturbed n = 6 files, perturbation 0.3, seed 2026, written by generate_level, as on x86-64
+# Linux, where CI and the vv-meshes workflow run (identical on every x86-64 runner measured). Our
+# perturbation, element order and geometry are platform-independent (#495); Gmsh's own
+# tetrahedralisation is not: macOS arm64 gives these two files but other tet meshes at other n.
+FILE_N6_SHA256 = {
+    "tet": "a81fbda14c03eeea6382e2c32d6d44ffeeb7ef92c5804cc8015cd0c94b55f3db",
+    "hybrid": "bfdc2d311e5de7b374787a97a95f876138957b50e549ee35ca8b7f56e902be5f",
+}
+
+
+@pytest.mark.parametrize("kind", sorted(FILE_N6_SHA256))
+def test_a_perturbed_file_is_the_same_bytes_on_every_platform(tmp_path: Path, kind: str) -> None:
+    path = tmp_path / f"{kind}.msh"
+    generate_level(kind, 6, perturbation=0.3, seed=2026, path=path)
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == FILE_N6_SHA256[kind]

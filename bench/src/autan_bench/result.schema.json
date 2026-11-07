@@ -409,11 +409,19 @@
             "after_1m"
           ],
           "additionalProperties": false,
-          "description": "Host 1-minute load average before and after the run: on unified memory, other processes' CPU work takes bandwidth from the GPU.",
+          "description": "Host runnable threads (median over 2 s, the observer excluded; what --max-load gates) and 1-minute load average before and after the run: on unified memory, other processes' CPU work takes bandwidth from the GPU. Runs before the runnable count was recorded lack it.",
           "properties": {
             "cpus": {
               "type": "integer",
               "minimum": 1
+            },
+            "before_runnable": {
+              "type": "number",
+              "minimum": 0
+            },
+            "after_runnable": {
+              "type": "number",
+              "minimum": 0
             },
             "before_1m": {
               "type": "number",
@@ -431,6 +439,566 @@
           "additionalProperties": {
             "type": "number",
             "minimum": 0
+          }
+        },
+        "setup_outside_lock_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Seconds a gated binary (autan-bench run --ready) spent setting up before the GPU lock was taken; absent for an ungated binary."
+        },
+        "host_activity": {
+          "type": "object",
+          "required": [
+            "before",
+            "after"
+          ],
+          "additionalProperties": false,
+          "description": "Host-wide activity right before the run starts and right after it returns (Linux): load, pressure (PSI), reclaim and compaction counters (/proc/vmstat), memory, with the monotonic time of each reading. Only the host's counters, no other tenant's container (#400). autan-bench writes it for every Linux run; results written before 2026-11-02 (the committed baselines among them) and macOS results lack it.",
+          "properties": {
+            "before": {
+              "type": "object",
+              "required": [
+                "monotonic_s"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "monotonic_s": {
+                  "type": "number",
+                  "description": "time.monotonic() of the reading: the two readings' difference turns counters into rates."
+                },
+                "loadavg": {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "minItems": 3,
+                  "maxItems": 3
+                },
+                "procs_running": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "procs_blocked": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "lxcfs": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "/proc/meminfo",
+                      "/proc/pressure"
+                    ]
+                  },
+                  "description": "Files served by LXCFS (a container's view): their readings are left out."
+                },
+                "pressure": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "cpu": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "some": {
+                          "type": "object",
+                          "required": [
+                            "avg10",
+                            "avg60",
+                            "avg300",
+                            "total"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "avg10": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg60": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg300": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "total": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          }
+                        },
+                        "full": {
+                          "type": "object",
+                          "required": [
+                            "avg10",
+                            "avg60",
+                            "avg300",
+                            "total"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "avg10": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg60": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg300": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "total": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "memory": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "some": {
+                          "type": "object",
+                          "required": [
+                            "avg10",
+                            "avg60",
+                            "avg300",
+                            "total"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "avg10": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg60": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg300": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "total": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          }
+                        },
+                        "full": {
+                          "type": "object",
+                          "required": [
+                            "avg10",
+                            "avg60",
+                            "avg300",
+                            "total"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "avg10": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg60": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg300": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "total": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "io": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "some": {
+                          "type": "object",
+                          "required": [
+                            "avg10",
+                            "avg60",
+                            "avg300",
+                            "total"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "avg10": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg60": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg300": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "total": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          }
+                        },
+                        "full": {
+                          "type": "object",
+                          "required": [
+                            "avg10",
+                            "avg60",
+                            "avg300",
+                            "total"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "avg10": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg60": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg300": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "total": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "vmstat": {
+                  "type": "object",
+                  "propertyNames": {
+                    "pattern": "^(pgscan|pgsteal|compact|pgmigrate|thp)_[a-z0-9_]+$|^pgfault$|^pgmajfault$"
+                  },
+                  "additionalProperties": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "meminfo_bytes": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "MemFree": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "MemAvailable": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "Cached": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "Dirty": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "Writeback": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "AnonPages": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            },
+            "after": {
+              "type": "object",
+              "required": [
+                "monotonic_s"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "monotonic_s": {
+                  "type": "number",
+                  "description": "time.monotonic() of the reading: the two readings' difference turns counters into rates."
+                },
+                "loadavg": {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "minItems": 3,
+                  "maxItems": 3
+                },
+                "procs_running": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "procs_blocked": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "lxcfs": {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "/proc/meminfo",
+                      "/proc/pressure"
+                    ]
+                  },
+                  "description": "Files served by LXCFS (a container's view): their readings are left out."
+                },
+                "pressure": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "cpu": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "some": {
+                          "type": "object",
+                          "required": [
+                            "avg10",
+                            "avg60",
+                            "avg300",
+                            "total"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "avg10": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg60": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg300": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "total": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          }
+                        },
+                        "full": {
+                          "type": "object",
+                          "required": [
+                            "avg10",
+                            "avg60",
+                            "avg300",
+                            "total"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "avg10": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg60": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg300": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "total": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "memory": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "some": {
+                          "type": "object",
+                          "required": [
+                            "avg10",
+                            "avg60",
+                            "avg300",
+                            "total"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "avg10": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg60": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg300": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "total": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          }
+                        },
+                        "full": {
+                          "type": "object",
+                          "required": [
+                            "avg10",
+                            "avg60",
+                            "avg300",
+                            "total"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "avg10": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg60": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg300": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "total": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "io": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "some": {
+                          "type": "object",
+                          "required": [
+                            "avg10",
+                            "avg60",
+                            "avg300",
+                            "total"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "avg10": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg60": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg300": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "total": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          }
+                        },
+                        "full": {
+                          "type": "object",
+                          "required": [
+                            "avg10",
+                            "avg60",
+                            "avg300",
+                            "total"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "avg10": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg60": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "avg300": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "total": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "vmstat": {
+                  "type": "object",
+                  "propertyNames": {
+                    "pattern": "^(pgscan|pgsteal|compact|pgmigrate|thp)_[a-z0-9_]+$|^pgfault$|^pgmajfault$"
+                  },
+                  "additionalProperties": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "meminfo_bytes": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "MemFree": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "MemAvailable": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "Cached": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "Dirty": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "Writeback": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "AnonPages": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }

@@ -8,9 +8,11 @@ import tomllib
 import traceback
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
+import pint
 import tomli_w
+from pydantic import TypeAdapter, ValidationError
 
 from autan.errors import CaseError, Location, diagnostic
 from autan.plan import Plan, plan
@@ -31,10 +33,12 @@ from autan.schema import (
     Manufactured,
     OracleState,
     Outlet,
+    PointVortex,
     Slip,
     Solid,
     SolidZone,
     State,
+    StateFile,
     Steady,
     Symmetry,
     Unsteady,
@@ -42,33 +46,47 @@ from autan.schema import (
     Verification,
     Wall,
     _caller_location,
+    diagnostics_from,
 )
+from autan.texts import load_json
+from autan.units import UnitOfLength
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    import pint
-
     from autan.fake import FakeBackend
+    from autan.memory import DeviceKind, StartMode
+
+    # A quantity, or its text "<number> <unit>" as the case document writes it.
+    type QuantityLike = pint.Quantity | str
     from autan.meshinfo import MeshInfo
     from autan.results import Results
     from autan.solver_backend import SolverBackend
 
+_MESH_UNIT = TypeAdapter(Annotated[pint.Unit, UnitOfLength])
 _collectors: list[list[Case]] = []
 
 
 class Case:
     """A case under construction: ``autan.Case("crm-hl", mesh="crm-hl.cgns")``.
 
+    ``mesh_unit`` is the length unit of the mesh file's coordinates (``"in"``, ``"mm"``, or
+    a Pint unit; default ``"m"``); every other length of the case carries its own unit.
+
     Builder methods validate their arguments immediately and raise ``autan.CaseError``
     with a coded diagnostic that points at the calling line. ``spec`` returns the
     complete, validated document (``autan.case/1``).
     """
 
-    def __init__(self, name: str, mesh: str | Path) -> None:
+    def __init__(self, name: str, mesh: str | Path, *, mesh_unit: str | pint.Unit = "m") -> None:
         self._origin = _caller_location()
         self._name = name
         self._mesh = str(mesh)
+        try:
+            self._mesh_unit = _MESH_UNIT.validate_python(mesh_unit)
+        except ValidationError as error:
+            located = self._origin.model_copy(update={"path": "mesh_unit"})
+            raise CaseError(diagnostics_from(error, located, {})) from None
         self._physics: Compressible | Incompressible | None = None
         self._freestream: Freestream | None = None
         self._time: Steady | Unsteady = Steady()
@@ -76,6 +94,7 @@ class Case:
         self._cell_zones: list[CellZoneRule] = []
         self._monitors: list[Forces] = []
         self._verification: Verification | None = None
+        self._initial_state: StateFile | None = None
         self._locations: dict[str, Location] = {}
         self._document_file: str | None = None
         if _collectors:
@@ -113,6 +132,26 @@ class Case:
             )
         self._physics = physics
         self._locations["physics"] = _caller_location()
+
+    @property
+    def initial_state(self) -> StateFile | None:
+        return self._initial_state
+
+    @initial_state.setter
+    def initial_state(self, state: StateFile) -> None:
+        """Start every fluid cell from a file: ``autan.StateFile(path=..., sha256=...)``."""
+        if not isinstance(state, StateFile):
+            raise CaseError(
+                [
+                    diagnostic(
+                        "E0003",
+                        f"initial_state must be autan.StateFile, got {type(state).__name__}",
+                        location=_caller_location(),
+                    )
+                ]
+            )
+        self._initial_state = state
+        self._locations["initial_state"] = _caller_location()
 
     @property
     def verification(self) -> Verification | None:
@@ -164,13 +203,13 @@ class Case:
         self,
         *,
         mach: float | None = None,
-        velocity: pint.Quantity | None = None,
-        aoa: pint.Quantity | None = None,
-        sideslip: pint.Quantity | None = None,
-        temperature: pint.Quantity | None = None,
-        pressure: pint.Quantity | None = None,
+        velocity: QuantityLike | None = None,
+        aoa: QuantityLike | None = None,
+        sideslip: QuantityLike | None = None,
+        temperature: QuantityLike | None = None,
+        pressure: QuantityLike | None = None,
         re: float | None = None,
-        ref_length: pint.Quantity | None = None,
+        ref_length: QuantityLike | None = None,
     ) -> None:
         """Set the freestream state; which parameters apply depends on the physics."""
         given = {
@@ -179,9 +218,10 @@ class Case:
         self._freestream = Freestream(**given)
         self._locations["freestream"] = _caller_location()
 
-    def boundary(self, zones: str) -> BoundarySelector:
-        """Select boundary zones by glob pattern; call a condition method on the result."""
-        return BoundarySelector(self, zones)
+    def boundary(self, zones: str | None = None, *, group: str | None = None) -> BoundarySelector:
+        """Select boundary zones by a glob over their names, or by ``group``, a glob over the
+        mesh's zone group names; call a condition method on the result."""
+        return BoundarySelector(self, zones, group)
 
     def cell_zone(self, zones: str) -> CellZoneSelector:
         """Select cell zones by glob pattern; call ``fluid`` or ``solid`` on the result."""
@@ -238,6 +278,7 @@ class Case:
             return CaseSpec(
                 name=self._name,
                 mesh=self._mesh,
+                mesh_unit=self._mesh_unit,
                 physics=self._physics,
                 freestream=self._freestream,
                 time=self._time,
@@ -245,6 +286,7 @@ class Case:
                 cell_zones=tuple(self._cell_zones),
                 monitors=tuple(self._monitors),
                 verification=self._verification,
+                initial_state=self._initial_state,
             )
         except CaseError as error:
             raise CaseError(
@@ -270,15 +312,27 @@ class Case:
         """A case holding ``spec``; diagnostics point at ``file`` and document paths."""
         case = cls.__new__(cls)
         case._origin = Location(file=file)
-        case._name, case._mesh = spec.name, spec.mesh
+        case._name, case._mesh, case._mesh_unit = spec.name, spec.mesh, spec.mesh_unit
         case._physics, case._freestream, case._time = spec.physics, spec.freestream, spec.time
         case._boundaries = list(spec.boundaries)
         case._cell_zones = list(spec.cell_zones)
         case._monitors = list(spec.monitors)
         case._verification = spec.verification
+        case._initial_state = spec.initial_state
         case._locations = {}
         case._document_file = file
         return case
+
+    def to_python(self) -> str:
+        """The case as SDK code in canonical form: ``autan.load`` on a file holding it gives
+        the same case. The form is fixed: ``import autan`` and the units it uses, then
+        ``autan.Case``, physics, freestream, time, initial state, verification, cell zones and
+        boundaries in the case's order, and monitors; only values that differ from their
+        default; quantities in the unit the case carries; library materials by name; numbers
+        in their shortest round-trip form. It is ``ruff format``-clean and has no docstring."""
+        from autan.render import to_python  # noqa: PLC0415 -- autan.render imports the autan package
+
+        return to_python(self.spec)
 
     def to_toml(self) -> str:
         return tomli_w.dumps(self.spec.document())
@@ -307,21 +361,31 @@ class Case:
         checked = resolve_start(self.spec, mesh_info, start, mode)
         return backend.run(self, mesh_info, Path(runs), checked)
 
-    def plan(self, mesh_info: MeshInfo, *, gpus: int = 1) -> Plan:
-        """Resolve boundaries and cell zones against the mesh and estimate memory."""
-        return plan(self, mesh_info, gpus=gpus)
+    def plan(
+        self,
+        mesh_info: MeshInfo,
+        *,
+        gpus: int = 1,
+        device_kind: DeviceKind = "cuda",
+        start: StartMode | None = None,
+    ) -> Plan:
+        """Resolve boundaries and cell zones against the mesh and estimate memory, for a run
+        that starts from a previous one in mode ``start`` (``continue`` or ``warm``) if given."""
+        return plan(self, mesh_info, gpus=gpus, device_kind=device_kind, start=start)
 
 
 class BoundarySelector:
     """The boundary zones matching a pattern; each method adds one rule to the case."""
 
-    def __init__(self, case: Case, zones: str) -> None:
-        self._case, self._zones = case, zones
+    def __init__(self, case: Case, zones: str | None, group: str | None) -> None:
+        self._case, self._zones, self._group = case, zones, group
 
     def _add(self, condition: Any) -> None:
-        self._case._add_boundary(BoundaryRule(zones=self._zones, condition=condition))
+        self._case._add_boundary(
+            BoundaryRule(zones=self._zones, group=self._group, condition=condition)
+        )
 
-    def wall(self, *, temperature: pint.Quantity | None = None) -> None:
+    def wall(self, *, temperature: QuantityLike | None = None) -> None:
         """No-slip wall, adiabatic unless ``temperature`` is given."""
         self._add(Wall() if temperature is None else Wall(temperature=temperature))
 
@@ -332,19 +396,20 @@ class BoundarySelector:
     def symmetry(self) -> None:
         self._add(Symmetry())
 
-    def farfield(self) -> None:
-        """Characteristic farfield at the freestream state."""
-        self._add(Farfield())
+    def farfield(self, *, point_vortex: PointVortex | None = None) -> None:
+        """Characteristic farfield at the freestream state, corrected by ``point_vortex`` for
+        a 2D lifting body."""
+        self._add(Farfield(point_vortex=point_vortex))
 
-    def inlet(self, *, total_pressure: pint.Quantity, total_temperature: pint.Quantity) -> None:
+    def inlet(self, *, total_pressure: QuantityLike, total_temperature: QuantityLike) -> None:
         """Subsonic inlet at total conditions (compressible)."""
         self._add(Inlet(total_pressure=total_pressure, total_temperature=total_temperature))
 
-    def velocity_inlet(self, *, velocity: pint.Quantity) -> None:
+    def velocity_inlet(self, *, velocity: QuantityLike) -> None:
         """Inlet at a given normal velocity (incompressible)."""
         self._add(VelocityInlet(velocity=velocity))
 
-    def outlet(self, *, static_pressure: pint.Quantity) -> None:
+    def outlet(self, *, static_pressure: QuantityLike) -> None:
         """Subsonic outlet at a static pressure."""
         self._add(Outlet(static_pressure=static_pressure))
 
@@ -377,14 +442,16 @@ class CellZoneSelector:
 
 
 def forces(
-    surfaces: str,
+    surfaces: str | None = None,
     *,
+    group: str | None = None,
     name: str = "forces",
-    ref_area: pint.Quantity | None = None,
-    moment_center: tuple[pint.Quantity, pint.Quantity, pint.Quantity] | None = None,
+    ref_area: QuantityLike | None = None,
+    moment_center: tuple[QuantityLike, QuantityLike, QuantityLike] | None = None,
 ) -> Forces:
-    """A forces monitor over the boundary zones matching ``surfaces``."""
-    given: dict[str, Any] = {"surfaces": surfaces, "name": name}
+    """A forces monitor over the boundary zones matching ``surfaces``, or the zones of the
+    groups matching ``group``."""
+    given: dict[str, Any] = {"surfaces": surfaces, "group": group, "name": name}
     if ref_area is not None:
         given["ref_area"] = ref_area
     if moment_center is not None:
@@ -410,9 +477,12 @@ def load(path: str | Path) -> Case:
     if path.suffix in (".toml", ".json"):
         try:
             text = path.read_text()
-            document = tomllib.loads(text) if path.suffix == ".toml" else json.loads(text)
-        except (tomllib.TOMLDecodeError, json.JSONDecodeError, UnicodeDecodeError) as error:
+            document = tomllib.loads(text) if path.suffix == ".toml" else load_json(text)
+        except ValueError as error:  # TOML, JSON, UTF-8 and nesting errors alike
             raise CaseError([diagnostic("E0001", f"{path}: {error}", location=where)]) from None
+        except RecursionError:  # tomllib on a document nested too deeply
+            message = f"{path}: nested too deeply"
+            raise CaseError([diagnostic("E0001", message, location=where)]) from None
         if not isinstance(document, dict):
             raise CaseError([diagnostic("E0003", f"{path}: not a table", location=where)])
         return Case.from_spec(CaseSpec.from_document(document, where), file=str(path))

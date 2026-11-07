@@ -2,9 +2,24 @@ import { type QueryClient, queryOptions, useQueryClient } from "@tanstack/react-
 import { useEffect, useState } from "react";
 import type { Diagnostic, Forces, HistoryRecord, LogLine, Run, RunRegistry } from "./contracts";
 
-async function getJson<T>(url: string): Promise<T> {
+/** A response the server refused: its status, and the reason it gave (FastAPI's `detail`). */
+export class HttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly detail: string,
+    url: string,
+  ) {
+    super(`${url}: HTTP ${status}${detail ? `: ${detail}` : ""}`);
+  }
+}
+
+export async function getJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
-  if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    const detail = typeof body?.detail === "string" ? body.detail : "";
+    throw new HttpError(response.status, detail, url);
+  }
   return (await response.json()) as T;
 }
 
@@ -62,7 +77,17 @@ export interface Plan {
     medium: { kind: string } | null;
     provenance: string | null;
   }[];
-  memory: { bytes_total: number; bytes_per_gpu: number; gpus: number; equations: number };
+  /** The memory estimate (case-schema.md, memory/2): `bytes_per_gpu` is one rank's host plus
+   * device memory, `gpus` the number of ranks. */
+  memory: {
+    device_kind: "cpu" | "cuda" | "hip";
+    gpus: number;
+    equations: number;
+    bytes_host: number;
+    bytes_device: number;
+    bytes_per_gpu: number;
+    bytes_total: number;
+  };
   diagnostics: Diagnostic[];
 }
 
@@ -77,13 +102,18 @@ export const runQuery = (runId: string) =>
   queryOptions({
     queryKey: ["run", runId],
     queryFn: () => getJson<RunDetails>(`/api/runs/${runId}`),
+    // A run the server does not have stays missing: no retry before saying so.
+    retry: (failures, error) =>
+      !(error instanceof HttpError && error.status === 404) && failures < 3,
   });
+
+const EMPTY: RunRegistry = { runs: [], rejected: [], summaries: {}, solutions: [] };
 
 function upsert(registry: RunRegistry | undefined, run: Run): RunRegistry {
   const runs = (registry?.runs ?? []).filter((r) => r.run_id !== run.run_id);
   runs.push(run);
   runs.sort((a, b) => b.started.localeCompare(a.started));
-  return { runs, rejected: registry?.rejected ?? [], summaries: registry?.summaries ?? {} };
+  return { ...EMPTY, ...registry, runs };
 }
 
 /** Keeps the run registry query live from the server's event stream. */
@@ -109,11 +139,15 @@ export function subscribeRegistry(client: QueryClient): () => void {
   });
   source.addEventListener("rejected", (e) => {
     const rejected = JSON.parse(e.data) as RunRegistry["rejected"];
-    update((old) => ({ runs: old?.runs ?? [], rejected, summaries: old?.summaries ?? {} }));
+    update((old) => ({ ...EMPTY, ...old, rejected }));
   });
   source.addEventListener("summaries", (e) => {
     const summaries = JSON.parse(e.data) as RunRegistry["summaries"];
-    update((old) => ({ runs: old?.runs ?? [], rejected: old?.rejected ?? [], summaries }));
+    update((old) => ({ ...EMPTY, ...old, summaries }));
+  });
+  source.addEventListener("solutions", (e) => {
+    const solutions = JSON.parse(e.data) as RunRegistry["solutions"];
+    update((old) => ({ ...EMPTY, ...old, solutions }));
   });
   return () => source.close();
 }
@@ -189,7 +223,7 @@ export function ruleKey(run: Rule): string {
  * every equation is, NaN when one cannot be compared. */
 function computeOrders(columns: HistoryColumns, run: Rule, from: number): void {
   const reference = run?.start?.residual_reference ?? null;
-  const floors = run?.convergence?.floor ?? {};
+  const plateau = new Set(run?.convergence?.plateau ?? []);
   if (from === 0) {
     columns.orders.length = 0;
     columns.woken = new Set(run?.start?.woken ?? []);
@@ -212,8 +246,7 @@ function computeOrders(columns: HistoryColumns, run: Rule, from: number): void {
         if (value >= 0 && value <= floor) continue;
         columns.woken.add(name);
       }
-      const limit = floors[name];
-      if (limit !== undefined && value >= 0 && value <= limit) continue;
+      if (plateau.has(name)) continue;
       if (value === 0 && first >= 0) continue;
       if (first > 0 && value > 0 && first < Infinity && value < Infinity)
         slowest = Math.min(slowest, Math.log10(first) - Math.log10(value));

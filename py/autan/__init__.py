@@ -8,6 +8,7 @@ from autan import gases, materials, units
 from autan.case import Case, forces, load
 from autan.errors import CaseError, Diagnostic, Location
 from autan.fake import FakeBackend
+from autan.memory import Memory
 from autan.meshinfo import MeshInfo
 from autan.plan import Plan
 from autan.results import Devices, Results, RunInfo
@@ -17,6 +18,7 @@ from autan.schema import (
     SST,
     WMLES,
     CaseSpec,
+    Checkpoint,
     Compressible,
     ConstantDensityFluid,
     ConstantViscosity,
@@ -25,8 +27,10 @@ from autan.schema import (
     Inviscid,
     Laminar,
     Manufactured,
+    PointVortex,
     Solid,
     State,
+    StateFile,
     Steady,
     Sutherland,
     Unsteady,
@@ -42,6 +46,7 @@ __all__ = [
     "Case",
     "CaseError",
     "CaseSpec",
+    "Checkpoint",
     "Compressible",
     "ConstantDensityFluid",
     "ConstantViscosity",
@@ -54,13 +59,16 @@ __all__ = [
     "Laminar",
     "Location",
     "Manufactured",
+    "Memory",
     "MeshInfo",
     "Plan",
+    "PointVortex",
     "Results",
     "RunInfo",
     "Solid",
     "SolverBackend",
     "State",
+    "StateFile",
     "Steady",
     "Sutherland",
     "Unsteady",

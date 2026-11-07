@@ -184,9 +184,9 @@ Fix: Fix the periodic declaration in the meshing tool: each periodic zone in exa
 
 **Periodic faces do not match** (error)
 
-The faces of a periodic pair do not match one to one under its translation.
+The faces of a periodic pair do not match one to one under its translation, the pairs place a node in two ways, or moving the matched nodes onto translates makes a face or cell degenerate.
 
-Fix: Regenerate the mesh with conforming periodic faces, and check the translation.
+Fix: Regenerate the mesh with conforming periodic faces, and check the translations.
 
 ## E0120
 
@@ -203,6 +203,14 @@ Fix: Repair the face in the meshing tool; it has no area.
 An owned cell has zero, negative or non-finite volume.
 
 Fix: Repair the cell in the meshing tool; it is inverted or flat.
+
+## E0122
+
+**Mesh text too long** (error)
+
+A name or text the reader keeps is longer than its cap: 4096 bytes for a zone, family, BC or patch name, a dictionary entry, a Gmsh section name or `PeriodicTranslation`; (families + 1) x 25 600 bytes for `ZoneNames` (a CGNS name of at most 32 bytes and a zone name of at most 4096, each escaped up to 6 bytes per byte, and their framing, per family). It is refused before the text is allocated; `data` gives what, its bytes and the limit.
+
+Fix: Shorten the name in the meshing tool: names identify zones, they carry no data.
 
 ## E0130
 
@@ -238,11 +246,11 @@ Fix: Export the mesh without the feature named in the message.
 
 ## E0134
 
-**Mesh refers to another file** (error)
+**File refers to another file** (error)
 
-The mesh refers to another file (CGNS link); meshes must be self-contained.
+A CGNS file the code reads (a mesh, a `start` solution, a run's solution) has data in another file: a CGNS link, an HDF5 link of a user-defined class (64 to 255, 64 being the external link; refused whatever its target, which is never resolved), a dataset with external storage or a virtual dataset (`data.node` names the first). Files must be self-contained.
 
-Fix: Export a self-contained mesh (no CGNS links to other files).
+Fix: Export a self-contained file: no links to other files, no user-defined HDF5 links, no external storage or virtual datasets. Remove each such link or replace it with the data it refers to.
 
 ## E0135
 
@@ -252,11 +260,43 @@ An entity belongs to several zones in the source (Gmsh entity in two physical gr
 
 Fix: Assign each entity to one zone in the meshing tool.
 
+## E0136
+
+**Zone groups file unreadable** (error)
+
+The mesh's `<mesh>.zones.json` is not JSON, or not an `autan.zone-groups/1` document (missing or unknown key, wrong type).
+
+Fix: Fix the file against docs/contracts/mesh-info.md, or remove it.
+
+## E0137
+
+**Zone groups file describes another mesh** (error)
+
+The `mesh_sha256` of the mesh's `<mesh>.zones.json` differs from the mesh hash, or the file the runtime reads differs from the solver input's `mesh.groups_sha256`.
+
+Fix: Regenerate the groups for this mesh, then the MeshInfo and the solver input.
+
+## E0138
+
+**Bad zone group** (error)
+
+A group of the mesh's `<mesh>.zones.json` names a boundary zone the mesh does not have (names are exact, spaces included), lists a zone twice, is empty, or has a name outside `[A-Za-z0-9_.-]` or starting with `-`.
+
+Fix: Correct the group against the zone names of the mesh's MeshInfo.
+
+## E0139
+
+**Zone group defined twice** (error)
+
+Two groups of the mesh's `<mesh>.zones.json` have the same name.
+
+Fix: Give each group one entry.
+
 ## E0140
 
 **Invalid partition request** (error)
 
-A part count, rank, part index or cell weight is out of range, or an array has the wrong size.
+A part count, rank, part index or cell weight is out of range, a group of cells weighs more than 2^31 - 1 in total on two parts or more, or an array has the wrong size.
 
 Fix: Ask for 1 to N parts (N = number of cells), one rank per part, and a weight of at least 1 per cell.
 
@@ -307,6 +347,14 @@ Fix: Use a build with CUDA enabled and a CUDA-aware MPI, such as the dev image.
 A launcher started several ranks of a build without MPI.
 
 Fix: Run this build on one rank, or use a build with MPI, such as the dev image.
+
+## W0150
+
+**Periodic nodes moved** (warning)
+
+The nodes of a periodic pair matched within the tolerance but not exactly, so assembly moved them onto translates, and the run computes on the moved coordinates (mesh.md, Periodic pairs). `data` gives the nodes moved by more than round-off, the largest move, the largest pair mismatch relative to its tolerance (at most 1) and the largest relative change of a cell's volume.
+
+Fix: Nothing is required. To avoid the move, regenerate the mesh so that one side of each pair is the other side translated.
 
 ## E0201
 
@@ -368,7 +416,7 @@ Fix: Export the manufactured solution with autan-vv and give its path.
 
 **Not a manufactured solution** (error)
 
-The file named by `verification.manufactured.path` is not JSON with `"schema": "autan.mms/1"` (docs/validation/mms.md).
+The file named by `verification.manufactured.path` is not JSON with `"schema": "autan.mms/1"` (docs/validation/mms.md), is larger than 1 MiB, or has an expression that is not one or is deeper than 1 024 levels (docs/contracts/case-schema.md#verification).
 
 Fix: Point the case at a manufactured solution exported by autan-vv.
 
@@ -379,6 +427,30 @@ Fix: Point the case at a manufactured solution exported by autan-vv.
 The constants the manufactured solution declares (gamma, gas constant, viscosity, Prandtl number) differ from the case's gas, its declared model is not compressible flow with the case's turbulence model, or the case has cell zone rules a single-medium solution cannot cover. The message names the difference.
 
 Fix: Build the case gas from the solution's parameters, or export the solution the case needs.
+
+## E0210
+
+**The MeshInfo's zone groups describe another groups file** (error)
+
+The SHA-256 of the mesh's `<mesh>.zones.json` differs from the MeshInfo `groups_source.sha256`, or the file exists and the MeshInfo has no groups: the groups the case selects would not be the ones the MeshInfo lists.
+
+Fix: Regenerate the MeshInfo with `autan-mesh-info` after changing the groups file.
+
+## W0211
+
+**Zone groups file not found** (warning)
+
+The MeshInfo has zone groups but the `<mesh>.zones.json` next to the case's mesh does not exist, so `plan` cannot check that they still describe it.
+
+Fix: Put the groups file next to the mesh.
+
+## E0212
+
+**MeshInfo prepared for another run** (error)
+
+The MeshInfo's derived counts are not for this run: its lines were computed at another scale than the case's `mesh_unit`, or a run on several ranks has no partition for that rank count and the groups its linear solver keeps whole, or a run on one rank with periodic pairs or reproducibility `"ranks"` has no one-part partition. The message names the difference.
+
+Fix: Run `autan-mesh-info --json --scale <metres per mesh unit>` again, with `--ranks N` (and `--groups lines` for a steady CPU run with the lines solver) for a run on N ranks.
 
 ## E0301
 
@@ -496,7 +568,7 @@ Fix: Set `case.time = autan.Steady(...)` in the verification case.
 
 **Face-state file missing or invalid** (error)
 
-The file of an `oracle_state` condition cannot be read, its SHA-256 differs from the case's, or it is not a valid `autan.face-states/1` document: its variables, a row of 3 finite coordinates and 5 finite values per face, density and pressure > 0 (docs/contracts/face-states.md).
+The file of an `oracle_state` condition cannot be read, its SHA-256 differs from the case's, or it is not a valid `autan.face-states/1` document: its variables, a row of 3 finite coordinates and 5 finite values per face, density and pressure > 0, strings and member names of at most 4 096 bytes, numbers of at most 64 characters, nested no deeper than its structure, at most 16 384 zones (docs/contracts/face-states.md).
 
 Fix: Export the face states with autan-vv for this mesh and give their path and sha256.
 
@@ -531,6 +603,62 @@ Fix: Export the face states for every zone the condition applies to.
 A boundary rule names a zone of a periodic pair; the mesh pairs its faces with those of its partner, so it takes no condition. Patterns with wildcards skip periodic zones.
 
 Fix: Remove the rule, or change the mesh if the zone is not meant to be periodic.
+
+## E0425
+
+**Point-vortex surfaces match no wall** (error)
+
+The `surfaces` of a farfield's `point_vortex` match no boundary zone, name a zone of a periodic pair, or match zones that are not wall or slip zones: the vortex's circulation comes from the lift on the body. Patterns with wildcards skip periodic zones.
+
+Fix: Give a pattern that matches the walls of the lifting body, e.g. `surfaces="wing.*"`.
+
+## E0426
+
+**Coupled turbulence not applicable** (error)
+
+`time.coupled_turbulence` is set on a case whose physics has no coupled turbulence step: only compressible physics with the SA model has one.
+
+Fix: Remove `coupled_turbulence=True`, or use compressible SA physics.
+
+## W0426
+
+**Coupled turbulence outside its validated domain** (warning)
+
+`time.coupled_turbulence` is on: the coupled step is validated on the TMR flat plate only (#429). `autan plan` reports it, and the run logs it at its first coupled step.
+
+Fix: Compare with a run without the option before relying on the result.
+
+## E0427
+
+**Opt-in step needs the host multigrid** (error)
+
+The opt-in steady steps (`time.coupled_turbulence`, `time.matrix_free`) run in the host multigrid on one rank: `linear_solver` must be `multigrid`, on the CPU, on one rank. `autan plan` and the physics both refuse other runs; the message names the key.
+
+Fix: Use `linear_solver='multigrid'` and run on one CPU rank, or drop the option.
+
+## E0428
+
+**Zone group pattern matches no group** (error)
+
+A selection's `group` (a glob over the zone group names of the mesh's MeshInfo) matches no group. Groups come from the mesh's `<mesh>.zones.json`.
+
+Fix: Use one of the group names the message lists, or select zones by name.
+
+## E0429
+
+**Matrix-free step not applicable** (error)
+
+`time.matrix_free` is set on a case whose physics has no matrix-free step: only compressible laminar physics has one.
+
+Fix: Remove `matrix_free=True`, or use compressible laminar physics.
+
+## W0429
+
+**Matrix-free step outside its validated domain** (warning)
+
+`time.matrix_free` is on: the matrix-free laminar step is validated on the TMR laminar flat plate only (#429). `autan plan` reports it, and the run logs it at its first matrix-free step.
+
+Fix: Compare with a run without the option before relying on the result.
 
 ## E0501
 
@@ -587,6 +715,46 @@ Fix: Use `autan.Compressible(...)`, or remove the solid zone from the mesh.
 A compressible fluid zone starts from an absolute pressure > 0, a temperature and a velocity; an incompressible one from a gauge pressure and a velocity, without temperature.
 
 Fix: Give the state the physics needs: `autan.State(pressure=..., temperature=..., velocity=(u, v, w))`.
+
+## E0508
+
+**Initial-state file missing or invalid** (error)
+
+The file of `initial_state` cannot be read, is not a regular file, its SHA-256 differs from the case's, or it is not a valid `autan.initial-state/1` document: its variables, a row of 3 finite coordinates and 5 finite values per cell, density and pressure > 0, strings and member names of at most 4 096 bytes, numbers of at most 64 characters, nested no deeper than its structure (docs/contracts/initial-state.md).
+
+Fix: Write the initial state with `autan.initial_state.write` for this mesh, and give its path and the SHA-256 it returns.
+
+## E0509
+
+**Initial state written for another mesh** (error)
+
+The file's `mesh_sha256` differs from the mesh hash of the case's MeshInfo.
+
+Fix: Write the initial state for the mesh the case uses.
+
+## E0510
+
+**Initial state does not cover the fluid cells** (error)
+
+The file gives another number of rows than the mesh has fluid cells.
+
+Fix: Write one row per fluid cell of the mesh, at its centroid.
+
+## E0511
+
+**Initial states do not match the cells** (error)
+
+The solver could not pair every fluid cell with exactly one row of the file by centroid, within 1e-9 times the largest extent of the mesh's bounding box, or two cells lie within that tolerance of each other; `data` names the cells.
+
+Fix: Write the initial state from the cell centroids of the mesh the case uses.
+
+## E0512
+
+**Initial-state file not available for this case** (error)
+
+An initial-state file needs compressible inviscid or laminar physics (it carries no turbulence variable), replaces the fluid zones' `initial` states, and cannot be combined with a start from a previous run, which gives the initial state itself.
+
+Fix: Remove the zones' `initial`, the start, or the file; or use a compressible inviscid or laminar case.
 
 ## E0601
 
@@ -664,7 +832,7 @@ Fix: Use a build that includes it, or change the case or the devices.
 
 **Previous run cannot be resumed** (error)
 
-A start needs a previous run that ended converged, completed or stopped after at least one iteration and holds a solution that conforms to its run.json; diverged and failed runs, and runs without a sound solution, cannot be resumed.
+A start needs a previous run that ended converged, completed or stopped after at least one iteration and holds a solution that conforms to its run.json; diverged and failed runs, and runs without a sound solution, cannot be resumed. A solution whose RunMetadata exceeds 64 KiB is not sound: it is refused before it is read (results.md).
 
 Fix: Start from another run, or run the case from the freestream.
 
@@ -691,6 +859,46 @@ Fix: Prepare the input again from the run as it is now.
 An equation that was identically zero at iteration 1 (below 1e-12 times the largest initial residual) rose above that floor, so it must now drop `residual_orders` like the others (case-schema.md#time). `data` gives the equation, iteration, residual and floor.
 
 Fix: Check the boundary conditions and the mesh: a symmetric or 2D problem whose symmetry breaks during the run usually means a boundary condition breaks it.
+
+## E0711
+
+**Not enough memory for the run** (error)
+
+The solver input's memory estimate (`memory`, from `autan plan`) exceeds the memory available to the run minus the margin: on a unified-memory device or the CPU, host and device together against the lower of `MemAvailable` and the container's limit; on a discrete device, each against its own pool. `data` gives `required_bytes`, `available_bytes`, `margin_bytes`, `device_kind`, `cgroup_limit` (`known`, or `unknown` when a memory cgroup above the process could not be read, `W0713`), `cgroup_scope` (`host`, or `namespace_root` in a private cgroup namespace) and `unseen_cgroups`. The run starts nothing.
+
+Fix: Run on more devices or a machine with more free memory; `--allow-oversubscription` starts it anyway, at the risk of exhausting the machine.
+
+## W0712
+
+**Run started beyond its memory** (warning)
+
+The run was started with `--allow-oversubscription` although its memory estimate exceeds the available memory minus the margin (as `E0711`, same `data`).
+
+Fix: Watch the machine's memory; a unified-memory device shares it with every process.
+
+## W0713
+
+**Memory limit unverifiable** (warning)
+
+A memory cgroup above the process (its own excepted when mounted) is shown by no mount of /proc/self/mountinfo, so its limit, if any, could not be read: the memory check rests on `MemAvailable` and the limits it could read. `data` gives `cgroup_limit` (`unknown`), `cgroup_scope` and `unseen_cgroups`, the cgroups rank 0 could not read.
+
+Fix: Mount the cgroup hierarchy from its root in the container (cgroup namespace), or check the job's memory limit by other means.
+
+## W0714
+
+**Checkpoint not written** (warning)
+
+Writing the restart checkpoint failed (results.md#checkpointcgns), or removing it once the final solution was written: the run goes on, and the previous checkpoint, if any, stays whole. For failed writes, `data` counts them and gives the first and the last (`failures`, `first_iteration`, `first_time`, `last_iteration`, `last_time`).
+
+Fix: Check the space and permissions of the run directory's file system.
+
+## W0715
+
+**Different solver binary** (warning)
+
+This `continue` run's `autan-run` executable is not the one that wrote the state it starts from (run.json `solver.binary_sha256`, results.md#runjson): the chain may not be bit for bit the uninterrupted run. `data` gives the `expected` and `found` SHA-256.
+
+Fix: Continue with the binary of the original run, or start the chain again with this one.
 
 ## W0801
 
@@ -747,6 +955,14 @@ Fix: Give a writable file path.
 The input asks for `devices.kind = cuda` and this build of autan-run drives CUDA, but the process sees no CUDA device (`data.visible`, `data.needed`).
 
 Fix: Run on a host with a GPU visible to the process (`docker --gpus`), or use `devices.kind = cpu`.
+
+## E0808
+
+**No MPI launcher** (error)
+
+A run on several devices starts one rank per device through an MPI launcher, found through `$AUTAN_MPIEXEC`, or `mpiexec` then `mpirun` on the PATH.
+
+Fix: Install a GPU-aware MPI (Open MPI or MPICH built with CUDA support), set `$AUTAN_MPIEXEC`, or run on one device.
 
 ## E1001
 
@@ -840,7 +1056,7 @@ Fix: Use a policy listed by the generator's --help.
 
 **Differentiation not supported** (error)
 
-A loop with several output datasets is differentiated, or a boundary loop writes face data computed from active data without frozen=True.
+A loop with several output datasets is differentiated, or a face or boundary loop writes face data computed from active data without frozen=True.
 
 Fix: Differentiate loops with a single output dataset; declare boundary-state loops frozen=True to drop their derivatives knowingly.
 
@@ -848,7 +1064,7 @@ Fix: Differentiate loops with a single output dataset; declare boundary-state lo
 
 **Policy not available on the backend** (error)
 
-A precision policy is requested on a backend that cannot run it (`fp64` on Metal).
+A precision policy is requested on a backend that cannot run it (`fp64` on Metal, a body computing in the accumulation type on Metal).
 
 Fix: Use fp32+acc64 or fp32 on Metal; run fp64 on the CPU, CUDA or HIP backends.
 
@@ -923,3 +1139,11 @@ Fix: Check that the Mac has an Apple GPU with `autan doctor`, then report the me
 A face-loop strategy needs atomics the backend lacks for the policy's accumulation type.
 
 Fix: Use a deterministic strategy (coloured, store-gather, gather-recompute) or fp32.
+
+## E1109
+
+**Strategy not rank-independent** (error)
+
+A face or boundary loop on a rank-independent topology uses a strategy whose order follows the local numbering (scatter, atomic, warp-aggregated, coloured).
+
+Fix: Use store-gather or gather-recompute, whose per-cell order is the global one, or build the topology without the global order.

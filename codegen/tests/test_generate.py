@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import autan_spike as s
@@ -145,3 +147,72 @@ def test_face_data_in_a_reduction_and_its_derivatives_use_the_incidence_face(kin
     np.testing.assert_allclose(got, tangent, rtol=0, atol=tol)
     got = s.face_weighted(m, "fp64", "adjoint", q, q_b, wbar)
     np.testing.assert_allclose(got, adjoint, rtol=0, atol=tol)
+
+
+BRANCHES = """
+from autan_codegen.dsl import Residual, State, Vec5, Write, cell_loop, cells, pointwise
+
+q = cells.field("q", State.Vec5)
+out = cells.field("out", Residual.Vec5)
+
+
+@pointwise
+def pick(w: State.Vec5) -> Residual.Vec5:
+    a, b, c, d, e = w[0], w[1], w[2], w[3], w[4]
+    f, g, h = w[0] * w[1], w[1] * w[2], w[2] * w[3]
+    if w[0] > 1.0:
+        a, b, c, d = 2.0 * w[0], 3.0 * w[1], 4.0 * w[2], 5.0 * w[3]
+        e, f, g, h = 6.0 * w[4], 7.0 * w[0], 8.0 * w[1], 9.0 * w[2]
+    elif w[1] > 1.0:
+        a, b, c, d = w[1], w[2], w[3], w[4]
+        e, f, g, h = w[0], w[0] + w[1], w[1] + w[2], w[2] + w[3]
+    return Vec5(a + b, c + d, e + f, g + h, a * h)
+
+
+picked = cell_loop(pick, w=q, out=Write(out))
+"""
+
+
+def test_generated_sources_do_not_depend_on_string_hashing(tmp_path: Path) -> None:
+    # Python orders sets of strings by hashes it randomises per process: a branch merge over a set
+    # of names gave each build its own order of selects.
+    src = tmp_path / "branches.py"
+    src.write_text(BRANCHES)
+    generated = []
+    for seed in ("0", "1", "2", "3"):
+        out = tmp_path / f"seed{seed}"
+        subprocess.run(
+            [sys.executable, "-m", "autan_codegen", str(src), "--out", str(out),
+             "--backends", "cpu,gpu,metal"],
+            check=True, env={**os.environ, "PYTHONHASHSEED": seed},
+        )  # fmt: skip
+        generated.append({f.name: f.read_bytes() for f in sorted(out.iterdir())})
+    assert generated[0]
+    assert all(g == generated[0] for g in generated[1:])
+
+
+@pytest.mark.parametrize("module", ["branches", "roe"])
+def test_two_checkouts_generate_the_same_text_relative_to_their_source_root(
+    tmp_path: Path, module: str
+) -> None:
+    # #line directives name the DSL source relative to --source-root, not by an absolute path.
+    # roe's Metal source spans several raw-string chunks, whose boundaries a path length moved.
+    text = BRANCHES if module == "branches" else (ROOT / "kernels" / "roe.py").read_text()
+    generated = []
+    for checkout in ("one", "a/longer/second"):
+        root = tmp_path / checkout
+        src = root / "kernels" / f"{module}.py"
+        src.parent.mkdir(parents=True)
+        src.write_text(text)
+        out = root / "generated"
+        subprocess.run(
+            [sys.executable, "-m", "autan_codegen", str(src), "--out", str(out),
+             "--backends", "cpu,gpu,metal", "--source-root", str(root)],
+            check=True,
+        )  # fmt: skip
+        generated.append({f.name: f.read_text() for f in sorted(out.iterdir())})
+    assert generated[0] == generated[1]
+    assert f'"kernels/{module}.py"' in generated[0][f"{module}.hpp"]
+    assert str(tmp_path) not in "".join(generated[0].values())
+    if module == "roe":
+        assert generated[0]["roe_metal.hpp"].count('R"autan_msl(') > 1

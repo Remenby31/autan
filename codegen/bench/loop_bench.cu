@@ -1,7 +1,10 @@
 // Times the generated loops of the spike on one mesh and prints the raw JSON that autan-bench
 // reads (one entry per loop, strategy and policy; bytes_per_rep is the loop's analytic minimum).
 //
-//   loop_bench MESH [--policy fp32|fp32+acc64|fp64] [--order input|rcm] [--block N]
+//   loop_bench MESH [--policy fp32|fp32+acc64|fp64] [--order input|rcm] [--block N] [--gate 1]
+//   --gate 1: after the host setup (inputs and every CPU reference), print `autan-bench: ready`
+//   on stderr and wait for a line on stdin before any CUDA call (autan-bench run --ready takes
+//   the GPU lock only then).
 //              [--warmup N] [--reps N] [--batch N]
 #include <algorithm>
 #include <chrono>
@@ -9,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <iostream>
 #include <limits>
 #include <random>
 #include <string>
@@ -20,7 +24,10 @@
 #include "autan/core/renumber.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
+#include "blocks_cpu.hpp"
+#include "blocks_gpu.cuh"
 #include "device.cuh"
+#include "diagonal_only_gpu.cuh"
 #include "gradients_cpu.hpp"
 #include "gradients_gpu.cuh"
 #include "revision.h"
@@ -32,7 +39,6 @@ namespace {
 using autan::kernels::index_t;
 using autan::kernels::offset_t;
 using autan::spike::DeviceArray;
-using autan::spike::DeviceGeom;
 using autan::spike::DeviceMesh;
 using autan::spike::GeomCopy;
 using autan::spike::SpikeMesh;
@@ -43,6 +49,7 @@ struct Options {
   std::string policy = "fp32+acc64";
   std::string order = "rcm";
   int block = 256;
+  bool gate = false;
   int warmup = 5;
   int reps = 30;
   int batch = 5;
@@ -51,6 +58,21 @@ struct Options {
 [[noreturn]] void fail(const std::string& msg) {
   std::fprintf(stderr, "error: %s\n", msg.c_str());
   std::exit(2);
+}
+
+/// With --gate 1 (autan-bench run --ready): the host setup is done, so announce it on stderr and
+/// wait for autan-bench to take the GPU lock and say go on stdin. No CUDA call comes before this,
+/// so the waiting process holds no device context.
+void wait_for_go(bool gate) {
+  if (!gate) {
+    return;
+  }
+  std::fprintf(stderr, "autan-bench: ready\n");
+  std::fflush(stderr);
+  std::string line;
+  if (!std::getline(std::cin, line)) {
+    fail("--gate: stdin closed before go");
+  }
 }
 
 Options parse(int argc, char** argv) {
@@ -64,6 +86,8 @@ Options parse(int argc, char** argv) {
       o.policy = v;
     else if (f == "--order")
       o.order = v;
+    else if (f == "--gate")
+      o.gate = std::stoi(v) != 0;
     else if (f == "--block")
       o.block = std::stoi(v);
     else if (f == "--warmup")
@@ -128,11 +152,17 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
   using S = typename P::state;
   using Gr = typename P::grad;
   using R = typename P::residual;
+  using A = typename P::accum;
+  using J = typename P::jac;
   const auto& t = m.topo;
   const auto nc = static_cast<std::size_t>(t.n_cells);
   const auto nf = static_cast<std::size_t>(t.n_faces);
   const double ni = t.n_interior_faces, nb = t.n_faces - t.n_interior_faces;
   const double cells = t.n_cells, inc = static_cast<double>(t.n_incidences);
+  const auto host_start = std::chrono::steady_clock::now();
+
+  // Host work first: inputs drawn in a fixed order and every host reference computed, so that
+  // the GPU lock (--gate) covers the device work only.
   std::mt19937_64 rng(42);
   std::normal_distribution<double> normal;
   std::vector<S> q(nc), qb(nf);
@@ -140,34 +170,46 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
   for (auto& v : q) v = S(normal(rng));
   for (auto& v : qb) v = S(normal(rng));
   for (auto& v : grad) v = Gr(normal(rng));
+  std::vector<R> seeds(5 * nc);
+  for (auto& v : seeds) v = R(normal(rng));
+  std::vector<S> u(5 * nc);
+  for (std::size_t c = 0; c < nc; ++c) {
+    const double rho = 1.0 + 0.1 * std::abs(normal(rng));
+    const double vx = 0.3 * normal(rng), vy = 0.3 * normal(rng), vz = 0.3 * normal(rng);
+    u[c] = S(rho);
+    u[nc + c] = S(rho * vx);
+    u[2 * nc + c] = S(rho * vy);
+    u[3 * nc + c] = S(rho * vz);
+    u[4 * nc + c] = S(2.5 + 0.5 * rho * (vx * vx + vy * vy + vz * vz));
+  }
+  // Diagonal blocks for the inverses (kernels/blocks.py), in the accumulation type: diagonally
+  // dominant random blocks, row-permuted so that pivoting swaps rows.
+  std::vector<A> hdiag(25 * nc), hinv(25 * nc);
+  for (std::size_t c = 0; c < nc; ++c) {
+    const std::size_t shift = c % 5;
+    for (std::size_t i = 0; i < 5; ++i) {
+      for (std::size_t j = 0; j < 5; ++j) {
+        const double v = normal(rng) + ((i + shift) % 5 == j ? 6.0 : 0.0);
+        hdiag[(5 * i + j) * nc + c] = A(v);
+      }
+    }
+  }
+  // Face and boundary blocks, shift and x of the block matrix (kernels/blocks.py).
+  std::vector<J> hjac(50 * nf), hbnd(25 * nf);
+  for (auto& v : hjac) v = J(normal(rng));
+  for (auto& v : hbnd) v = J(normal(rng));
+  std::vector<A> hshift(nc), hdiag2(25 * nc);
+  for (auto& v : hshift) v = A(6.0 + normal(rng));
+  std::vector<J> hoff(25 * static_cast<std::size_t>(t.n_incidences));
+  std::vector<R> hx(5 * nc), hy(5 * nc);
+  for (auto& v : hx) v = R(normal(rng));
 
-  const auto colour_start = std::chrono::steady_clock::now();
-  DeviceMesh dm(m, o.block);
-  const double colouring_seconds =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - colour_start).count();
   GeomCopy<P> hg(m.packed);
-  DeviceGeom<P> g(hg);
-  DeviceArray<S> dq(q), dqb(qb), dmin(nc), dmax(nc);
-  DeviceArray<Gr> dgrad(grad);
-  DeviceArray<R> dres(nc), dacc(3 * nc);
-  tolerance = std::is_same_v<typename P::compute, double> ? 1e-12 : 1e-4;
-
   namespace av = autan::kernels::advection;
-  av::Data<P> a{};
-  a.topo = dm.topo;
-  a.q = dq.get();
-  a.grad = dgrad.get();
-  a.res = dres.get();
-  autan::spike::bind(a.face_r_left, g.face_r_left);
-  autan::spike::bind(a.face_r_right, g.face_r_right);
-  autan::spike::bind(a.face_normal, g.face_normal);
-  autan::spike::bind(a.face_area_magnitude, g.face_area_magnitude);
-  a.velocity[0] = typename P::param(1.0);
-  a.velocity[1] = typename P::param(0.7);
-  a.velocity[2] = typename P::param(0.4);
-
-  // Host reference of one residual evaluation.
-  av::Data<P> ah = a;
+  av::Data<P> ah{};
+  ah.velocity[0] = typename P::param(1.0);
+  ah.velocity[1] = typename P::param(0.7);
+  ah.velocity[2] = typename P::param(0.4);
   ah.topo = m.topo;
   std::vector<R> hres(nc, R(0));
   ah.q = q.data();
@@ -178,6 +220,102 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
   autan::spike::bind(ah.face_normal, hg.face_normal);
   autan::spike::bind(ah.face_area_magnitude, hg.face_area_magnitude);
   av::cpu::residual(ah);
+
+  namespace gr = autan::kernels::gradients;
+  gr::Data<P> dh{};
+  dh.topo = m.topo;
+  std::vector<Gr> hgrad(3 * nc);
+  std::vector<S> hmin(nc), hmax(nc);
+  dh.q = q.data();
+  dh.q_b = qb.data();
+  dh.grad = hgrad.data();
+  dh.qmin = hmin.data();
+  dh.qmax = hmax.data();
+  autan::spike::bind(dh.lsq_weight, hg.lsq_weight);
+  gr::cpu::lsq_gradient_bounds(dh);
+  // The adjoint consumes (zeroes) its seeds, so each device check uploads them again.
+  std::vector<R> h_gadj(seeds.begin(), seeds.begin() + 3 * nc);
+  std::vector<R> h_lo(seeds.begin() + 3 * nc, seeds.begin() + 4 * nc);
+  std::vector<R> h_hi(seeds.begin() + 4 * nc, seeds.end());
+  std::vector<R> h_qadj(nc, R(0));
+  gr::Data<P> dha = dh;
+  dha.grad_adj = h_gadj.data();
+  dha.qmin_adj = h_lo.data();
+  dha.qmax_adj = h_hi.data();
+  dha.q_adj = h_qadj.data();
+  gr::cpu::lsq_gradient_bounds_adjoint(dha);
+
+  // LSQ gradient over the wider cell stencils that make the unlimited scheme stable on
+  // tetrahedra: the stencils, their weights in the stored type and the host gradients.
+  using W = std::remove_cv_t<std::remove_pointer_t<decltype(dh.stencil_lsq_weight)>>;
+  struct Wide {
+    const char* label;
+    autan::kernels::CellStencil st;
+    std::vector<W> w;
+    std::vector<Gr> grad;
+  };
+  std::vector<Wide> wide;
+  for (auto kind : {autan::kernels::StencilKind::vertex, autan::kernels::StencilKind::face2}) {
+    const auto t_build = std::chrono::steady_clock::now();
+    auto st = autan::kernels::cell_stencil(m.mesh, m.packed, kind);
+    const double build_seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count();
+    const char* label = kind == autan::kernels::StencilKind::vertex ? "vertex" : "face2";
+    std::fprintf(stderr, "%s stencil: %zu entries (%.1f per cell), built in %.3f s\n", label,
+                 st.entries.size(), static_cast<double>(st.entries.size()) / cells, build_seconds);
+    auto w = autan::kernels::converted<W>(st.lsq_weight);
+    std::vector<Gr> g(3 * nc);
+    gr::Data<P> hst = dh;
+    hst.grad = g.data();
+    hst.topo.n_stencil = static_cast<offset_t>(st.entries.size());
+    hst.topo.stencil_offsets = st.offsets.data();
+    hst.topo.stencil = st.entries.data();
+    hst.topo.stencil_twin = st.twin.data();
+    hst.stencil_lsq_weight = w.data();
+    gr::cpu::lsq_gradient_stencil(hst);
+    wide.push_back({label, std::move(st), std::move(w), std::move(g)});
+  }
+
+  namespace bk = autan::kernels::blocks;
+  bk::Data<P> hb{};
+  hb.topo = t;
+  hb.diag = hdiag.data();
+  hb.diag_inv = hinv.data();
+  bk::cpu::invert_diagonal(hb);
+  bk::Data<P> hm = hb;
+  hm.face_jac = hjac.data();
+  hm.bnd_jac = hbnd.data();
+  hm.shift = hshift.data();
+  hm.diag = hdiag2.data();
+  hm.off = hoff.data();
+  hm.x = hx.data();
+  hm.y = hy.data();
+  autan::spike::bind(hm.incidence_side, hg.incidence_side);
+  bk::cpu::assemble(hm);
+  bk::cpu::multiply(hm);
+  std::fprintf(
+      stderr, "host inputs and references: %.3f s\n",
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - host_start).count());
+
+  wait_for_go(o.gate);
+  const auto colour_start = std::chrono::steady_clock::now();
+  DeviceMesh dm(m, o.block);
+  const double colouring_seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - colour_start).count();
+  DeviceArray<S> dq(q), dqb(qb), dmin(nc), dmax(nc);
+  DeviceArray<Gr> dgrad(grad);
+  DeviceArray<R> dres(nc), dacc(3 * nc);
+  tolerance = std::is_same_v<typename P::compute, double> ? 1e-12 : 1e-4;
+
+  av::Data<P> a{};
+  a.topo = dm.topo;
+  a.q = dq.get();
+  a.grad = dgrad.get();
+  a.res = dres.get();
+  dm.bind(a);
+  a.velocity[0] = typename P::param(1.0);
+  a.velocity[1] = typename P::param(0.7);
+  a.velocity[2] = typename P::param(0.4);
 
   // Analytic minimum traffic: face geometry (r_left, r_right, n, |S|) and owner/neighbour once per
   // interior face; q and grad read once, res read and written once per cell.
@@ -195,7 +333,6 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
                    time_it(o, [&] { av::gpu_loops::residual(a, s, dm.schedule); })});
   }
 
-  namespace gr = autan::kernels::gradients;
   gr::Data<P> d{};
   d.topo = dm.topo;
   d.q = dq.get();
@@ -204,23 +341,7 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
   d.qmin = dmin.get();
   d.qmax = dmax.get();
   d.gg_sum = dacc.get();
-  autan::spike::bind(d.lsq_weight, g.lsq_weight);
-  autan::spike::bind(d.cell_volume, g.cell_volume);
-  autan::spike::bind(d.cell_centroid, g.cell_centroid);
-  autan::spike::bind(d.face_centroid, g.face_centroid);
-  autan::spike::bind(d.face_area, g.face_area);
-  autan::spike::bind(d.face_moment, g.face_moment);
-  gr::Data<P> dh = d;
-  dh.topo = m.topo;
-  std::vector<Gr> hgrad(3 * nc);
-  std::vector<S> hmin(nc), hmax(nc);
-  dh.q = q.data();
-  dh.q_b = qb.data();
-  dh.grad = hgrad.data();
-  dh.qmin = hmin.data();
-  dh.qmax = hmax.data();
-  autan::spike::bind(dh.lsq_weight, hg.lsq_weight);
-  gr::cpu::lsq_gradient_bounds(dh);
+  dm.bind(d);
   gr::gpu_loops::lsq_gradient_bounds(d, dm.schedule);
   gpu::check(cudaDeviceSynchronize(), "lsq");
   if (max_rel_diff(as_double(dgrad.download()), as_double(hgrad)) > tolerance) verified = false;
@@ -234,7 +355,8 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
                  time_it(o, [&] { gr::gpu_loops::lsq_gradient_bounds(d, dm.schedule); })});
 
   // Its adjoint: atomic scatter against the deterministic two-pass form. Bytes: the primal's
-  // reads, the 5 seeds per cell read and zeroed, q_adj read and written.
+  // reads, the 5 seeds per cell read and zeroed, q_adj read and written. Timed repetitions
+  // after the first run on zeroed seeds: same work.
   DeviceArray<R> g_adj(3 * nc), lo_adj(nc), hi_adj(nc), q_adj(nc);
   gr::Data<P> da = d;
   da.grad_adj = g_adj.get();
@@ -243,21 +365,6 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
   da.q_adj = q_adj.get();
   const double lsq_adj_bytes = lsq_bytes - cells * (3.0 * sizeof(S) + 3.0 * sizeof(Gr)) +
                                cells * (sizeof(S) + 10.0 * sizeof(R) + 2.0 * sizeof(R));
-  // Host reference with random seeds; the adjoint consumes (zeroes) its seeds, so each check
-  // uploads them again. Timed repetitions after the first run on zeroed seeds: same work.
-  std::vector<R> seeds(5 * nc);
-  for (auto& v : seeds) v = R(normal(rng));
-  std::vector<R> h_gadj(seeds.begin(), seeds.begin() + 3 * nc);
-  std::vector<R> h_lo(seeds.begin() + 3 * nc, seeds.begin() + 4 * nc);
-  std::vector<R> h_hi(seeds.begin() + 4 * nc, seeds.end());
-  std::vector<R> h_qadj(nc, R(0));
-  gr::Data<P> dha = dh;
-  dha.grad_adj = h_gadj.data();
-  dha.qmin_adj = h_lo.data();
-  dha.qmax_adj = h_hi.data();
-  dha.q_adj = h_qadj.data();
-  gr::cpu::lsq_gradient_bounds(dh);
-  gr::cpu::lsq_gradient_bounds_adjoint(dha);
   for (auto s : {gpu::Strategy::atomic, gpu::Strategy::store_gather}) {
     g_adj.upload(seeds.data());
     lo_adj.upload(seeds.data() + 3 * nc);
@@ -273,67 +380,55 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
          time_it(o, [&] { gr::gpu_loops::lsq_gradient_bounds_adjoint(da, s, dm.schedule); })});
   }
 
-  // LSQ gradient over the wider cell stencils that make the unlimited scheme stable on
-  // tetrahedra. Analytic minimum: per entry its index and weight; per cell its offset, q, and
-  // the gradient written.
-  for (auto kind : {autan::kernels::StencilKind::vertex, autan::kernels::StencilKind::face2}) {
-    const auto t_build = std::chrono::steady_clock::now();
-    const auto st = autan::kernels::cell_stencil(m.mesh, m.packed, kind);
-    const double build_seconds =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build).count();
+  // The wide stencils. Analytic minimum: per entry its index and weight; per cell its offset, q,
+  // and the gradient written.
+  for (const auto& ws : wide) {
+    const auto& st = ws.st;
     const auto ns = st.entries.size();
     DeviceArray<offset_t> st_off(st.offsets), st_twin(st.twin);
     DeviceArray<index_t> st_entries(st.entries);
-    const auto w_host = autan::kernels::converted<
-        std::remove_cv_t<std::remove_pointer_t<decltype(d.stencil_lsq_weight)>>>(st.lsq_weight);
-    DeviceArray<std::remove_cv_t<std::remove_pointer_t<decltype(d.stencil_lsq_weight)>>> w_dev(
-        w_host);
+    DeviceArray<W> w_dev(ws.w);
     gr::Data<P> dst = d;
     dst.topo.n_stencil = static_cast<offset_t>(ns);
     dst.topo.stencil_offsets = st_off.get();
     dst.topo.stencil = st_entries.get();
     dst.topo.stencil_twin = st_twin.get();
     dst.stencil_lsq_weight = w_dev.get();
-    gr::Data<P> hst = dh;
-    hst.topo.n_stencil = static_cast<offset_t>(ns);
-    hst.topo.stencil_offsets = st.offsets.data();
-    hst.topo.stencil = st.entries.data();
-    hst.topo.stencil_twin = st.twin.data();
-    hst.stencil_lsq_weight = w_host.data();
-    gr::cpu::lsq_gradient_stencil(hst);
     gr::gpu_loops::lsq_gradient_stencil(dst, dm.schedule);
     gpu::check(cudaDeviceSynchronize(), "lsq stencil");
-    if (max_rel_diff(as_double(dgrad.download()), as_double(hgrad)) > tolerance) verified = false;
-    const double st_bytes = static_cast<double>(ns) * (sizeof(index_t) + 3.0 * sizeof(w_host[0])) +
+    if (max_rel_diff(as_double(dgrad.download()), as_double(ws.grad)) > tolerance) {
+      verified = false;
+    }
+    const double st_bytes = static_cast<double>(ns) * (sizeof(index_t) + 3.0 * sizeof(W)) +
                             cells * (sizeof(offset_t) + sizeof(S) + 3.0 * sizeof(Gr)) +
                             nb * sizeof(S);
-    const char* label = kind == autan::kernels::StencilKind::vertex ? "vertex" : "face2";
-    std::fprintf(stderr, "%s stencil: %zu entries (%.1f per cell), built in %.3f s\n", label, ns,
-                 static_cast<double>(ns) / cells, build_seconds);
-    out.push_back({std::string("lsq_gradient_stencil_") + label, st_bytes, "cell",
+    out.push_back({std::string("lsq_gradient_stencil_") + ws.label, st_bytes, "cell",
                    time_it(o, [&] { gr::gpu_loops::lsq_gradient_stencil(dst, dm.schedule); })});
+    // The same in the sliced layout (32 cells per slice): the CSR bytes (padding is skipped)
+    // plus each cell's row length; the output is cleared first so the check sees this launch.
+    gpu::DeviceMesh sm(m.mesh, m.packed, &st, {o.block, 0, 0, nullptr, 32});
+    gr::Data<P> dsl = dst;
+    sm.bind(dsl);
+    gpu::check(cudaMemset(dgrad.get(), 0, 3 * nc * sizeof(Gr)), "clear gradient");
+    gr::gpu_loops::lsq_gradient_stencil(dsl, sm.schedule());
+    gpu::check(cudaDeviceSynchronize(), "lsq stencil sliced");
+    if (max_rel_diff(as_double(dgrad.download()), as_double(ws.grad)) > tolerance) {
+      verified = false;
+    }
+    out.push_back({std::string("lsq_gradient_stencil_") + ws.label + "_sliced",
+                   st_bytes + cells * sizeof(index_t), "sliced32",
+                   time_it(o, [&] { gr::gpu_loops::lsq_gradient_stencil(dsl, sm.schedule()); })});
   }
 
   // Roe flux, its tangent and its adjoint: the adjoint cost ratio of research section 8.
   namespace rf = autan::kernels::roe;
-  std::vector<S> u(5 * nc);
-  for (std::size_t c = 0; c < nc; ++c) {
-    const double rho = 1.0 + 0.1 * std::abs(normal(rng));
-    const double vx = 0.3 * normal(rng), vy = 0.3 * normal(rng), vz = 0.3 * normal(rng);
-    u[c] = S(rho);
-    u[nc + c] = S(rho * vx);
-    u[2 * nc + c] = S(rho * vy);
-    u[3 * nc + c] = S(rho * vz);
-    u[4 * nc + c] = S(2.5 + 0.5 * rho * (vx * vx + vy * vy + vz * vz));
-  }
   DeviceArray<S> du(u), du_tan(u);
   DeviceArray<R> dr(5 * nc), dr_tan(5 * nc), dr_adj(5 * nc), du_adj(5 * nc);
   rf::Data<P> rd{};
   rd.topo = dm.topo;
   rd.u_cons = du.get();
   rd.res = dr.get();
-  autan::spike::bind(rd.face_normal, g.face_normal);
-  autan::spike::bind(rd.face_area_magnitude, g.face_area_magnitude);
+  dm.bind(rd);
   rd.u_cons_tan = du_tan.get();
   rd.res_tan = dr_tan.get();
   rd.res_adj = dr_adj.get();
@@ -351,9 +446,79 @@ void run(const Options& o, const SpikeMesh& m, std::vector<Timed>& out, bool& ve
     out.push_back({"roe_adjoint_" + tag, roe_bytes, gpu::name(s),
                    time_it(o, [&] { rf::gpu_loops::flux_adjoint(rd, s, dm.schedule); })});
   }
+
+  // Diagonal block inverses.
+  DeviceArray<A> ddiag(hdiag), dinv(25 * nc);
+  bk::Data<P> db{};
+  db.topo = t;
+  db.diag = ddiag.get();
+  db.diag_inv = dinv.get();
+  bk::gpu_loops::invert_diagonal(db, dm.schedule);
+  if (max_rel_diff(as_double(dinv.download()), as_double(hinv)) > tolerance) verified = false;
+  out.push_back({"block_inverse", cells * 50.0 * sizeof(A), "cell",
+                 time_it(o, [&] { bk::gpu_loops::invert_diagonal(db, dm.schedule); })});
+
+  // The block matrix: `assemble` from the face and boundary blocks and the shift, then y = A x,
+  // in the CSR and the sliced incidence layout (Topology::incidence_stride).
+  DeviceArray<J> djac(hjac), dbnd(hbnd);
+  DeviceArray<A> dshift(hshift), ddiag2(25 * nc);
+  DeviceArray<R> dx(hx), dy(5 * nc);
+  const double nbf = static_cast<double>(t.n_faces) - ni;
+  for (const int slice : {0, 32}) {
+    autan::spike::incidence_slice() = slice;
+    DeviceMesh dl(m, o.block);
+    autan::spike::incidence_slice() = 0;
+    bk::Data<P> dd{};
+    dl.bind(dd);
+    DeviceArray<J> doff(25 * static_cast<std::size_t>(dl.topo.n_incidences));
+    dd.face_jac = djac.get();
+    dd.bnd_jac = dbnd.get();
+    dd.shift = dshift.get();
+    dd.diag = ddiag2.get();
+    dd.off = doff.get();
+    dd.x = dx.get();
+    dd.y = dy.get();
+    bk::gpu_loops::assemble(dd, dl.schedule);
+    bk::gpu_loops::multiply(dd, dl.schedule);
+    if (max_rel_diff(as_double(ddiag2.download()), as_double(hdiag2)) > tolerance ||
+        max_rel_diff(as_double(dy.download()), as_double(hy)) > tolerance) {
+      verified = false;
+    }
+    // Analytic minima. Assembly: per cell its offset, shift and diagonal block; per incidence
+    // its face, side and off-diagonal block; per interior face its two blocks and its owner and
+    // neighbour; per boundary face its block. Product: per cell its offset, diagonal block, x
+    // and y; per incidence its block and the cell across (the sliced column index, or the face
+    // and its owner and neighbour in CSR).
+    const double row = slice > 0 ? sizeof(offset_t) + sizeof(index_t) : sizeof(offset_t);
+    const double asm_bytes =
+        cells * (row + 26.0 * sizeof(A)) +
+        inc * (sizeof(index_t) + sizeof(*dd.incidence_side) + 25.0 * sizeof(J)) +
+        ni * (50.0 * sizeof(J) + 2 * sizeof(index_t)) + nbf * 25.0 * sizeof(J);
+    const double mul_bytes = cells * (row + 25.0 * sizeof(A) + 10.0 * sizeof(R)) +
+                             inc * (25.0 * sizeof(J) + sizeof(index_t)) +
+                             (slice > 0 ? 0.0 : ni * 2 * sizeof(index_t));
+    const std::string layout = slice > 0 ? "_sliced" : "_csr";
+    out.push_back({"block_assemble" + layout, asm_bytes, "gather",
+                   time_it(o, [&] { bk::gpu_loops::assemble(dd, dl.schedule); })});
+    out.push_back({"block_multiply" + layout, mul_bytes, "gather",
+                   time_it(o, [&] { bk::gpu_loops::multiply(dd, dl.schedule); })});
+    // The same assembly without the off-diagonal blocks (codegen/tests/kernels): their cost.
+    namespace dgo = autan::kernels::diagonal_only;
+    DeviceArray<A> ddiag3(25 * nc);
+    dgo::Data<P> dq{};
+    dl.bind(dq);
+    dq.face_jac = djac.get();
+    dq.bnd_jac = dbnd.get();
+    dq.shift = dshift.get();
+    dq.diag = ddiag3.get();
+    dgo::gpu_loops::assemble(dq, dl.schedule);
+    if (max_rel_diff(as_double(ddiag3.download()), as_double(hdiag2)) > tolerance) verified = false;
+    out.push_back({"block_diagonal" + layout, asm_bytes - inc * 25.0 * sizeof(J), "gather",
+                   time_it(o, [&] { dgo::gpu_loops::assemble(dq, dl.schedule); })});
+  }
   std::fprintf(stderr, "colouring %.3f s (%zu interior colours, %zu boundary colours)\n",
-               colouring_seconds, dm.int_colours.offsets.size() - 1,
-               dm.bnd_colours.offsets.size() - 1);
+               colouring_seconds, dm.schedule.interior.offsets.size() - 1,
+               dm.schedule.boundary.offsets.size() - 1);
 }
 
 }  // namespace

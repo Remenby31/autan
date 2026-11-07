@@ -1,0 +1,946 @@
+#!/usr/bin/env python3
+"""autan-campaign: CPU campaigns on a DGX Spark that never disturb a GPU measurement.
+
+    autan-campaign start NAME [--cpus 12] [--free 24G] [--image autan-dev:local] [--dir DIR] -- COMMAND...
+    autan-campaign status
+    autan-campaign stop NAME
+
+A campaign runs COMMAND in a container limited to --cpus cores at nice 19, without the GPU and
+without the GPU lock. A watcher on the host freezes the whole container (docker pause, the cgroup
+v2 freezer) whenever a process holds or waits for /home/admin/autan-gpu/gpu.lock without also
+holding untimed.lock (autan-gpu-lock --untimed: a build, a functional test), and thaws it when
+none does: on the GB10 the CPU shares the GPU's memory, so a running campaign would lower the
+bandwidth a measurement sees. The watcher publishes each campaign's state next to the lock
+(campaigns/NAME.state: "running" before any start or thaw, "frozen" once frozen, and a heartbeat
+touched at every poll), and autan-bench measures only once every live campaign reads frozen. The container stops by itself when the watcher's
+heartbeat is a minute old, so a campaign never outlives its watcher. The watcher removes the
+campaign if more than 6 threads outside every campaign stay runnable for a minute, and as soon
+as the host's available memory falls below --free (autan_memfloor.py). See docs/infra/bench.md.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import fcntl
+import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+
+# autan_memfloor sits beside this script once installed, in bench/lock/ in the repository.
+sys.path.append(str(Path(__file__).resolve().parents[1] / "lock"))
+sys.dont_write_bytecode = True
+import autan_memfloor as memfloor
+
+LOCK = Path(os.environ.get("AUTAN_GPU_LOCK", "/home/admin/autan-gpu/gpu.lock"))
+# Held (shared) by a holder of the GPU lock that times nothing (autan-gpu-lock --untimed: a build,
+# a functional test): campaigns are not frozen for it. Any other user of the GPU lock, a legacy
+# one included, is taken as timed.
+UNTIMED = LOCK.parent / "untimed.lock"
+STATES = LOCK.parent / "campaigns"
+CGROUPS = Path("/sys/fs/cgroup")
+PREFIX = "autan-campaign-"
+STATE = Path.home() / "autan-campaigns"
+POLL_S = 0.1
+LOAD_EVERY_S = 1.0
+LOAD_SAMPLES = 10
+MAX_OTHER_LOAD = 6
+LOAD_GRACE_S = 60.0
+DOCKER_TIMEOUT_S = 30
+HEARTBEAT_MAX_AGE_S = 60
+# PID 1 of the container: runs the command, and stops the container when the watcher's heartbeat
+# ($1, mounted read-only) is older than $2 seconds. Frozen with the rest while paused.
+SUPERVISOR = r"""
+heartbeat=$1 max_age=$2; shift 2
+"$@" &
+child=$!
+while kill -0 "$child" 2>/dev/null; do
+  age=$(( $(date +%s) - $(stat -c %Y "$heartbeat") ))
+  if [ "$age" -gt "$max_age" ]; then
+    echo "autan-campaign: watcher heartbeat ${age} s old; stopping" >&2
+    exit 125
+  fi
+  sleep 2
+done
+wait "$child"
+"""
+
+
+def lock_in_use(lock: Path, proc_locks: str) -> bool:
+    """Whether any process holds or waits for a flock on ``lock``, read from /proc/locks."""
+    st = lock.stat()
+    key = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
+    # proc(5): "N: FLOCK ADVISORY WRITE PID MAJ:MIN:INODE START END", device numbers in hex;
+    # a process blocked on the lock has its own line with "->" after "N:".
+    return any(key in line.split() for line in proc_locks.splitlines())
+
+
+def _key(path: Path) -> str | None:
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return None
+    return f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
+
+
+def lock_users(proc_locks: str) -> tuple[set[str], set[str]]:
+    """PIDs that hold or wait for the GPU lock, and those among them that also hold
+    ``untimed.lock``. An owner without a PID (an OFD lock reads -1) is never matched: it counts
+    as timed, the safe side."""
+    gpu, untimed_key = _key(LOCK), _key(UNTIMED)
+    users: set[str] = set()
+    untimed: set[str] = set()
+    for line in proc_locks.splitlines():
+        fields = line.split()
+        if gpu is not None and gpu in fields:
+            users.add(fields[fields.index(gpu) - 1])
+        if untimed_key is not None and untimed_key in fields and "->" not in fields:
+            pid = fields[fields.index(untimed_key) - 1]
+            if pid.isdigit() and int(pid) > 0:
+                untimed.add(pid)
+    return users, users & untimed
+
+
+def freeze_wanted(proc_locks: str) -> bool:
+    """Whether a process holds or waits for the GPU lock without holding ``untimed.lock``: a
+    timed measurement, or any holder that did not say it times nothing. Fail-safe: a holder
+    unknown to this rule (an older wrapper, a raw flock, autan-bench) freezes campaigns. Only
+    holders and blocked waiters are seen: a waiter that polls (autan-gpu-lock, autan-bench)
+    appears once it holds, and autan-bench then waits for every campaign to read frozen."""
+    users, untimed = lock_users(proc_locks)
+    return bool(users - untimed)
+
+
+def _state_of(stat_file: Path) -> bytes | None:
+    try:
+        # proc(5): the state follows the parenthesised command name.
+        return stat_file.read_bytes().rpartition(b")")[2].split()[0]
+    except (OSError, IndexError):
+        return None
+
+
+def other_runnable() -> int:
+    """Threads in state R outside every campaign (each watcher publishes its campaign's cgroup
+    in campaigns/NAME.cgroup), this watcher excluded: campaigns are not another project's load.
+    Both counts come from the threads' own states, so CPU-quota throttling does not skew them."""
+    total = sum(1 for t in Path("/proc").glob("[0-9]*/task/[0-9]*/stat") if _state_of(t) == b"R")
+    return max(0, total - campaigns_running() - 1)
+
+
+def campaigns_running() -> int:
+    """Threads in state R in the cgroups that live campaigns' watchers published: a publication
+    counts only under CGROUPS and with a fresh heartbeat, each thread once."""
+    tids: set[str] = set()
+    for published in STATES.glob("*.cgroup"):
+        try:
+            fresh = time.time() - published.with_suffix(".heartbeat").stat().st_mtime
+            cgroup = Path(published.read_text().strip()).resolve()
+            if fresh > HEARTBEAT_MAX_AGE_S or not cgroup.is_relative_to(CGROUPS):
+                continue
+            tids.update((cgroup / "cgroup.threads").read_text().split())
+        except (OSError, ValueError):
+            continue
+    return sum(1 for tid in tids if _state_of(Path(f"/proc/{tid}/stat")) == b"R")
+
+
+class ForeignLoad:
+    """The rule that stops a campaign beside another project's load: the median of
+    LOAD_SAMPLES samples, one every LOAD_EVERY_S, above MAX_OTHER_LOAD for LOAD_GRACE_S. Not
+    counted while the campaign is frozen, nor while an untimed hold (a build, a test) runs:
+    that load is admitted work."""
+
+    def __init__(self) -> None:
+        self.samples: list[int] = []
+        self.busy_since: float | None = None
+        self.next_sample = 0.0
+
+    def update(self, paused: bool, now: float, sample: Callable[[], int]) -> int | None:
+        """The foreign load that ends the campaign, or None."""
+        if paused:
+            self.samples.clear()
+            self.busy_since = None
+            return None
+        if now >= self.next_sample:
+            self.samples.append(sample())
+            self.next_sample = now + LOAD_EVERY_S
+        if len(self.samples) < LOAD_SAMPLES:
+            return None
+        load = sorted(self.samples)[len(self.samples) // 2]
+        self.samples.clear()
+        if load <= MAX_OTHER_LOAD:
+            self.busy_since = None
+        elif self.busy_since is None:
+            self.busy_since = now
+        elif now - self.busy_since >= LOAD_GRACE_S:
+            return load
+        return None
+
+
+def oom_kills_in(cgroup: Path) -> int:
+    """The cgroup's count of kernel out-of-memory kills (cgroup v2 memory.events), 0 if unread."""
+    try:
+        for line in (cgroup / "memory.events").read_text().splitlines():
+            key, _, value = line.partition(" ")
+            if key == "oom_kill":
+                return int(value)
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+def ended_status(name: str, container: str) -> int:
+    """Log how the campaign ended, from docker's record of its container: 0 for a clean exit,
+    1 for a failure or an out-of-memory kill, so that neither reads as a completion."""
+    state = docker("inspect", "-f", "{{.State.ExitCode}} {{.State.OOMKilled}}", container,
+                   check=False).stdout.split()  # fmt: skip
+    code = int(state[0]) if state and state[0].lstrip("-").isdigit() else None
+    oom = len(state) > 1 and state[1] == "true"
+    if oom:
+        log(name, f"campaign ended: killed for exceeding its --memory cap (exit {code}); "
+                  "`docker logs` keeps its output")  # fmt: skip
+        return 1
+    if code != 0:
+        log(name, f"campaign ended with exit {code}; `docker logs` keeps its output")
+        return 1
+    log(name, "campaign ended; `docker logs` keeps its output")
+    return 0
+
+
+def docker(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["docker", *args], check=check, capture_output=True, text=True, timeout=DOCKER_TIMEOUT_S
+    )
+
+
+def cgroup_of(name: str) -> Path:
+    """The container's cgroup v2 directory, read from its main process."""
+    for _ in range(50):
+        out = docker("inspect", "-f", "{{.State.Status}} {{.State.Pid}}", name).stdout.split()
+        if out[0] != "running":
+            logs = docker("logs", "--tail", "5", name, check=False)
+            sys.exit(f"autan-campaign: container {name} is {out[0]} right after start:"
+                     f" {logs.stdout[-500:]}{logs.stderr[-500:]}")  # fmt: skip
+        try:
+            relative = Path(f"/proc/{out[1]}/cgroup").read_text().strip().removeprefix("0::")
+        except FileNotFoundError:
+            relative = ""
+        cgroup = Path("/sys/fs/cgroup") / relative.lstrip("/")
+        if relative and (cgroup / "cgroup.threads").exists():
+            return cgroup
+        time.sleep(0.1)
+    sys.exit(f"autan-campaign: no cgroup v2 directory for container {name}")
+
+
+def publish(name: str, state: str) -> None:
+    """Write campaigns/NAME.state atomically: autan-bench reads it before measuring."""
+    STATES.mkdir(mode=0o755, exist_ok=True)
+    tmp = STATES / f".{name}.state"
+    tmp.write_text(state + "\n")
+    tmp.chmod(0o644)
+    tmp.replace(STATES / f"{name}.state")
+
+
+def _say(text: str) -> None:
+    sys.stdout.write(text + "\n")
+
+
+def log(name: str, message: str) -> None:
+    STATE.mkdir(exist_ok=True)
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    with (STATE / f"{name}.log").open("a") as handle:
+        handle.write(f"{stamp} {message}\n")
+
+
+def _start_time(pid: int) -> str | None:
+    try:
+        # proc(5): field 22, starttime; 20th after the parenthesised command name.
+        return Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
+def remove(name: str) -> bool:
+    """Remove the container; True once docker no longer lists it."""
+    container = PREFIX + name
+    for _ in range(3):
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            docker("rm", "-f", container, check=False)
+            if not docker("ps", "-aq", "--filter", f"name=^{container}$").stdout.strip():
+                return True
+        time.sleep(1)
+    return False
+
+
+# --- A memory-floor breach (#455) --------------------------------------------------------------
+# One leader per breach (an exclusive flock on campaigns/breach.lock): it freezes every campaign,
+# then asks one victim at a time to stop cleanly, and removes it only as a last resort, until the
+# host is back above the floor plus a hysteresis. No watcher kills its campaign on its own.
+# Pauses and thaws are serialised through campaigns/transitions.lock: a watcher holds it shared
+# for each of its own, the leader exclusive for the whole breach, so neither undoes the other's.
+BREACH_LOCK = STATES / "breach.lock"
+TRANSITIONS = STATES / "transitions.lock"
+CULPRIT_GROWTH = 4 << 30  # memory grown in GROWTH_WINDOW_S that names a campaign the culprit
+GROWTH_WINDOW_S = 30.0
+GROWTH_FRESH_S = 5.0  # a growth published longer ago is its watcher's, stalled: not evidence
+HYSTERESIS = 4 << 30
+# Rewritten by each leader: a watcher that sees it change reads its container's state again, even
+# when a whole breach fell between two of its polls.
+BREACH_GENERATION = STATES / "breach.generation"
+STOP_WAIT_DEFAULT_S = 120
+
+
+@dataclass
+class Member:
+    """A live campaign, as its watcher publishes it (campaigns/NAME.meta and NAME.growth)."""
+
+    name: str
+    started: float
+    clean_stop: str  # "stop-file:/host/path", "signal" or "none"
+    stop_wait_s: float
+    floor: int = 0  # its --free
+    growth: int = 0  # bytes its cgroup grew over the last GROWTH_WINDOW_S
+
+
+# A docker call in a thread of its own: the leader keeps watching memory while it runs.
+class Op:
+    def __init__(self, call: Callable[[], bool]) -> None:
+        self.ok = False
+
+        def run() -> None:
+            self.ok = call()
+
+        self._thread = threading.Thread(target=run, daemon=True)
+        self._thread.start()
+
+    def done(self) -> bool:
+        return not self._thread.is_alive()
+
+
+@dataclass
+class Host:
+    """The boundaries the leader acts on: real ones in the watcher, fakes in the tests."""
+
+    available: Callable[[], int | None]
+    exclusive: Callable[[], bool]  # one try at transitions.lock, exclusive
+    gpu_busy: Callable[[], bool]  # the GPU lock held or waited for: no campaign may run
+    pause: Callable[[str], Op]  # publishes "frozen" once docker has paused it
+    unpause: Callable[[str], Op]
+    publish: Callable[[str, str], None]
+    request_stop: Callable[[Member], None]  # raises OSError when the request cannot be made
+    members: Callable[[], list[Member]]  # every live campaign, read again once exclusive
+    ended: Callable[[str], bool]
+    kill: Callable[[str], None]
+    log: Callable[[str, str], None]
+    sleep: Callable[[float], None] = time.sleep
+    now: Callable[[], float] = time.monotonic
+
+
+def victim_of(members: list[Member]) -> tuple[Member, str]:
+    """The campaign to stop, and why: the one that grew by CULPRIT_GROWTH or more in the window
+    (the cause, whatever its stop); otherwise the newest with a clean stop; otherwise the newest."""
+    culprit = max(members, key=lambda m: m.growth)
+    if culprit.growth >= CULPRIT_GROWTH:
+        return culprit, f"grew {culprit.growth / (1 << 30):.1f} GiB in {GROWTH_WINDOW_S:.0f} s"
+    clean = [m for m in members if m.clean_stop != "none"]
+    if clean:
+        return max(clean, key=lambda m: m.started), "the newest with a clean stop"
+    return max(members, key=lambda m: m.started), "the newest (none declares a clean stop)"
+
+
+def lead(members: list[Member], floor: int, host: Host) -> None:
+    """Handle one breach, as its leader. Survivors are left frozen: each watcher thaws its own
+    campaign once the breach is over and the GPU lock is free."""
+    ops: list[Op] = []
+    exclusive = False
+
+    def held() -> bool:
+        nonlocal exclusive
+        exclusive = exclusive or host.exclusive()
+        return exclusive
+
+    def wait(condition: Callable[[], bool], deadline: float) -> str:
+        """ "done", "critical" (below half the floor) or "timeout", whichever comes first."""
+        while not condition():
+            free = host.available()
+            if free is None or free < floor // 2:
+                return "critical"
+            if host.now() >= deadline:
+                return "timeout"
+            host.sleep(POLL_S)
+        return "done"
+
+    pauses: dict[str, Op] = {}
+    everyone, remaining = list(members), list(members)
+
+    # Every campaign paused, once the leader holds transitions.lock: no watcher's pause, thaw or
+    # start is then under way, and a campaign started since the election is read as a member.
+    def frozen() -> bool:
+        if pauses:
+            return True
+        if not held():
+            return False
+        known = {m.name for m in everyone}
+        newcomers = [m for m in host.members() if m.name not in known]
+        everyone.extend(newcomers)
+        remaining.extend(newcomers)
+        shown = memfloor.show(host.available())
+        for m in everyone:
+            pauses[m.name] = host.pause(m.name)
+            ops.append(pauses[m.name])
+            host.log(m.name, f"host memory available {shown}, below --free "
+                             f"{memfloor.show(floor)}: breach, every campaign frozen")  # fmt: skip
+        return True
+
+    try:
+        # A watcher's transition under way ends within its docker call's timeout. Until the
+        # leader holds transitions.lock, only the last resort, which needs no exclusivity, acts.
+        wait(frozen, host.now() + DOCKER_TIMEOUT_S + 5)
+        while remaining:
+            frozen()
+            free = host.available()
+            if free is not None and free >= floor + HYSTERESIS:
+                if all(op.done() for op in ops):
+                    break
+                host.sleep(POLL_S)  # still watching memory while docker answers
+                continue
+            victim, why = victim_of(remaining)
+            remaining.remove(victim)
+            name = victim.name
+            host.log(name, f"chosen to stop: {why}")
+            if victim.clean_stop == "none" or free is None or free < floor // 2:
+                reason = "no clean stop declared" if victim.clean_stop == "none" else (
+                    f"host below half the floor, {memfloor.show(free)}")  # fmt: skip
+                host.kill(name)
+                host.log(name, f"last resort: removed ({reason})")
+                host.sleep(2.0)  # the victim's memory takes a moment to come back
+                continue
+            how = "stop-file" if victim.clean_stop.startswith("stop-file:") else "SIGTERM"
+            # --stop-wait bounds the whole clean stop. The thaw waits for exclusivity, for its
+            # pause to have landed (one landing after it would freeze the stop), and for any
+            # measurement to end; "running" is published first, then the GPU lock read again.
+            deadline = host.now() + victim.stop_wait_s
+            while True:
+                outcome = wait(lambda n=name: frozen() and pauses[n].done()
+                               and not host.gpu_busy(), deadline)  # fmt: skip
+                if outcome != "done":
+                    break
+                host.publish(name, "running")
+                if host.gpu_busy():
+                    if pauses[name].ok:
+                        host.publish(name, "frozen")
+                    continue
+                thaw = host.unpause(name)
+                ops.append(thaw)
+                outcome = wait(thaw.done, deadline)
+                break
+            if outcome == "done":
+                try:
+                    host.request_stop(victim)
+                except OSError as error:
+                    outcome = f"its {how} could not be requested: {error}"
+                else:
+                    host.log(name, f"clean stop requested ({how}), waiting at most "
+                                   f"{victim.stop_wait_s:.0f} s")  # fmt: skip
+                    outcome = wait(lambda n=name: host.ended(n), deadline)
+            if outcome == "done":
+                host.log(name, "stopped cleanly")
+            else:
+                reason = {
+                    "critical": f"host below half the floor, {memfloor.show(host.available())}",
+                    "timeout": f"no clean stop within {victim.stop_wait_s:.0f} s ({how})",
+                }.get(outcome, outcome)
+                host.kill(name)
+                host.log(name, f"last resort: removed ({reason})")
+            host.sleep(2.0)
+        for m in remaining:
+            host.log(m.name, f"breach over ({memfloor.show(host.available())} available)")
+    finally:
+        # Every docker call settled before the breach ends: a pause landing later would freeze a
+        # campaign its watcher believes running, a thaw would undo the next leader's pause.
+        end = host.now() + DOCKER_TIMEOUT_S + 5
+        while not all(op.done() for op in ops) and host.now() < end:
+            host.sleep(POLL_S)
+
+
+def members_alive() -> list[Member]:
+    """Every live campaign's published description: a fresh heartbeat, and a state its watcher
+    published before starting it (a campaign not yet started holds no memory)."""
+    out = []
+    for meta in STATES.glob("*.meta"):
+        name = meta.stem
+        try:
+            fresh = time.time() - (STATES / f"{name}.heartbeat").stat().st_mtime
+            if fresh > HEARTBEAT_MAX_AGE_S or not (STATES / f"{name}.state").exists():
+                continue
+            d = json.loads(meta.read_text())
+            growth = 0
+            with contextlib.suppress(OSError, ValueError):
+                grown, stamp = (STATES / f"{name}.growth").read_text().split()
+                if time.time() - float(stamp) <= GROWTH_FRESH_S:
+                    growth = int(grown)
+            out.append(Member(name, d["started"], d["clean_stop"], d["stop_wait_s"],
+                              d["floor"], growth))  # fmt: skip
+        except (OSError, ValueError, KeyError):
+            continue
+    return out
+
+
+def request_stop(member: Member) -> None:
+    """Ask the campaign to stop as it declared; OSError when the request cannot be made."""
+    if member.clean_stop.startswith("stop-file:"):
+        Path(member.clean_stop.removeprefix("stop-file:")).touch()
+        return
+    # SIGTERM to every process of the campaign's cgroup, not to the container's PID 1: the lane's
+    # supervisor shell has no handler and, as PID 1, the kernel drops the signal for it.
+    cgroup = Path((STATES / f"{member.name}.cgroup").read_text().strip())
+    for pid in (cgroup / "cgroup.procs").read_text().split():
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(int(pid), signal.SIGTERM)
+
+
+def gpu_busy() -> bool:
+    """A campaign may not run now: the GPU lock held or waited for by a timed holder (#452)."""
+    return freeze_wanted(Path("/proc/locks").read_text())
+
+
+def real_host(transitions: object) -> Host:
+    def ended(name: str) -> bool:
+        try:
+            cgroup = Path((STATES / f"{name}.cgroup").read_text().strip())
+        except OSError:
+            return True
+        return not cgroup.exists()
+
+    def call(*args: str) -> bool:
+        try:
+            return docker(*args, check=False).returncode == 0
+        except (subprocess.SubprocessError, OSError):
+            return False
+
+    def pause(name: str) -> Op:
+        def run() -> bool:
+            ok = call("pause", PREFIX + name)
+            if ok:
+                publish(name, "frozen")
+            return ok
+
+        return Op(run)
+
+    def exclusive() -> bool:
+        try:
+            fcntl.flock(transitions, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        return True
+
+    def kill(name: str) -> None:
+        # Marked first: the victim's own watcher then ends and removes its container, whether or
+        # not docker reports it gone.
+        (STATES / f"{name}.victim").touch()
+        call("kill", PREFIX + name)
+
+    return Host(available=memfloor.available, exclusive=exclusive, gpu_busy=gpu_busy,
+                pause=pause, unpause=lambda name: Op(lambda: call("unpause", PREFIX + name)),
+                publish=publish, request_stop=request_stop, members=members_alive, ended=ended,
+                kill=kill, log=log)  # fmt: skip
+
+
+def handle_breach(floor: int, host: Callable[[object], Host] = real_host) -> bool:
+    """Lead the breach if no other watcher does; False when another leads it. The floor is the
+    highest any live campaign declared: the host's, whichever watcher wins the election."""
+    STATES.mkdir(mode=0o755, exist_ok=True)
+    with BREACH_LOCK.open("a") as election, TRANSITIONS.open("a") as transitions:
+        try:
+            fcntl.flock(election, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        members = members_alive()
+        floor = max([floor, *(m.floor for m in members)])
+        if members and memfloor.below(floor):
+            BREACH_GENERATION.write_text(f"{time.time_ns()}\n")
+            lead(members, floor, host(transitions))
+        return True
+
+
+@contextlib.contextmanager
+def transition_allowed() -> Iterator[bool]:
+    """Whether a watcher may pause or thaw its own campaign: no breach is being led. Held shared
+    through the transition, so a breach's leader waits for it to end before acting."""
+    STATES.mkdir(mode=0o755, exist_ok=True)
+    with TRANSITIONS.open("a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield not (
+            BREACH_LOCK.exists() and lock_in_use(BREACH_LOCK, Path("/proc/locks").read_text())
+        )
+
+
+def docker_paused(container: str) -> bool:
+    out = docker("inspect", "-f", "{{.State.Paused}}", container, check=False).stdout.strip()
+    return out == "true"
+
+
+def publish_growth(name: str, cgroup: Path, samples: list[tuple[float, int]]) -> None:
+    """How much the campaign's cgroup grew over the last GROWTH_WINDOW_S, for a breach's leader
+    (campaigns/NAME.growth, bytes): sampled once a second from memory.current."""
+    now = time.monotonic()
+    if samples and now - samples[-1][0] < 1.0:
+        return
+    try:
+        current = int((cgroup / "memory.current").read_text())
+    except (OSError, ValueError):
+        return
+    samples.append((now, current))
+    while samples and now - samples[0][0] > GROWTH_WINDOW_S:
+        samples.pop(0)
+    tmp = STATES / f".{name}.growth"
+    tmp.write_text(f"{max(0, current - samples[0][1])} {time.time()}\n")
+    tmp.replace(STATES / f"{name}.growth")
+
+
+def watch(name: str, floor: int) -> int:
+    container = PREFIX + name
+    heartbeat = STATES / f"{name}.heartbeat"
+    stopping = False
+
+    def stop(*_: object) -> None:
+        nonlocal stopping
+        stopping = True
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    pid = os.getpid()
+    (STATE / f"{name}.pid").write_text(f"{pid} {_start_time(pid)}\n")
+    ended = False
+    # Held while this watcher leads a breach: the process does not end in the middle of one, even
+    # when its own campaign is the victim.
+    leading = threading.Lock()
+    failed: list[str] = []
+    try:
+        while not stopping and freeze_wanted(Path("/proc/locks").read_text()):
+            heartbeat.touch()
+            time.sleep(POLL_S)
+        if stopping:
+            log(name, "stopped before it started")
+            return 0
+        if memfloor.below(floor):
+            log(name, f"{memfloor.show(memfloor.available())} of host memory available, below "
+                      f"--free {memfloor.show(floor)}: not started")  # fmt: skip
+            return 1
+        # Its own thread: the loop below waits on docker calls (up to 30 s each), the floor
+        # cannot. Before the start a breach cancels the campaign; after it, a breach is led by
+        # one watcher for every campaign (#455).
+        breached = threading.Event()
+        # Read before this campaign can be a breach's member: any breach after it changes it.
+        generation = ""
+        with contextlib.suppress(OSError):
+            generation = BREACH_GENERATION.read_text()
+
+        def guard() -> None:
+            next_kill = 0.0
+            while not stopping:
+                if memfloor.below(floor):
+                    if not started.is_set():
+                        # Its start may be under way: killed at once, again every second.
+                        breached.set()
+                        if time.monotonic() >= next_kill:
+                            next_kill = time.monotonic() + 1.0
+                            with contextlib.suppress(subprocess.SubprocessError, OSError):
+                                docker("kill", container, check=False)
+                    else:
+                        with leading:
+                            if stopping:
+                                return
+                            try:
+                                handle_breach(floor)
+                            except Exception as error:  # noqa: BLE001 - the floor still holds
+                                failed.append(f"{type(error).__name__}: {error}")
+                                return
+                time.sleep(POLL_S)
+
+        started = threading.Event()
+
+        threading.Thread(target=guard, daemon=True).start()
+        # The start is a transition: never under way once a breach's leader holds
+        # transitions.lock, which then counts this campaign among the members it freezes.
+        while True:
+            if stopping:
+                log(name, "stopped before it started")
+                return 0
+            if breached.is_set():
+                log(name, f"host memory available fell below --free {memfloor.show(floor)}: "
+                          "not started")  # fmt: skip
+                return 1
+            with transition_allowed() as allowed:
+                # A start delayed behind a breach waits again for a measurement begun meanwhile.
+                # "running" is published before the start, then the GPU lock read again: a
+                # measurement that takes it in between waits for the freeze, or this start waits.
+                if allowed and not gpu_busy():
+                    publish(name, "running")
+                    if gpu_busy():
+                        (STATES / f"{name}.state").unlink(missing_ok=True)
+                    else:
+                        heartbeat.touch()
+                        docker("start", container)
+                        started.set()
+                        break
+            heartbeat.touch()
+            time.sleep(POLL_S)
+        if breached.is_set():
+            log(name, f"host memory available fell below --free {memfloor.show(floor)} during "
+                      "its start: removed")  # fmt: skip
+            return 1
+        cgroup = cgroup_of(container)
+        oom_kills = oom_kills_in(cgroup)
+        (STATES / f"{name}.cgroup").write_text(f"{cgroup}\n")
+        log(name, "started")
+        frozen: bool | None = False
+        # No docker call in the steady state: the CLI would load the CPU at every poll,
+        # measurements included. The cgroup directory disappears with the container.
+        foreign = ForeignLoad()
+        growth: list[tuple[float, int]] = []
+        while not stopping:
+            heartbeat.touch()
+            if (STATES / f"{name}.victim").exists():
+                # Removed as a breach's last resort (its log says why): the finally removes it.
+                return 1
+            if failed:
+                log(name, f"leading a memory-floor breach failed ({failed[0]}): campaign stopped")
+                return 1
+            if not cgroup.exists():
+                if (STATES / f"{name}.victim").exists():
+                    return 1  # killed by a breach's leader since the check above
+                ended = True
+                return ended_status(name, container)
+            # A process over --memory is killed by the kernel, but only that one (memory.oom.group
+            # is 0): a driver that outlives it would keep the campaign silently half-dead.
+            kills = oom_kills_in(cgroup)
+            if kills > oom_kills:
+                log(name, f"a process of the campaign exceeded its --memory cap ({kills} kernel "
+                          "out-of-memory kill(s)): campaign stopped")  # fmt: skip
+                return 1
+            publish_growth(name, cgroup, growth)
+            with contextlib.suppress(OSError):
+                generation_now = BREACH_GENERATION.read_text()
+                if generation_now != generation:
+                    generation, frozen = generation_now, None
+            proc_locks = Path("/proc/locks").read_text()
+            if BREACH_LOCK.exists() and lock_in_use(BREACH_LOCK, proc_locks):
+                # A breach is being led: its leader pauses every campaign and thaws only its
+                # victim; this loop reads the container's state again once the breach is over.
+                foreign.update(True, time.monotonic(), other_runnable)
+                frozen = None
+                time.sleep(POLL_S)
+                continue
+            if frozen is None:
+                frozen = docker_paused(container)
+            users, untimed = lock_users(proc_locks)
+            wanted = bool(users - untimed)
+            # An untimed hold's own load (a build, a test) is admitted work, not a foreign load.
+            admitted = bool(untimed)
+            if wanted != frozen:
+                with transition_allowed() as allowed:
+                    if not allowed:  # a breach's leader took over since: its state is unknown
+                        frozen = None
+                    elif wanted:
+                        docker("pause", container)
+                        publish(name, "frozen")
+                        frozen = True
+                        log(name, "GPU lock in use: frozen")
+                    else:
+                        publish(name, "running")
+                        # A measurement that read "frozen" just before the publish holds the lock
+                        # by now, and the campaign stays frozen for it.
+                        if freeze_wanted(Path("/proc/locks").read_text()):
+                            publish(name, "frozen")
+                        else:
+                            docker("unpause", container)
+                            frozen = False
+                            log(name, "GPU lock free: thawed")
+            over = foreign.update(frozen is not False or admitted, time.monotonic(), other_runnable)
+            if over is not None:
+                log(name, f"{over} runnable threads outside the campaign for a minute")
+                return 1
+            time.sleep(POLL_S)
+        log(name, "stopped")
+        return 0
+    finally:
+        stopping = True
+        with leading:
+            pass
+        # A campaign never outlives its watcher: unwatched, it would run through measurements.
+        if not ended and not remove(name):
+            log(name, f"FAILED to remove {container}; it stops by itself within "
+                      f"{HEARTBEAT_MAX_AGE_S} s, when the heartbeat is stale")  # fmt: skip
+            sys.exit(1)
+        if not ended:
+            log(name, "container removed")
+        (STATES / f"{name}.state").unlink(missing_ok=True)
+        (STATES / f"{name}.heartbeat").unlink(missing_ok=True)
+        (STATES / f"{name}.cgroup").unlink(missing_ok=True)
+        (STATES / f"{name}.meta").unlink(missing_ok=True)
+        (STATES / f"{name}.victim").unlink(missing_ok=True)
+        (STATES / f"{name}.growth").unlink(missing_ok=True)
+        (STATE / f"{name}.pid").unlink(missing_ok=True)
+
+
+def start(args: argparse.Namespace) -> int:
+    if not LOCK.exists():
+        sys.exit(f"autan-campaign: {LOCK} is missing; run docker/runner/deploy.sh start")
+    container = PREFIX + args.name
+    floor = memfloor.parse(args.free)
+    if floor is None:
+        sys.exit(f"autan-campaign: --free {args.free!r} is not a size such as 24G or 512M")
+    memory = memfloor.parse(args.memory)
+    if not memory:
+        sys.exit(f"autan-campaign: --memory {args.memory!r} is not a size such as 40G or 512M")
+    # A cap that cannot fit beside the floor would end in the floor's breach, which removes every
+    # campaign, not in this container's own out-of-memory.
+    total = memfloor.total()
+    if total is not None and memory > total - floor:
+        sys.exit(f"autan-campaign: --memory {memfloor.show(memory)} exceeds the host's "
+                 f"{memfloor.show(total)} less --free {memfloor.show(floor)}")  # fmt: skip
+    if not 10 <= args.stop_wait <= 600:
+        sys.exit("autan-campaign: --stop-wait is 10 to 600 seconds")
+    clean_stop = args.clean_stop
+    if clean_stop.startswith("stop-file:"):
+        relative = clean_stop.removeprefix("stop-file:")
+        if not relative or Path(relative).is_absolute() or ".." in Path(relative).parts:
+            sys.exit("autan-campaign: --clean-stop stop-file:PATH takes a path inside --dir")
+        # The leader creates it on the host; the command sees it under /work.
+        stop_file = Path(args.dir).resolve() / relative
+        if not stop_file.parent.is_dir():
+            sys.exit(f"autan-campaign: --clean-stop: {stop_file.parent} is not a directory")
+        clean_stop = f"stop-file:{stop_file}"
+    elif clean_stop not in ("signal", "none"):
+        sys.exit("autan-campaign: --clean-stop is stop-file:PATH, signal or none")
+    command = args.command
+    if not command:
+        sys.exit("autan-campaign: no command after --")
+    # The arguments checked first: a bad one is refused before docker is asked anything.
+    STATE.mkdir(exist_ok=True)
+    if docker("ps", "-aq", "--filter", f"name=^{container}$").stdout.strip():
+        sys.exit(f"autan-campaign: {container} already exists")
+    workdir = Path(args.dir).resolve()
+    STATES.mkdir(mode=0o755, exist_ok=True)
+    heartbeat = STATES / f"{args.name}.heartbeat"
+    heartbeat.touch()
+    docker(
+        "create", "--name", container, "--cpus", str(args.cpus), "--cpu-shares", "2",
+        # The campaign's own cap (cgroup memory.max, no swap beyond it): a campaign that outgrows
+        # its declared peak is killed alone, before the host's floor removes every campaign.
+        "--memory", f"{memory}b", "--memory-swap", f"{memory}b",
+        "--user", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp",
+        "-v", f"{workdir}:/work", "-w", "/work",
+        "-v", f"{heartbeat}:/autan-campaign/heartbeat:ro",
+        args.image, "nice", "-n", "19", "sh", "-c", SUPERVISOR, "supervisor",
+        "/autan-campaign/heartbeat", str(HEARTBEAT_MAX_AGE_S), *command,
+    )  # fmt: skip
+    # What a breach's leader needs to know of this campaign (#455).
+    (STATES / f"{args.name}.meta").write_text(json.dumps({
+        "started": time.time(), "clean_stop": clean_stop, "stop_wait_s": args.stop_wait,
+        "floor": floor,
+    }) + "\n")  # fmt: skip
+    # The watcher starts the container once the GPU lock is free, then freezes and thaws it.
+    with (STATE / f"{args.name}.log").open("a") as errors:
+        subprocess.Popen(
+            [sys.executable, __file__, "_watch", args.name, str(floor)],
+            start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=errors,
+        )  # fmt: skip
+    _say(f"created {container}; log: {STATE / (args.name + '.log')}")
+    return 0
+
+
+def status(_: argparse.Namespace) -> int:
+    fmt = "{{.Names}}\t{{.Status}}"
+    names = docker("ps", "-a", "--filter", f"name=^{PREFIX}", "--format", fmt).stdout.strip()
+    _say(names or "no campaign")
+    return 0
+
+
+def stop_campaign(args: argparse.Namespace) -> int:
+    pid_file = STATE / f"{args.name}.pid"
+    if pid_file.exists():
+        pid_text, _, started = pid_file.read_text().partition(" ")
+        pid = int(pid_text)
+        # Only the watcher that wrote the file: a PID reused after a reboot is someone else.
+        cmdline = Path(f"/proc/{pid}/cmdline")
+        ours = (
+            _start_time(pid) == started.strip()
+            and cmdline.exists()
+            and f"_watch\0{args.name}\0" in cmdline.read_text()
+        )
+        if ours:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGTERM)
+                for _ in range(600):
+                    os.kill(pid, 0)
+                    time.sleep(0.1)
+    if not remove(args.name):
+        sys.exit(f"autan-campaign: could not remove {PREFIX + args.name}")
+    (STATES / f"{args.name}.state").unlink(missing_ok=True)
+    (STATES / f"{args.name}.heartbeat").unlink(missing_ok=True)
+    (STATES / f"{args.name}.cgroup").unlink(missing_ok=True)
+    (STATES / f"{args.name}.meta").unlink(missing_ok=True)
+    (STATES / f"{args.name}.growth").unlink(missing_ok=True)
+    (STATES / f"{args.name}.victim").unlink(missing_ok=True)
+    _say(f"removed {PREFIX + args.name}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="autan-campaign", description=__doc__.split("\n")[0])
+    sub = parser.add_subparsers(required=True)
+    s = sub.add_parser("start", help="start a campaign")
+    s.add_argument("name")
+    s.add_argument("--cpus", type=float, default=12.0)
+    s.add_argument("--free", default=memfloor.DEFAULT,
+                   help="host memory to keep available, as 24G or 512M (0G for none)")  # fmt: skip
+    s.add_argument("--memory", default="48G",
+                   help="the container's memory cap, as 40G or 512M: its declared peak plus a "
+                        "margin; exceeding it kills this campaign alone (default 48G)")  # fmt: skip
+    s.add_argument("--clean-stop", default="none", metavar="stop-file:PATH|signal|none",
+                   help="how a breach of the memory floor asks this campaign to stop cleanly: a "
+                        "file created in --dir, SIGTERM to its processes, or none (removed); "
+                        "declare one only for a program checked to stop cleanly on it")  # fmt: skip
+    s.add_argument(
+        "--stop-wait",
+        type=float,
+        default=STOP_WAIT_DEFAULT_S,
+        help="seconds to wait for a clean stop before removing it (10 to 600)",
+    )
+    s.add_argument("--image", default="autan-dev:local")
+    s.add_argument("--dir", default=".", help="directory mounted at /work")
+    s.set_defaults(func=start)
+    sub.add_parser("status", help="list campaigns").set_defaults(func=status)
+    k = sub.add_parser("stop", help="stop a campaign")
+    k.add_argument("name")
+    k.set_defaults(func=stop_campaign)
+    w = sub.add_parser("_watch", help=argparse.SUPPRESS)
+    w.add_argument("name")
+    w.add_argument("floor", type=int)
+    w.set_defaults(func=lambda a: watch(a.name, a.floor))
+    argv = sys.argv[1:] if argv is None else argv
+    # argparse.REMAINDER would also swallow the options before "--".
+    split = argv.index("--") if "--" in argv else len(argv)
+    args = parser.parse_args(argv[:split])
+    args.command = argv[split + 1 :]
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -16,36 +16,50 @@ import rfc8785
 from autan.cli import json_schema, main
 from pydantic import ValidationError
 
-from tests.conftest import FIXTURES
+from tests.conftest import CRM_HL, EXAMPLES, FIXTURES, mesh_document, place_meshes, prepared
 
 R_UNIVERSAL = 8.314462618
 
 
 def prepare(
-    capsys: pytest.CaptureFixture[str], case: Path, mesh: str, *extra: str
+    capsys: pytest.CaptureFixture[str], case: Path, mesh: str | Path, *extra: str
 ) -> tuple[int, Any]:
     status = main(["prepare", str(case), "--mesh-info", str(FIXTURES / mesh), *extra])
-    out = capsys.readouterr().out
-    return status, json.loads(out) if status == 0 else out
+    out, err = capsys.readouterr()
+    return status, json.loads(out) if status == 0 else out + err
 
 
 def test_crm_hl_input_is_resolved_and_closed_in_si(
-    capsys: pytest.CaptureFixture[str], example: Callable[[str], Path]
+    capsys: pytest.CaptureFixture[str], example: Callable[[str], Path], tmp_path: Path
 ) -> None:
+    mesh_info = tmp_path / "crm-hl.meshinfo.json"
+    mesh_info.write_text(json.dumps(prepared(mesh_document("crm-hl"), ranks=8)))
     status, document = prepare(
         capsys,
         example("crm_hl.py"),
-        "crm-hl.meshinfo.json",
+        mesh_info,
         "--device-kind",
         "cuda",
         "--device-count",
         "8",
-        "--deterministic",
     )
     assert status == 0
     jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
     assert document["devices"] == {"kind": "cuda", "count": 8}
-    assert document["deterministic"] is True
+    planned = autan.load(example("crm_hl.py")).plan(
+        autan.MeshInfo.load(mesh_info), gpus=8, device_kind="cuda"
+    )
+    assert document["memory"] == {
+        "bytes_host": planned.memory.bytes_host,
+        "bytes_device": planned.memory.bytes_device,
+    }
+    assert document["reproducibility"] == "run"  # the case's default (case-schema.md#physics)
+    # solver-input.md: the MeshInfo the plan used travels with the input, for the same mesh.
+    assert document["mesh_info"] == autan.MeshInfo.load(mesh_info).document()
+    document["mesh"]["sha256"] = "1" * 64
+    with pytest.raises(ValidationError):
+        autan.solver_input.SolverInput.model_validate(document)
+    document["mesh"]["sha256"] = document["mesh_info"]["source"]["sha256"]
 
     # The case hash is SHA-256 of the RFC 8785 form of the (fully defaulted) case document.
     canonical = rfc8785.dumps(tomllib.loads(document["case"]["toml"]))
@@ -81,7 +95,84 @@ def test_crm_hl_input_is_resolved_and_closed_in_si(
     assert forces["zones"] == ["wing.slat", "wing.main", "wing.flap"]
     assert forces["ref_area"] == pytest.approx(191.84)
     assert forces["ref_length"] == pytest.approx(7.0)
-    assert document["time"] == {"kind": "steady", "max_iterations": 10000, "residual_orders": 8.0}
+    assert document["time"] == {
+        "kind": "steady",
+        "max_iterations": 10000,
+        "residual_orders": 8.0,
+        "linear_solver": "multigrid",
+        "coupled_turbulence": False,
+        "matrix_free": False,
+        "checkpoint": {"seconds": 1800.0},
+    }
+
+
+def test_the_coupled_turbulence_step_is_an_sa_option(
+    write_case: Callable[..., Path], capsys: pytest.CaptureFixture[str], crm_mesh: autan.MeshInfo
+) -> None:
+    # case-schema.md#time: off by default; on for compressible SA only (E0426), with the
+    # multigrid on one rank (E0427), and always reported as validated on the TMR plate only.
+    def codes(turbulence: str, time: str, gpus: int = 1) -> list[str]:
+        body = CRM_HL.replace("autan.SA()", turbulence) + f"case.time = autan.Steady({time})\n"
+        try:
+            planned = autan.load(write_case(body)).plan(crm_mesh, gpus=gpus)
+        except autan.CaseError as error:
+            return error.codes
+        return sorted(d.code for d in planned.diagnostics if d.code[1:3] == "04")
+
+    on = "coupled_turbulence=True"
+    assert codes("autan.SA()", "") == []
+    assert codes("autan.SA()", on) == ["W0426"]
+    assert codes("autan.SST()", on) == ["E0426"]
+    assert codes("autan.Laminar()", on) == ["E0426"]
+    assert codes("autan.SA()", f"{on}, linear_solver='gauss-seidel'") == ["E0427", "W0426"]
+    assert codes("autan.SA()", on, gpus=2) == ["E0427", "W0426"]
+    case = write_case(CRM_HL + f"case.time = autan.Steady({on})\n")
+    jsonschema.Draft202012Validator(json_schema("case")).validate(autan.load(case).spec.document())
+    status, document = prepare(capsys, case, "crm-hl.meshinfo.json")
+    assert status == 0
+    assert document["time"]["coupled_turbulence"] is True
+    # The runtime and the published schema take a JSON boolean only.
+    with pytest.raises(ValidationError):
+        autan.solver_input.SolverInput.model_validate(
+            document | {"time": document["time"] | {"coupled_turbulence": "true"}}
+        )
+    status, refused = prepare(capsys, case, "crm-hl.meshinfo.json", "--device-count", "2")
+    assert status != 0
+    assert "E0427" in refused
+
+
+def test_the_matrix_free_step_is_a_laminar_option(
+    write_case: Callable[..., Path], capsys: pytest.CaptureFixture[str], crm_mesh: autan.MeshInfo
+) -> None:
+    # case-schema.md#time: off by default; on for compressible laminar flow only (E0429), with
+    # the multigrid on one rank (E0427), and always reported as validated on the TMR laminar
+    # flat plate only.
+    def codes(turbulence: str, time: str, gpus: int = 1) -> list[str]:
+        body = CRM_HL.replace("autan.SA()", turbulence) + f"case.time = autan.Steady({time})\n"
+        try:
+            planned = autan.load(write_case(body)).plan(crm_mesh, gpus=gpus)
+        except autan.CaseError as error:
+            return error.codes
+        return sorted(d.code for d in planned.diagnostics if d.code[1:3] == "04")
+
+    on = "matrix_free=True"
+    assert codes("autan.Laminar()", "") == []
+    assert codes("autan.Laminar()", on) == ["W0429"]
+    assert codes("autan.SA()", on) == ["E0429"]
+    assert codes("autan.Inviscid()", on) == ["E0429"]
+    assert codes("autan.Laminar()", f"{on}, linear_solver='lines'") == ["E0427", "W0429"]
+    assert codes("autan.Laminar()", on, gpus=2) == ["E0427", "W0429"]
+    case = write_case(
+        CRM_HL.replace("autan.SA()", "autan.Laminar()") + f"case.time = autan.Steady({on})\n"
+    )
+    jsonschema.Draft202012Validator(json_schema("case")).validate(autan.load(case).spec.document())
+    status, document = prepare(capsys, case, "crm-hl.meshinfo.json")
+    assert status == 0
+    assert document["time"]["matrix_free"] is True
+    with pytest.raises(ValidationError):
+        autan.solver_input.SolverInput.model_validate(
+            document | {"time": document["time"] | {"matrix_free": 1}}
+        )
 
 
 def test_heat_exchanger_media_and_inlets_in_si(
@@ -148,6 +239,9 @@ def _set_boundary(document: dict[str, Any], **values: Any) -> None:
         lambda d: d.update(extra=1),
         lambda d: d.pop("schema"),
         lambda d: d["time"].pop("kind"),
+        lambda d: d["mesh"].update(scale=True),
+        lambda d: d["mesh"].update(scale="1.0"),
+        lambda d: d["mesh"].update(scale=0.0),
         lambda d: d["monitors"][0].pop("kind"),
         lambda d: _set_boundary(d, kind="inlet"),
         lambda d: _set_boundary(d, static_pressure=1.0),
@@ -217,3 +311,179 @@ def test_each_published_schema_has_its_identifier(name: str) -> None:
     schema = json_schema(name)
     assert schema["$id"] == autan.version.SCHEMAS[name]
     assert schema["properties"]["schema"]["const"] == autan.version.SCHEMAS[name]
+
+
+# Exact by definition: the international inch (1959) and foot.
+@pytest.mark.parametrize(("unit", "metres"), [("m", 1.0), ("in", 0.0254), ("ft", 0.3048)])
+def test_mesh_unit_scales_the_mesh_alone(
+    unit: str,
+    metres: float,
+    capsys: pytest.CaptureFixture[str],
+    write_case: Callable[..., Path],
+    crm_mesh: autan.MeshInfo,
+    tmp_path: Path,
+) -> None:
+    body = CRM_HL.replace('mesh="crm-hl.cgns"', f'mesh="crm-hl.cgns", mesh_unit="{unit}"')
+    path = write_case(body)
+    case = autan.load(path)
+    assert case.spec.document()["mesh_unit"] == unit
+    planned = case.plan(crm_mesh).mesh
+    assert planned["unit"] == unit
+    # The fixture's bounds are in its file's units; plan gives them in metres.
+    assert planned["bounds"]["max"] == [80.0 * metres, 50.0 * metres, 30.0 * metres]
+    # mesh-info.md: the lines are counted on the mesh at the case's scale.
+    status, refused = prepare(capsys, path, "crm-hl.meshinfo.json")
+    assert (status == 0) == (unit == "m")
+    if unit != "m":
+        assert "E0212" in refused
+    mesh_info = tmp_path / "scaled.meshinfo.json"
+    mesh_info.write_text(json.dumps(prepared(mesh_document("crm-hl"), scale=metres)))
+    status, document = prepare(capsys, path, mesh_info)
+    assert status == 0
+    jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
+    assert document["mesh"]["scale"] == metres
+    autan.solver_input.SolverInput.model_validate(document)
+    with pytest.raises(ValidationError):  # a scale that is not the case's unit
+        autan.solver_input.SolverInput.model_validate(
+            document | {"mesh": document["mesh"] | {"scale": 2 * metres}}
+        )
+    # Every other length carries its own unit: the reference length stays 7 m.
+    assert document["monitors"][0]["ref_length"] == pytest.approx(7.0)
+    in_metres = autan.load(write_case(CRM_HL, "metres.py")).spec
+    assert (case.spec.hash() == in_metres.hash()) == (unit == "m")
+
+
+@pytest.mark.parametrize("mode", ["none", "run", "ranks"])
+def test_reproducibility_reaches_the_runtime_and_the_hash(
+    mode: str,
+    write_case: Callable[..., Path],
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    body = CRM_HL.replace("autan.SA())", f"autan.SA(), reproducibility={mode!r})")
+    case = write_case(body, name=f"{mode}.py")
+    spec = autan.load(case).spec
+    copy = tmp_path / "copy.toml"
+    copy.write_text(autan.load(case).to_toml())
+    assert autan.load(copy).spec == spec
+    assert (spec.hash() == autan.load(write_case(CRM_HL, name="default.py")).spec.hash()) == (
+        mode == "run"  # the default
+    )
+    assert main(["prepare", str(case), "--mesh-info", str(FIXTURES / "crm-hl.meshinfo.json")]) == 0
+    document = json.loads(capsys.readouterr().out)
+    jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
+    assert document["reproducibility"] == mode
+
+
+def test_the_runtime_mode_is_the_case_s(
+    write_case: Callable[..., Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    case = write_case(CRM_HL)
+    assert main(["prepare", str(case), "--mesh-info", str(FIXTURES / "crm-hl.meshinfo.json")]) == 0
+    document = json.loads(capsys.readouterr().out)
+    document["reproducibility"] = "none"  # the embedded case says "run"
+    with pytest.raises(ValidationError, match="reproducibility"):
+        autan.solver_input.SolverInput.model_validate(document)
+
+
+@pytest.mark.parametrize("linear_solver", ["multigrid", "gauss-seidel", "lines"])
+def test_the_linear_solver_is_a_steady_choice(
+    write_case: Callable[..., Path],
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    linear_solver: str,
+) -> None:
+    body = CRM_HL + f"case.time = autan.Steady(linear_solver='{linear_solver}')\n"
+    case = write_case(body)
+    copy = tmp_path / "copy.toml"
+    copy.write_text(autan.load(case).to_toml())
+    assert autan.load(copy).spec == autan.load(case).spec
+    assert main(["prepare", str(case), "--mesh-info", str(FIXTURES / "crm-hl.meshinfo.json")]) == 0
+    document = json.loads(capsys.readouterr().out)
+    validator = jsonschema.Draft202012Validator(json_schema("solver-input"))
+    validator.validate(document)
+    assert document["time"]["linear_solver"] == linear_solver
+    unsteady = {"kind": "unsteady", "steps": 10, "dt": 1e-3, "cfl": None, "average_from": None}
+    with pytest.raises(jsonschema.ValidationError):  # an unsteady run has no linear solver choice
+        validator.validate(document | {"time": unsteady | {"linear_solver": "multigrid"}})
+
+
+@pytest.mark.parametrize("names", ["long", "short"])
+@pytest.mark.parametrize("repeats", ["monitors", "point vortex"])
+def test_the_input_stays_within_the_size_its_plan_counts(
+    repeats: str, names: str, tmp_path: Path, mesh_variant: Callable[..., autan.MeshInfo]
+) -> None:
+    # plan.md: the solver input as `autan prepare` writes it is at most the plan's "solver
+    # input". Long: every free text at its 4096-byte bound in control characters, which JSON
+    # escapes 6 times, on 256 walls and 64 cell zones whose names 8 monitors or a point vortex
+    # repeat. Short: 1024 walls of a few characters, which 1024 monitors or the point vortices
+    # of 1024 farfield zones repeat: each repeated name costs its list formatting more than its
+    # text, and the repeats outgrow the 1 KiB a zone's and a monitor's entry are counted.
+    walls_n, monitors_n = (256, 8) if names == "long" else (1024, 1024)
+
+    def long(tag: str) -> str:
+        return "\x01" * (4096 - len(tag)) + tag if names == "long" else tag
+
+    def rename(document: dict[str, Any]) -> None:
+        zones = document["boundary_zones"]
+        walls = [z for z in zones if z["type"] == "wall"]
+        faces = sum(z["faces"] for z in walls)
+        split = [
+            {
+                "name": long(f"wall-{i}"),
+                "type": "wall",
+                "native_type": None,
+                "faces": faces // walls_n,
+            }
+            for i in range(walls_n)
+        ]
+        split[0]["faces"] += faces % walls_n
+        others = [z | {"name": long(f"{z['type']}-{z['name']}")} for z in zones if z not in walls]
+        if names == "short":  # as many farfield zones as walls, each repeating every wall
+            far = [z for z in others if z["type"] == "farfield"]
+            total = sum(z["faces"] for z in far)
+            others = [z for z in others if z["type"] != "farfield"] + [
+                {
+                    "name": f"farfield-{i}",
+                    "type": "farfield",
+                    "native_type": None,
+                    "faces": total // walls_n + (total % walls_n if i == 0 else 0),
+                }
+                for i in range(walls_n)
+            ]
+        document["boundary_zones"] = split + others
+        cells = document["counts"]["cells"]
+        document["cell_zones"] = [
+            {"name": long(f"fluid-{i}"), "type": None, "native_type": None, "cells": cells // 64}
+            for i in range(64)
+        ]
+        document["cell_zones"][0]["cells"] += cells % 64
+
+    mesh = mesh_variant("crm-hl", rename)
+    place_meshes(tmp_path)
+    case = autan.load(EXAMPLES / "crm_hl.py").spec.document()
+    case["name"] = long("case")
+    case["physics"]["gas"]["name"] = long("gas")
+    farfield: dict[str, Any] = {"kind": "farfield"}
+    if repeats == "point vortex":
+        farfield["point_vortex"] = {"surfaces": "*wall-*", "center": ["0 m", "0 m", "0 m"]}
+        case["monitors"] = []
+    else:
+        case["monitors"] = [
+            {**case["monitors"][0], "name": long(f"forces-{i}"), "surfaces": "*"}
+            for i in range(monitors_n)
+        ]
+    case["boundaries"] = [
+        {"zones": "*wall-*", "condition": {"kind": "wall"}},
+        {"zones": "*farfield-*", "condition": farfield},
+    ]
+    path = tmp_path / "case.json"
+    path.write_text(json.dumps(case))
+    loaded = autan.load(path)
+    devices = autan.Devices(kind="cuda", count=1)
+
+    document = autan.solver_input.build(loaded, mesh, devices=devices).document()
+    written = json.dumps(document, indent=2) + "\n"
+
+    bound = {c.name: c for c in loaded.plan(mesh).memory.components}["solver input"]
+    assert len(written.encode()) <= bound.bytes_host

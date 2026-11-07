@@ -8,6 +8,7 @@ in their storage type before converting. Backends emit loops around these bodies
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from autan_codegen import dsl
@@ -39,6 +40,7 @@ class Emitter:
 
     header_name: str
     line_directives: bool = True
+    source_root: Path | None = None  # #line names the sources under it relative to it
 
     def __post_init__(self) -> None:
         self.lines: list[str] = []
@@ -48,7 +50,15 @@ class Emitter:
 
     def source_line(self, line: int, path: str) -> None:
         if self.line_directives and line > 0:
-            self.lines.append(f'#line {line} "{path}"')
+            self.lines.append(f'#line {line} "{self.shown(path)}"')
+
+    def shown(self, path: str) -> str:
+        p = Path(path)
+        if self.source_root is not None and p.is_absolute():
+            base = self.source_root.resolve()
+            if p.is_relative_to(base):
+                return p.relative_to(base).as_posix()
+        return path
 
     def restore_line(self) -> None:
         if self.line_directives:
@@ -71,10 +81,11 @@ def emit_function(
         for k, t in enumerate(sig_types)
         for c in range(t.size)
     ]
-    params.append("typename P::compute* __restrict__ out" if n_out else "typename P::compute*")
+    ct = f"typename P::{fn.compute}"
+    params.append(f"{ct}* __restrict__ out" if n_out else f"{ct}*")
     e.w("template <class P>")
     e.w(f"AUTAN_HD inline void {name or fn.name}({', '.join(params)}) {{")
-    e.w("  using C = typename P::compute;")
+    e.w(f"  using C = {ct};")
     body_lines(e, fn, indent="  ")
     for k, o in enumerate(fn.outputs):
         e.w(f"  out[{k}] = v{o};")
@@ -150,6 +161,24 @@ def at(d: dsl.Dataset | dsl.Parameter, index: str, c: int, layout: str = "soa") 
     return f"d.{d.name}[offset_t({c}) * {stride(d)} + ({index})]" if c else f"d.{d.name}[{index}]"
 
 
+def incidence_loop(indent: str) -> str:
+    """Opening of the loop over the incidences k of cell c, in CSR or sliced layout
+    (Topology::incidence_stride): the same incidences in the same order."""
+    return (
+        f"{indent}for (offset_t k = d.topo.cell_face_offsets[c], kn = d.topo.incidence_stride == 1 "
+        "? d.topo.cell_face_offsets[c + 1] : d.topo.cell_face_offsets[c] + "
+        "offset_t(d.topo.incidence_length[c]) * d.topo.incidence_stride; "
+        "k < kn; k += d.topo.incidence_stride) {"
+    )
+
+
+def at_dynamic(d: dsl.Dataset, index: str, comp: str, layout: str = "soa") -> str:
+    """`at` with a component index computed at run time."""
+    if layout == "aos":
+        return f"d.{d.name}[offset_t({d.type.size}) * ({index}) + {comp}]"
+    return f"d.{d.name}[offset_t{comp} * {stride(d)} + ({index})]"
+
+
 def rel_datasets(m: Module) -> set[int]:
     """Ids of the datasets some body reads through rel(), in any loop of the module."""
     out: set[int] = set()
@@ -168,6 +197,10 @@ def rel_datasets(m: Module) -> set[int]:
                         out.add(id(b.dataset))
                         if b.boundary is not None:
                             out.add(id(b.boundary))
+    # Members of a swapped pair (a reversed face reads one for the other) share their storage.
+    for name, other in SWAPPED.items():
+        if id(getattr(dsl.geometry, name)) in out:
+            out.add(id(getattr(dsl.geometry, other)))
     return out
 
 
@@ -201,18 +234,41 @@ def emit_data_struct(e: Emitter, m: Module) -> None:
     e.w()
 
 
+# Built-in face geometry that changes with the face's orientation: negated, or swapped in pairs.
+ORIENTED = {"face_area", "face_normal", "face_moment"}
+SWAPPED = {"face_r_left": "face_r_right", "face_r_right": "face_r_left"}
+
+
 def call_args(
     sig: Signature,
     bindings: dict[str, dsl.Binding],
     index_of: dict[str, str],
     skip: int = 0,
     layout: str = "soa",
+    reversible: bool = False,
 ) -> list[str]:
-    """Loads of each scalar argument; `index_of[via]` is the index expression of that binding."""
+    """Loads of each scalar argument; `index_of[via]` is the index expression of that binding.
+    With `reversible`, face geometry is read in the face's global orientation when the C++
+    boolean `rev` holds (Topology::face_reversed)."""
     out = []
     for name, t in zip(sig.names[skip:], sig.types[skip:], strict=True):
         b = bindings[name]
         for c in range(t.size):
+            if b.via in ("near", "far", "on_boundary"):
+                zero = f"{ctype(t.role)}(0)"
+                if b.via == "on_boundary":
+                    out.append(f"(across ? {zero} : {at(b.dataset, 'f', c, layout)})")
+                    continue
+                # Half 0 of the face's (2, ...) data for its left cell, half 1 for its right one,
+                # in the face's global orientation (Topology::face_reversed).
+                left = (
+                    "(d.topo.owner[f] == c) != "
+                    "(d.topo.face_reversed != nullptr && d.topo.face_reversed[f] != 0)"
+                )
+                first = left if b.via == "near" else f"!({left})"
+                comp = f"(({first}) ? {c} : {t.size + c})"
+                out.append(f"(across ? {at_dynamic(b.dataset, 'f', comp, layout)} : {zero})")
+                continue
             if b.via == "other":
                 bnd = (
                     at(b.boundary, "f", c, layout)
@@ -229,7 +285,15 @@ def call_args(
                     and "face" in index_of
                 ):
                     via = "face"
-                out.append(at(b.dataset, index_of[via], c, layout))
+                load = at(b.dataset, index_of[via], c, layout)
+                ds = b.dataset
+                if reversible and isinstance(ds, dsl.Dataset) and ds.geometry:
+                    if ds.name in ORIENTED:
+                        load = f"(rev ? -{load} : {load})"
+                    elif ds.name in SWAPPED:
+                        other = getattr(dsl.geometry, SWAPPED[ds.name])
+                        load = f"(rev ? {at(other, index_of[via], c, layout)} : {load})"
+                out.append(load)
     return out
 
 
@@ -243,9 +307,11 @@ def unique_bodies(m: Module) -> list[tuple[Function, Signature]]:
     return out
 
 
-def emit_common_header(m: Module, line_directives: bool = True) -> str:
+def emit_common_header(
+    m: Module, line_directives: bool = True, source_root: Path | None = None
+) -> str:
     """`<module>.hpp`: the Data struct and every body of the module."""
-    e = Emitter(f"{m.name}.hpp", line_directives)
+    e = Emitter(f"{m.name}.hpp", line_directives, source_root)
     e.w(f"// Generated by autan_codegen from {m.path.name}. Do not edit.")
     e.w("#pragma once")
     e.w('#include "autan/kernels/runtime.hpp"')

@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { X } from "lucide-react";
 import { motion } from "motion/react";
 import type { Run, RunSummary } from "../../api/contracts";
+import { devicesLabel } from "../../api/devices";
 import { formatCount } from "../run/format";
 import { Kbd } from "../ui/Kbd";
 import { RelativeTime } from "../ui/RelativeTime";
@@ -34,7 +35,7 @@ export function Peek({
     ["Mach", settings?.mach ?? "—"],
     ["Re", settings?.re != null ? settings.re.toExponential(2) : "—"],
     ["Turbulence", settings?.turbulence ?? "—"],
-    ["Devices", `${run.devices.count}× ${run.devices.kind} · ${run.precision}`],
+    ["Devices", `${devicesLabel(run.devices)} · ${run.precision}`],
   ];
   return (
     <motion.aside

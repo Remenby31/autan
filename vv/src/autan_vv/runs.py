@@ -26,18 +26,22 @@ from autan.results import (
     RunWriter,
     Solver,
     field_names,
-    identity,
     iso,
     residual_names,
+    run_identity,
     run_metadata,
     utc_now,
 )
-from autan.version import COMMIT, __version__
+from autan.schema import Steady
+from autan.version import COMMIT, DIRTY, __version__
 
 from autan_vv.errors import VVError
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from autan.errors import Diagnostic
+    from autan.results import Convergence, StartInfo
 
     from autan_vv.meshes.facemesh import FaceMesh, FloatArray
 
@@ -51,10 +55,15 @@ KINDS = {
 NORMALIZED = {"wall": "wall", "pressure-far-field": "farfield"}
 
 
-def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
+def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str, scale: float = 1.0) -> autan.MeshInfo:
     """The MeshInfo the core reader reports for `mesh` stored at `path` (docs/contracts/mesh-info.md).
 
-    Gmsh files carry no boundary types (`type: null`); Fluent files carry theirs.
+    Gmsh files carry no boundary types (`type: null`); Fluent files carry theirs. The derived counts
+    of a run's memory estimate need the core, so they are upper bounds: every cell in lines of every
+    length (RCM order, at `scale` metres per mesh unit, the case's `mesh_unit`), a gradient
+    stencil of each cell's face neighbours and theirs, and vertex rings of a cell's every face
+    node's every face's two sides. The multigrid hierarchy is the mesh alone (no coarsening declared). Fixture meshes have no
+    periodic pairs. Nothing reads these counts from a fixture run.
     """
     kinds = mesh.cell_kinds or ("polyhedron",) * mesh.n_cells
     by_type = dict.fromkeys(KINDS.values(), 0)
@@ -71,6 +80,16 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
     faces_per_cell = np.bincount(
         np.concatenate([mesh.owner, mesh.neighbour]), minlength=mesh.n_cells
     )
+    # A cell's vertex stencil holds at most the two sides of every face at each of its faces'
+    # nodes; its rings at most that many times the widest stencil per ring.
+    at_node = np.bincount(mesh.face_nodes, minlength=mesh.points.shape[0])
+    per_face = np.add.reduceat(2 * at_node[mesh.face_nodes], mesh.face_offsets[:-1])
+    vertex = np.bincount(mesh.owner, per_face, mesh.n_cells) + np.bincount(
+        mesh.neighbour, per_face[:ni], mesh.n_cells
+    )
+    widest = int(vertex.max())
+    vertex_entries = int(vertex.sum())
+    band = (mesh.n_cells + vertex_entries) * widest
     typed = mesh_format == "fluent"
     document = {
         "schema": "autan.mesh-info/1",
@@ -78,12 +97,32 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
             "path": str(path),
             "format": mesh_format,
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "bytes": path.stat().st_size,
+            "logical_bytes": path.stat().st_size,
+            "descriptor_bytes": 0,
+            "zone_names_bytes": 0,
+            "filtered_bytes": 0,
+            "cgns_nodes": 0,
+            "point_list_ids": 0,
+        },
+        "groups": [],
+        "groups_source": None,
+        "bounds": {
+            "min": [float(x) for x in mesh.points.min(axis=0)],
+            "max": [float(x) for x in mesh.points.max(axis=0)],
         },
         "counts": {
             "cells": mesh.n_cells,
             "faces": mesh.n_faces,
             "nodes": int(mesh.points.shape[0]),
+            "source_nodes": int(mesh.points.shape[0]),
+            "face_nodes": len(mesh.face_nodes),
             "cells_by_type": by_type,
+            "stencil_entries": int(np.sum(1 + faces_per_cell * int(faces_per_cell.max()))),
+            "vertex_stencil_entries": vertex_entries,
+            "band_entries": band,
+            "boundary_fit_entries": band * (1 + widest),
+            "periodic_ghosts": 0,
         },
         "boundary_zones": [
             {
@@ -102,6 +141,13 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str) -> autan.MeshInfo:
                 np.degrees(np.arccos(np.clip(cos.min(), -1.0, 1.0)))
             ),
             "max_faces_per_cell": int(faces_per_cell.max()),
+            "lines": {
+                "order": "rcm",
+                "scale": scale,
+                "cells": mesh.n_cells,
+                "long_cells": mesh.n_cells,
+            },
+            "multigrid": {"cells_by_level": [mesh.n_cells], "edges_by_level": [mesh.n_interior]},
         },
     }
     return autan.MeshInfo.from_document(document, autan.Location(file=str(path)))
@@ -223,12 +269,19 @@ def write_run(
     *,
     time: float | None = None,
     status: str = "converged",
+    residuals: list[dict[str, float]] | None = None,
+    start: StartInfo | None = None,
+    convergence: Convergence | None = None,
+    diagnostics: tuple[Diagnostic, ...] = (),
 ) -> autan.Results:
     """Write one finished run of `case` on `mesh` with the given cell fields; return it opened.
 
     `fields` must hold exactly the fields results.md requires for the case's physics, one value per
-    cell in mesh order. The history holds one line with unit residuals. Cases with monitors or time
-    averaging are refused (V0731); runs are marked non-deterministic, since their fields are given.
+    cell in mesh order. `residuals` gives the history, one line per iteration (after
+    `start.iterations` for a continuation); without it a steady `converged` run holds unit
+    residuals then the same dropped `residual_orders`, any other run one line of unit residuals.
+    `start`, `convergence` and `diagnostics` go to run.json as given. Cases with monitors or time
+    averaging are refused (V0731).
     """
     spec = case.spec
     if spec.monitors or getattr(spec.time, "average_from", None) is not None:
@@ -247,44 +300,66 @@ def write_run(
         raise VVError(msg, code="V0731")
     started = utc_now()
     # Always the fake backend: fixture fields are given, never computed, so they are never evidence.
-    solver = Solver(version=__version__, commit=COMMIT, backend="fake")
+    solver = Solver(
+        version=__version__, commit=COMMIT, dirty=DIRTY, backend="fake", binary_sha256=None
+    )
     devices = Devices(kind="cpu", count=1)
+    groups = info.groups_source.sha256 if info.groups_source else None
     run = RunInfo(
         run_id=RunWriter.new_run_id(started),
-        identity=identity(spec.hash(), info.source.sha256, solver, spec.physics.precision, devices),
+        identity="0" * 64,
         status="running",
         case=CaseIdentity(name=spec.name, sha256=spec.hash()),
-        mesh=MeshIdentity(path=str(case.mesh_path), sha256=info.source.sha256),
+        mesh=MeshIdentity(
+            path=str(case.mesh_path), sha256=info.source.sha256, groups_sha256=groups
+        ),
         solver=solver,
         precision=spec.physics.precision,
-        # The fields come from the caller, not from the identified configuration.
-        deterministic=False,
         devices=devices,
+        cell_order="input",
         started=iso(started),
         finished=None,
         iterations=0,
         time=None,
         averaging=None,
+        start=start,
         diagnostics=(),
     )
-    # oracle-state conditions: the face-state files, archived as results.md#run-directory says.
+    run = run.model_copy(update={"identity": run_identity(run)})
+    # oracle-state conditions and the initial state: their files, archived as
+    # results.md#run-directory says.
     states = {
         rule.condition.sha256: case.resolve(rule.condition.path).read_bytes()
         for rule in spec.boundaries
         if rule.condition.kind == "oracle-state"
     }
-    writer = RunWriter(runs, run, spec, info, states=states)
-    writer.append(
-        {
-            "iteration": 1,
-            "time": time,
-            "residuals": dict.fromkeys(residual_names(spec), 1.0),
-            "monitors": {},
-        }
+    if spec.initial_state is not None:
+        states[spec.initial_state.sha256] = case.resolve(spec.initial_state.path).read_bytes()
+    # A verified run keeps its manufactured solution beside it, as autan-run writes it (E0701).
+    manufactured = (
+        case.resolve(spec.verification.manufactured.path).read_bytes()
+        if spec.verification is not None
+        else None
     )
-    final = writer.info.model_copy(update={"status": status, "iterations": 1, "time": time})
+    writer = RunWriter(runs, run, spec, info, manufactured=manufactured, states=states)
+    if residuals is None:
+        ones = dict.fromkeys(residual_names(spec), 1.0)
+        residuals = [ones]
+        if isinstance(spec.time, Steady) and status == "converged":
+            residuals.append(dict.fromkeys(ones, 10.0**-spec.time.residual_orders))
+    first = start.iterations if start is not None and start.mode == "continue" else 0
+    for k, line in enumerate(residuals):
+        writer.append({"iteration": first + k + 1, "time": time, "residuals": line, "monitors": {}})
+    changes = {
+        "status": status,
+        "iterations": first + len(residuals),
+        "time": time,
+        "convergence": convergence,
+        "diagnostics": diagnostics,
+    }
+    final = writer.info.model_copy(update=changes)
     staging = writer.path / ".solution.cgns.tmp"
     _write_solution(staging, mesh, plan, final, {k: fields[k] for k in field_names(spec)})
     staging.rename(writer.path / "solution.cgns")
-    writer.finish(status=status, iterations=1, time=time)
+    writer.finish(**changes)
     return autan.Results.open(writer.path)

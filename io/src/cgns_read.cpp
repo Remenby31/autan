@@ -9,13 +9,14 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
-#include <cgns_io.h>
 #include <cgnslib.h>
 #include <nlohmann/json.hpp>
 
@@ -23,6 +24,8 @@
 #include "autan/core/error.hpp"
 #include "autan/io/cgns.hpp"
 #include "cgns_util.hpp"
+#include "self_contained.hpp"
+#include "text_limit.hpp"
 
 namespace autan::io {
 
@@ -49,33 +52,6 @@ void ok(int status, const std::string& what, const std::string& name = "") {
 }
 [[noreturn]] void malformed(const std::string& path, const std::string& what) {
   throw Error(ErrorCode::io_malformed, path + ": " + what);
-}
-
-// A mesh hash covers one file: links to other files are rejected (E0134).
-void reject_external_links(int cgio, double root, const std::string& path) {
-  std::vector<double> pending{root};
-  std::vector<double> children;
-  while (!pending.empty()) {
-    const double node = pending.back();
-    pending.pop_back();
-    int length = 0;
-    if (cgio_is_link(cgio, node, &length) != CG_OK) malformed(path, "unreadable node");
-    if (length > 0) {
-      int file_length = 0, name_length = 0;
-      cgio_link_size(cgio, node, &file_length, &name_length);
-      if (file_length > 0) {
-        throw Error(ErrorCode::io_external_reference, path + ": link to another file");
-      }
-      continue;
-    }
-    int count = 0;
-    cgio_number_children(cgio, node, &count);
-    if (count == 0) continue;
-    children.resize(at(count));
-    int got = 0;
-    cgio_children_ids(cgio, node, 1, count, &got, children.data());
-    pending.insert(pending.end(), children.begin(), children.begin() + got);
-  }
 }
 
 // docs/contracts/mesh-info.md, "Normalized boundary types", CGNS column.
@@ -124,6 +100,32 @@ bool is_face_type(CGNS_ENUMT(ElementType_t) type) {
   return type == CGNS_ENUMV(TRI_3) || type == CGNS_ENUMV(QUAD_4);
 }
 
+// An element section is read in chunks of at most chunk_elements offsets (32 KiB) and
+// chunk_entries connectivity entries (1 MiB), whatever the section's size: what reading a section
+// costs beside the elements kept is a constant, and nothing for the points and edges skipped.
+constexpr std::size_t chunk_elements = 4096;
+constexpr std::int64_t chunk_entries = std::int64_t{128} * 1024;
+
+// The count of `tree`, E0133 beyond its nodes, depth or data read at open, naming the commonest
+// label for too many nodes.
+TreeCount bounded_nodes(const CgioTree& tree, const fs::path& path) {
+  const TreeCount count = count_nodes(tree);
+  if (count.eager_bytes > max_cgns_eager_bytes) {
+    unsupported(path.string(), "more than " + std::to_string(max_cgns_eager_bytes) +
+                                   " bytes of data read when the file opens");
+  }
+  if (count.too_deep) {
+    unsupported(path.string(), "a tree deeper than " + std::to_string(max_cgns_depth) + " levels");
+  }
+  if (count.nodes > max_cgns_nodes) {
+    const auto most =
+        std::ranges::max_element(count.labels, {}, [](const auto& l) { return l.second; });
+    unsupported(path.string(), "more than " + std::to_string(max_cgns_nodes) + " nodes, " +
+                                   std::to_string(most->second) + " of them " + most->first);
+  }
+  return count;
+}
+
 bool is_ignored_type(CGNS_ENUMT(ElementType_t) type) {
   return type == CGNS_ENUMV(NODE) || type == CGNS_ENUMV(BAR_2);
 }
@@ -133,7 +135,6 @@ bool is_ignored_type(CGNS_ENUMT(ElementType_t) type) {
 struct Element {
   CGNS_ENUMT(ElementType_t) type = CGNS_ENUMV(ElementTypeNull);
   std::vector<cgsize_t> connectivity;
-  std::string family;
 };
 
 class Reader {
@@ -141,21 +142,11 @@ class Reader {
   explicit Reader(const fs::path& path)
       : path_(path.string()), file_((check_links(path), path), CG_MODE_READ) {}
 
-  // Scans the raw node tree before the library resolves any link.
+  // E0134 before the library resolves any link or reads any data; E0133 before it allocates for
+  // more nodes than max_cgns_nodes.
   static void check_links(const fs::path& path) {
-    int cgio = 0;
-    if (cgio_open_file(path.string().c_str(), CGIO_MODE_READ, CGIO_FILE_NONE, &cgio) != CG_OK) {
-      throw Error(ErrorCode::io_cannot_open, "cannot open '" + path.string() + "' as CGNS");
-    }
-    double root = 0;
-    cgio_get_root_id(cgio, &root);
-    try {
-      reject_external_links(cgio, root, path.string());
-    } catch (...) {
-      cgio_close_file(cgio);
-      throw;
-    }
-    cgio_close_file(cgio);
+    reject_outside_data(path);
+    (void)bounded_nodes(CgioTree(path), path);
   }
 
   MeshInput read() {
@@ -166,6 +157,7 @@ class Reader {
     char name[33];
     int cell_dim = 0, phys_dim = 0;
     ok(cg_base_read(fn_, 1, name, &cell_dim, &phys_dim), "read base");
+    base_name_ = name;
     if (cell_dim != 3) unsupported(path_, "a base of cell dimension " + std::to_string(cell_dim));
     int zones = 0;
     ok(cg_nzones(fn_, 1, &zones), "count zones");
@@ -175,12 +167,17 @@ class Reader {
     if (zone_type != CGNS_ENUMV(Unstructured)) unsupported(path_, "a structured zone");
     cgsize_t size[3] = {0, 0, 0};
     ok(cg_zone_read(fn_, 1, 1, name, size), "read zone");
+    zone_name_ = name;
     n_nodes_ = size[0];
     n_cells_ = size[1];
 
     read_families();
     read_coordinates();
+    mark_referenced_sections();
     read_sections();
+    // The ids that chose which faces to keep: released before the point sets are read for zones.
+    referenced_ids_ = {};
+    referenced_ranges_ = {};
     read_bcs();
     read_connectivity();
     read_subregions();
@@ -189,6 +186,7 @@ class Reader {
   }
 
  private:
+  struct Section;
   void read_families() {
     int n = 0;
     ok(cg_nfamilies(fn_, 1, &n), "count families");
@@ -259,6 +257,15 @@ class Reader {
   void read_sections() {
     int n = 0;
     ok(cg_nsections(fn_, 1, 1, &n), "count sections");
+    const CgioTree tree(fn_);
+    std::map<std::string, double> section_nodes;
+    if (const auto base = tree.child(tree.root(), "CGNSBase_t", base_name_)) {
+      if (const auto zone = tree.child(*base, "Zone_t", zone_name_)) {
+        for (const double id : tree.children(*zone)) {
+          if (tree.label(id) == "Elements_t") section_nodes.emplace(tree.name(id), id);
+        }
+      }
+    }
     for (int s = 1; s <= n; ++s) {
       char name[33];
       CGNS_ENUMT(ElementType_t) type{};
@@ -267,60 +274,114 @@ class Reader {
       ok(cg_section_read(fn_, 1, 1, s, name, &type, &start, &end, &boundary, &parent_flag),
          "read section");
       if (start < 1 || end < start) malformed(path_, std::string("section '") + name + "' range");
-      std::string family;
-      ok(cg_goto(fn_, 1, "Zone_t", 1, "Elements_t", s, "end"), "go to section", name);
-      char family_name[CG_MAX_GOTO_DEPTH * 33 + 1];
-      if (cg_famname_read(family_name) == CG_OK) family = family_name;
-
-      cgsize_t data_size = 0;
-      ok(cg_ElementDataSize(fn_, 1, 1, s, &data_size), "size section", name);
-      std::vector<cgsize_t> connectivity(at(data_size));
-      std::vector<cgsize_t> offsets;
       const auto count = at(end - start + 1);
+      // A section of boundary faces no point set names labels nothing: the faces come from the
+      // cells, so it is skipped as points and edges are; beside NGON_n faces, which are the
+      // faces, every standard face is.
+      const bool unused_faces =
+          is_face_type(type) &&
+          (ngon_faces_ || !referenced_sections_[static_cast<std::size_t>(s - 1)]);
+      if (is_ignored_type(type) || unused_faces) {
+        // Points, edges and faces the reader never uses: their ids resolve, their nodes are not
+        // read, and they label nothing (a skipped face answers as an edge, as in MIXED sections).
+        const auto as = is_ignored_type(type) ? type : CGNS_ENUMV(BAR_2);
+        sections_.push_back(Section{.start = start,
+                                    .count = count,
+                                    .elements = {},
+                                    .skipped = {},
+                                    .ignored = Element{.type = as, .connectivity = {}}});
+        continue;
+      }
+
+      int fixed_nodes = 0;
       const bool poly =
           type == CGNS_ENUMV(MIXED) || type == CGNS_ENUMV(NGON_n) || type == CGNS_ENUMV(NFACE_n);
-      if (poly) {
-        offsets.resize(count + 1);
-        ok(cg_poly_elements_read(fn_, 1, 1, s, connectivity.data(), offsets.data(), nullptr),
-           "read section", name);
-      } else {
-        ok(cg_elements_read(fn_, 1, 1, s, connectivity.data(), nullptr), "read section", name);
-        int nodes = 0;
-        ok(cg_npe(type, &nodes), "size element", name);
-        if (nodes <= 0 || at(nodes) * count != connectivity.size()) {
+      if (!poly) {
+        ok(cg_npe(type, &fixed_nodes), "size element", name);
+        if (fixed_nodes <= 0)
           unsupported(path_, std::string("element type ") + ElementTypeName[type]);
-        }
-        offsets.resize(count + 1);
-        for (std::size_t e = 0; e <= count; ++e) offsets[e] = static_cast<cgsize_t>(e) * nodes;
       }
-      check_offsets(offsets, connectivity.size(), name);
-      Section& section =
-          sections_.emplace_back(Section{.start = start, .elements = std::vector<Element>(count)});
-      for (std::size_t e = 0; e < count; ++e) {
-        Element& element = section.elements[e];
-        auto first = connectivity.begin() + offsets[e];
-        const auto last = connectivity.begin() + offsets[e + 1];
-        element.type = type;
-        if (type == CGNS_ENUMV(MIXED)) {
-          const cgsize_t code = *first;
-          ++first;
-          int nodes = 0;
-          if (code <= CGNS_ENUMV(NODE) || code >= CGNS_ENUMV(MIXED) ||
-              cg_npe(static_cast<CGNS_ENUMT(ElementType_t)>(code), &nodes) != CG_OK || nodes <= 0 ||
-              last - first != nodes) {
-            malformed(path_, std::string("MIXED element of section '") + name + "' is invalid");
-          }
-          element.type = static_cast<CGNS_ENUMT(ElementType_t)>(code);
+      const auto node = section_nodes.find(name);
+      if (node == section_nodes.end()) malformed(path_, std::string("section '") + name + "'");
+      const auto connectivity_node = tree.child(node->second, "DataArray_t", "ElementConnectivity");
+      if (!connectivity_node) {
+        malformed(path_, std::string("section '") + name + "' without ElementConnectivity");
+      }
+      const double connectivity = *connectivity_node;
+      double offsets = 0.0;  // read only for poly sections
+      if (poly) {
+        const auto offsets_node = tree.child(node->second, "DataArray_t", "ElementStartOffset");
+        // ElementStartOffset came with CGNS 4.0; earlier MIXED and NGON sections lack it.
+        if (!offsets_node) {
+          unsupported(path_, std::string("section '") + name + "' without ElementStartOffset");
         }
-        element.connectivity.assign(first, last);
-        element.family = family;
-        classify(element, name);
+        offsets = *offsets_node;
+      }
+      const std::int64_t entries = tree.values(connectivity);
+      if (!poly && entries != std::int64_t{fixed_nodes} * static_cast<std::int64_t>(count)) {
+        malformed(path_, std::string("section '") + name + "' connectivity size");
+      }
+      if (poly && tree.values(offsets) != static_cast<std::int64_t>(count) + 1) {
+        inconsistent_offsets(name);
+      }
+      Section& section = sections_.emplace_back(
+          Section{.start = start,
+                  .count = count,
+                  .elements = {},
+                  .skipped = {},
+                  .ignored = Element{.type = CGNS_ENUMV(BAR_2), .connectivity = {}}});
+      // A section of faces, or a MIXED one, keeps the faces a point set names.
+      pruning_ = type == CGNS_ENUMV(MIXED) || is_face_type(type);
+      if (!pruning_) section.elements.resize(count);
+      // The section in chunks of at most chunk_elements elements and chunk_entries connectivity
+      // entries, so that reading costs a constant beside what is kept; a larger element is read
+      // into its own storage.
+      std::vector<cgsize_t> bounds(chunk_elements + 1), data;
+      std::int64_t previous = 0;  // the offset that ends the elements read so far
+      for (std::size_t first = 0; first < count; first += chunk_elements) {
+        const std::size_t size = std::min(chunk_elements, count - first);
+        const std::span<cgsize_t> b(bounds.data(), size + 1);
+        if (poly) {
+          tree.read_integers(offsets, static_cast<std::int64_t>(first), b);
+        } else {
+          for (std::size_t e = 0; e <= size; ++e)
+            b[e] = static_cast<std::int64_t>(first + e) * fixed_nodes;
+        }
+        // ElementStartOffset starts at 0, gives every element at least one entry and ends at
+        // the connectivity size, checked before anything is allocated from it.
+        if (b[0] != previous || (first + size == count && b[size] != entries))
+          inconsistent_offsets(name);
+        for (std::size_t e = 0; e < size; ++e) {
+          if (b[e + 1] <= b[e] || b[e + 1] > entries) inconsistent_offsets(name);
+        }
+        previous = b[size];
+        for (std::size_t lo = 0; lo < size;) {
+          std::size_t hi = lo + 1;
+          while (hi < size && b[hi + 1] - b[lo] <= chunk_entries) ++hi;
+          if (b[hi] - b[lo] > chunk_entries) {
+            std::vector<cgsize_t> own(static_cast<std::size_t>(b[hi] - b[lo]));
+            tree.read_integers(connectivity, b[lo], own);
+            read_element(section, type, first + lo, own, &own, name);
+            lo = hi;
+            continue;
+          }
+          data.resize(static_cast<std::size_t>(b[hi] - b[lo]));
+          tree.read_integers(connectivity, b[lo], data);
+          for (std::size_t e = lo; e < hi; ++e) {
+            read_element(
+                section, type, first + e,
+                std::span<const cgsize_t>(data).subspan(static_cast<std::size_t>(b[e] - b[lo]),
+                                                        static_cast<std::size_t>(b[e + 1] - b[e])),
+                nullptr, name);
+          }
+          lo = hi;
+        }
       }
     }
     std::ranges::sort(sections_, {}, &Section::start);
     for (std::size_t i = 1; i < sections_.size(); ++i) {
       const auto& previous = sections_[i - 1];
-      if (sections_[i].start < previous.start + static_cast<cgsize_t>(previous.elements.size())) {
+      if (sections_[i].start < previous.start + static_cast<cgsize_t>(previous.count)) {
         malformed(path_, "two sections share element ids");
       }
     }
@@ -330,16 +391,49 @@ class Reader {
     }
   }
 
-  // ElementStartOffset of a section: starts at 0, never decreases, ends at
-  // the connectivity size, and gives every element at least one entry.
-  void check_offsets(const std::vector<cgsize_t>& offsets, std::size_t size,
-                     const char* section) const {
-    bool valid = !offsets.empty() && offsets.front() == 0 && at(offsets.back()) == size;
-    for (std::size_t e = 0; valid && e + 1 < offsets.size(); ++e)
-      valid = offsets[e + 1] > offsets[e];
-    if (!valid)
-      malformed(path_,
-                std::string("ElementStartOffset of section '") + section + "' is inconsistent");
+  [[noreturn]] void inconsistent_offsets(const char* section) const {
+    malformed(path_,
+              std::string("ElementStartOffset of section '") + section + "' is inconsistent");
+  }
+
+  // Element `e` of `section`, its entries `entries`: kept, or skipped when it is a point or an
+  // edge of a MIXED section or a face that labels nothing. With `owner`, the vector `entries`
+  // views, whose storage the element takes.
+  void read_element(Section& section, CGNS_ENUMT(ElementType_t) type, std::size_t e,
+                    std::span<const cgsize_t> entries, std::vector<cgsize_t>* owner,
+                    const char* name) {
+    CGNS_ENUMT(ElementType_t) element_type = type;
+    auto first = entries.begin();
+    const auto last = entries.end();
+    if (type == CGNS_ENUMV(MIXED)) {
+      const cgsize_t code = *first;
+      ++first;
+      int nodes = 0;
+      if (code < CGNS_ENUMV(NODE) || code >= CGNS_ENUMV(MIXED) ||
+          cg_npe(static_cast<CGNS_ENUMT(ElementType_t)>(code), &nodes) != CG_OK || nodes <= 0 ||
+          last - first != nodes) {
+        malformed(path_, std::string("MIXED element of section '") + name + "' is invalid");
+      }
+      element_type = static_cast<CGNS_ENUMT(ElementType_t)>(code);
+    }
+    // Points and edges of a MIXED section, and faces no point set names (the faces come from the
+    // cells): their index alone, as in a section of them.
+    if (is_ignored_type(element_type) || (pruning_ && is_face_type(element_type) && ngon_faces_) ||
+        (pruning_ && is_face_type(element_type) &&
+         !referenced(section.start + static_cast<cgsize_t>(e)))) {
+      section.skip(e);
+      return;
+    }
+    if (pruning_) section.elements.emplace_back();
+    Element& element = pruning_ ? section.elements.back() : section.elements[e];
+    element.type = element_type;
+    if (owner != nullptr) {
+      owner->erase(owner->begin(), owner->begin() + (first - entries.begin()));
+      element.connectivity = std::move(*owner);
+    } else {
+      element.connectivity.assign(first, last);
+    }
+    classify(element, name);
   }
 
   // The element of id `id`, or null when no section holds it.
@@ -348,7 +442,8 @@ class Reader {
     if (it == sections_.begin()) return nullptr;
     const Section& section = *std::prev(it);
     const cgsize_t index = id - section.start;
-    return std::cmp_less(index, section.elements.size()) ? &section.elements[at(index)] : nullptr;
+    if (!std::cmp_less(index, section.count)) return nullptr;
+    return section.at(at(index));
   }
 
   void classify(const Element& element, const char* section) {
@@ -365,6 +460,177 @@ class Reader {
     }
   }
 
+  // Which sections a point set names: every IndexRange_t and IndexArray_t under the zone's BCs,
+  // subregions and connectivities, ranges at once and lists 2^17 ids at a time.
+  void mark_referenced_sections() {
+    int n = 0;
+    ok(cg_nsections(fn_, 1, 1, &n), "count sections");
+    std::vector<std::pair<cgsize_t, cgsize_t>> ranges;  // [start, end] of section s - 1
+    std::vector<bool> prunable;  // a section of faces or a MIXED one: pruned element by element
+    for (int s = 1; s <= n; ++s) {
+      char name[33];
+      CGNS_ENUMT(ElementType_t) type{};
+      cgsize_t start = 0, end = 0;
+      int boundary = 0, parent_flag = 0;
+      ok(cg_section_read(fn_, 1, 1, s, name, &type, &start, &end, &boundary, &parent_flag),
+         "read section");
+      ranges.emplace_back(start, end);
+      prunable.push_back(type == CGNS_ENUMV(MIXED) || is_face_type(type));
+      ngon_faces_ = ngon_faces_ || type == CGNS_ENUMV(NGON_n);
+    }
+    referenced_sections_.assign(ranges.size(), false);
+    referenced_ranges_.clear();
+    referenced_ids_.clear();
+    std::vector<std::size_t> by_start(ranges.size());
+    std::iota(by_start.begin(), by_start.end(), std::size_t{0});
+    std::ranges::sort(by_start, {}, [&](std::size_t s) { return ranges[s].first; });
+    // The sections overlapping [lo, hi] marked; whether one of them is prunable.
+    const auto mark = [&](cgsize_t lo, cgsize_t hi) {
+      bool any = false;
+      // From the last section starting at or before lo.
+      auto it = std::ranges::upper_bound(by_start, lo, {},
+                                         [&](std::size_t s) { return ranges[s].first; });
+      if (it != by_start.begin()) --it;
+      for (; it != by_start.end() && ranges[*it].first <= hi; ++it) {
+        if (ranges[*it].second < lo) continue;
+        referenced_sections_[*it] = true;
+        any = any || prunable[*it];
+      }
+      return any;
+    };
+    const CgioTree tree(fn_);
+    const auto base = tree.child(tree.root(), "CGNSBase_t", base_name_);
+    const auto zone = base ? tree.child(*base, "Zone_t", zone_name_) : std::nullopt;
+    if (!zone) return;
+    // The point sets' containers, walked twice: their lists' entries counted, then read. `visit`
+    // gets each IndexArray_t and IndexRange_t under them, descriptors aside.
+    const auto point_sets = [&](const auto& visit) {
+      std::vector<double> pending;
+      for (const double child : tree.children(*zone)) {
+        const std::string label = tree.label(child);
+        if (label == "ZoneBC_t" || label == "ZoneSubRegion_t" ||
+            label == "ZoneGridConnectivity_t") {
+          pending.push_back(child);
+        }
+      }
+      while (!pending.empty()) {
+        const double node = pending.back();
+        pending.pop_back();
+        for (const double child : tree.children(node)) {
+          const std::string label = tree.label(child);
+          if (label == "IndexArray_t" || label == "IndexRange_t") {
+            visit(child, label);
+          } else if (label != "Descriptor_t") {
+            pending.push_back(child);
+          }
+        }
+      }
+    };
+    // The listed ids are held in storage sized once, 8 bytes per entry the lists give
+    // (source.point_list_ids), so that it never grows, whatever their stored width.
+    std::int64_t entries = 0;
+    point_sets([&](double node, const std::string& label) {
+      if (label == "IndexArray_t") entries += tree.values(node);
+    });
+    referenced_ids_.reserve(static_cast<std::size_t>(entries));
+    std::vector<cgsize_t> chunk;
+    point_sets([&](double node, const std::string& label) {
+      if (label == "IndexRange_t") {
+        std::array<cgsize_t, 2> range{};
+        tree.read_integers(node, 0, range);
+        const cgsize_t lo = std::min(range[0], range[1]), hi = std::max(range[0], range[1]);
+        if (mark(lo, hi)) referenced_ranges_.emplace_back(lo, hi);
+        return;
+      }
+      const std::int64_t count = tree.values(node);
+      for (std::int64_t first = 0; first < count; first += chunk_entries) {
+        chunk.resize(static_cast<std::size_t>(std::min(chunk_entries, count - first)));
+        tree.read_integers(node, first, chunk);
+        for (const cgsize_t id : chunk) {
+          if (mark(id, id)) referenced_ids_.push_back(id);
+        }
+      }
+    });
+    std::ranges::sort(referenced_ids_);
+    referenced_ids_.erase(std::ranges::unique(referenced_ids_).begin(), referenced_ids_.end());
+    // The ranges merged, disjoint and ascending: at most one per IndexRange_t node.
+    std::ranges::sort(referenced_ranges_);
+    std::size_t kept = 0;
+    for (const auto& r : referenced_ranges_) {
+      if (kept > 0 && r.first <= referenced_ranges_[kept - 1].second) {
+        referenced_ranges_[kept - 1].second =
+            std::max(referenced_ranges_[kept - 1].second, r.second);
+      } else {
+        referenced_ranges_[kept++] = r;
+      }
+    }
+    referenced_ranges_.resize(kept);
+  }
+
+  // Whether a point set names element `id` (mark_referenced_sections), for an id of a prunable
+  // section.
+  [[nodiscard]] bool referenced(cgsize_t id) const {
+    if (std::ranges::binary_search(referenced_ids_, id)) return true;
+    const auto it =
+        std::ranges::upper_bound(referenced_ranges_, id, {}, &std::pair<cgsize_t, cgsize_t>::first);
+    return it != referenced_ranges_.begin() && std::prev(it)->second >= id;
+  }
+
+  // The dimension of the elements the point set of BC or subregion `owner` designates, as
+  // dimension_of gives it, 2 for a range (point_set judges ranges): a list is read in chunks of
+  // chunk_entries, so that a list of points or edges, which labels nothing, is never held whole.
+  // `container` is "ZoneBC_t" for a BC, empty for a subregion, which sits under the zone.
+  int listed_dimension(CGNS_ENUMT(PointSetType_t) set, const char* container, const char* owner) {
+    if (set != CGNS_ENUMV(PointList) && set != CGNS_ENUMV(ElementList)) return 2;
+    int dimension = -1;
+    each_listed(container, owner, [&](std::span<const cgsize_t> chunk) {
+      for (const cgsize_t id : chunk) dimension = merged_dimension(dimension, id, owner);
+    });
+    return dimension;
+  }
+
+  // The point list of BC or subregion `owner`, chunk_entries ids at a time (listed_dimension).
+  template <typename Visit>
+  void each_listed(const char* container, const char* owner, Visit&& visit) {
+    const CgioTree tree(fn_);
+    const auto base = tree.child(tree.root(), "CGNSBase_t", base_name_);
+    auto parent = base ? tree.child(*base, "Zone_t", zone_name_) : std::nullopt;
+    if (parent && *container != '\0') parent = tree.child(*parent, container);
+    const auto node =
+        parent ? tree.child(*parent, *container != '\0' ? "BC_t" : "ZoneSubRegion_t", owner)
+               : std::nullopt;
+    const auto list = node ? tree.child(*node, "IndexArray_t") : std::nullopt;
+    if (!list) malformed(path_, std::string("no point list in '") + owner + "'");
+    const std::int64_t n = tree.values(*list);
+    std::vector<cgsize_t> chunk;
+    for (std::int64_t first = 0; first < n; first += chunk_entries) {
+      chunk.resize(static_cast<std::size_t>(std::min(chunk_entries, n - first)));
+      tree.read_integers(*list, first, chunk);
+      visit(std::span<const cgsize_t>(chunk));
+    }
+  }
+
+  // The distinct ids of `owner`'s point list, ascending: read in chunks, made distinct before the
+  // storage would grow, which it does only for distinct ids, to twice them and a chunk. A list
+  // naming its faces many times holds them about twice, not as often as it names them.
+  std::vector<cgsize_t> listed_ids(const char* container, const char* owner) {
+    std::vector<cgsize_t> ids;
+    const auto compact = [&] {
+      std::ranges::sort(ids);
+      ids.erase(std::ranges::unique(ids).begin(), ids.end());
+    };
+    each_listed(container, owner, [&](std::span<const cgsize_t> chunk) {
+      if (ids.size() + chunk.size() > ids.capacity()) {
+        compact();
+        if (ids.size() + chunk.size() > ids.capacity())
+          ids.reserve(2 * (ids.size() + static_cast<std::size_t>(chunk_entries)));
+      }
+      ids.insert(ids.end(), chunk.begin(), chunk.end());
+    });
+    compact();
+    return ids;
+  }
+
   // Elements a point set designates: a range or a list of 1-based ids.
   std::vector<cgsize_t> point_set(CGNS_ENUMT(PointSetType_t) type, std::vector<cgsize_t> points,
                                   const std::string& owner) {
@@ -372,6 +638,12 @@ class Reader {
       if (points.size() != 2 || points[1] < points[0] || points[0] < 1) {
         malformed(path_, "invalid range in '" + owner + "'");
       }
+      // A range of points or edges labels nothing: judged id by id, never expanded.
+      int dimension = -1;
+      for (cgsize_t i = points[0]; i <= points[1]; ++i) {
+        dimension = merged_dimension(dimension, i, owner.c_str());
+      }
+      if (dimension <= 1) return {};
       std::vector<cgsize_t> ids;
       for (cgsize_t i = points[0]; i <= points[1]; ++i) ids.push_back(i);
       return ids;
@@ -398,9 +670,21 @@ class Reader {
          "read BC");
       CGNS_ENUMT(GridLocation_t) location{};
       ok(cg_boco_gridlocation_read(fn_, 1, 1, b, &location), "read BC location", name);
-      std::vector<cgsize_t> ids(at(points));
-      ok(cg_boco_read(fn_, 1, 1, b, ids.data(), nullptr), "read BC", name);
-      ids = point_set(set, std::move(ids), name);
+      if (location == CGNS_ENUMV(Vertex) && set != CGNS_ENUMV(ElementList) &&
+          set != CGNS_ENUMV(ElementRange)) {
+        unsupported(path_,
+                    std::string("BC '") + name + "' given by vertices (element point sets only)");
+      }
+      std::vector<cgsize_t> ids;
+      if (listed_dimension(set, "ZoneBC_t", name) > 1) {
+        if (set == CGNS_ENUMV(PointList) || set == CGNS_ENUMV(ElementList)) {
+          ids = listed_ids("ZoneBC_t", name);
+        } else {
+          ids.resize(at(points));
+          ok(cg_boco_read(fn_, 1, 1, b, ids.data(), nullptr), "read BC", name);
+          ids = point_set(set, std::move(ids), name);
+        }
+      }
       ok(cg_goto(fn_, 1, "Zone_t", 1, "ZoneBC_t", 1, "BC_t", b, "end"), "go to BC", name);
       char family[CG_MAX_GOTO_DEPTH * 33 + 1];
       const std::string family_name = cg_famname_read(family) == CG_OK ? family : "";
@@ -413,11 +697,6 @@ class Reader {
       const std::string zone = family_ref.empty() ? name : group_of(family_ref);
       std::string bc_type = BCTypeName[type];
       if (type == CGNS_ENUMV(FamilySpecified)) bc_type = family_bc(family_ref);
-      if (location == CGNS_ENUMV(Vertex) && set != CGNS_ENUMV(ElementList) &&
-          set != CGNS_ENUMV(ElementRange)) {
-        unsupported(path_,
-                    std::string("BC '") + name + "' given by vertices (element point sets only)");
-      }
       // The ids name elements; their dimension says whether the BC labels
       // faces or cells (some writers mark surface BCs as CellCenter).
       switch (dimension_of(ids, name)) {
@@ -437,21 +716,24 @@ class Reader {
   // faces, 1 or less for points and edges.
   int dimension_of(const std::vector<cgsize_t>& ids, const char* owner) const {
     int dimension = -1;
-    for (const cgsize_t id : ids) {
-      if (element(id) == nullptr) {
-        malformed(path_, std::string("'") + owner + "' refers to element " + std::to_string(id) +
-                             " that does not exist");
-      }
-      const auto type = element(id)->type;
-      const int d = (type == CGNS_ENUMV(NFACE_n) || cell_shape(type))    ? 3
-                    : (type == CGNS_ENUMV(NGON_n) || is_face_type(type)) ? 2
-                                                                         : 1;
-      if (dimension != -1 && d != dimension) {
-        malformed(path_, std::string("'") + owner + "' mixes elements of different dimensions");
-      }
-      dimension = d;
-    }
+    for (const cgsize_t id : ids) dimension = merged_dimension(dimension, id, owner);
     return dimension;
+  }
+
+  // `dimension` (-1 for none yet) with that of element `id`, which must agree with it.
+  int merged_dimension(int dimension, cgsize_t id, const char* owner) const {
+    if (element(id) == nullptr) {
+      malformed(path_, std::string("'") + owner + "' refers to element " + std::to_string(id) +
+                           " that does not exist");
+    }
+    const auto type = element(id)->type;
+    const int d = (type == CGNS_ENUMV(NFACE_n) || cell_shape(type))    ? 3
+                  : (type == CGNS_ENUMV(NGON_n) || is_face_type(type)) ? 2
+                                                                       : 1;
+    if (dimension != -1 && d != dimension) {
+      malformed(path_, std::string("'") + owner + "' mixes elements of different dimensions");
+    }
+    return d;
   }
 
   void read_subregions() {
@@ -468,9 +750,16 @@ class Reader {
                         &gc_name_length),
          "read subregion");
       if (location != CGNS_ENUMV(CellCenter) || points == 0) continue;
-      std::vector<cgsize_t> ids(at(points));
-      ok(cg_subreg_ptset_read(fn_, 1, 1, s, ids.data()), "read subregion", name);
-      ids = point_set(set, std::move(ids), name);
+      std::vector<cgsize_t> ids;
+      if (listed_dimension(set, "", name) > 1) {
+        if (set == CGNS_ENUMV(PointList) || set == CGNS_ENUMV(ElementList)) {
+          ids = listed_ids("", name);
+        } else {
+          ids.resize(at(points));
+          ok(cg_subreg_ptset_read(fn_, 1, 1, s, ids.data()), "read subregion", name);
+          ids = point_set(set, std::move(ids), name);
+        }
+      }
       ok(cg_goto(fn_, 1, "Zone_t", 1, "ZoneSubRegion_t", s, "end"), "go to subregion", name);
       char family[CG_MAX_GOTO_DEPTH * 33 + 1];
       const std::string zone =
@@ -484,20 +773,28 @@ class Reader {
   // Files Autan writes (results.md) map node names to zone names in the
   // ZoneNames descriptor of the base; zones keep their own names and those
   // declared without faces stay visible.
+  // mesh.md, Periodic pairs and Readers: only ZoneNames is read among the base's descriptors,
+  // sized from its node first; the others are never read.
   void restore_zone_names() {
-    ok(cg_goto(fn_, 1, "end"), "go to base");
-    int count = 0;
-    ok(cg_ndescriptors(&count), "count descriptors");
-    for (int d = 1; d <= count; ++d) {
-      char name[33];
-      char* text = nullptr;
-      ok(cg_descriptor_read(d, name, &text), "read descriptor");
-      const std::string content = text != nullptr ? text : "";
-      cg_free(text);
-      if (std::string_view(name) != "ZoneNames") continue;
+    const CgioTree tree(fn_);
+    const auto base = tree.child(tree.root(), "CGNSBase_t", base_name_);
+    const auto descriptor = base ? tree.child(*base, "Descriptor_t", "ZoneNames") : std::nullopt;
+    if (descriptor) {
+      // Each entry: a node name of at most 32 bytes and a zone name of at most 4096, both escaped
+      // by the writer's ensure_ascii (6 bytes per byte at worst), and their framing.
+      // Its keys are the families that results.md's writer declares, one per zone.
+      check_text(path_, "ZoneNames descriptor",
+                 static_cast<std::size_t>(tree.logical_bytes(*descriptor)),
+                 (families_.size() + 1) * 25600);
       nlohmann::json names;
       try {
-        names = nlohmann::json::parse(content);
+        names = nlohmann::json::parse(tree.text(*descriptor));
+        for (const char* side : {"boundary", "cell"}) {
+          for (const auto& [key, value] : names.at(side).items()) {
+            if (value.is_string())
+              check_text(path_, "zone name", value.get_ref<const std::string&>().size());
+          }
+        }
         for (auto& zone : face_zones_) {
           if (names.at("boundary").contains(zone.name))
             zone.name = names["boundary"][zone.name].get<std::string>();
@@ -599,7 +896,7 @@ class Reader {
                                "' other than a face-to-face connection of the zone with itself");
       }
       std::size_t elements = 0;
-      for (const auto& section : sections_) elements += section.elements.size();
+      for (const auto& section : sections_) elements += section.count;
       if (points < 1 || std::cmp_greater(points, elements)) {
         malformed(path_, std::string("connectivity '") + name + "' lists " +
                              std::to_string(points) + " faces");
@@ -648,19 +945,20 @@ class Reader {
         malformed(path_, std::string("Periodic of '") + name + "' has no Translation");
       // Files of results.md keep the translation to the bit in a descriptor;
       // it must round to the R4 one.
-      ok(cg_goto(fn_, 1, "Zone_t", 1, "ZoneGridConnectivity_t", 1, "GridConnectivity_t", i, "end"),
-         "go to connectivity", name);
-      int descriptors = 0;
-      ok(cg_ndescriptors(&descriptors), "count descriptors", name);
-      for (int d = 1; d <= descriptors; ++d) {
-        char descriptor[33];
-        char* text = nullptr;
-        ok(cg_descriptor_read(d, descriptor, &text), "read descriptor", name);
-        const std::string content = text != nullptr ? text : "";
-        cg_free(text);
-        if (std::string_view(descriptor) != "PeriodicTranslation") continue;
+      // Only that descriptor is read, sized from its node first.
+      const CgioTree tree(fn_);
+      std::optional<double> node = tree.child(tree.root(), "CGNSBase_t", base_name_);
+      for (const auto& [label, child] : {std::pair<const char*, std::string>{"Zone_t", ""},
+                                         {"ZoneGridConnectivity_t", ""},
+                                         {"GridConnectivity_t", name},
+                                         {"Descriptor_t", "PeriodicTranslation"}}) {
+        if (node) node = tree.child(*node, label, child);
+      }
+      if (node) {
+        check_text(path_, "PeriodicTranslation descriptor",
+                   static_cast<std::size_t>(tree.logical_bytes(*node)));
         std::array<double, 3> exact{};
-        const nlohmann::json value = nlohmann::json::parse(content, nullptr, false);
+        const nlohmann::json value = nlohmann::json::parse(tree.text(*node), nullptr, false);
         if (!value.is_array() || value.size() != 3 ||
             !std::ranges::all_of(
                 value, [](const nlohmann::json& v) { return v.is_number() && !v.is_boolean(); })) {
@@ -759,21 +1057,13 @@ class Reader {
     }
   }
 
-  // Cell zone of every cell element, in element order; families of the
-  // sections name zones for cells no other source labels.
+  // Cell zone of every cell element, in element order (mesh.md, synthesised zones).
   std::vector<index_t> cell_zones_of(const std::vector<cgsize_t>& cells) {
     std::vector<index_t> zone(cells.size(), -1);
     for (std::size_t c = 0; c < cells.size(); ++c) {
       const auto it = cell_label_.find(cells[c]);
       if (it != cell_label_.end()) {
         zone[c] = it->second;
-        continue;
-      }
-      const std::string& family = element(cells[c])->family;
-      if (!family.empty()) {
-        add_cell_zone(group_of(family_key(family)), {cells[c]},
-                      "CGNS family '" + family + "' of an element section");
-        zone[c] = cell_label_.at(cells[c]);
       }
     }
     if (std::ranges::find(zone, -1) != zone.end()) {
@@ -792,8 +1082,8 @@ class Reader {
   std::vector<cgsize_t> element_ids(bool (*keep)(const Element&)) const {
     std::vector<cgsize_t> ids;
     for (const Section& section : sections_) {
-      for (std::size_t e = 0; e < section.elements.size(); ++e) {
-        if (keep(section.elements[e])) ids.push_back(section.start + static_cast<cgsize_t>(e));
+      for (std::size_t e = 0; e < section.count; ++e) {
+        if (keep(*section.at(e))) ids.push_back(section.start + static_cast<cgsize_t>(e));
       }
     }
     return ids;
@@ -880,7 +1170,7 @@ class Reader {
     in.x = x_;
     in.y = y_;
     in.z = z_;
-    in.source = MeshSource{.format = "cgns", .path = path_};
+    in.source = MeshSource{.format = "cgns", .path = path_, .nodes = 0};
     return in;
   }
 
@@ -913,22 +1203,58 @@ class Reader {
     mesh.face_zones = face_zones_;
     mesh.cell_zones = cell_zones_;
     mesh.periodic = periodic_;
-    mesh.source = MeshSource{.format = "cgns", .path = path_};
+    mesh.source = MeshSource{.format = "cgns", .path = path_, .nodes = 0};
     return to_face_based(std::move(mesh));
   }
 
   std::string path_;
+  std::string base_name_, zone_name_;  // read(): looked up by name, siblings unread
   CgnsFile file_;
   int fn_ = 0;
   cgsize_t n_nodes_ = 0;
   cgsize_t n_cells_ = 0;
   std::vector<double> x_, y_, z_;
   std::map<std::string, Family> families_;
+  // A section's elements but its points and edges: none in a section of them, those of a
+  // MIXED section listed as runs of consecutive indices in `skipped`, one element standing for
+  // them all. A run follows a kept element, so there are at most as many runs as kept elements,
+  // plus one.
+  struct Run {
+    std::size_t first;   // index of its first element
+    std::size_t count;   // elements in it
+    std::size_t before;  // elements skipped before it
+  };
   struct Section {
     cgsize_t start;
+    std::size_t count;
     std::vector<Element> elements;
+    std::vector<Run> skipped;  // ascending
+    Element ignored;
+
+    void skip(std::size_t index) {
+      if (!skipped.empty() && skipped.back().first + skipped.back().count == index) {
+        ++skipped.back().count;
+      } else {
+        const std::size_t before =
+            skipped.empty() ? 0 : skipped.back().before + skipped.back().count;
+        skipped.push_back(Run{.first = index, .count = 1, .before = before});
+      }
+    }
+    [[nodiscard]] const Element* at(std::size_t index) const {
+      if (elements.empty()) return &ignored;
+      const auto it = std::ranges::upper_bound(skipped, index, {}, &Run::first);
+      if (it == skipped.begin()) return &elements[index];
+      const Run& run = *std::prev(it);
+      if (index < run.first + run.count) return &ignored;
+      return &elements[index - run.before - run.count];
+    }
   };
   std::vector<Section> sections_;
+  std::vector<bool> referenced_sections_;  // by section index - 1, mark_referenced_sections
+  std::vector<std::pair<cgsize_t, cgsize_t>> referenced_ranges_;  // [lo, hi], disjoint, ascending
+  std::vector<cgsize_t> referenced_ids_;                          // listed, sorted, distinct
+  bool ngon_faces_ = false;  // the zone's faces are NGON_n elements: standard faces are never used
+  bool pruning_ = false;     // the section read_element reads drops the faces no point set names
   bool has_ngon_ = false, has_nface_ = false, has_standard_cells_ = false;
   std::vector<FaceZone> face_zones_;
   std::map<std::string, index_t> face_zone_index_;
@@ -951,6 +1277,73 @@ Mesh read_cgns(const fs::path& file) {
   Mesh mesh = assemble(reader.read(), &map);
   reader.check_declared_pairs(mesh, map);
   return mesh;
+}
+
+LogicalBytes cgns_logical_bytes(const fs::path& file) {
+  reject_outside_data(file);
+  const CgioTree tree(file);
+  LogicalBytes out;
+  const TreeCount count = bounded_nodes(tree, file);  // first: every walk below is then bounded
+  out.nodes = count.nodes;
+  out.eager = count.eager_bytes;
+  // Every Descriptor_t, at any level: cg_open loads them all.
+  for (std::vector<double> pending{tree.root()}; !pending.empty();) {
+    const double node = pending.back();
+    pending.pop_back();
+    for (const double child : tree.children(node)) {
+      if (tree.label(child) == "Descriptor_t") out.descriptors += tree.logical_bytes(child);
+      pending.push_back(child);
+    }
+  }
+  // The datasets the reader reads, descriptors aside.
+  std::int64_t arrays = 0;
+  // `lists`: under a BC, subregion or connectivity container, where IndexArray_t are point lists.
+  const auto subtree = [&](double top, bool lists) {
+    for (std::vector<double> pending{top}; !pending.empty();) {
+      const double node = pending.back();
+      pending.pop_back();
+      arrays += tree.logical_bytes(node);
+      if (lists && tree.label(node) == "IndexArray_t") out.point_list_ids += tree.values(node);
+      for (const double child : tree.children(node)) {
+        if (tree.label(child) != "Descriptor_t") pending.push_back(child);
+      }
+    }
+  };
+  for (const double base : tree.children(tree.root())) {
+    if (tree.label(base) != "CGNSBase_t") continue;
+    arrays += tree.logical_bytes(base);
+    if (const auto names = tree.child(base, "Descriptor_t", "ZoneNames"))
+      out.zone_names = tree.logical_bytes(*names);
+    for (const double node : tree.children(base)) {
+      const std::string label = tree.label(node);
+      if (label == "Family_t") subtree(node, false);
+      if (label != "Zone_t") continue;
+      arrays += tree.logical_bytes(node);
+      for (const double child : tree.children(node)) {
+        const std::string kind = tree.label(child);
+        const bool lists =
+            kind == "ZoneBC_t" || kind == "ZoneSubRegion_t" || kind == "ZoneGridConnectivity_t";
+        if (lists || kind == "ZoneType_t" || kind == "GridCoordinates_t" ||
+            kind == "FamilyName_t") {
+          subtree(child, lists);
+        } else if (kind == "Elements_t") {
+          // A section of points or edges: its header and range only (mesh.md, Readers).
+          std::array<std::int64_t, 2> header{};
+          tree.read_integers(child, header);
+          if (header[0] == CGNS_ENUMV(NODE) || header[0] == CGNS_ENUMV(BAR_2)) {
+            arrays += tree.logical_bytes(child);
+            if (const auto range = tree.child(child, "IndexRange_t", "ElementRange"))
+              arrays += tree.logical_bytes(*range);
+          } else {
+            subtree(child, false);
+          }
+        }
+      }
+    }
+  }
+  out.total = arrays + out.descriptors;
+  out.filtered = largest_filtered_bytes(file);
+  return out;
 }
 
 }  // namespace autan::io

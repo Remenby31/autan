@@ -8,8 +8,10 @@ on:
 
 permissions: {}
 
+# A push runs in a group of its own commit: a group holds one pending run, which the next one
+# replaces, so in a group shared by pushes a push to main could get no run at all.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -25,6 +27,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: "0.13.6"
           enable-cache: false
       - name: Run every hook on every file
         env:
@@ -34,8 +37,8 @@ jobs:
 
   cpp:
     name: C++ ${{ matrix.compiler }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.timeout }}
     permissions:
       contents: read
     strategy:
@@ -43,11 +46,37 @@ jobs:
       matrix:
         include:
           - compiler: gcc
+            os: ubuntu-24.04
+            timeout: 20
             cc: gcc
             cxx: g++
+            hardening: -D_GLIBCXX_ASSERTIONS
+          # The supported Clang range (docs/getting-started/build.md): Ubuntu 24.04's (18), the
+          # oldest, and a recent one from conda-forge (20), whose warnings come closer to the
+          # Mac's Apple Clang.
           - compiler: clang
+            os: ubuntu-24.04
+            timeout: 20
             cc: clang
             cxx: clang++
+            hardening: -D_GLIBCXX_ASSERTIONS
+          - compiler: clang-20
+            os: ubuntu-24.04
+            timeout: 20
+            cc: clang
+            cxx: clang++
+            hardening: -D_GLIBCXX_ASSERTIONS
+            conda: clangxx=20.1.8 clang-tools=20.1.8
+          # macOS: Apple Clang and libc++, the only place the runtime's tests meet them (the Metal
+          # job builds the Metal targets alone): libc++ code paths differ (#516). libc++'s
+          # hardening is the counterpart of libstdc++'s assertions. macOS 26 for Xcode 26's libc++,
+          # which has the floating-point std::from_chars the mesh readers use.
+          - compiler: apple-clang
+            os: macos-26
+            timeout: 40
+            cc: clang
+            cxx: clang++
+            hardening: -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
@@ -61,7 +90,10 @@ jobs:
         with:
           micromamba-version: 2.3.3-0
           environment-name: cgns
-          create-args: -c conda-forge cgns=4.5.2 ninja=1.13.2
+          # METIS 5.1.0, the dev image's (Ubuntu's): the partitioner's tests hold for it, where
+          # 5.2.1 cuts more than slabs on the hybrid box. From conda-forge, so that every compiler,
+          # conda-forge's clang included, finds its header and library.
+          create-args: -c conda-forge cgns=4.5.2 ninja=1.13.2 metis=5.1.0 ${{ matrix.conda }}
           init-shell: none
           cache-downloads: false
           cache-environment: false
@@ -69,8 +101,18 @@ jobs:
         run: |
           grep -q '#define CG_BUILD_64BIT  1' "${MAMBA_ROOT_PREFIX}/envs/cgns/include/cgnstypes.h"
           echo "${MAMBA_ROOT_PREFIX}/envs/cgns/bin" >> "${GITHUB_PATH}"
+      - name: Show the compiler
+        run: ${CXX} --version
+      # The standard library's assertions (libstdc++ on Linux, libc++'s hardening on macOS): a
+      # bounds-checked operator[], an asserted *optional, a checked front() and back(). They catch
+      # undefined behaviour the tests reach but that neither the Release builds nor
+      # AddressSanitizer see (Noyau's mutation runs).
+      # METIS too: without it the partitioner's paths are not reached, and its bugs not caught.
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="${MAMBA_ROOT_PREFIX}/envs/cgns" -DCMAKE_BUILD_TYPE=Debug -DAUTAN_WARNINGS_AS_ERRORS=ON
+        run: >-
+          cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="${MAMBA_ROOT_PREFIX}/envs/cgns"
+          -DCMAKE_BUILD_TYPE=Debug -DAUTAN_WARNINGS_AS_ERRORS=ON -DAUTAN_ENABLE_METIS=ON
+          -DCMAKE_CXX_FLAGS=${{ matrix.hardening }}
       - name: Build
         run: cmake --build build
       - name: Test
@@ -114,6 +156,9 @@ jobs:
           -DAUTAN_ENABLE_MPI=ON -DAUTAN_ENABLE_METIS=ON -DMPIEXEC_PREFLAGS=--oversubscribe
       - name: Build
         run: cmake --build build
+      - name: Install gdb for the hang watchdog
+        timeout-minutes: 5
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends gdb
       - name: Run the multi-rank tests
         env:
           OMPI_MCA_rmaps_base_oversubscribe: "1"
@@ -121,14 +166,42 @@ jobs:
         run: |
           n=$(ctest --test-dir build -N -L mpi | sed -n 's/^Total Tests: //p')
           echo "$n multi-rank tests (CTest label mpi)"
-          [ "$n" -ge 6 ] || { echo "::error::expected at least 6 tests labelled mpi, found $n"; exit 1; }
-          ctest --test-dir build -L mpi --output-on-failure --no-tests=error
+          [ "$n" -ge 10 ] || { echo "::error::expected at least 10 tests labelled mpi, found $n"; exit 1; }
+          # A test normally ends within 25 s: past 120 s the watchdog dumps every rank's stacks
+          # and fails it (#304), instead of a hang holding the runner until CTest's timeout.
+          bench/ci/ctest-watchdog.sh 120 "$RUNNER_TEMP/mpi-hang-stacks" -- \
+            ctest --test-dir build -L mpi --output-on-failure --no-tests=error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: mpi-hang-stacks-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mpi-hang-stacks/
+          if-no-files-found: ignore
+      # The SDK through a real launcher: autan.SolverBackend starts `mpiexec -n 2` and stops every
+      # rank through the stop file (py/tests, marker mpi; deselected in the Python SDK job).
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.6"
+          enable-cache: false
+      - name: Run the SDK's multi-rank tests
+        env:
+          OMPI_MCA_rmaps_base_oversubscribe: "1"
+          PRTE_MCA_rmaps_default_mapping_policy: ":oversubscribe"
+        run: |
+          set -o pipefail
+          uv sync --locked --no-install-project
+          uv sync --locked --no-build-isolation
+          export AUTAN_RUN_RELAXATION_MPI="$PWD/build/tests/runtime/autan-run-relaxation"
+          uv run --locked --no-sync pytest -m mpi -ra py/tests | tee pytest-mpi.log
+          if grep -q '^SKIPPED' pytest-mpi.log; then echo "::error::the SDK's MPI tests must run, not skip"; exit 1; fi
+          grep -Eq '^=+ [1-9][0-9]* passed' pytest-mpi.log || { echo "::error::no SDK MPI test passed"; exit 1; }
 
   bench-harness:
     # autan-bench and the runner hook, without a GPU (the GPU tests skip here and run in gpu-bench).
     name: Bench harness
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # The suite takes most of 10 minutes on a hosted runner: 20 leaves room for the next tests.
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -137,8 +210,119 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: "0.13.6"
           enable-cache: false
-      - run: uv run --project bench --locked pytest -rs bench/tests docker/runner/tests
+      - run: uv run --project bench --locked pytest -rs bench/tests docker/runner/tests docker/host-guard/tests
+
+  ui:
+    # No path filter: the UI reads the SDK, the contracts and the fake backend, which live outside ui/.
+    name: UI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: website/package.json
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.6"
+          enable-cache: false
+      - run: bun install --frozen-lockfile
+      # The server's build backend (hatchling, editables) comes from its uv.lock, not from an
+      # isolated build environment; Vitest's surface test runs the server too.
+      - name: Install the server from its lock file
+        working-directory: ui/server
+        run: |
+          uv sync --locked --no-install-project --no-install-package autan
+          uv sync --locked --no-build-isolation
+      - name: Lint (Biome)
+        run: bunx biome ci .
+      - name: Type-check
+        run: bunx tsc --noEmit -p .
+      - name: Unit tests (Vitest)
+        run: bun run test
+      - name: Server type-check (mypy)
+        working-directory: ui/server
+        run: uv run --locked --no-sync mypy
+      - name: Server tests (pytest)
+        working-directory: ui/server
+        run: uv run --locked --no-sync python -m pytest -q tests
+      # Headless Chrome, preinstalled on the runner (playwright.config.ts uses channel "chrome");
+      # WebGL2, since there is no WebGPU without a GPU.
+      - name: End-to-end tests (Playwright)
+        env:
+          AUTAN_UI_E2E_BACKEND: webgl2
+        run: bun run e2e
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: ui-playwright-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ui/test-results/
+          if-no-files-found: ignore
+
+  ui-golden:
+    # The UI driven on what the solver itself writes: autan-mesh-info and autan-run (CPU) produce
+    # a mesh's MeshInfo and surface and two runs, which the golden-path e2e reads.
+    name: UI golden path
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: website/package.json
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.6"
+          enable-cache: false
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
+        with:
+          micromamba-version: 2.3.3-0
+          environment-name: cgns
+          create-args: -c conda-forge cgns=4.5.2 ninja=1.13.2
+          init-shell: none
+          cache-downloads: false
+          cache-environment: false
+      - name: Put CGNS tools and Ninja on the PATH
+        run: |
+          grep -q '#define CG_BUILD_64BIT  1' "${MAMBA_ROOT_PREFIX}/envs/cgns/include/cgnstypes.h"
+          echo "${MAMBA_ROOT_PREFIX}/envs/cgns/bin" >> "${GITHUB_PATH}"
+      - name: Build autan-run and autan-mesh-info
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="${MAMBA_ROOT_PREFIX}/envs/cgns" -DCMAKE_BUILD_TYPE=Release -DAUTAN_BUILD_TESTS=OFF
+          cmake --build build --target autan-run autan-mesh-info
+      - name: Install the UI
+        working-directory: ui
+        run: bun install --frozen-lockfile
+      - name: Install the server from its lock file
+        working-directory: ui/server
+        run: |
+          uv sync --locked --no-install-project --no-install-package autan
+          uv sync --locked --no-build-isolation
+      - name: Golden path (Playwright on the solver's own output)
+        working-directory: ui
+        env:
+          AUTAN_RUN: ${{ github.workspace }}/build/runtime/autan-run
+          AUTAN_MESH_INFO: ${{ github.workspace }}/build/io/autan-mesh-info
+        run: bun run e2e:golden
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: ui-golden-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ui/test-results/
+          if-no-files-found: ignore
 
   clang-tidy:
     name: clang-tidy
@@ -152,6 +336,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: "0.13.6"
           enable-cache: false
       - name: Install clang-tidy
         run: uv tool install clang-tidy==23.1.4
@@ -186,6 +371,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: "0.13.6"
           enable-cache: false
       # 64-bit, HDF5-backed CGNS 4.5 from conda-forge (Ubuntu 24.04 ships CGNS 3.4, which cannot read CGNS 4 files),
       # and Ninja from the same place, so no job depends on the Ubuntu mirrors.
@@ -238,6 +424,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
+          version: "0.13.6"
           enable-cache: false
       - name: Check that uv.lock matches pyproject.toml
         run: uv lock --check

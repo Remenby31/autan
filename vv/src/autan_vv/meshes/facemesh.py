@@ -22,6 +22,16 @@ FloatArray = npt.NDArray[np.float64]
 IntArray = npt.NDArray[np.int64]
 
 
+def dot3(a: FloatArray, b: FloatArray) -> FloatArray:
+    """Row-wise dot product of (n, 3) arrays, written out so that every CPU rounds it alike.
+
+    `einsum` may vectorise its sum and `@` goes to BLAS, which may fuse with FMA: in an order that
+    depends on the CPU, and decisions taken on the sign (a valid cell, a face's side) with it (#495).
+    """
+    result: FloatArray = a[..., 0] * b[..., 0] + a[..., 1] * b[..., 1] + a[..., 2] * b[..., 2]
+    return result
+
+
 @dataclass(frozen=True)
 class Zone:
     """A boundary face zone: a contiguous range of boundary faces sharing a name and BC type."""
@@ -85,8 +95,8 @@ class FaceMesh:
         tri_area = 0.5 * np.cross(a, b)
         face_area = np.zeros((self.n_faces, 3))
         np.add.at(face_area, face_of_node, tri_area)
-        unit = face_area / np.linalg.norm(face_area, axis=1, keepdims=True)
-        weight = np.einsum("ij,ij->i", tri_area, unit[face_of_node])
+        unit = face_area / np.sqrt(dot3(face_area, face_area))[:, None]
+        weight = dot3(tri_area, unit[face_of_node])
         tri_centroid = mean[face_of_node] + (a + b) / 3.0
         face_centroid = np.zeros((self.n_faces, 3))
         np.add.at(face_centroid, face_of_node, weight[:, None] * tri_centroid)
@@ -111,7 +121,7 @@ class FaceMesh:
         min_sub = np.full(self.n_cells, np.inf)
         apex_owner = ref[self.owner][face_of_node]
         # Tetrahedron (ref, mean, p_i, p_i+1); positive when the face normal points away from ref.
-        tet_owner = np.einsum("ij,ij->i", tri_area, mean[face_of_node] - apex_owner) / 3.0
+        tet_owner = dot3(tri_area, mean[face_of_node] - apex_owner) / 3.0
         cen_owner = 0.25 * (
             apex_owner + mean[face_of_node] + pts[self.face_nodes] + pts[self.face_nodes[nxt]]
         )
@@ -122,7 +132,7 @@ class FaceMesh:
         interior_tris = face_of_node < self.n_interior
         fi = face_of_node[interior_tris]
         apex_nb = ref[self.neighbour[fi]]
-        tet_nb = -np.einsum("ij,ij->i", tri_area[interior_tris], mean[fi] - apex_nb) / 3.0
+        tet_nb = -dot3(tri_area[interior_tris], mean[fi] - apex_nb) / 3.0
         cen_nb = 0.25 * (
             apex_nb
             + mean[fi]

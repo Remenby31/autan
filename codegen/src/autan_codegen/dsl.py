@@ -27,6 +27,16 @@ class Role(enum.Enum):
     GEOM = "geom"
     PARAM = "param"
     JAC = "jac"  # blocks of Jacobians, written for preconditioners (not differentiated)
+    # Blocks kept in the accumulation precision (diagonal blocks and their inverses, FP64 in
+    # fp32+acc64), off-diagonal blocks staying in `jac` (mixed-precision preconditioners).
+    JAC_ACCUM = "jac_accum"
+    # Face flags: 0 or 1, one byte in every policy; read as 0 or 1 in the compute type, stored
+    # as 1 where the written value is > 0. Face data are passive.
+    FLAG = "flag"
+
+
+# Matrix blocks are data of a linear solve, never differentiated.
+PASSIVE_ROLES = frozenset({Role.JAC, Role.JAC_ACCUM})
 
 
 @dataclass(frozen=True)
@@ -50,6 +60,7 @@ class RoleAnnotation:
     def __init__(self, role: Role) -> None:
         self.role = role
         self.scalar = Type(role)
+        self.Vec2 = Type(role, (2,))
         self.Vec3 = Type(role, (3,))
         self.Vec5 = Type(role, (5,))
         self.Mat3 = Type(role, (3, 3))
@@ -62,15 +73,17 @@ Grad = RoleAnnotation(Role.GRAD)
 Residual = RoleAnnotation(Role.RESIDUAL)
 Geom = RoleAnnotation(Role.GEOM)
 Param = RoleAnnotation(Role.PARAM)
+Flag = RoleAnnotation(Role.FLAG)
 
 
 class _JacAnnotation(RoleAnnotation):
     def shape(self, *dims: int) -> Type:
         """`Jac.shape(2, 5, 5)`: a block shape for Jacobian datasets."""
-        return Type(Role.JAC, tuple(dims))
+        return Type(self.role, tuple(dims))
 
 
 Jac = _JacAnnotation(Role.JAC)
+JacAccum = _JacAnnotation(Role.JAC_ACCUM)
 
 
 def as_type(annotation: object) -> Type:
@@ -100,6 +113,10 @@ class Dataset:
     type: Type
     geometry: bool = False
 
+    def __post_init__(self) -> None:
+        if self.type.role is Role.FLAG and (self.set is not MeshSet.FACES or self.geometry):
+            raise CodegenError(Code.TYPE_MISMATCH, f"{self.name}: Flag datasets are face datasets")
+
     @property
     def left(self) -> Binding:
         return Binding(self, "left")
@@ -111,6 +128,25 @@ class Dataset:
     @property
     def self_(self) -> Binding:
         return Binding(self, "self")
+
+    @property
+    def near(self) -> Binding:
+        """In an incidence reduction, half [0] of a face dataset of shape (2, ...) if the cell is
+        the face's left cell, half [1] if it is the right one, in the face's global orientation
+        (Topology::face_reversed); zero on boundary faces."""
+        return Binding(self, "near")
+
+    @property
+    def far(self) -> Binding:
+        """The half `near` does not take: [1] for the left cell, [0] for the right one; zero on
+        boundary faces."""
+        return Binding(self, "far")
+
+    @property
+    def on_boundary(self) -> Binding:
+        """In an incidence reduction, the face's value on a boundary face, zero on an interior
+        face."""
+        return Binding(self, "on_boundary")
 
     def other(self, boundary: Dataset | None) -> Binding:
         """Value across each incidence of a cell; `boundary` (a face dataset) on boundary faces,
@@ -129,7 +165,7 @@ class Binding:
     """How a body argument is loaded: directly, or through the face/incidence -> cell maps."""
 
     dataset: Dataset | Parameter
-    via: str = "direct"  # direct | left | right | self | other
+    via: str = "direct"  # direct | left | right | self | other | near | far | on_boundary
     boundary: Dataset | None = None
 
 
@@ -143,6 +179,7 @@ class _SetDecl:
 
 cells = _SetDecl(MeshSet.CELLS)
 faces = _SetDecl(MeshSet.FACES)
+incidences = _SetDecl(MeshSet.INCIDENCES)
 
 
 def param(name: str, annotation: object) -> Parameter:
@@ -168,6 +205,9 @@ class geometry:
     cell_centroid = Dataset("cell_centroid", MeshSet.CELLS, Geom.Vec3, geometry=True)
     cell_volume = Dataset("cell_volume", MeshSet.CELLS, Geom.scalar, geometry=True)
     lsq_weight = Dataset("lsq_weight", MeshSet.INCIDENCES, Geom.Vec3, geometry=True)
+    # +1 where the cell is its face's left (owner) cell, and on boundary faces; -1 where it is
+    # the right one: the sign of a face's contribution to the cell in a gather over incidences.
+    incidence_side = Dataset("incidence_side", MeshSet.INCIDENCES, Geom.scalar, geometry=True)
     # The same least-squares weights over the entries of the cell stencil.
     stencil_lsq_weight = Dataset("stencil_lsq_weight", MeshSet.STENCIL, Geom.Vec3, geometry=True)
 
@@ -180,6 +220,7 @@ class Body:
     """A pointwise function in the restricted subset; parsed lazily into the IR."""
 
     fn: Callable[..., Any]
+    compute: str = "compute"
 
     @property
     def name(self) -> str:
@@ -196,9 +237,18 @@ class Body:
         )
 
 
-def pointwise(fn: Callable[..., Any]) -> Body:
-    """Declare a pointwise body. Its source is parsed into the generator's IR."""
-    return Body(fn)
+def pointwise(fn: Callable[..., Any] | None = None, *, compute: str = "compute") -> Any:
+    """Declare a pointwise body. Its source is parsed into the generator's IR.
+
+    `@pointwise(compute="accum")` computes the body in the accumulation type of the policy
+    instead of the compute type (FP64 under fp32+acc64), for bodies whose arguments are all
+    passive (blocks, geometry, parameters) in cell loops.
+    """
+    if compute not in ("compute", "accum"):
+        raise CodegenError(Code.TYPE_MISMATCH, f"compute={compute!r}: 'compute' or 'accum'")
+    if fn is None:
+        return lambda f: Body(f, compute)
+    return Body(fn, compute)
 
 
 # ---------------------------------------------------------------------------- loops
@@ -275,7 +325,8 @@ class Loop:
     name: str = ""
     over: str = "incidences"  # reductions: "incidences" (faces of the cell) or "stencil"
     jacobians: list[Jacobian] = field(default_factory=list)
-    frozen: bool = False  # boundary_write reading active data: derivatives through it dropped
+    frozen: bool = False  # face data written from active data: derivatives through it dropped
+    entries: list[Write] = field(default_factory=list)  # reductions: one value per entry
 
 
 def _bindings(raw: dict[str, object]) -> dict[str, Binding]:
@@ -303,14 +354,28 @@ def _split(out: object) -> tuple[list[Any], list[Jacobian]]:
     ]
 
 
-def face_loop(body: Body, *, out: object, **args: object) -> Loop:
+def face_loop(body: Body, *, out: object, frozen: bool = False, **args: object) -> Loop:
     """Loop over interior faces; `out` increments owner and neighbour cells, and may add
-    Jacobian blocks per face."""
+    Jacobian blocks per face, or writes face datasets (`Write` only, for example flags), each
+    face once, its `left` and `right` cells in the face's global orientation. Face datasets are
+    passive: a writing loop that reads active cell data declares `frozen=True` (see
+    `boundary_loop`)."""
     outs, jacs = _split(out)
+    if outs and all(isinstance(o, Write) and o.dataset.set is MeshSet.FACES for o in outs):
+        if jacs:
+            raise CodegenError(
+                Code.INVALID_LOOP_OUTPUT, "a face loop writing face data has no Jacobian outputs"
+            )
+        return Loop("face_write", body, _bindings(args), outs, frozen=frozen)
+    if frozen:
+        raise CodegenError(
+            Code.INVALID_LOOP_OUTPUT, "frozen=True applies to loops writing face data only"
+        )
     for o in outs:
         if not isinstance(o, Inc) or o.right is None:
             raise CodegenError(
-                Code.INVALID_LOOP_OUTPUT, "interior face loop outputs are Inc with both signs"
+                Code.INVALID_LOOP_OUTPUT,
+                "interior face loop outputs are Inc with both signs, or Write of face datasets only",
             )
     return Loop("face", body, _bindings(args), outs, jacobians=jacs)
 
@@ -358,6 +423,7 @@ def cell_reduce(
     finalise: Body | None = None,
     finalise_args: dict[str, object] | None = None,
     over: str = INCIDENCES,
+    entries: object = (),
     **args: object,
 ) -> Loop:
     """Reduce `body` over the entries of each owned cell into accumulators, then write them.
@@ -370,6 +436,9 @@ def cell_reduce(
     The body's outputs feed `acc` in order (Sum, Min or Max, each naming its target cell dataset).
     With `finalise`, the accumulated values are passed to it as its first arguments, followed by
     `finalise_args`, and its outputs are written to the accumulators' datasets instead.
+    `entries` (Write outputs to datasets of the iterated set, of a passive role) take the body's
+    outputs after the accumulators' ones, one value per entry, stored at the entry: each entry
+    is written once, by its cell. A loop with entries has no active input (no derivatives).
     """
     if over not in (INCIDENCES, STENCIL):
         raise CodegenError(
@@ -381,6 +450,13 @@ def cell_reduce(
             raise CodegenError(
                 Code.INVALID_LOOP_OUTPUT, "cell_reduce accumulators are Sum, Min or Max"
             )
+    per_entry = _outs(entries) if entries != () else []
+    for w in per_entry:
+        if not isinstance(w, Write) or w.dataset.set.value != over:
+            raise CodegenError(
+                Code.INVALID_LOOP_OUTPUT,
+                f"cell_reduce entries are Write outputs to {over} datasets",
+            )
     return Loop(
         "reduce",
         body,
@@ -389,6 +465,7 @@ def cell_reduce(
         finalise,
         _bindings(dict(finalise_args or {})),
         over=over,
+        entries=per_entry,
     )
 
 
@@ -399,6 +476,5 @@ def _intrinsic(*_: object) -> object:
     raise CodegenError(Code.UNSUPPORTED_CONSTRUCT, "DSL intrinsics only exist inside parsed bodies")
 
 
-dot = cross = norm = sqrt = exp = log = sin = cos = rel = transpose = outer = Vec3 = Vec5 = (
-    _intrinsic
-)
+dot = cross = norm = sqrt = exp = log = sin = cos = rel = _intrinsic
+transpose = inverse = identity = outer = Vec2 = Vec3 = Vec5 = _intrinsic

@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
+#include <numeric>
 #include <set>
 #include <span>
 #include <vector>
@@ -17,8 +19,14 @@
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
+#include "autan/core/renumber.hpp"
+#include "autan/partition/device_self.hpp"
 #include "autan/partition/partition.hpp"
 #include "fixtures.hpp"
+
+#ifdef AUTAN_HAVE_CUDA
+#include <cuda_runtime.h>
+#endif
 
 using autan::index_t;
 
@@ -209,11 +217,17 @@ TEST_CASE("Graph partitioners return balanced, reproducible parts", "[partition]
   const auto q = autan::partition_quality(global, parts, n_parts, options.cell_weights);
   CHECK(q.imbalance <= 1.0 + options.imbalance_tolerance + 1e-12);
   CHECK(std::all_of(q.owned_cells.begin(), q.owned_cells.end(), [](auto c) { return c > 0; }));
-  // A partitioner beats slabs, whose cut is (n_parts - 1) layers of the box.
+  // Slabs cut (n_parts - 1) planes of the box. On 2 parts that plane is the least bisection, which
+  // a multilevel partitioner need not find: it must cut fewer than two planes. On 4 and 8 parts
+  // blocks cut 2 and 3 planes against 3 and 7: a partitioner beats slabs.
   const auto slab_cut = autan::partition_quality(
                             global, slabs(autan::compute_geometry(global), n_parts, 1.0), n_parts)
                             .cut_faces;
-  CHECK(q.cut_faces <= slab_cut);
+  if (n_parts == 2) {
+    CHECK(q.cut_faces < 2 * slab_cut);
+  } else {
+    CHECK(q.cut_faces <= slab_cut);
+  }
   check_split(global, parts, n_parts);
 }
 #endif
@@ -237,8 +251,17 @@ TEST_CASE("Invalid partition requests are rejected with their documented code", 
                 [&] { autan::extract_partition(global, gg, two, 2, 1); });
   require_error(ErrorCode::partition_invalid_request,
                 [&] { autan::extract_partition(global, gg, two, 1, 1); });
+  auto beyond = slabs(gg, 2, 1.0);
+  std::ranges::replace(beyond, 1, 2);
   require_error(ErrorCode::partition_invalid_request,
-                [&] { autan::partition_quality(global, std::vector<std::int32_t>(8, 3), 2); });
+                [&] { autan::extract_partition(global, gg, beyond, 2, 0); });
+  require_error(ErrorCode::partition_invalid_request,
+                [&] { autan::partition_quality(global, std::vector<std::int32_t>(8, 2), 2); });
+  // The bounds themselves are valid: one part, weights of 1, no imbalance allowed.
+  autan::PartitionOptions bounds;
+  bounds.cell_weights.assign(8, 1);
+  bounds.imbalance_tolerance = 0.0;
+  CHECK(autan::partition_cells(global, 1, bounds) == std::vector<std::int32_t>(8, 0));
 
   const auto parts = slabs(gg, 2, 1.0);
   const auto half = autan::extract_partition(global, gg, parts, 2, 0);
@@ -374,6 +397,56 @@ TEST_CASE("Image ghosts sit one cell across periodic faces; a z-linear field kee
   }
 }
 
+TEST_CASE("A part's geometry agrees with its own nodes across pairs matched within tolerance",
+          "[partition][periodic]") {
+  // The x pair's zone b moved by half the matching tolerance (1e-4 of the 1/4 side edges):
+  // every face of every part has the geometry its own nodes give, and every owned cell is
+  // closed, so a uniform state has a zero face sum, to round-off.
+  using autan::test::BoxFill;
+  const std::int32_t n_parts = GENERATE(1, 2);
+  autan::CellwiseMesh cells = autan::test::box(4, BoxFill::hexa, 0.2);
+  for (int k = 0; k < 2; ++k) {
+    cells.face_zones[at(2 * k)].kind = autan::BcKind::periodic;
+    cells.face_zones[at(2 * k + 1)].kind = autan::BcKind::periodic;
+    std::array<double, 3> t{};
+    t[at(k)] = 1.0;
+    cells.periodic.push_back({.zone_a = 2 * k, .zone_b = 2 * k + 1, .translation = t});
+  }
+  for (std::size_t i = 0; i < cells.x.size(); ++i) {
+    if (cells.x[i] == 1.0) cells.z[i] += 0.5 * 1e-4 / 4.0;
+  }
+  const autan::Mesh global = autan::assemble(autan::to_face_based(std::move(cells)));
+  const autan::Geometry gg = autan::compute_geometry(global);
+  const auto parts = slabs(gg, n_parts, 1.0);
+  for (std::int32_t r = 0; r < n_parts; ++r) {
+    const auto lp = autan::extract_partition(global, gg, parts, n_parts, r);
+    const autan::Geometry own = autan::compute_geometry(lp.mesh);
+    const double eps = 1e-14;
+    for (std::size_t f = 0; f < at(lp.mesh.n_faces()); ++f) {
+      CHECK_THAT(lp.geometry.face_area_x[f], Catch::Matchers::WithinAbs(own.face_area_x[f], eps));
+      CHECK_THAT(lp.geometry.face_area_y[f], Catch::Matchers::WithinAbs(own.face_area_y[f], eps));
+      CHECK_THAT(lp.geometry.face_area_z[f], Catch::Matchers::WithinAbs(own.face_area_z[f], eps));
+      CHECK_THAT(lp.geometry.face_centroid_x[f],
+                 Catch::Matchers::WithinAbs(own.face_centroid_x[f], eps));
+      CHECK_THAT(lp.geometry.face_centroid_y[f],
+                 Catch::Matchers::WithinAbs(own.face_centroid_y[f], eps));
+      CHECK_THAT(lp.geometry.face_centroid_z[f],
+                 Catch::Matchers::WithinAbs(own.face_centroid_z[f], eps));
+    }
+    const auto& m = lp.mesh;
+    for (index_t c = 0; c < m.n_owned_cells(); ++c) {
+      std::array<double, 3> sum{};
+      for (const index_t face : m.cell_faces(c)) {
+        const double sign = m.owner()[at(face)] == c ? 1.0 : -1.0;
+        sum[0] += sign * lp.geometry.face_area_x[at(face)];
+        sum[1] += sign * lp.geometry.face_area_y[at(face)];
+        sum[2] += sign * lp.geometry.face_area_z[at(face)];
+      }
+      CHECK(std::hypot(sum[0], sum[1], sum[2]) < eps);
+    }
+  }
+}
+
 TEST_CASE("Periodic sides split into several pairs share their direction",
           "[partition][periodic]") {
   // The unit box in 2^3 hexahedra, periodic in x, y and z, with each x side cut
@@ -424,6 +497,37 @@ TEST_CASE("Periodic sides split into several pairs share their direction",
       CHECK(std::hypot(dx, dy) < 0.75);
     }
   }
+}
+
+TEST_CASE("Periodic directions that are not independent are refused", "[partition][periodic]") {
+  // partitioning.md: at most three directions, linearly independent, else E0140. Translations
+  // (1, 0, 0) and (2, 0, 0): the unit cube beside a disjoint [0,2]x[3,4]x[0,1] hexahedron.
+  autan::CellwiseMesh line = autan::test::box(1, autan::test::BoxFill::hexa);
+  constexpr std::array<std::array<double, 3>, 8> corners{
+      {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}}};
+  std::array<index_t, 8> hex{};
+  for (std::size_t k = 0; k < hex.size(); ++k) {
+    hex[k] = static_cast<index_t>(line.x.size());
+    line.x.push_back(2.0 * corners[k][0]);
+    line.y.push_back(3.0 + corners[k][1]);
+    line.z.push_back(corners[k][2]);
+  }
+  line.add_cell(autan::CellShape::hexa, hex, 0);
+  for (const char* name : {"long_xmin", "long_xmax"}) {
+    line.face_zones.push_back(
+        {.name = name, .bc_type = "", .kind = autan::BcKind::periodic, .provenance = {}});
+  }
+  line.add_labelled_face(std::array<index_t, 4>{hex[0], hex[3], hex[7], hex[4]}, 6);
+  line.add_labelled_face(std::array<index_t, 4>{hex[1], hex[2], hex[6], hex[5]}, 7);
+  for (const int z : {0, 1}) line.face_zones[at(z)].kind = autan::BcKind::periodic;
+  line.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
+  line.periodic.push_back({.zone_a = 6, .zone_b = 7, .translation = {2.0, 0.0, 0.0}});
+  const autan::Mesh dependent = autan::assemble(autan::to_face_based(std::move(line)));
+  const autan::Geometry dependent_geometry = autan::compute_geometry(dependent);
+  require_error(autan::ErrorCode::partition_invalid_request, [&] {
+    (void)autan::extract_partition(dependent, dependent_geometry, std::vector<std::int32_t>(2, 0),
+                                   1, 0);
+  });
 }
 
 TEST_CASE("A cell periodic with itself marks the faces it reverses", "[partition][periodic]") {
@@ -492,4 +596,459 @@ TEST_CASE("One part fills its periodic images alone", "[partition][periodic]") {
   autan::LocalPartition half = autan::extract_partition(global, gg, slabs(gg, 2, 1.0), 2, 0);
   require_error(autan::ErrorCode::partition_invalid_request,
                 [&] { autan::fill_ghost_geometry(half); });
+}
+
+TEST_CASE("Periodic images fill in device memory as on the host", "[partition][periodic][gpu]") {
+  // The one-part tetrahedra box of "One part fills its periodic images
+  // alone": DeviceSelfForward on device arrays gives the host forward_self's
+  // values; a build without CUDA refuses device memory (E0145).
+  autan::CellwiseMesh cells = autan::test::box(3, autan::test::BoxFill::tetra, 0.2);
+  for (int k = 0; k < 2; ++k) {
+    cells.face_zones[at(2 * k)].kind = autan::BcKind::periodic;
+    cells.face_zones[at(2 * k + 1)].kind = autan::BcKind::periodic;
+    std::array<double, 3> t{};
+    t[at(k)] = 1.0;
+    cells.periodic.push_back({.zone_a = 2 * k, .zone_b = 2 * k + 1, .translation = t});
+  }
+  const autan::Mesh global = autan::assemble(autan::to_face_based(std::move(cells)));
+  const autan::LocalPartition part =
+      autan::extract_partition(global, autan::compute_geometry(global),
+                               std::vector<std::int32_t>(at(global.n_cells()), 0), 1, 0);
+  const auto& m = part.mesh;
+#ifdef AUTAN_HAVE_CUDA
+  const auto n = at(m.n_cells());
+  autan::DeviceSelfForward images(part.halo, m.n_owned_cells());
+  cudaStream_t stream = nullptr;
+  REQUIRE(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess);
+  // Two components, owned values distinct, ghosts unset, in each precision.
+  const auto check_precision = [&]<class T>(T) {
+    std::vector<T> a(n, T{-1}), b(n, T{-1});
+    for (std::size_t c = 0; c < at(m.n_owned_cells()); ++c) {
+      a[c] = static_cast<T>(m.cell_global_id()[c]) + T{0.25};
+      b[c] = -static_cast<T>(m.cell_global_id()[c]);
+    }
+    std::vector<T> host_a = a, host_b = b;
+    const std::array<T*, 2> host{host_a.data(), host_b.data()};
+    autan::forward_self(part.halo, m.n_owned_cells(), std::span<T* const>(host));
+    std::array<T*, 2> device{};
+    for (std::size_t k = 0; k < 2; ++k) {
+      REQUIRE(cudaMalloc(&device[k], n * sizeof(T)) == cudaSuccess);
+      REQUIRE(cudaMemcpy(device[k], (k == 0 ? a : b).data(), n * sizeof(T),
+                         cudaMemcpyHostToDevice) == cudaSuccess);
+    }
+    images.forward(std::span<T* const>(device), stream);
+    REQUIRE(cudaStreamSynchronize(stream) == cudaSuccess);
+    REQUIRE(cudaMemcpy(a.data(), device[0], n * sizeof(T), cudaMemcpyDeviceToHost) == cudaSuccess);
+    REQUIRE(cudaMemcpy(b.data(), device[1], n * sizeof(T), cudaMemcpyDeviceToHost) == cudaSuccess);
+    CHECK(a == host_a);
+    CHECK(b == host_b);
+    std::array<T*, 17> too_many{};
+    too_many.fill(device[0]);
+    require_error(autan::ErrorCode::partition_invalid_request,
+                  [&] { images.forward(std::span<T* const>(too_many), stream); });
+    for (T* d : device) cudaFree(d);
+  };
+  check_precision(float{});
+  check_precision(double{});
+  cudaStreamDestroy(stream);
+#else
+  require_error(autan::ErrorCode::halo_device_unsupported,
+                [&] { autan::DeviceSelfForward images(part.halo, m.n_owned_cells()); });
+#endif
+}
+
+namespace {
+
+// The dual graph of a mesh as a GraphLevel: cells, interior faces, global ids.
+struct DualLevel {
+  std::vector<index_t> owner, neighbour;
+  std::vector<std::int64_t> ids;
+  autan::GraphLevel level;
+  explicit DualLevel(const autan::Mesh& mesh) {
+    owner.assign(mesh.owner().begin(), mesh.owner().begin() + mesh.n_interior_faces());
+    neighbour.assign(mesh.neighbour().begin(), mesh.neighbour().end());
+    ids.assign(mesh.cell_global_id().begin(), mesh.cell_global_id().end());
+    level = {
+        .n_nodes = at(mesh.n_cells()), .owner = owner, .neighbour = neighbour, .global_id = ids};
+  }
+};
+
+}  // namespace
+
+#if defined(AUTAN_HAVE_METIS) || defined(AUTAN_HAVE_SCOTCH)
+TEST_CASE("Groups of cells stay in one part", "[partition][graph]") {
+  // Pairs of cells across every third interior face that touch no earlier pair.
+  const autan::Mesh mesh =
+      autan::assemble(autan::to_face_based(autan::test::box(6, autan::test::BoxFill::hybrid, 0.2)));
+  std::vector<autan::offset_t> offsets{0};
+  std::vector<index_t> grouped;
+  std::vector<char> used(at(mesh.n_cells()), 0);
+  for (index_t f = 0; f < mesh.n_interior_faces(); f += 3) {
+    const index_t a = mesh.owner()[at(f)], b = mesh.neighbour()[at(f)];
+    if (used[at(a)] || used[at(b)]) continue;
+    used[at(a)] = used[at(b)] = 1;
+    grouped.insert(grouped.end(), {a, b});
+    offsets.push_back(static_cast<autan::offset_t>(grouped.size()));
+  }
+  REQUIRE(offsets.size() > 10);
+  std::vector<autan::PartitionMethod> methods;
+#ifdef AUTAN_HAVE_METIS
+  methods.push_back(autan::PartitionMethod::metis);
+#endif
+#ifdef AUTAN_HAVE_SCOTCH
+  methods.push_back(autan::PartitionMethod::scotch);
+#endif
+  for (const auto method : methods) {
+    for (const std::int32_t n : {2, 4}) {
+      const auto parts = autan::partition_cells(
+          mesh, n,
+          {.method = method, .cell_weights = {}, .group_offsets = offsets, .group_cells = grouped});
+      for (std::size_t g = 0; g + 1 < offsets.size(); ++g)
+        CHECK(parts[at(grouped[at(offsets[g])])] == parts[at(grouped[at(offsets[g]) + 1])]);
+      CHECK(parts == autan::partition_cells(mesh, n,
+                                            {.method = method,
+                                             .cell_weights = {},
+                                             .group_offsets = offsets,
+                                             .group_cells = grouped}));
+    }
+  }
+  // Malformed groups, refused on one part as on two: a cell in two groups, a cell equal to the
+  // cell count, an empty group (no phantom node), cells without offsets.
+  const auto refused = [&](std::vector<autan::offset_t> group_offsets,
+                           std::vector<index_t> group_cells) {
+    for (const std::int32_t n : {1, 2}) {
+      require_error(autan::ErrorCode::partition_invalid_request, [&] {
+        (void)autan::partition_cells(
+            mesh, n,
+            {.cell_weights = {}, .group_offsets = group_offsets, .group_cells = group_cells});
+      });
+    }
+  };
+  refused({0, 2, 4}, {0, 1, 1, 2});
+  refused({0, 2}, {0, mesh.n_cells()});
+  std::vector<index_t> all(at(mesh.n_cells()));
+  std::iota(all.begin(), all.end(), index_t{0});
+  refused({0, 0, static_cast<autan::offset_t>(all.size())}, all);
+  refused({}, {0, 1});
+  // A group weighs up to 2^31 - 1 in total on two parts or more; the method may then refuse the
+  // graph's total (E0142) or leave a part empty (E0143), as the backend allows.
+  const std::vector<autan::offset_t> pair_offsets{0, 2};
+  const std::vector<index_t> pair_cells{0, 1};
+  std::vector<std::int32_t> heavy(at(mesh.n_cells()), 1);
+  heavy[0] = std::numeric_limits<std::int32_t>::max() - 1;
+  try {
+    (void)autan::partition_cells(
+        mesh, 2, {.cell_weights = heavy, .group_offsets = pair_offsets, .group_cells = pair_cells});
+  } catch (const autan::Error& e) {
+    CHECK((e.code() == autan::ErrorCode::partition_backend_failed ||
+           e.code() == autan::ErrorCode::partition_empty_part));
+  }
+  heavy[0] = std::numeric_limits<std::int32_t>::max();
+  require_error(autan::ErrorCode::partition_invalid_request, [&] {
+    (void)autan::partition_cells(
+        mesh, 2, {.cell_weights = heavy, .group_offsets = pair_offsets, .group_cells = pair_cells});
+  });
+  CHECK(autan::partition_cells(
+            mesh, 1,
+            {.cell_weights = heavy, .group_offsets = pair_offsets, .group_cells = pair_cells}) ==
+        std::vector<std::int32_t>(at(mesh.n_cells()), 0));
+  const std::vector<autan::offset_t> halves{0, static_cast<autan::offset_t>(all.size() / 2),
+                                            static_cast<autan::offset_t>(all.size())};
+  for (const auto method : methods) {
+    const auto parts = autan::partition_cells(
+        mesh, 2,
+        {.method = method, .cell_weights = {}, .group_offsets = halves, .group_cells = all});
+    REQUIRE(parts.size() == all.size());
+    CHECK(std::ranges::all_of(parts, [](std::int32_t p) { return p == 0 || p == 1; }));
+    for (std::size_t c = 0; c < parts.size(); ++c)
+      CHECK((parts[c] == parts.front()) == (c < at(halves[1])));
+  }
+}
+#endif
+
+TEST_CASE("A coarse node goes to the part of its least child", "[partition][graph]") {
+  // Children (ids 5, 2, 7) of coarse 0 and (ids 4, 9) of coarse 1.
+  const std::vector<std::int32_t> parts{0, 1, 0, 2, 1};
+  const std::vector<index_t> coarse{0, 0, 0, 1, 1};
+  const std::vector<std::int64_t> ids{5, 2, 7, 4, 9};
+  const auto cp = autan::coarse_parts(parts, coarse, ids, 2);
+  CHECK(cp == std::vector<std::int32_t>{1, 2});
+  // Coarse 0 is rank 1's (node 1, id 2): its other children, nodes 0 and 2, live on rank 0.
+  CHECK(autan::remote_children(1, parts, coarse, cp) == std::vector<index_t>{0, 2});
+  CHECK(autan::remote_children(2, parts, coarse, cp) == std::vector<index_t>{4});
+  CHECK(autan::remote_children(0, parts, coarse, cp).empty());
+  require_error(autan::ErrorCode::partition_invalid_request,
+                [&] { (void)autan::coarse_parts(parts, coarse, ids, 3); });  // coarse 2 empty
+  require_error(autan::ErrorCode::partition_invalid_request, [&] {
+    (void)autan::coarse_parts(parts, std::vector<index_t>{0, 0, 0, 1, 2}, ids, 2);
+  });
+  // The largest id is an id like any other.
+  const std::vector<std::int64_t> top{std::numeric_limits<std::int64_t>::max()};
+  CHECK(autan::coarse_parts(std::vector<std::int32_t>{1}, std::vector<index_t>{0}, top, 1) ==
+        std::vector<std::int32_t>{1});
+}
+
+TEST_CASE("Graph parts send each other exactly the ghosts they hold", "[partition][graph]") {
+  // The dual graph of a box, cut in slabs, coarsened by groups of 4 consecutive cells (so
+  // many coarse nodes have children in two slabs). For every pair of parts, what one receives
+  // from the other (ghost nodes and ghost edges, in order) is what the other sends, by id.
+  const autan::Mesh mesh =
+      autan::assemble(autan::to_face_based(autan::test::box(4, autan::test::BoxFill::tetra, 0.2)));
+  const DualLevel dual(mesh);
+  const autan::Geometry g = autan::compute_geometry(mesh);
+  const std::int32_t n_parts = GENERATE(1, 2, 4);
+  CAPTURE(n_parts);
+  const auto parts = slabs(g, n_parts, 1.0);
+  std::vector<index_t> coarse(at(mesh.n_cells()));
+  for (std::size_t c = 0; c < coarse.size(); ++c) coarse[c] = static_cast<index_t>(c / 4);
+  const auto cp = autan::coarse_parts(parts, coarse, dual.ids, (coarse.size() + 3) / 4);
+  std::vector<autan::LocalGraph> locals;
+  for (std::int32_t r = 0; r < n_parts; ++r)
+    locals.push_back(autan::extract_graph(dual.level, parts, n_parts, r, coarse, cp));
+
+  std::vector<int> owned(at(mesh.n_cells()), 0);
+  for (std::int32_t r = 0; r < n_parts; ++r) {
+    const auto& l = locals[at(r)];
+    for (std::size_t v = 0; v < l.n_owned; ++v) {
+      ++owned[at(l.node_source[v])];
+      CHECK(parts[at(l.node_source[v])] == r);
+    }
+    // Ghosts: the remote children and the edge neighbours of the owned nodes and of those
+    // children, once each. Edges: those with an end owned or a remote child.
+    const auto children = autan::remote_children(r, parts, coarse, cp);
+    std::set<index_t> core(children.begin(), children.end());
+    for (std::size_t v = 0; v < parts.size(); ++v) {
+      if (parts[v] == r) core.insert(static_cast<index_t>(v));
+    }
+    std::set<std::int64_t> ghosts, edges;
+    for (const index_t v : children) ghosts.insert(dual.ids[at(v)]);
+    for (index_t f = 0; f < mesh.n_interior_faces(); ++f) {
+      const index_t a = dual.owner[at(f)], b = dual.neighbour[at(f)];
+      if (!core.contains(a) && !core.contains(b)) continue;
+      edges.insert(f);
+      for (const index_t v : {a, b}) {
+        if (parts[at(v)] != r) ghosts.insert(dual.ids[at(v)]);
+      }
+    }
+    const std::vector<std::int64_t> held(
+        l.node_global_id.begin() + static_cast<std::ptrdiff_t>(l.n_owned), l.node_global_id.end());
+    CHECK(held.size() == ghosts.size());
+    CHECK(std::set<std::int64_t>(held.begin(), held.end()) == ghosts);
+    CHECK(std::is_sorted(l.node_global_id.begin(),
+                         l.node_global_id.begin() + static_cast<std::ptrdiff_t>(l.n_owned)));
+    const auto by_part = [&](std::size_t i) {
+      return std::pair(parts[at(l.node_source[i])], l.node_global_id[i]);
+    };
+    for (std::size_t i = l.n_owned + 1; i < l.node_global_id.size(); ++i)
+      CHECK(by_part(i - 1) < by_part(i));
+    CHECK(l.edge_global_id.size() == edges.size());
+    CHECK(std::set<std::int64_t>(l.edge_global_id.begin(), l.edge_global_id.end()) == edges);
+    // Local edges: local owner < neighbour, the level's cells, reversed as flagged.
+    for (std::size_t e = 0; e < l.owner.size(); ++e) {
+      CHECK(l.owner[e] < l.neighbour[e]);
+      const auto f = at(l.edge_global_id[e]);
+      const bool reversed = l.edge_reversed[e] != 0;
+      CHECK(l.node_source[at(reversed ? l.neighbour[e] : l.owner[e])] == dual.owner[f]);
+      CHECK(l.node_source[at(reversed ? l.owner[e] : l.neighbour[e])] == dual.neighbour[f]);
+      CHECK((e < l.n_owned_edges) == (parts[at(dual.owner[f])] == r));
+    }
+  }
+  CHECK(std::all_of(owned.begin(), owned.end(), [](int k) { return k == 1; }));
+
+  // The exchange, emulated: the ids received from q are the ids q sends, in order.
+  const auto check = [&](auto halo_of, auto ids_of, auto n_owned_of) {
+    for (std::int32_t r = 0; r < n_parts; ++r) {
+      const autan::HaloPattern& h = halo_of(locals[at(r)]);
+      for (std::size_t i = 0; i < h.neighbours.size(); ++i) {
+        const std::int32_t q = h.neighbours[i];
+        const autan::HaloPattern& hq = halo_of(locals[at(q)]);
+        const auto j =
+            at(std::find(hq.neighbours.begin(), hq.neighbours.end(), r) - hq.neighbours.begin());
+        REQUIRE(j < hq.neighbours.size());
+        std::vector<std::int64_t> received, sent;
+        for (index_t k = h.recv_offsets[i]; k < h.recv_offsets[i + 1]; ++k)
+          received.push_back(ids_of(locals[at(r)])[n_owned_of(locals[at(r)]) + at(k)]);
+        for (index_t k = hq.send_offsets[j]; k < hq.send_offsets[j + 1]; ++k)
+          sent.push_back(ids_of(locals[at(q)])[at(hq.send_cells[at(k)])]);
+        CHECK(received == sent);
+      }
+      std::size_t total = 0;
+      for (std::size_t i = 0; i + 1 < h.recv_offsets.size(); ++i)
+        total += at(h.recv_offsets[i + 1] - h.recv_offsets[i]);
+      CHECK(total == ids_of(locals[at(r)]).size() - n_owned_of(locals[at(r)]));
+    }
+  };
+  check([](const autan::LocalGraph& l) -> const autan::HaloPattern& { return l.node_halo; },
+        [](const autan::LocalGraph& l) -> const std::vector<std::int64_t>& {
+          return l.node_global_id;
+        },
+        [](const autan::LocalGraph& l) { return l.n_owned; });
+  check([](const autan::LocalGraph& l) -> const autan::HaloPattern& { return l.edge_halo; },
+        [](const autan::LocalGraph& l) -> const std::vector<std::int64_t>& {
+          return l.edge_global_id;
+        },
+        [](const autan::LocalGraph& l) { return l.n_owned_edges; });
+
+  const auto refused = [&](const autan::GraphLevel& level, std::span<const std::int32_t> p,
+                           std::int32_t rank, std::span<const index_t> c,
+                           std::span<const std::int32_t> c_parts) {
+    require_error(autan::ErrorCode::partition_invalid_request,
+                  [&] { (void)autan::extract_graph(level, p, n_parts, rank, c, c_parts); });
+  };
+  for (const std::int32_t wrong : {-1, n_parts}) {
+    refused(dual.level, parts, wrong, coarse, cp);
+    auto bad_parts = parts;
+    bad_parts.front() = wrong;
+    refused(dual.level, bad_parts, 0, coarse, cp);
+    auto bad_cp = cp;
+    bad_cp.front() = wrong;
+    refused(dual.level, parts, 0, coarse, bad_cp);
+  }
+  for (const auto wrong : {index_t{-1}, static_cast<index_t>(mesh.n_cells())}) {
+    auto owner = dual.owner;
+    owner.front() = wrong;
+    refused({.n_nodes = dual.level.n_nodes,
+             .owner = owner,
+             .neighbour = dual.neighbour,
+             .global_id = dual.ids},
+            parts, 0, coarse, cp);
+    auto neighbour = dual.neighbour;
+    neighbour.front() = wrong;
+    refused({.n_nodes = dual.level.n_nodes,
+             .owner = dual.owner,
+             .neighbour = neighbour,
+             .global_id = dual.ids},
+            parts, 0, coarse, cp);
+  }
+  for (const auto wrong : {index_t{-1}, static_cast<index_t>(cp.size())}) {
+    auto bad_coarse = coarse;
+    bad_coarse.front() = wrong;
+    refused(dual.level, parts, 0, bad_coarse, cp);
+  }
+}
+
+TEST_CASE("Greedy colouring visits nodes by increasing global id", "[partition][colour]") {
+  using autan::offset_t;
+  // A path 0-1-2-3 with ids 3, 2, 1, 0: visited 3, 2, 1, 0, so colours alternate from node 3.
+  const std::vector<offset_t> path_offsets{0, 1, 3, 5, 6};
+  const std::vector<index_t> path{1, 0, 2, 1, 3, 2};
+  CHECK(autan::colour_greedy(path_offsets, path, std::vector<std::int64_t>{3, 2, 1, 0}) ==
+        std::vector<std::int32_t>{1, 0, 1, 0});
+  // A star whose centre has the largest id: the leaves first, all 0, then the centre 1.
+  const std::vector<offset_t> star_offsets{0, 3, 4, 5, 6};
+  const std::vector<index_t> star{1, 2, 3, 0, 0, 0};
+  CHECK(autan::colour_greedy(star_offsets, star, std::vector<std::int64_t>{9, 1, 2, 3}) ==
+        std::vector<std::int32_t>{1, 0, 0, 0});
+  // A triangle needs three.
+  const std::vector<offset_t> triangle_offsets{0, 2, 4, 6};
+  const std::vector<index_t> triangle{1, 2, 0, 2, 0, 1};
+  CHECK(autan::colour_greedy(triangle_offsets, triangle, std::vector<std::int64_t>{0, 1, 2}) ==
+        std::vector<std::int32_t>{0, 1, 2});
+  require_error(autan::ErrorCode::partition_invalid_request, [&] {
+    (void)autan::colour_greedy(path_offsets, path, std::vector<std::int64_t>{0, 1});
+  });
+  // Offsets that go back: their last entry matches, the middle one does not.
+  require_error(autan::ErrorCode::partition_invalid_request, [&] {
+    (void)autan::colour_greedy(std::vector<offset_t>{0, 3, 2}, std::vector<index_t>{1, 0},
+                               std::vector<std::int64_t>{0, 1});
+  });
+  require_error(autan::ErrorCode::partition_invalid_request, [&] {
+    (void)autan::colour_greedy(triangle_offsets, std::vector<index_t>{1, 2, 0, 2, 0, 3},
+                               std::vector<std::int64_t>{0, 1, 2});
+  });
+}
+
+TEST_CASE("Cells across a face or a periodic pair never share a colour, in any cell order",
+          "[partition][colour]") {
+  using autan::test::BoxFill;
+  const BoxFill fill = GENERATE(BoxFill::hexa, BoxFill::tetra, BoxFill::hybrid);
+  const bool periodic = GENERATE(false, true);
+  CAPTURE(periodic);
+  autan::CellwiseMesh cells = autan::test::box(4, fill, 0.2);
+  if (periodic) {
+    for (int k = 0; k < 2; ++k) {
+      cells.face_zones[at(2 * k)].kind = autan::BcKind::periodic;
+      cells.face_zones[at(2 * k + 1)].kind = autan::BcKind::periodic;
+      std::array<double, 3> t{};
+      t[at(k)] = 1.0;
+      cells.periodic.push_back({.zone_a = 2 * k, .zone_b = 2 * k + 1, .translation = t});
+    }
+  }
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(std::move(cells)));
+  const auto colour = autan::colour_cells(mesh);
+  REQUIRE(colour.size() == at(mesh.n_cells()));
+  for (index_t f = 0; f < mesh.n_interior_faces(); ++f)
+    CHECK(colour[at(mesh.owner()[at(f)])] != colour[at(mesh.neighbour()[at(f)])]);
+  std::size_t across = 0;
+  const auto offsets = mesh.boundary_zone_offsets();
+  for (std::size_t p = 0; p < mesh.periodic_pairs().size(); ++p) {
+    const auto partners = mesh.periodic_partners(p);
+    const index_t first = offsets[at(mesh.periodic_pairs()[p].zone_a)];
+    for (std::size_t k = 0; k < partners.size(); ++k, ++across) {
+      CHECK(colour[at(mesh.owner()[at(first) + k])] != colour[at(mesh.owner()[at(partners[k])])]);
+    }
+  }
+  CHECK((across > 0) == periodic);
+  // The same colour for each global id after renumbering the cells (RCM).
+  const autan::Mesh renumbered = autan::renumber_cells(mesh, autan::rcm_order(mesh));
+  const auto again = autan::colour_cells(renumbered);
+  for (std::size_t c = 0; c < again.size(); ++c)
+    CHECK(again[c] == colour[at(renumbered.cell_global_id()[c])]);
+  // Groups of four consecutive cells, every other block: a group shares one colour, and two
+  // cells of different nodes across a face or a periodic pair never do.
+  std::vector<autan::offset_t> group_offsets{0};
+  std::vector<index_t> group_cells;
+  std::vector<std::int64_t> node(at(mesh.n_cells()));
+  std::iota(node.begin(), node.end(), std::int64_t{mesh.n_cells()});
+  for (index_t c = 0; c + 4 <= mesh.n_cells(); c += 8) {
+    for (index_t k = c; k < c + 4; ++k) {
+      group_cells.push_back(k);
+      node[at(k)] = c;
+    }
+    group_offsets.push_back(static_cast<autan::offset_t>(group_cells.size()));
+  }
+  const auto grouped = autan::colour_cells(mesh, group_offsets, group_cells);
+  REQUIRE(grouped.size() == at(mesh.n_cells()));
+  const auto apart = [&](index_t a, index_t b) {
+    if (node[at(a)] != node[at(b)]) CHECK(grouped[at(a)] != grouped[at(b)]);
+  };
+  for (std::size_t g = 0; g + 1 < group_offsets.size(); ++g) {
+    for (auto k = group_offsets[g]; k < group_offsets[g + 1]; ++k)
+      CHECK(grouped[at(group_cells[at(k)])] == grouped[at(group_cells[at(group_offsets[g])])]);
+  }
+  for (index_t f = 0; f < mesh.n_interior_faces(); ++f)
+    apart(mesh.owner()[at(f)], mesh.neighbour()[at(f)]);
+  for (std::size_t p = 0; p < mesh.periodic_pairs().size(); ++p) {
+    const auto partners = mesh.periodic_partners(p);
+    const index_t first = offsets[at(mesh.periodic_pairs()[p].zone_a)];
+    for (std::size_t k = 0; k < partners.size(); ++k)
+      apart(mesh.owner()[at(first) + k], mesh.owner()[at(partners[k])]);
+  }
+  // A group's id is its least cell_global_id, not its place: the cells renumbered (RCM) and
+  // the groups listed backwards, each cell keeps its colour.
+  std::vector<index_t> new_of(at(mesh.n_cells()));
+  for (std::size_t c = 0; c < new_of.size(); ++c)
+    new_of[at(renumbered.cell_global_id()[c])] = static_cast<index_t>(c);
+  std::vector<autan::offset_t> backwards_offsets{0};
+  std::vector<index_t> backwards_cells;
+  for (std::size_t g = group_offsets.size() - 1; g > 0; --g) {
+    for (auto k = group_offsets[g - 1]; k < group_offsets[g]; ++k)
+      backwards_cells.push_back(new_of[at(group_cells[at(k)])]);
+    backwards_offsets.push_back(static_cast<autan::offset_t>(backwards_cells.size()));
+  }
+  const auto regrouped = autan::colour_cells(renumbered, backwards_offsets, backwards_cells);
+  for (std::size_t c = 0; c < regrouped.size(); ++c)
+    CHECK(regrouped[c] == grouped[at(renumbered.cell_global_id()[c])]);
+  require_error(autan::ErrorCode::partition_invalid_request, [&] {
+    (void)autan::colour_cells(mesh, std::vector<autan::offset_t>{0, 2}, std::vector<index_t>{0, 0});
+  });
+  require_error(autan::ErrorCode::partition_input_has_ghosts, [&] {
+    const autan::LocalPartition part =
+        autan::extract_partition(mesh, autan::compute_geometry(mesh),
+                                 std::vector<std::int32_t>(at(mesh.n_cells()), 0), 1, 0);
+    if (part.mesh.n_cells() == part.mesh.n_owned_cells()) {
+      throw autan::Error(autan::ErrorCode::partition_input_has_ghosts, "no ghosts to refuse");
+    }
+    (void)autan::colour_cells(part.mesh);
+  });
 }

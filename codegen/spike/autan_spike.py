@@ -57,6 +57,7 @@ class Mesh:
     cell_centroid: F64
     cell_volume: F64
     lsq_weight: F64
+    incidence_side: F64  # (n_incidences,)
 
     def __del__(self) -> None:
         if self.handle:
@@ -105,6 +106,24 @@ def partition(m: Mesh, parts: npt.NDArray[np.int32], n_parts: int, rank: int, la
     return _wrap(h)
 
 
+def set_global_order(m: Mesh, stencil: str | None) -> None:
+    """Order `m` by its global numbering, with a cell stencil of `stencil` ordered the same way
+    (autan_spike_set_global_order): results then do not depend on the partition."""
+    err = ctypes.create_string_buffer(512)
+    kind = {"vertex": 0, "face2": 1, None: -1}[stencil]
+    _check(
+        lib().autan_spike_set_global_order(
+            m.handle, ctypes.c_int(kind), err, ctypes.c_size_t(len(err))
+        ),
+        err,
+    )
+
+
+def all_planar(m: Mesh) -> bool:
+    """PackedGeometry::all_planar: every face moment of `m` is an exact zero."""
+    return bool(lib().autan_spike_all_planar(m.handle))
+
+
 def global_ids(m: Mesh) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
     """Global cell of each local cell and global face of each local face."""
     cells, faces = np.zeros(m.n_cells, np.int64), np.zeros(m.n_faces, np.int64)
@@ -112,10 +131,24 @@ def global_ids(m: Mesh) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
     return cells, faces
 
 
-def _wrap(h: ctypes.c_void_p) -> Mesh:
+def incidences(m: Mesh) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int32], F64]:
+    """Cell -> face offsets, faces and incidence sides as `m` holds them now (after
+    set_global_order: in the global order, sides for the faces' global orientation)."""
+    a = _arrays(m.handle)
+    return a["cell_face_offsets"], a["cell_faces"], a["incidence_side"]
+
+
+def face_moments(m: Mesh) -> F64:
+    """Face moments (n_faces, 3, 3) as `m` holds them now (after set_global_order: signed for each
+    face's local orientation, computed in its global one)."""
+    a = _arrays(m.handle)
+    return a["face_moment"].reshape(9, m.n_faces).T.reshape(m.n_faces, 3, 3).copy()
+
+
+def _arrays(h: ctypes.c_void_p) -> dict[str, np.ndarray]:
     counts = np.zeros(5, dtype=np.int64)
     lib().autan_spike_mesh_counts(h, _p(counts))
-    nc, no, nf, ni, nk = (int(c) for c in counts)
+    nc, _, nf, ni, nk = (int(c) for c in counts)
     a = {
         "owner": np.zeros(nf, np.int32),
         "neighbour": np.zeros(ni, np.int32),
@@ -127,14 +160,23 @@ def _wrap(h: ctypes.c_void_p) -> Mesh:
         "cell_centroid": np.zeros(3 * nc),
         "cell_volume": np.zeros(nc),
         "lsq_weight": np.zeros(3 * nk),
+        "incidence_side": np.zeros(nk),
     }
     lib().autan_spike_mesh_arrays(h, *(_p(v) for v in a.values()))
+    return a
+
+
+def _wrap(h: ctypes.c_void_p) -> Mesh:
+    counts = np.zeros(5, dtype=np.int64)
+    lib().autan_spike_mesh_counts(h, _p(counts))
+    nc, no, nf, ni, nk = (int(c) for c in counts)
+    a = _arrays(h)
     soa = {k: a[k].reshape(3, n).T.copy() for k, n in
            (("face_area", nf), ("face_centroid", nf), ("cell_centroid", nc), ("lsq_weight", nk))}  # fmt: skip
     moment = a["face_moment"].reshape(9, nf).T.reshape(nf, 3, 3).copy()
     return Mesh(h, nc, no, nf, ni, nk, a["owner"], a["neighbour"], a["cell_face_offsets"], a["cell_faces"],
                 soa["face_area"], soa["face_centroid"], moment, soa["cell_centroid"], a["cell_volume"],
-                soa["lsq_weight"])  # fmt: skip
+                soa["lsq_weight"], a["incidence_side"])  # fmt: skip
 
 
 def soa(v: F64) -> F64:
@@ -187,14 +229,30 @@ def gradients(
     return grad.reshape(3, -1).T, qmin, qmax
 
 
-def advection(m: Mesh, policy: str, q: F64, grad: F64, velocity: tuple[float, float, float]) -> F64:
-    """Residual of the section 3.3 upwind face loop on the host."""
+def advection(
+    m: Mesh,
+    policy: str,
+    q: F64,
+    grad: F64,
+    velocity: tuple[float, float, float],
+    strategy: str = "scatter",
+) -> F64:
+    """Residual of the section 3.3 upwind face loop on the host: the face loop ("scatter") or a
+    per-cell gather ("gather-recompute", "store-gather")."""
     err = ctypes.create_string_buffer(512)
     res = np.zeros(m.n_cells)
     vel = np.array(velocity, dtype=np.float64)
     q, g = np.ascontiguousarray(q, dtype=np.float64), soa(grad)
     rc = lib().autan_spike_advection(
-        m.handle, policy.encode(), _p(q), _p(g), _p(vel), _p(res), err, ctypes.c_size_t(len(err))
+        m.handle,
+        policy.encode(),
+        strategy.encode(),
+        _p(q),
+        _p(g),
+        _p(vel),
+        _p(res),
+        err,
+        ctypes.c_size_t(len(err)),
     )
     _check(rc, err)
     return res
@@ -452,6 +510,52 @@ def gpu_lsq_bounds_adjoint(
     return out
 
 
+def set_stencil_slice(slice_: int) -> None:
+    """Cells per slice of the device stencil layout of the following calls (0: CSR)."""
+    lib().autan_spike_set_stencil_slice(ctypes.c_int(slice_))
+
+
+def set_incidence_slice(slice_: int) -> None:
+    """Cells per slice of the device incidence layout of the following calls (0: CSR)."""
+    lib().autan_spike_set_incidence_slice(ctypes.c_int(slice_))
+
+
+def gpu_bind_check(m: Mesh) -> tuple[bool, ...]:
+    """DeviceMesh: (built-in face_area bound, a physics' own writable cell_volume left alone,
+    face_area uploaded in chunks equal to the host's, still bound after release_host(), a field
+    first bound after release_host() refused with E1101, a sliced stencil without twins or
+    weights accepted with a null stencil_twin, a deterministic adjoint over it refused with
+    E1106, an upload range that wraps around refused with E1101, weights given after
+    release_host() bound in the sliced layout while a pointer bound before keeps the old ones,
+    weights of another type refused until set for it then converted from double, CSR and sliced,
+    bind_and_release() binding the host's values and refusing a field it did not upload, a
+    refused bind_and_release() leaving the geometry whole)."""
+    err = ctypes.create_string_buffer(512)
+    out = np.zeros(12, dtype=np.int32)
+    _check(lib().autan_spike_gpu_bind_check(m.handle, _p(out), err, ctypes.c_size_t(len(err))), err)
+    return tuple(bool(v) for v in out)
+
+
+def gpu_reductions(x: F64, flags: npt.NDArray[np.bool_]) -> tuple[float, float, int, int]:
+    """Device min of x in FP64 and in FP32, and the first index where flags is set, from flags
+    stored as bytes and as doubles."""
+    err = ctypes.create_string_buffer(512)
+    m64, m32, first, first64 = (
+        ctypes.c_double(),
+        ctypes.c_float(),
+        ctypes.c_int64(),
+        ctypes.c_int64(),
+    )
+    xs = np.ascontiguousarray(x, dtype=np.float64)
+    fs = np.ascontiguousarray(flags, dtype=np.uint8)
+    rc = lib().autan_spike_gpu_reductions(
+        _p(xs), _p(fs), ctypes.c_int64(xs.size), ctypes.byref(m64), ctypes.byref(m32),
+        ctypes.byref(first), ctypes.byref(first64), err, ctypes.c_size_t(len(err)),
+    )  # fmt: skip
+    _check(rc, err)
+    return m64.value, m32.value, first.value, first64.value
+
+
 def gpu_sum_of_squares(x: F64) -> float:
     """Fixed-order FP64 sum of squares computed on the device."""
     err = ctypes.create_string_buffer(512)
@@ -489,12 +593,47 @@ def fill_ghost_geometry(m: Mesh, centroid: F64, volume: F64) -> None:
     )
 
 
+def face_colours(m: Mesh, interior: bool = True) -> npt.NDArray[np.int32]:
+    """Colour of each owned interior (or boundary) face, in face order (kernels::colour_faces)."""
+    first = 0 if interior else m.n_interior
+    last = m.n_interior if interior else m.n_faces
+    out = np.zeros(last - first, np.int32)
+    lib().autan_spike_face_colours(m.handle, ctypes.c_int(1 if interior else 0), _p(out))
+    return out
+
+
 def stencil_arrays(m: Mesh, size: int) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int32]]:
     """Offsets and entries of the mesh's cell stencil (cell index, or -(f + 1) for face f)."""
     offsets = np.zeros(m.n_cells + 1, np.int64)
     entries = np.zeros(size, np.int32)
     lib().autan_spike_stencil_arrays(m.handle, _p(offsets), _p(entries))
     return offsets, entries
+
+
+def face_flags(
+    m: Mesh, policy: str, q: F64, strategy: str | None = None, read_back: bool = False
+) -> tuple[npt.NDArray[np.uint8], F64, F64 | None]:
+    """Test kernel codegen/tests/kernels/face_flags.py, on the host (`strategy` None) or the
+    device in `strategy`: keep (n_faces x 2, 255 where no loop writes), jump, and res from the
+    face loop reading keep when `read_back`."""
+    err = ctypes.create_string_buffer(512)
+    keep = np.zeros(2 * m.n_faces, dtype=np.uint8)
+    jump = np.zeros(m.n_faces)
+    res = np.zeros(m.n_cells) if read_back else None
+    q = np.ascontiguousarray(q, dtype=np.float64)
+    res_p = _p(res) if res is not None else None
+    if strategy is None:
+        rc = lib().autan_spike_face_flags(
+            m.handle, policy.encode(), _p(q), _p(keep), _p(jump), res_p, err,
+            ctypes.c_size_t(len(err)),
+        )  # fmt: skip
+    else:
+        rc = lib().autan_spike_gpu_face_flags(
+            m.handle, policy.encode(), strategy.encode(), ctypes.c_int(128), _p(q), _p(keep),
+            _p(jump), res_p, err, ctypes.c_size_t(len(err)),
+        )  # fmt: skip
+    _check(rc, err)
+    return keep.reshape(2, -1).T, jump, res
 
 
 def face_weighted(

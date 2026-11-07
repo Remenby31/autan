@@ -9,10 +9,19 @@ from typing import Annotated, Any, Literal, Self
 
 import pint
 import rfc8785
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_validator,
+)
 
 from autan.errors import CaseError, Diagnostic, Location, diagnostic
-from autan.units import K, deg, fail, m, quantity, si, validate_number
+from autan.texts import bounded
+from autan.units import K, UnitOfLength, deg, fail, m, quantity, s, si, validate_number
 
 SCHEMA_ID = "autan.case/1"
 # Largest integer RFC 8785 canonicalizes exactly (IEEE 754 double, 2**53 - 1).
@@ -42,8 +51,8 @@ PositiveNumber = Annotated[
 Gamma = Annotated[float, Field(gt=1), BeforeValidator(lambda v: validate_number(v, positive=True))]
 Count = Annotated[int, Field(strict=True, ge=1, le=MAX_INTEGER)]
 Index = Annotated[int, Field(strict=True, ge=0, le=MAX_INTEGER)]
-Pattern = Annotated[str, Field(min_length=1)]
-Name = Annotated[str, Field(min_length=1)]
+Pattern = Annotated[str, Field(min_length=1), AfterValidator(bounded)]
+Name = Annotated[str, Field(min_length=1), AfterValidator(bounded)]
 
 _RANGE_ERRORS = frozenset({"greater_than", "greater_than_equal", "less_than", "less_than_equal"})
 _TAGS = ("kind", "model", "law")
@@ -226,6 +235,8 @@ class WMLES(Spec):
 
 Turbulence = Annotated[Inviscid | Laminar | SA | SST | DDES | WMLES, Field(discriminator="model")]
 Precision = Literal["fp32+acc64", "fp64"]
+# What bits a run guarantees to repeat (case-schema.md#physics).
+Reproducibility = Literal["none", "run", "ranks"]
 
 
 def _air() -> IdealGas:
@@ -240,6 +251,7 @@ class Compressible(Spec):
     kind: Literal["compressible"] = "compressible"
     turbulence: Turbulence
     precision: Precision = "fp32+acc64"
+    reproducibility: Reproducibility = "run"
     gas: IdealGas = Field(default_factory=_air)
 
 
@@ -249,6 +261,7 @@ class Incompressible(Spec):
     kind: Literal["incompressible"] = "incompressible"
     turbulence: Turbulence
     precision: Precision = "fp32+acc64"
+    reproducibility: Reproducibility = "run"
     fluid: ConstantDensityFluid
 
 
@@ -268,14 +281,46 @@ class Freestream(Spec):
 
 # --- time --------------------------------------------------------------------------------
 
+CHECKPOINT_SECONDS = (60.0, 86400.0)
+
+
+class Checkpoint(Spec):
+    """How often a running run writes its restart checkpoint (results.md#checkpointcgns): every
+    ``seconds`` of wall-clock time, in [60 s, 86400 s], or every ``iterations`` iterations;
+    exactly one. A checkpoint never changes the results, only when they are saved."""
+
+    seconds: Duration | None = None
+    iterations: Count | None = None
+
+    @model_validator(mode="after")
+    def _check(self) -> Self:
+        if (self.seconds is None) == (self.iterations is None):
+            fail("E0003", "give exactly one of seconds or iterations")
+        if self.seconds is not None:
+            low, high = CHECKPOINT_SECONDS
+            if not low <= si(self.seconds, "s") <= high:
+                fail("E0304", "checkpoint seconds must be in [60, 86400]")
+        return self
+
+
+def _default_checkpoint() -> Checkpoint:
+    return Checkpoint(seconds=1800.0 * s)
+
 
 class Steady(Spec):
     """Local time stepping until every residual drops ``residual_orders`` orders, at most
-    ``max_iterations`` iterations."""
+    ``max_iterations`` iterations; an implicit physics solves each step's linear system with
+    ``linear_solver``. ``coupled_turbulence`` solves the flow and the SA variable together in
+    each step (validated on the TMR flat plate only); ``matrix_free`` applies the laminar
+    step's Jacobian without assembling it (validated on the TMR laminar flat plate only)."""
 
     kind: Literal["steady"] = "steady"
     max_iterations: Count = 10000
     residual_orders: PositiveNumber = 8.0
+    linear_solver: Literal["multigrid", "gauss-seidel", "lines"] = "multigrid"
+    coupled_turbulence: Annotated[bool, Field(strict=True)] = False
+    matrix_free: Annotated[bool, Field(strict=True)] = False
+    checkpoint: Checkpoint = Field(default_factory=_default_checkpoint)
 
 
 class Unsteady(Spec):
@@ -286,6 +331,7 @@ class Unsteady(Spec):
     dt: Duration | None = None
     cfl: PositiveNumber | None = None
     average_from: Index | None = None
+    checkpoint: Checkpoint = Field(default_factory=_default_checkpoint)
 
     @model_validator(mode="after")
     def _check(self) -> Self:
@@ -315,8 +361,41 @@ class Symmetry(Spec):
     kind: Literal["symmetry"] = "symmetry"
 
 
+def _one_of(key: str) -> ConfigDict:
+    """The model's JSON Schema requires exactly one of ``key`` and ``group``."""
+
+    def extra(schema: dict[str, Any]) -> None:
+        schema["oneOf"] = [{"required": [key]}, {"required": ["group"]}]
+
+    return ConfigDict(**Spec.model_config, json_schema_extra=extra)
+
+
+def one_selector(zones: str | None, group: str | None, key: str) -> None:
+    """A zone selection gives exactly one of a glob over zone names (``key``) and ``group``."""
+    if (zones is None) == (group is None):
+        fail("E0003", "give exactly one of {key} or group", key=key)
+
+
+class PointVortex(Spec):
+    """The point-vortex correction of a 2D farfield: the far field of a vortex at ``center``
+    whose circulation is that of the lift on the wall and slip zones matching ``surfaces``
+    (or the zones of the groups matching ``group``)."""
+
+    surfaces: Pattern | None = None
+    group: Pattern | None = None
+    center: tuple[Coordinate, Coordinate, Coordinate]
+
+    model_config = _one_of("surfaces")
+
+    @model_validator(mode="after")
+    def _selector(self) -> Self:
+        one_selector(self.surfaces, self.group, "surfaces")
+        return self
+
+
 class Farfield(Spec):
     kind: Literal["farfield"] = "farfield"
+    point_vortex: PointVortex | None = None
 
 
 class Inlet(Spec):
@@ -351,8 +430,16 @@ Condition = Annotated[
 
 
 class BoundaryRule(Spec):
-    zones: Pattern
+    zones: Pattern | None = None
+    group: Pattern | None = None
     condition: Condition
+
+    model_config = _one_of("zones")
+
+    @model_validator(mode="after")
+    def _selector(self) -> Self:
+        one_selector(self.zones, self.group, "zones")
+        return self
 
 
 class State(Spec):
@@ -384,16 +471,25 @@ class CellZoneRule(Spec):
 
 
 class Forces(Spec):
-    """Integrated forces and moments over the boundary zones matching ``surfaces``."""
+    """Integrated forces and moments over the boundary zones matching ``surfaces`` (or the
+    zones of the groups matching ``group``)."""
 
     kind: Literal["forces"] = "forces"
     name: Name = "forces"
-    surfaces: Pattern
+    surfaces: Pattern | None = None
+    group: Pattern | None = None
     every: Count = 1
     ref_area: Area | None = None
     moment_center: tuple[Coordinate, Coordinate, Coordinate] = Field(
         default_factory=lambda: (0.0 * m, 0.0 * m, 0.0 * m)
     )
+
+    model_config = _one_of("surfaces")
+
+    @model_validator(mode="after")
+    def _selector(self) -> Self:
+        one_selector(self.surfaces, self.group, "surfaces")
+        return self
 
 
 Monitor = Annotated[Forces, Field(discriminator="kind")]
@@ -414,6 +510,14 @@ class Verification(Spec):
     manufactured: Manufactured
 
 
+class StateFile(Spec):
+    """The initial state of every fluid cell, from an ``autan.initial-state/1`` file written
+    for the case's mesh (docs/contracts/initial-state.md), fixed by its SHA-256."""
+
+    path: Name
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
+
+
 # --- case --------------------------------------------------------------------------------
 
 
@@ -423,6 +527,7 @@ class CaseSpec(Spec):
     schema_: Literal["autan.case/1"] = Field(default="autan.case/1", alias="schema")
     name: Name
     mesh: Name
+    mesh_unit: Annotated[pint.Unit, UnitOfLength] = Field(default_factory=lambda: m)
     physics: Physics
     freestream: Freestream
     time: Time = Field(default_factory=Steady)
@@ -430,6 +535,7 @@ class CaseSpec(Spec):
     cell_zones: tuple[CellZoneRule, ...] = ()
     monitors: tuple[Monitor, ...] = ()
     verification: Verification | None = None
+    initial_state: StateFile | None = None
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -512,6 +618,24 @@ def consistency(spec: CaseSpec) -> list[tuple[str, str, str]]:
             )
         if not compressible and state.temperature is not None:
             found.append(("E0507", where, "an incompressible initial state takes no temperature"))
+    if spec.initial_state is not None:
+        zones = [
+            f"cell_zones[{i}].medium.initial"
+            for i, rule in enumerate(spec.cell_zones)
+            if isinstance(rule.medium, Fluid) and rule.medium.initial is not None
+        ]
+        if not compressible or not isinstance(physics.turbulence, Inviscid | Laminar):
+            found.append(
+                (
+                    "E0512",
+                    "initial_state",
+                    "an initial-state file needs compressible inviscid or laminar physics",
+                )
+            )
+        found.extend(
+            ("E0512", where, "a zone takes no initial state with an initial-state file")
+            for where in zones
+        )
     if spec.verification is not None and spec.boundaries:
         found.append(
             (
@@ -523,6 +647,22 @@ def consistency(spec: CaseSpec) -> list[tuple[str, str, str]]:
     if spec.verification is not None and isinstance(spec.time, Unsteady):
         found.append(
             ("E0417", "time", "manufactured solutions are steady: verification needs a steady time")
+        )
+    coupled = isinstance(spec.time, Steady) and spec.time.coupled_turbulence
+    if coupled and not (isinstance(physics, Compressible) and isinstance(physics.turbulence, SA)):
+        found.append(
+            (
+                "E0426",
+                "time.coupled_turbulence",
+                "only compressible SA has a coupled turbulence step",
+            )
+        )
+    matrix_free = isinstance(spec.time, Steady) and spec.time.matrix_free
+    if matrix_free and not (
+        isinstance(physics, Compressible) and isinstance(physics.turbulence, Laminar)
+    ):
+        found.append(
+            ("E0429", "time.matrix_free", "only compressible laminar flow has a matrix-free step")
         )
     if isinstance(physics.turbulence, DDES | WMLES) and not isinstance(spec.time, Unsteady):
         found.append(
@@ -559,11 +699,44 @@ def json_schema() -> dict[str, Any]:
     def absent(*keys: str) -> dict[str, Any]:
         return {"not": {"anyOf": [{"required": [k]} for k in keys]}}
 
+    def opt_in(key: str, model: str) -> dict[str, Any]:
+        time = {"required": [key], "properties": {key: {"const": True}}}
+        turbulence = {"properties": {"model": {"const": model}}}
+        kind = {"kind": {"const": "compressible"}, "turbulence": turbulence}
+        return {
+            "if": {"required": ["time"], "properties": {"time": time}},
+            "then": {"properties": {"physics": {"properties": kind}}},
+        }
+
     def zone_states(rule: dict[str, Any]) -> dict[str, Any]:
         initial = {"properties": {"initial": {"anyOf": [{"type": "null"}, rule]}}}
         return {"properties": {"cell_zones": {"items": {"properties": {"medium": initial}}}}}
 
+    one = [
+        {
+            "required": [key],
+            "properties": {key: {"not": {"type": "null"}}, other: {"type": "null"}},
+        }
+        for key, other in (("seconds", "iterations"), ("iterations", "seconds"))
+    ]
     schema["allOf"] = [
+        {"properties": {"time": {"properties": {"checkpoint": {"oneOf": one}}}}},
+        {
+            "if": {"required": ["initial_state"]},
+            "then": {
+                "properties": {
+                    "physics": {
+                        "properties": {
+                            "kind": {"const": "compressible"},
+                            "turbulence": {
+                                "properties": {"model": {"enum": ["inviscid", "laminar"]}}
+                            },
+                        }
+                    },
+                    **zone_states({"not": {}})["properties"],
+                },
+            },
+        },
         {"if": physics("compressible"), "then": zone_states({"required": ["temperature"]})},
         {
             "if": physics("incompressible"),
@@ -610,5 +783,7 @@ def json_schema() -> dict[str, Any]:
                 "properties": {"time": {"properties": {"kind": {"const": "unsteady"}}}},
             },
         },
+        opt_in("coupled_turbulence", "sa"),
+        opt_in("matrix_free", "laminar"),
     ]
     return {"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": SCHEMA_ID, **schema}

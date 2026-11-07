@@ -13,6 +13,14 @@ RANGE = re.compile(r"\b[EWD]\d{4}`?\s*(?:[\u2013-]|to)\s*`?[EWD]\d{4}\b")
 CODE_ROW = re.compile(r"^\| ([EWD]\d{4}) \| `[a-z_]+` \| (.+?) \|$", re.MULTILINE)
 
 
+def test_every_code_is_declared_once() -> None:
+    # REGISTRY is a dict over the declarations: a second declaration of a code would replace the
+    # first silently, as when two branches take the same free code.
+    source = (ROOT / "py" / "autan" / "errors.py").read_text()
+    declared = re.findall(r'Code\(\s*"([EWD]\d{4})"', source)
+    assert sorted(code for code in set(declared) if declared.count(code) > 1) == []
+
+
 def test_reference_page_is_generated_from_the_registry() -> None:
     assert (ROOT / "docs" / "sdk" / "errors.md").read_text() == reference_page()
 

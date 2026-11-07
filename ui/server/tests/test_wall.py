@@ -3,7 +3,7 @@
 import numpy as np
 import numpy.typing as npt
 import pytest
-from autan_ui.wall import _ear_clip, _zone
+from autan_ui.wall import _ear_clip, polygon_zone
 
 # A C-shaped octagon in z = 0 (notch on the right), counter-clockwise.
 C_SHAPE = np.array(
@@ -23,7 +23,7 @@ def test_a_concave_polygon_is_covered_without_crossing_its_notch(plane: str) -> 
     # The same polygon in each coordinate plane, counter-clockwise about +z, +x, +y.
     order = {"xy": [0, 1, 2], "yz": [2, 0, 1], "zx": [1, 2, 0]}[plane]
     shape = C_SHAPE[:, order]
-    zone = _zone(
+    zone = polygon_zone(
         "c", np.array([0]), np.array([0, 8]), np.arange(8), shape, {"Cp": np.zeros(1)}, np.zeros(3)
     )
     corners = zone.positions[zone.triangles].astype(np.float64)
@@ -40,7 +40,7 @@ def test_face_areas_and_node_values_follow_the_contract() -> None:
     start = np.array([0, 8], dtype=np.int64)
     rotated = np.roll(np.arange(8, dtype=np.int64), 3)
     for connectivity in (np.arange(8, dtype=np.int64), rotated):
-        zone = _zone(
+        zone = polygon_zone(
             "c",
             np.array([0]),
             start,
@@ -62,7 +62,7 @@ def test_ear_clipping_alone_covers_the_polygon() -> None:
 
 def test_positions_far_from_the_origin_keep_their_shape() -> None:
     far = C_SHAPE + 1e9
-    zone = _zone(
+    zone = polygon_zone(
         "c",
         np.array([0]),
         np.array([0, 8], dtype=np.int64),

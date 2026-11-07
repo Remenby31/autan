@@ -2,10 +2,17 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
+#include <limits>
 #include <map>
+#include <optional>
+#include <regex>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -15,6 +22,7 @@
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/core/quality.hpp"
+#include "autan/io/cgns.hpp"
 #include "cursor.hpp"
 
 namespace autan::io {
@@ -128,6 +136,46 @@ MeshInfoZones meshinfo_zones(const Mesh& mesh) {
   return zones;
 }
 
+std::int64_t mesh_bytes(const fs::path& path) {
+  std::error_code ec;
+  std::uintmax_t total = 0;
+  const auto add = [&](const fs::path& file) {
+    const auto size = fs::file_size(file, ec);
+    if (ec) throw Error(ErrorCode::io_cannot_open, "cannot read '" + file.string() + "'");
+    total += size;
+  };
+  if (fs::is_directory(path, ec)) {
+    const fs::path dir = polymesh_directory(path);
+    for (const char* name : {"points", "faces", "owner", "neighbour", "boundary", "cellZones"}) {
+      const fs::path file = dir / name;
+      if (std::string_view(name) == "cellZones" && !fs::exists(file, ec)) continue;
+      add(file);
+    }
+  } else {
+    add(path);
+  }
+  return static_cast<std::int64_t>(total);
+}
+
+LogicalBytes mesh_logical_bytes(const fs::path& path) {
+  std::error_code ec;
+  if (!fs::is_directory(path, ec)) {
+    std::ifstream in(path, std::ios::binary);
+    std::array<char, 8> signature{};
+    in.read(signature.data(), signature.size());
+    if (in.gcount() == 8 &&
+        std::string_view(signature.data(), 8) == std::string_view("\x89HDF\r\n\x1a\n", 8)) {
+#ifdef AUTAN_HAVE_CGNS
+      return cgns_logical_bytes(path);
+#else
+      throw Error(ErrorCode::io_unsupported,
+                  "'" + path.string() + "' is a CGNS/HDF5 file and this build has no CGNS support");
+#endif
+    }
+  }
+  return {.total = mesh_bytes(path), .descriptors = 0, .zone_names = 0, .filtered = 0, .nodes = 0};
+}
+
 std::string mesh_hash(const fs::path& path) {
   picosha2::hash256_one_by_one hasher;
   std::error_code ec;
@@ -145,7 +193,142 @@ std::string mesh_hash(const fs::path& path) {
   return picosha2::get_hash_hex_string(hasher);
 }
 
-std::string mesh_info_json(const Mesh& mesh, const std::string& sha256) {
+fs::path zone_groups_path(const fs::path& mesh_path) {
+  // Next to the mesh file itself, symlinks followed (case-schema.md), so the
+  // SDK and the runtime read the same sidecar; for an OpenFOAM case
+  // directory, next to its polyMesh directory.
+  std::error_code ec;
+  const fs::path given =
+      fs::is_directory(mesh_path, ec) ? polymesh_directory(mesh_path) : mesh_path;
+  const fs::path resolved = fs::canonical(given, ec);
+  return (ec ? given.lexically_normal() : resolved).string() + ".zones.json";
+}
+
+std::optional<ZoneGroups> read_zone_groups(const fs::path& mesh_path, const Mesh& mesh,
+                                           const std::string& sha256) {
+  const fs::path path = zone_groups_path(mesh_path);
+  std::error_code ec;
+  // Absent only when nothing is there: a link to nothing or an error is unreadable.
+  const auto entry = fs::symlink_status(path, ec);
+  if (ec && ec != std::errc::no_such_file_or_directory) {
+    throw Error(ErrorCode::zone_groups_invalid, path.string() + ": " + ec.message());
+  }
+  if (!fs::exists(entry)) return std::nullopt;
+  if (!fs::is_regular_file(path, ec)) {
+    throw Error(ErrorCode::zone_groups_invalid, path.string() + ": not a readable file");
+  }
+  const auto invalid = [&](ErrorCode code, const std::string& why) -> Error {
+    return {code, path.string() + ": " + why};
+  };
+  // mesh-info.md, Zone groups: at most 1 MiB, a hundred times a sidecar listing the 668 zones of
+  // the CRM-HL grid once, checked before anything is read.
+  constexpr std::uintmax_t max_bytes = std::uintmax_t{1} << 20U;
+  if (const auto size = fs::file_size(path, ec); ec || size > max_bytes) {
+    throw invalid(ErrorCode::zone_groups_invalid,
+                  ec ? ec.message() : std::to_string(size) + " bytes (at most 1 MiB)");
+  }
+  const std::ifstream in(path, std::ios::binary);
+  std::ostringstream bytes;
+  bytes << in.rdbuf();
+  if (!in && !in.eof()) throw invalid(ErrorCode::zone_groups_invalid, "cannot be read");
+  const std::string text = bytes.str();
+
+  // Duplicate keys, which a JSON parser would merge silently: a group name
+  // twice is E0139, any other key twice breaks the schema.
+  std::vector<std::vector<std::string>> keys;
+  std::string root_key;
+  bool duplicate_group = false, duplicate_other = false;
+  const auto watch = [&](int depth, nlohmann::json::parse_event_t event, nlohmann::json& parsed) {
+    using E = nlohmann::json::parse_event_t;
+    if (event == E::object_start) keys.emplace_back();
+    if (event == E::object_end) keys.pop_back();
+    if (event == E::key) {
+      const std::string key = parsed.get<std::string>();
+      if (depth == 1) root_key = key;
+      auto& seen = keys.back();
+      if (std::ranges::find(seen, key) != seen.end()) {
+        (depth == 2 && root_key == "groups" ? duplicate_group : duplicate_other) = true;
+      }
+      seen.push_back(key);
+    }
+    return true;
+  };
+  nlohmann::json doc;
+  try {
+    doc = nlohmann::json::parse(text, watch);
+  } catch (const nlohmann::json::exception& e) {
+    throw invalid(ErrorCode::zone_groups_invalid, std::string("not JSON: ") + e.what());
+  }
+  if (duplicate_other) throw invalid(ErrorCode::zone_groups_invalid, "a key is given twice");
+  if (duplicate_group)
+    throw invalid(ErrorCode::zone_groups_duplicate_name, "a group is given twice");
+  const auto schema = [&](const std::string& why) {
+    throw invalid(ErrorCode::zone_groups_invalid, why);
+  };
+  if (!doc.is_object()) schema("not an object");
+  for (const auto& [key, value] : doc.items()) {
+    if (key != "schema" && key != "mesh_sha256" && key != "provenance" && key != "groups")
+      schema("unknown key '" + key + "'");
+  }
+  for (const char* key : {"schema", "mesh_sha256", "provenance", "groups"}) {
+    if (!doc.contains(key)) schema(std::string("no '") + key + "'");
+  }
+  if (doc["schema"] != "autan.zone-groups/1") schema("schema is not autan.zone-groups/1");
+  if (!doc["mesh_sha256"].is_string()) schema("mesh_sha256 is not a string");
+  if (doc["mesh_sha256"].get<std::string>() != sha256) {
+    throw invalid(
+        ErrorCode::zone_groups_other_mesh,
+        "mesh_sha256 " + doc["mesh_sha256"].get<std::string>() + " is not the mesh's " + sha256);
+  }
+  if (!doc["provenance"].is_object()) schema("provenance is not an object");
+  if (!doc["groups"].is_object()) schema("groups is not an object");
+
+  ZoneGroups out;
+  out.path = path.string();
+  out.sha256 = picosha2::hash256_hex_string(text);
+  for (const auto& [key, value] : doc["provenance"].items()) {
+    if (!value.is_string()) schema("provenance '" + key + "' is not a string");
+    out.provenance.emplace_back(key, value.get<std::string>());
+  }
+  std::map<std::string, std::size_t> order;  // boundary zone name -> MeshInfo position
+  const MeshInfoZones zones = meshinfo_zones(mesh);
+  for (std::size_t k = 0; k < zones.boundary.size(); ++k)
+    order[mesh.face_zones()[at(zones.boundary[k])].name] = k;
+  const std::regex name("[A-Za-z0-9_.][A-Za-z0-9_.-]*");
+  for (const auto& [group, members] : doc["groups"].items()) {
+    const auto bad = [&](const std::string& why) {
+      std::string message = "group '";
+      message += group;
+      message += "': ";
+      message += why;
+      throw invalid(ErrorCode::zone_groups_bad_group, message);
+    };
+    if (!std::regex_match(group, name)) bad("not a valid name");
+    if (!members.is_array()) schema("group '" + group + "' is not a list");
+    if (members.empty()) bad("empty");
+    std::vector<std::pair<std::size_t, std::string>> found;
+    for (const auto& zone : members) {
+      if (!zone.is_string()) schema("group '" + group + "' lists a non-string");
+      const auto it = order.find(zone.get<std::string>());
+      if (it == order.end()) bad("no boundary zone '" + zone.get<std::string>() + "'");
+      if (std::ranges::find(found, it->second, &std::pair<std::size_t, std::string>::first) !=
+          found.end())
+        bad("zone '" + it->first + "' listed twice");
+      found.emplace_back(it->second, it->first);
+    }
+    std::ranges::sort(found);
+    std::vector<std::string> names;
+    names.reserve(found.size());
+    for (const auto& [k, zone] : found) names.push_back(zone);
+    out.groups.emplace_back(group, std::move(names));
+  }
+  std::ranges::sort(out.groups);
+  return out;
+}
+
+std::string mesh_info_json(const Mesh& mesh, const std::string& sha256, std::int64_t bytes,
+                           const LogicalBytes& logical, const MeshInfoRun& run,
+                           const std::optional<ZoneGroups>& groups) {
   if (mesh.n_owned_cells() != mesh.n_cells()) {
     throw Error(ErrorCode::mesh_inconsistent_sizes, "MeshInfo describes an unpartitioned mesh");
   }
@@ -209,28 +392,171 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256) {
              {"faces", offsets[at(pair.zone_a) + 1] - offsets[at(pair.zone_a)]}});
   }
 
+  Json group_list = Json::array();
+  Json source = nullptr;
+  if (groups) {
+    for (const auto& [name, zones_of] : groups->groups)
+      group_list.push_back(Json{{"name", name}, {"zones", zones_of}});
+    Json provenance = Json::object();
+    for (const auto& [key, value] : groups->provenance) provenance[key] = value;
+    source = Json{{"path", groups->path}, {"sha256", groups->sha256}, {"provenance", provenance}};
+  }
   const double max_angle = *std::ranges::max_element(quality.non_orthogonality);
-  const Json doc{
+  const auto [x_low, x_high] = std::ranges::minmax(mesh.x());
+  const auto [y_low, y_high] = std::ranges::minmax(mesh.y());
+  const auto [z_low, z_high] = std::ranges::minmax(mesh.z());
+  Json doc{
       {"schema", "autan.mesh-info/1"},
       {"source",
-       {{"path", mesh.source().path}, {"format", mesh.source().format}, {"sha256", sha256}}},
+       {{"path", mesh.source().path},
+        {"format", mesh.source().format},
+        {"sha256", sha256},
+        {"bytes", bytes},
+        {"logical_bytes", logical.total},
+        {"descriptor_bytes", logical.descriptors},
+        {"zone_names_bytes", logical.zone_names},
+        {"filtered_bytes", logical.filtered},
+        {"cgns_nodes", logical.nodes},
+        {"point_list_ids", logical.point_list_ids}}},
       {"counts",
        {{"cells", mesh.n_cells()},
         {"faces", mesh.n_faces()},
         {"nodes", mesh.n_points()},
+        {"source_nodes", mesh.source().nodes},
+        {"face_nodes", mesh.face_nodes().size()},
         {"cells_by_type",
          {{"tetra", by_shape[0]},
           {"pyramid", by_shape[1]},
           {"prism", by_shape[2]},
           {"hexa", by_shape[3]},
-          {"polyhedron", by_shape[4]}}}}},
+          {"polyhedron", by_shape[4]}}},
+        {"stencil_entries", run.stencil_entries},
+        {"vertex_stencil_entries", run.vertex_stencil_entries},
+        {"band_entries", run.band_entries},
+        {"boundary_fit_entries", run.boundary_fit_entries},
+        {"periodic_ghosts", run.periodic_ghosts}}},
+      {"bounds", {{"min", {x_low, y_low, z_low}}, {"max", {x_high, y_high, z_high}}}},
       {"boundary_zones", boundary},
       {"cell_zones", cell_zones},
       {"interfaces", interfaces},
       {"periodic", periodic},
-      {"quality", {{"max_non_orthogonality_deg", max_angle}, {"max_faces_per_cell", max_faces}}},
+      {"groups", group_list},
+      {"groups_source", source},
+      {"quality",
+       {{"max_non_orthogonality_deg", max_angle},
+        {"max_faces_per_cell", max_faces},
+        {"lines",
+         {{"order", run.line_order},
+          {"scale", run.line_scale},
+          {"cells", run.line_cells},
+          {"long_cells", run.long_line_cells}}},
+        {"multigrid",
+         {{"cells_by_level", run.multigrid_cells}, {"edges_by_level", run.multigrid_edges}}}}},
   };
+  if (run.partition) {
+    const auto& p = *run.partition;
+    doc["partition"] = {{"ranks", p.ranks},
+                        {"groups", p.groups},
+                        {"cells_by_rank", p.cells},
+                        {"ghosts_by_rank", p.ghosts},
+                        {"faces_by_rank", p.faces},
+                        {"interior_faces_by_rank", p.interior_faces},
+                        {"stencil_entries_by_rank", p.stencil_entries},
+                        {"vertex_stencil_entries_by_rank", p.vertex_stencil_entries},
+                        {"band_entries_by_rank", p.band_entries},
+                        {"boundary_fit_entries_by_rank", p.boundary_fit_entries},
+                        {"nodes_by_rank", p.nodes},
+                        {"face_nodes_by_rank", p.face_nodes},
+                        {"sent_cells_by_rank", p.sent_cells}};
+  }
   return doc.dump(2);
+}
+
+std::string surface_bytes(const Mesh& mesh, const std::string& sha256) {
+  static_assert(std::endian::native == std::endian::little, "autan.surface/1 is little-endian");
+  if (mesh.n_owned_cells() != mesh.n_cells()) {
+    throw Error(ErrorCode::mesh_inconsistent_sizes, "a surface describes an unpartitioned mesh");
+  }
+  // Outward normals need positive cells: the geometry checks them (E0120, E0121).
+  (void)compute_geometry(mesh);
+  const MeshInfoZones zones = meshinfo_zones(mesh);
+  const auto offsets = mesh.boundary_zone_offsets();
+  std::vector<std::int64_t> node_of(at(mesh.n_points()), -1);
+  std::vector<double> positions;
+  std::vector<std::uint64_t> face_offsets{0}, face_nodes;
+  Json zone_list = Json::array();
+  for (const index_t zi : zones.boundary) {
+    const auto z = at(zi);
+    const FaceZone& zone = mesh.face_zones()[z];
+    zone_list.push_back(Json{{"name", zone.name},
+                             {"type", name_or_null(bc_type_name(zone.kind))},
+                             {"native_type", string_or_null(zone.bc_type)},
+                             {"first_face", face_offsets.size() - 1},
+                             {"faces", offsets[z + 1] - offsets[z]}});
+    for (index_t f = offsets[z]; f < offsets[z + 1]; ++f) {
+      for (const index_t p : mesh.face_nodes(f)) {
+        auto& node = node_of[at(p)];
+        if (node < 0) {
+          node = static_cast<std::int64_t>(positions.size() / 3);
+          const auto x = mesh.x()[at(p)], y = mesh.y()[at(p)], zc = mesh.z()[at(p)];
+          positions.insert(positions.end(), {x, y, zc});
+        }
+        face_nodes.push_back(static_cast<std::uint64_t>(node));
+      }
+      face_offsets.push_back(face_nodes.size());
+    }
+  }
+  constexpr std::uint64_t u32_max = std::numeric_limits<std::uint32_t>::max();
+  if (face_nodes.size() > u32_max || positions.size() / 3 > u32_max) {
+    throw Error(ErrorCode::mesh_too_large, "the boundary surface exceeds 32-bit indices");
+  }
+  const auto to_u32 = [](const std::vector<std::uint64_t>& v) {
+    std::vector<std::uint32_t> out(v.begin(), v.end());
+    return out;
+  };
+  const std::vector<std::uint32_t> offsets32 = to_u32(face_offsets), nodes32 = to_u32(face_nodes);
+
+  struct Buffer {
+    const char* name;
+    const char* dtype;
+    const void* data;
+    std::size_t length, bytes;
+  };
+  const std::array<Buffer, 3> buffers{{
+      {"positions", "f64", positions.data(), positions.size(), positions.size() * sizeof(double)},
+      {"face_offsets", "u32", offsets32.data(), offsets32.size(),
+       offsets32.size() * sizeof(std::uint32_t)},
+      {"face_nodes", "u32", nodes32.data(), nodes32.size(), nodes32.size() * sizeof(std::uint32_t)},
+  }};
+  const auto aligned = [](std::size_t n) { return (n + 7) / 8 * 8; };
+  Json layout = Json::array();
+  std::size_t offset = 0;
+  for (const Buffer& b : buffers) {
+    layout.push_back(
+        Json{{"name", b.name}, {"dtype", b.dtype}, {"offset", offset}, {"length", b.length}});
+    offset = aligned(offset + b.bytes);
+  }
+  const Json header{{"schema", "autan.surface/1"},
+                    {"source", {{"sha256", sha256}}},
+                    {"nodes", positions.size() / 3},
+                    {"faces", face_offsets.size() - 1},
+                    {"zones", zone_list},
+                    {"buffers", layout}};
+  std::string text = header.dump();
+  text.append(aligned(4 + text.size()) - 4 - text.size(), ' ');
+  if (text.size() > u32_max) {
+    throw Error(ErrorCode::mesh_too_large, "the surface header exceeds 2^32 - 1 bytes");
+  }
+  std::string out(4 + text.size() + offset, '\0');
+  const auto length = static_cast<std::uint32_t>(text.size());
+  std::memcpy(out.data(), &length, 4);
+  std::memcpy(out.data() + 4, text.data(), text.size());
+  std::size_t at_byte = 4 + text.size();
+  for (const Buffer& b : buffers) {
+    if (b.bytes > 0) std::memcpy(out.data() + at_byte, b.data, b.bytes);
+    at_byte += aligned(b.bytes);
+  }
+  return out;
 }
 
 }  // namespace autan::io

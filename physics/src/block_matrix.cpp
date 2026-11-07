@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 
 namespace autan::physics {
@@ -90,6 +91,24 @@ BlockMatrix::BlockMatrix(const Mesh& mesh)
   lower_.assign(25 * ni, 0.0);
 }
 
+void BlockMatrix::order_rows(const kernels::GlobalKeys& keys) {
+  // keys.shift holds the ghosts', which follow the owned cells.
+  const std::size_t owned = n_cells_ - keys.shift.size();
+  const std::array<double, 3> none{};
+  for (std::size_t c = 0; c < n_cells_; ++c) {
+    const auto first = cell_faces_.begin() + cell_offsets_[c];
+    const auto last = cell_faces_.begin() + cell_offsets_[c + 1];
+    auto key = [&](index_t f) {
+      const auto i = static_cast<std::size_t>(f);
+      const auto other = static_cast<std::size_t>(
+          static_cast<std::size_t>(owner_[i]) == c ? neighbour_[i] : owner_[i]);
+      return std::tuple(keys.face[i], keys.reversed.empty() ? 0 : keys.reversed[i],
+                        other < owned ? none : keys.shift[other - owned]);
+    };
+    std::sort(first, last, [&](index_t a, index_t b) { return key(a) < key(b); });
+  }
+}
+
 void BlockMatrix::zero() {
   std::fill(diag_.begin(), diag_.end(), 0.0);
   std::fill(upper_.begin(), upper_.end(), 0.0);
@@ -115,8 +134,10 @@ void BlockMatrix::multiply(std::span<const double> x, std::span<double> y) const
   }
 }
 
-void BlockMatrix::factor() {
-  for (std::size_t c = 0; c < n_cells_; ++c) invert5(&diag_[25 * c], &inverse_[25 * c]);
+void BlockMatrix::factor() { factor(n_cells_); }
+
+void BlockMatrix::factor(std::size_t rows) {
+  for (std::size_t c = 0; c < rows; ++c) invert5(&diag_[25 * c], &inverse_[25 * c]);
 }
 
 void BlockMatrix::relax(std::size_t c, std::span<const double> b, std::span<double> x) const {
@@ -147,6 +168,21 @@ void BlockMatrix::gauss_seidel(std::span<const double> b, std::span<double> x, i
     }
     for (auto it = colours_.rbegin(); it != colours_.rend(); ++it) {
       for (const std::size_t c : *it) relax(c, b, x);
+    }
+  }
+}
+
+void BlockMatrix::gauss_seidel(std::span<const double> b, std::span<double> x, int sweeps,
+                               std::span<const std::vector<std::size_t>> colours,
+                               const std::function<void(std::span<double>)>& exchange) const {
+  for (int s = 0; s < sweeps; ++s) {
+    for (const auto& colour : colours) {
+      for (const std::size_t c : colour) relax(c, b, x);
+      exchange(x);
+    }
+    for (auto it = colours.rbegin(); it != colours.rend(); ++it) {
+      for (const std::size_t c : *it) relax(c, b, x);
+      exchange(x);
     }
   }
 }

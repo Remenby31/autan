@@ -16,13 +16,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict, dataclass
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from autan_vv.errors import VVError
-from autan_vv.meshes import ringleb
+from autan_vv.meshes import ringleb, tube, vortex
 from autan_vv.meshes.dual import median_dual
 from autan_vv.meshes.facemesh import FaceMesh, FloatArray, IntArray, from_faces, merge_cells
 from autan_vv.meshes.fluent import write_fluent
@@ -94,6 +96,53 @@ class Family:
         return {"schema": MANIFEST_SCHEMA, **asdict(self)}
 
 
+def level_record(n: int, path: Path, mesh: FaceMesh) -> Level:
+    """The manifest entry of level `n`, written to `path` from `mesh`."""
+    # fsum: the exactly rounded sum. NumPy's sum splits it differently on NEON and AVX, and the
+    # manifest records it (#495).
+    volume = math.fsum(mesh.geometry.cell_volume.tolist())
+    counts: dict[str, int] = {}
+    for k in mesh.cell_kinds or ("polyhedron",) * mesh.n_cells:
+        counts[k] = counts.get(k, 0) + 1
+    return Level(
+        n=n,
+        file=path.name,
+        file_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        mesh_sha256=mesh.sha256(),
+        n_cells=mesh.n_cells,
+        n_faces=mesh.n_faces,
+        n_points=int(mesh.points.shape[0]),
+        cell_counts=counts,
+        min_subvolume_ratio=mesh.min_subvolume_ratio(),
+        volume=volume,
+        h=cbrt(volume / mesh.n_cells),
+    )
+
+
+def cbrt(x: float) -> float:
+    """The cube root of `x` > 0, correctly rounded: the same double on every platform.
+
+    `x ** (1/3)` is libm's `pow`, whose last bit may differ between platforms, and a manifest records
+    it (#495). From it, step by one ulp while the exact cube of a midpoint says the root lies beyond.
+    """
+    y: float = x ** (1.0 / 3.0)
+    exact = Fraction(x)
+    while True:
+        up, down = math.nextafter(y, math.inf), math.nextafter(y, 0.0)
+        if ((Fraction(y) + Fraction(up)) / 2) ** 3 < exact:
+            y = up
+        elif ((Fraction(down) + Fraction(y)) / 2) ** 3 > exact:
+            y = down
+        else:
+            return y
+
+
+def write_manifest(family: Family, out_dir: Path) -> None:
+    """Write `manifest.json` (schema autan.mesh-family/1) of `family` into `out_dir`."""
+    manifest = json.dumps(family.manifest(), indent=2, allow_nan=False)
+    (out_dir / "manifest.json").write_text(manifest + "\n")
+
+
 def _build_geometry(gmsh: ModuleType, kind: str, n: int) -> None:
     geo = gmsh.model.geo
     corners = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
@@ -124,6 +173,31 @@ def _nodes(gmsh: ModuleType) -> tuple[IntArray, FloatArray]:
     return np.asarray(tags)[order].astype(np.int64), np.asarray(coords).reshape(-1, 3)[order]
 
 
+# The even permutations of a tetrahedron's four nodes: those that keep its orientation.
+_TET_EVEN = np.array(
+    [
+        (0, 1, 2, 3), (0, 2, 3, 1), (0, 3, 1, 2), (1, 0, 3, 2), (1, 2, 0, 3), (1, 3, 2, 0),
+        (2, 0, 1, 3), (2, 1, 3, 0), (2, 3, 0, 1), (3, 0, 2, 1), (3, 1, 0, 2), (3, 2, 1, 0),
+    ]
+)  # fmt: skip
+
+
+def canonical_tets(tets: IntArray) -> IntArray:
+    """The tetrahedra in an order of our own: each as the smallest of its even permutations (it
+    starts from its smallest node and keeps its orientation), the rows sorted.
+
+    Gmsh enumerates the same mesh in an order that differs between its builds (libc++ on macOS,
+    libstdc++ on Linux): without this, the same mesh would be written as other bytes (#495).
+    """
+    cand = tets[:, _TET_EVEN]
+    alive = np.ones(cand.shape[:2], dtype=bool)
+    for col in range(4):
+        value = np.where(alive, cand[:, :, col], np.iinfo(np.int64).max)
+        alive &= value == value.min(axis=1, keepdims=True)
+    rows = cand[np.arange(tets.shape[0]), alive.argmax(axis=1)]
+    return rows[np.lexsort(rows.T[::-1])]
+
+
 def _cells(gmsh: ModuleType, index: dict[int, int] | IntArray) -> dict[str, IntArray]:
     out: dict[str, IntArray] = {}
     types, _, node_tags = gmsh.model.mesh.getElements(3)
@@ -133,6 +207,8 @@ def _cells(gmsh: ModuleType, index: dict[int, int] | IntArray) -> dict[str, IntA
             msg = f"unexpected Gmsh element type {t}"
             raise VVError(msg, code="V0305")
         out[kind] = np.asarray(index)[np.asarray(nodes, dtype=np.int64)].reshape(-1, _NODES[kind])
+        if kind == "tet":
+            out[kind] = canonical_tets(out[kind])
     return out
 
 
@@ -143,10 +219,32 @@ def _min_edge(points: FloatArray, cells: dict[str, IntArray]) -> FloatArray:
         k = conn.shape[1]
         for i in range(k):
             for j in range(i + 1, k):
-                d = np.linalg.norm(points[conn[:, i]] - points[conn[:, j]], axis=1)
+                e = points[conn[:, i]] - points[conn[:, j]]
+                # Written out, so that every CPU rounds it the same way (#495).
+                d = np.sqrt(e[:, 0] * e[:, 0] + e[:, 1] * e[:, 1] + e[:, 2] * e[:, 2])
                 np.minimum.at(h, conn[:, i], d)
                 np.minimum.at(h, conn[:, j], d)
     return h
+
+
+def _uniform_in_ball(rng: np.random.Generator, count: int) -> FloatArray:
+    """`count` points uniform in the unit ball, by rejection from the cube [-1, 1]^3.
+
+    Only exactly rounded operations: the generator's doubles (an integer times 2**-53), and
+    NumPy's element-wise `*`, `-`, `+` and comparison, each rounded once. So the same bits on
+    every IEEE-754 CPU. A power, a normal draw or `Generator.uniform` (whose `low + range * r` a
+    compiler may fuse) can end in a different last bit on another CPU (#495).
+    """
+    out = np.empty((count, 3))
+    filled = 0
+    while filled < count:
+        need = count - filled
+        cube = 2.0 * rng.random((2 * need + 8, 3)) - 1.0  # about 52 % of them fall in the ball
+        r2 = cube[:, 0] * cube[:, 0] + cube[:, 1] * cube[:, 1] + cube[:, 2] * cube[:, 2]
+        kept = cube[r2 <= 1.0][:need]
+        out[filled : filled + kept.shape[0]] = kept
+        filled += kept.shape[0]
+    return out
 
 
 def perturb(
@@ -160,13 +258,10 @@ def perturb(
 
     Coordinates on the faces of the unit cube stay on them, so the domain is unchanged. Nodes of a
     cell that would become inverted or non-star-shaped have their displacement halved until every
-    cell is valid, so the result is deterministic for a given seed.
+    cell is valid. The result depends on the seed alone: the same bits on every CPU (#495).
     """
     rng = np.random.default_rng(seed)
-    direction = rng.normal(size=points.shape)
-    direction /= np.linalg.norm(direction, axis=1, keepdims=True)
-    radius = amplitude * _min_edge(points, cells) * rng.uniform(size=points.shape[0]) ** (1.0 / 3.0)
-    step = direction * radius[:, None]
+    step = _uniform_in_ball(rng, points.shape[0]) * (amplitude * _min_edge(points, cells))[:, None]
     on_face = (np.abs(points) < 1e-12) | (np.abs(points - 1.0) < 1e-12)
     step[on_face] = 0.0
     width = max(c.shape[1] for c in cells.values())
@@ -392,8 +487,11 @@ def _write_msh(
     cells: dict[str, IntArray],
     boundary: dict[str, IntArray],
     path: Path,
+    periodic: tuple[tuple[str, str, tuple[float, float, float]], ...] = (),
 ) -> None:
-    """Write arrays as MSH 4.1 ASCII through a discrete Gmsh model, so the file is exactly the arrays."""
+    """Write arrays as MSH 4.1 ASCII through a discrete Gmsh model, so the file is exactly the arrays.
+    Each (zone a, zone b, translation) of `periodic` becomes a `$Periodic` surface link, b the
+    translate of a (mesh.md, Periodic pairs: the reader pairs the faces by geometry)."""
     gmsh.model.add("export")
     volume = gmsh.model.addDiscreteEntity(3)
     gmsh.model.mesh.addNodes(
@@ -411,8 +509,10 @@ def _write_msh(
                 (conn + 1).ravel().tolist(),
             )
             tag += conn.shape[0]
+    surfaces: dict[str, int] = {}
     for name, faces in boundary.items():
         surface = gmsh.model.addDiscreteEntity(2)
+        surfaces[name] = surface
         for k, gmsh_type in ((3, 2), (4, 3)):
             rows = faces[(faces >= 0).sum(axis=1) == k][:, :k]
             if rows.size:
@@ -425,6 +525,9 @@ def _write_msh(
                 tag += rows.shape[0]
         gmsh.model.addPhysicalGroup(2, [surface], name=name)
     gmsh.model.addPhysicalGroup(3, [volume], name=CELL_ZONE)
+    for a, b, (tx, ty, tz) in periodic:
+        affine = [1.0, 0.0, 0.0, tx, 0.0, 1.0, 0.0, ty, 0.0, 0.0, 1.0, tz, 0.0, 0.0, 0.0, 1.0]
+        gmsh.model.mesh.setPeriodic(2, [surfaces[b]], [surfaces[a]], affine)
     gmsh.write(str(path))
     gmsh.model.remove()
 
@@ -446,15 +549,32 @@ def generate_level(
 ) -> tuple[FaceMesh, str]:
     """Generate one level with about n cells per edge; optionally write it to `path`.
 
-    Returns the mesh and the Gmsh version. `poly` is written as Fluent ASCII, the others as MSH 4.1
-    ASCII. The file holds exactly the in-memory mesh: coordinates are rounded to the 16 significant
-    digits Gmsh writes.
+    Returns the mesh and the Gmsh version (empty for `sod-tube`, written without Gmsh). `poly` and
+    `sod-tube` are written as Fluent ASCII, the others as MSH 4.1 ASCII. The file holds exactly the
+    in-memory mesh: coordinates are rounded to the 16 significant digits Gmsh writes.
     """
-    if kind not in (*KINDS, "ringleb"):
-        msg = f"unknown mesh kind {kind!r}; expected one of {KINDS} or 'ringleb'"
+    if kind not in (*KINDS, "ringleb", *vortex.KINDS, tube.KIND):
+        msg = (
+            f"unknown mesh kind {kind!r}; expected one of {KINDS}, 'ringleb', {vortex.KINDS}"
+            f" or {tube.KIND!r}"
+        )
         raise VVError(msg, code="V0304")
+    if kind == tube.KIND:
+        if perturbation > 0.0:
+            msg = f"{kind} is a 1D family: its levels refine along x only, without perturbation"
+            raise VVError(msg, code="V0309")
+        points, cells = tube.grid(n)
+        points = np.array([float(f"{v:.16g}") for v in points.ravel()]).reshape(-1, 3)
+        mesh = _to_facemesh(points, cells, _box_boundary(points, cells))
+        if path is not None:
+            write_fluent(mesh, path, CELL_ZONE)
+        mesh.check()
+        return mesh, ""
     if kind == "ringleb" and perturbation > 0.0:
         msg = "the Ringleb mesh follows the flow's streamlines and is not perturbed"
+        raise VVError(msg, code="V0309")
+    if kind in vortex.KINDS and perturbation > 0.0:
+        msg = f"{kind} is nested and periodic: it carries its own seeded jitter, not a perturbation"
         raise VVError(msg, code="V0309")
     if not (0.0 <= perturbation < 1.0) or n < 1:
         msg = f"need 0 <= perturbation < 1 and n >= 1, got {perturbation} and {n}"
@@ -468,8 +588,13 @@ def generate_level(
         gmsh.option.setNumber("Mesh.Binary", 0)
         gmsh.option.setNumber("Mesh.SaveAll", 0)
         version = str(gmsh.__version__)
+        periodic: tuple[tuple[str, str, tuple[float, float, float]], ...] = ()
         if kind == "ringleb":
             points, cells, boundary = ringleb.grid(n)
+        elif kind in vortex.KINDS:
+            points, cells = vortex.grid(kind, n, seed)
+            boundary = _box_boundary(points, cells)
+            periodic = vortex.PERIODIC
         else:
             if kind == "hybrid":
                 points, cells = _structured_hybrid(n)
@@ -491,7 +616,7 @@ def generate_level(
         else:
             mesh = _to_facemesh(points, cells, boundary)
             if path is not None:
-                _write_msh(gmsh, points, cells, boundary, path)
+                _write_msh(gmsh, points, cells, boundary, path, periodic)
     finally:
         gmsh.finalize()
     mesh.check()
@@ -513,27 +638,7 @@ def generate_family(
         meshes.append(mesh)
         if kind == "ringleb":
             ringleb.write_face_states(mesh, path, path.with_suffix(".states.json"))
-        g = mesh.geometry
-        volume = float(g.cell_volume.sum())
-        counts: dict[str, int] = {}
-        for k in mesh.cell_kinds or ("polyhedron",) * mesh.n_cells:
-            counts[k] = counts.get(k, 0) + 1
-        records.append(
-            Level(
-                n=n,
-                file=name,
-                file_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
-                mesh_sha256=mesh.sha256(),
-                n_cells=mesh.n_cells,
-                n_faces=mesh.n_faces,
-                n_points=int(mesh.points.shape[0]),
-                cell_counts=counts,
-                min_subvolume_ratio=mesh.min_subvolume_ratio(),
-                volume=volume,
-                h=(volume / mesh.n_cells) ** (1.0 / 3.0),
-            )
-        )
+        records.append(level_record(n, path, mesh))
     family = Family(kind, perturbation, seed, version, tuple(records))
-    manifest = json.dumps(family.manifest(), indent=2, allow_nan=False)
-    (out_dir / "manifest.json").write_text(manifest + "\n")
+    write_manifest(family, out_dir)
     return family, meshes

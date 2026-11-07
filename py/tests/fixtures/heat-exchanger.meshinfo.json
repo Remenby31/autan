@@ -3,19 +3,45 @@
   "source": {
     "path": "heat-exchanger.msh",
     "format": "fluent",
-    "sha256": "2c5a776f8a65fd979846b7d589de0306154e9683cf3ed8298d3ea0c97b141dba"
+    "sha256": "2c5a776f8a65fd979846b7d589de0306154e9683cf3ed8298d3ea0c97b141dba",
+    "bytes": 412000000,
+    "logical_bytes": 412000000,
+    "descriptor_bytes": 0,
+    "zone_names_bytes": 0,
+    "filtered_bytes": 0,
+    "cgns_nodes": 0,
+    "point_list_ids": 0
   },
   "counts": {
     "cells": 1200000,
     "faces": 3900000,
     "nodes": 1400000,
+    "source_nodes": 1400000,
+    "face_nodes": 15210000,
     "cells_by_type": {
       "tetra": 0,
       "pyramid": 0,
       "prism": 300000,
       "hexa": 700000,
       "polyhedron": 200000
-    }
+    },
+    "stencil_entries": 43500000,
+    "vertex_stencil_entries": 117450000,
+    "band_entries": 426300000,
+    "boundary_fit_entries": 128760000,
+    "periodic_ghosts": 0
+  },
+  "bounds": {
+    "min": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "max": [
+      1.0,
+      0.2,
+      0.1
+    ]
   },
   "boundary_zones": [
     {
@@ -88,6 +114,67 @@
   "periodic": [],
   "quality": {
     "max_non_orthogonality_deg": 35.0,
-    "max_faces_per_cell": 18
+    "max_faces_per_cell": 18,
+    "lines": {
+      "order": "rcm",
+      "scale": 1.0,
+      "cells": 0,
+      "long_cells": 0
+    },
+    "multigrid": {
+      "cells_by_level": [
+        1200000,
+        150000,
+        18750,
+        2343,
+        292
+      ],
+      "edges_by_level": [
+        3788000,
+        975000,
+        121875,
+        15229,
+        1898
+      ]
+    }
+  },
+  "groups": [],
+  "groups_source": null,
+  "partition": {
+    "ranks": 1,
+    "groups": "none",
+    "cells_by_rank": [
+      1200000
+    ],
+    "ghosts_by_rank": [
+      0
+    ],
+    "faces_by_rank": [
+      3900000
+    ],
+    "interior_faces_by_rank": [
+      3788000
+    ],
+    "stencil_entries_by_rank": [
+      43500000
+    ],
+    "vertex_stencil_entries_by_rank": [
+      117450000
+    ],
+    "band_entries_by_rank": [
+      426300000
+    ],
+    "boundary_fit_entries_by_rank": [
+      128760000
+    ],
+    "nodes_by_rank": [
+      1400000
+    ],
+    "face_nodes_by_rank": [
+      15210000
+    ],
+    "sent_cells_by_rank": [
+      0
+    ]
   }
 }

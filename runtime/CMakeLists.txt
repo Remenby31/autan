@@ -1,10 +1,22 @@
 FetchContent_GetProperties(picosha2)
 
+# results.md, run.json `solver.binary_sha256`: the hash of autan-run covers the solver only when
+# every library of ours links into it statically.
+if(BUILD_SHARED_LIBS)
+  message(
+    FATAL_ERROR
+    "autan-run links our libraries statically (results.md, solver.binary_sha256): "
+    "configure with BUILD_SHARED_LIBS=OFF"
+  )
+endif()
+
 add_library(
   autan_runtime
   src/comm.cpp
   src/device.cpp
   src/exact_sum.cpp
+  src/executable_hash.cpp
+  src/host_memory.cpp
   src/input.cpp
   src/run_directory.cpp
   src/run.cpp
@@ -17,6 +29,9 @@ target_include_directories(
   PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 target_include_directories(autan_runtime SYSTEM PRIVATE ${picosha2_SOURCE_DIR})
+# Every process hashes its executable (run.json solver.binary_sha256): unoptimised, hashing a
+# Debug test executable took seconds. Not per configuration, which Xcode refuses per source.
+set_source_files_properties(src/executable_hash.cpp PROPERTIES COMPILE_OPTIONS -O2)
 target_link_libraries(
   autan_runtime
   PUBLIC autan::io autan::core autan::partition
@@ -38,7 +53,8 @@ add_custom_target(
   autan_build_info
   COMMAND
     ${CMAKE_COMMAND} -DSOURCE=${PROJECT_SOURCE_DIR} -DOUT=${build_info} -DVERSION=${AUTAN_VERSION}
-    "-DAUTAN_COMMIT=${AUTAN_COMMIT}" -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_info.cmake
+    "-DAUTAN_COMMIT=${AUTAN_COMMIT}" "-DAUTAN_DIRTY=${AUTAN_DIRTY}" -P
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_info.cmake
   BYPRODUCTS ${build_info}
   VERBATIM
 )

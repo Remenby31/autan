@@ -65,6 +65,10 @@ repos:
     rev: 357f7eec6dec49bf7693dc0dbec30212226d5492  # frozen: v1.7.12.25
     hooks:
       - id: actionlint
+        # actionlint skips the workflows' shell checks, without a word, when no shellcheck is on
+        # PATH (the dev image has none). This one is the hook's own, wherever pre-commit runs.
+        # ShellCheck is GPL-3.0: a development-time tool only, never shipped.
+        additional_dependencies: [shellcheck-py==0.11.0.1]
 
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
     rev: c92afdf2c6ca336aaa8f39e2bd8d48f62dbd8e1f  # frozen: v1.31.1
@@ -73,6 +77,19 @@ repos:
 
   - repo: local
     hooks:
+      # The error codes' registry (py/autan/) and the tables that document them must agree; the
+      # SDK's test says so in about a second, before CI's Python SDK job does. On every commit: it
+      # also reads files a commit may delete or rename. From uv.lock only, build backend included,
+      # as CI's SDK job installs it; --inexact keeps the extras a developer installed.
+      - id: error-registry
+        name: error registry matches its documentation
+        language: system
+        entry: >-
+          bash -c 'uv sync --locked --inexact --no-install-project -q &&
+          uv sync --locked --inexact --no-build-isolation -q &&
+          uv run --no-sync pytest -q -p no:cacheprovider py/tests/test_errors.py'
+        always_run: true
+        pass_filenames: false
       # Personal home directories must not reach the repository (they carry user names). Allowed:
       # the Sparks' shared GPU lock and the CI runner's home.
       - id: no-personal-paths

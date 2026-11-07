@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "autan/core/geometry.hpp"
+#include "autan/core/lines.hpp"
 #include "autan/core/mesh.hpp"
 
 namespace autan::solvers {
@@ -41,13 +42,19 @@ struct AgglomerationOptions {
   std::size_t max_lines = 4;
   /// Lines of fewer nodes are smoothed as lines but agglomerated as isotropic nodes (pairs of
   /// cells across a large face are not wall layers).
-  std::size_t min_line = 4;
+  std::size_t min_line = long_line;
   /// Coarsening stops once a level has at most this many nodes, or when a level would keep more
-  /// than `min_coarsening` of the finer level's nodes.
+  /// than `min_coarsening` of the finer level's nodes or of its edges.
   std::size_t coarsest_nodes = 64;
   double min_coarsening = 0.8;
   int max_levels = 30;
 };
+
+/// The colours the multigrid's smoother sweeps a level's lines in: lines of one colour share no
+/// edge, each line has one colour, colours are numbered from 0 and list their lines in increasing
+/// index. Greedy in line order (each line takes the least colour no earlier neighbouring line
+/// has). A device port of the smoother must sweep these, not a colouring of its own.
+std::vector<std::vector<std::size_t>> line_colours(const Level& level);
 
 /// Agglomeration hierarchy of a mesh without ghost cells, finest level first. Throws
 /// std::invalid_argument on a mesh with ghost cells. Deterministic: the result depends only on

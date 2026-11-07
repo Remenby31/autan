@@ -2,6 +2,7 @@ import hashlib
 import http.client
 import json
 import math
+import os
 import shutil
 import socket
 import threading
@@ -12,8 +13,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import ANY
+from urllib.parse import quote
 
 import autan
+import autan.initial_state
 import httpx
 import numpy as np
 import numpy.typing as npt
@@ -104,6 +107,35 @@ def test_registry_lists_conforming_runs_and_rejects_others(runs: Path) -> None:
     assert snapshot.rejected[foreign.name].startswith("E0701")
 
 
+def test_the_registry_lists_the_runs_whose_solution_is_a_result(runs: Path) -> None:
+    # results.md: an ended run's solution.cgns is its result, history or not; a running run's
+    # is not yet.
+    case = autan.load(PY / "examples" / "crm_hl.py")
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    early = case.run(mesh_info, backend=autan.FakeBackend(iterations=0), runs=runs).path
+    source = next(p for p in runs.iterdir() if p != early)
+    assert (early / "solution.cgns").is_file()
+    assert sorted(Registry(runs).scan().solutions) == sorted([source.name, early.name])
+
+    run = json.loads((source / "run.json").read_text())
+    (source / "run.json").write_text(
+        json.dumps(run | {"status": "running", "finished": None, "monitors": None})
+    )
+    assert Registry(runs).scan().solutions == [early.name]
+
+
+def test_a_run_without_history_has_a_summary_with_its_settings(runs: Path) -> None:
+    # py/examples/crm_hl.py: M 0.2, 19.57 deg; no iteration recorded yet.
+    case = autan.load(PY / "examples" / "crm_hl.py")
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    early = case.run(mesh_info, backend=autan.FakeBackend(iterations=0), runs=runs).path
+
+    summary = Registry(runs).scan().summaries[early.name]
+
+    assert (summary["iteration"], summary["trend"]) == (None, [])
+    assert (summary["settings"]["mach"], summary["settings"]["aoa"]) == (0.2, "19.57 deg")
+
+
 def test_registry_rechecks_a_run_when_any_contract_file_changes(runs: Path) -> None:
     source = next(runs.iterdir())
     registry = Registry(runs)
@@ -157,10 +189,12 @@ def test_registry_stream_reports_runs_and_rejections_as_they_appear(
         copy = staging.rename(runs / run["run_id"])
         kind, data = next(events)
         assert (kind, data["run_id"]) == ("run", copy.name)
+        assert next(events) == ("solutions", sorted([source.name, copy.name]))
 
         (copy / "run.json").write_text("{")
-        assert [next(events), next(events)] == [
+        assert [next(events), next(events), next(events)] == [
             ("removed", copy.name),
+            ("solutions", [source.name]),
             ("rejected", [{"dir": copy.name, "reason": ANY}]),
         ]
 
@@ -168,9 +202,13 @@ def test_registry_stream_reports_runs_and_rejections_as_they_appear(
 def test_history_stream_delivers_appended_lines_and_status(runs: Path, server: str) -> None:
     directory = next(runs.iterdir())
     run_id = directory.name
+    ended = (directory / "run.json").read_text()
+    running = json.loads(ended) | {"status": "running", "finished": None, "monitors": None}
+    (directory / "run.json").write_text(json.dumps(running))
     with httpx.stream("GET", f"{server}/api/runs/{run_id}/history/events", timeout=10) as response:
         events = (e for e in sse_events(response) if e[0] != "log")
-        assert next(events)[0] == "run"
+        kind, data = next(events)
+        assert (kind, data["status"]) == ("run", "running")
         kind, records = next(events)
         assert kind == "history"
         assert len(records) == 30
@@ -180,11 +218,92 @@ def test_history_stream_delivers_appended_lines_and_status(runs: Path, server: s
         kind, records = next(events)
         assert (kind, [r["iteration"] for r in records]) == ("history", [31])
 
-        run = json.loads((directory / "run.json").read_text())
-        run["status"] = "failed"
-        (directory / "run.json").write_text(json.dumps(run))
+        (directory / ".run.json").write_text(ended)
+        (directory / ".run.json").replace(directory / "run.json")
         kind, data = next(events)
-        assert (kind, data["status"]) == ("run", "failed")
+        assert (kind, data["status"]) == ("run", "stopped")
+
+
+def test_a_stream_ends_when_the_case_its_run_is_checked_against_changes(
+    runs: Path, server: str
+) -> None:
+    directory = next(runs.iterdir())
+    with httpx.stream(
+        "GET", f"{server}/api/runs/{directory.name}/history/events", timeout=10
+    ) as response:
+        events = (e for e in sse_events(response) if e[0] not in ("log", "history"))
+        assert next(events)[0] == "run"
+
+        # results.md: run.json's case.sha256 is the stored case's hash; this case is another.
+        case = (directory / "case.toml").read_text()
+        (directory / "case.toml").write_text(case.replace('name = "crm-hl"', 'name = "other"'))
+        kind, _ = next(events)
+        assert kind == "invalid"
+
+
+def test_a_replaced_run_json_is_checked_again_whatever_its_time_and_size(runs: Path) -> None:
+    directory = next(runs.iterdir())
+    registry = Registry(runs)
+    assert directory.name in registry.scan().runs
+    path = directory / "run.json"
+    before = path.stat()
+    text = path.read_text()
+    identity = json.loads(text)["identity"]
+    # Another identity of the same length: run.json no longer matches its definition.
+    other = ("0" if identity[0] != "0" else "1") + identity[1:]
+    (directory / ".run.json").write_text(text.replace(identity, other))
+    (directory / ".run.json").replace(path)
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert (path.stat().st_mtime_ns, path.stat().st_size) == (before.st_mtime_ns, before.st_size)
+
+    assert directory.name in registry.scan().rejected
+
+
+def test_a_run_file_downloads_as_it_is_on_disk(runs: Path, server: str, tmp_path: Path) -> None:
+    directory = next(runs.iterdir())
+    (tmp_path / "secret.txt").write_text("SECRET")
+    (directory / "linked.txt").symlink_to(tmp_path / "secret.txt")
+    (directory / "states").mkdir(exist_ok=True)
+
+    for name in ("run.json", "case.toml", "history.jsonl", "solution.cgns"):
+        response = httpx.get(f"{server}/api/runs/{directory.name}/files/{name}")
+        assert response.status_code == 200, name
+        assert response.content == (directory / name).read_bytes()
+        assert f'filename="{name}"' in response.headers["content-disposition"]
+
+    # Only the directory's own regular files: no link, no directory, no path, no other name.
+    for name in ("linked.txt", "states", "..%2Frun.json", "%2E%2E", "missing.json"):
+        status = httpx.get(f"{server}/api/runs/{directory.name}/files/{name}").status_code
+        assert status == 404, name
+
+    # Any file name reaches the client whole (RFC 6266), and a growing file is sent as opened.
+    odd = 'résultat "final".txt'
+    (directory / odd).write_text("x" * 10)
+    response = httpx.get(f"{server}/api/runs/{directory.name}/files/{quote(odd)}")
+    assert response.status_code == 200
+    assert response.headers["content-disposition"].endswith(
+        f"filename*=UTF-8''{quote(odd, safe='')}"
+    )
+    assert response.headers["content-disposition"].count("filename=") == 1
+
+    # results.md: a running run's solution.cgns is a checkpoint, not a result.
+    run = json.loads((directory / "run.json").read_text())
+    (directory / "run.json").write_text(
+        json.dumps(run | {"status": "running", "finished": None, "monitors": None})
+    )
+    status = httpx.get(f"{server}/api/runs/{directory.name}/files/solution.cgns").status_code
+    assert status == 409
+
+
+def test_a_download_cut_short_leaves_no_file_open(runs: Path, server: str) -> None:
+    directory = next(runs.iterdir())
+    url = f"{server}/api/runs/{directory.name}/files/solution.cgns"
+    before = len(list(Path("/dev/fd").iterdir()))
+    for _ in range(5):
+        with httpx.stream("GET", url) as response:
+            assert response.status_code == 200
+    time.sleep(0.5)
+    assert len(list(Path("/dev/fd").iterdir())) <= before
 
 
 def test_unknown_run_is_404_before_any_stream(server: str) -> None:
@@ -226,7 +345,9 @@ def test_synthetic_surface_layout() -> None:
 def test_every_run_reports_its_iteration_and_residual_drop(runs: Path) -> None:
     source = next(runs.iterdir())
     run = json.loads((source / "run.json").read_text())
-    (source / "run.json").write_text(json.dumps(run | {"status": "running", "finished": None}))
+    (source / "run.json").write_text(
+        json.dumps(run | {"status": "running", "finished": None, "monitors": None})
+    )
     records = [json.loads(line) for line in (source / "history.jsonl").read_text().splitlines()]
     with (source / "history.jsonl").open("a") as history:
         history.write('{"iteration": 31, "time": null, "resid')
@@ -275,6 +396,18 @@ def test_run_details_and_plan(runs: Path, server: str) -> None:
     assert {b["zone"] for b in plan["boundaries"]} == {
         z["name"] for z in mesh_info["boundary_zones"]
     }
+
+    # A started run is planned with the state it starts from.
+    case = autan.load(PY / "examples" / "crm_hl.py")
+    info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    first = autan.Results.open(runs / run_id)
+    continued = case.run(info, backend=autan.FakeBackend(iterations=60), runs=runs, start=first)
+
+    plan = httpx.get(f"{server}/api/runs/{continued.path.name}/plan").json()
+
+    devices = json.loads((continued.path / "run.json").read_text())["devices"]
+    expected = case.plan(info, gpus=devices["count"], device_kind=devices["kind"], start="continue")
+    assert plan["memory"] == expected.document()["memory"]
 
 
 @pytest.mark.parametrize(
@@ -390,7 +523,7 @@ INF = math.inf
 
 
 @pytest.mark.parametrize(
-    ("first", "now", "woken", "floors", "expected", "now_woken"),
+    ("first", "now", "woken", "plateau", "expected", "now_woken"),
     [
         ({"rho": 1e-300, "e": 1.0}, {"rho": 1e-310, "e": 1e-8}, set(), {}, 8.0, set()),
         ({"rho": 1.0, "e": 0.0}, {"rho": 1e-8, "e": 0.0}, set(), {}, 8.0, set()),
@@ -399,58 +532,56 @@ INF = math.inf
         # Identically zero at iteration 1 (below 1e-12 of the largest): exempt at the floor...
         ({"rho": 1.0, "my": 0.0}, {"rho": 1e-8, "my": 1e-12}, set(), {}, 8.0, set()),
         ({"rho": 1.0, "my": 1e-30}, {"rho": 1e-8, "my": 1e-33}, set(), {}, 8.0, set()),
-        # ...woken above it, for good: it must drop like the others, which it cannot from zero.
-        ({"rho": 1.0, "my": 0.0}, {"rho": 1e-8, "my": 1e-11}, set(), {}, None, {"my"}),
-        ({"rho": 1.0, "my": 0.0}, {"rho": 1e-8, "my": 1e-33}, {"my"}, {}, None, {"my"}),
-        ({"rho": 1.0, "my": 1e-30}, {"rho": 1e-8, "my": 1e-33}, {"my"}, {}, 3.0, {"my"}),
-        # Every equation of a line wakes, even after one that cannot be compared.
+        # ...woken above it, for good: it drops from the largest first residual, rho's 1 here.
+        ({"rho": 1.0, "my": 0.0}, {"rho": 1e-8, "my": 1e-11}, set(), {}, 8.0, {"my"}),
+        ({"rho": 1.0, "my": 0.0}, {"rho": 1e-8, "my": 1e-33}, {"my"}, {}, 8.0, {"my"}),
+        ({"rho": 1.0, "my": 1e-30}, {"rho": 1e-7, "my": 1e-6}, {"my"}, {}, 6.0, {"my"}),
+        # A woken momentum component drops from the largest first momentum residual (#432).
         (
-            {"rho": 1.0, "a": 0.0, "b": 1e-30},
-            {"rho": 1e-8, "a": 1.0, "b": 1.0},
+            {"density": 1.0, "momentum-x": 400.0, "momentum-y": 0.0, "energy": 3e5},
+            {"density": 1e-8, "momentum-x": 4e-6, "momentum-y": 4e-5, "energy": 3e-3},
             set(),
             {},
-            None,
+            7.0,
+            {"momentum-y"},
+        ),
+        # Every equation of a line wakes.
+        (
+            {"rho": 1.0, "a": 0.0, "b": 1e-30},
+            {"rho": 1e-8, "a": 1.0, "b": 1e-3},
+            set(),
+            {},
+            0.0,
             {"a", "b"},
         ),
-        # At or below its round-off floor (run.json convergence.floor), an equation has converged.
-        ({"rho": 1.0, "e": 1.0}, {"rho": 1e-4, "e": 1e-6}, set(), {"rho": 1e-4}, 6.0, set()),
-        (
-            {"rho": 1.0, "e": 1.0},
-            {"rho": 1e-4, "e": 1e-6},
-            set(),
-            {"rho": 1e-4, "e": 1e-6},
-            INF,
-            set(),
-        ),
-        (
-            {"rho": 1.0, "e": 1.0},
-            {"rho": 2e-4, "e": 1e-6},
-            set(),
-            {"rho": 1e-4, "e": 1e-6},
-            4 - math.log10(2),
-            set(),
-        ),
+        # On a round-off plateau (run.json convergence.plateau), an equation has converged;
+        # below its floor alone it has not (case-schema.md#time).
+        ({"rho": 1.0, "e": 1.0}, {"rho": 1e-4, "e": 1e-6}, set(), ["rho"], 6.0, set()),
+        ({"rho": 1.0, "e": 1.0}, {"rho": 1e-4, "e": 1e-6}, set(), ["rho", "e"], INF, set()),
+        ({"rho": 1.0, "e": 1.0}, {"rho": 2e-4, "e": 1e-6}, set(), [], 4 - math.log10(2), set()),
     ],
 )
 def test_residual_drop_is_the_slowest_equation_not_converged(
     first: dict[str, float],
     now: dict[str, float],
     woken: set[str],
-    floors: dict[str, float],
+    plateau: list[str],
     expected: float | None,
     now_woken: set[str],
 ) -> None:
-    orders = residual_orders(first, now, woken, floors)
+    orders = residual_orders(first, now, woken, plateau)
     assert orders == (None if expected is None else pytest.approx(expected))
     assert woken == now_woken
 
 
-def test_a_run_at_its_round_off_floors_reports_its_target(runs: Path) -> None:
+def test_a_run_converged_on_its_round_off_plateaus_reports_its_target(runs: Path) -> None:
     source = next(runs.iterdir())
     lines = (source / "history.jsonl").read_text().splitlines()
     last = json.loads(lines[-1])["residuals"]
     run = json.loads((source / "run.json").read_text())
-    (source / "run.json").write_text(json.dumps(run | {"convergence": {"floor": last}}))
+    convergence = {"floor": last, "plateau": list(last)}
+    converged = {"status": "converged", "convergence": convergence}
+    (source / "run.json").write_text(json.dumps(run | converged))
 
     summary = Registry(runs).scan().summaries[source.name]
 
@@ -459,13 +590,15 @@ def test_a_run_at_its_round_off_floors_reports_its_target(runs: Path) -> None:
     assert summary["trend"][-1] == case["time"]["residual_orders"]
 
 
-def test_floors_written_after_the_history_was_read_recompute_the_drop(runs: Path) -> None:
+def test_a_plateau_written_after_the_history_was_read_recomputes_the_drop(runs: Path) -> None:
     source = next(runs.iterdir())
     registry = Registry(runs)
     before = registry.scan().summaries[source.name]["orders"]
     last = json.loads((source / "history.jsonl").read_text().splitlines()[-1])["residuals"]
     run = json.loads((source / "run.json").read_text())
-    (source / "run.json").write_text(json.dumps(run | {"convergence": {"floor": last}}))
+    convergence = {"floor": last, "plateau": list(last)}
+    converged = {"status": "converged", "convergence": convergence}
+    (source / "run.json").write_text(json.dumps(run | converged))
 
     after = registry.scan().summaries[source.name]["orders"]
 
@@ -474,54 +607,81 @@ def test_floors_written_after_the_history_was_read_recompute_the_drop(runs: Path
     assert after == case["time"]["residual_orders"]
 
 
-def _oracle_state_run(runs: Path, tmp_path: Path) -> Path:
-    # The case names its face states by absolute path: a plan that reads them is not confined.
+def _archived_state_run(kind: str, runs: Path, tmp_path: Path) -> tuple[Path, Path]:
+    # The case names its state file by absolute path: a plan that reads it is not confined.
     mesh = json.loads((PY / "tests" / "fixtures" / "crm-hl.meshinfo.json").read_text())
-    for zone in mesh["boundary_zones"]:
-        if zone["name"] == "farfield":
-            zone.update(faces=2, type=None, native_type=None)
-    (tmp_path / "mesh.meshinfo.json").write_text(json.dumps(mesh))
-    states = json.dumps(
-        {
+    case = (PY / "examples" / "crm_hl.py").read_text().replace("autan.SA()", "autan.Laminar()")
+    source = tmp_path / "state.json"
+    row = [1.2, 30, 0, 0, 1e5]
+    if kind == "oracle-state":
+        for zone in mesh["boundary_zones"]:
+            if zone["name"] == "farfield":
+                zone.update(faces=2, type=None, native_type=None)
+        states = {
             "schema": "autan.face-states/1",
             "oracle": "test",
             "mesh_sha256": mesh["source"]["sha256"],
             "variables": ["density", "velocity-x", "velocity-y", "velocity-z", "pressure"],
             "zones": {
-                "farfield": {
-                    "faces": 2,
-                    "centroids": [[0, 0, 0], [1, 0, 0]],
-                    "values": [[1.2, 30, 0, 0, 1e5], [1.2, 30, 0, 0, 1e5]],
-                }
+                "farfield": {"faces": 2, "centroids": [[0, 0, 0], [1, 0, 0]], "values": [row] * 2}
             },
         }
-    ).encode()
-    (tmp_path / "ringleb.json").write_bytes(states)
-    case = tmp_path / "oracle.py"
-    case.write_text(
-        (PY / "examples" / "crm_hl.py").read_text().replace("autan.SA()", "autan.Laminar()")
-        + f"case.boundary('farfield').oracle_state(path={str(tmp_path / 'ringleb.json')!r}, "
-        + f"sha256={hashlib.sha256(states).hexdigest()!r})\n"
-    )
+        source.write_text(json.dumps(states))
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        case += f"case.boundary('farfield').oracle_state(path={str(source)!r}, sha256={digest!r})\n"
+    else:
+        mesh["counts"]["cells"] = 4
+        # A hand-written MeshInfo may omit its partition; this run extracts none.
+        del mesh["partition"]
+        mesh["counts"]["cells_by_type"] = dict.fromkeys(mesh["counts"]["cells_by_type"], 0)
+        mesh["counts"]["cells_by_type"]["hexa"] = 4
+        # Lines of cells within the 4 cells, as mesh.md bounds them.
+        mesh["quality"]["lines"] |= {"cells": 0, "long_cells": 0}
+        # One level, as mesh-info.md defines it: the 4 cells in a row and their 3 interior faces.
+        mesh["quality"]["multigrid"] = {"cells_by_level": [4], "edges_by_level": [3]}
+        mesh["cell_zones"] = [{"name": "fluid", "type": None, "native_type": None, "cells": 4}]
+        mesh["interfaces"] = []
+        digest = autan.initial_state.write(
+            source,
+            oracle="test",
+            mesh_sha256=mesh["source"]["sha256"],
+            centroids=[[0.1 * i, 0, 0] for i in range(4)],
+            values=[row] * 4,
+        )
+        case += f"case.initial_state = autan.StateFile(path={str(source)!r}, sha256={digest!r})\n"
+    # mesh-info.md: the finest level's edges are the interior faces, all faces less the boundary's.
+    boundary = sum(zone["faces"] for zone in mesh["boundary_zones"])
+    mesh["counts"]["faces"] = boundary + mesh["quality"]["multigrid"]["edges_by_level"][0]
+    (tmp_path / "mesh.meshinfo.json").write_text(json.dumps(mesh))
+    (tmp_path / "case.py").write_text(case)
     mesh_info = autan.MeshInfo.load(tmp_path / "mesh.meshinfo.json")
-    return autan.load(case).run(mesh_info, backend=autan.FakeBackend(iterations=2), runs=runs).path
+    backend = autan.FakeBackend(iterations=2)
+    run = autan.load(tmp_path / "case.py").run(mesh_info, backend=backend, runs=runs).path
+    return run, source
 
 
-def test_an_oracle_state_run_plans_against_its_archived_face_states(
-    runs: Path, server: str, tmp_path: Path
+STATE_FILES = pytest.mark.parametrize(
+    ("kind", "missing"), [("oracle-state", "E0420"), ("initial-state", "E0508")]
+)
+
+
+@pytest.mark.parametrize("kind", ["oracle-state", "initial-state"])
+def test_a_run_plans_against_its_archived_state_file(
+    kind: str, runs: Path, server: str, tmp_path: Path
 ) -> None:
-    run = _oracle_state_run(runs, tmp_path)
-    (tmp_path / "ringleb.json").unlink()  # The plan reads the run's archive, not the source.
+    run, source = _archived_state_run(kind, runs, tmp_path)
+    source.unlink()  # The plan reads the run's archive, not the source.
 
     plan = httpx.get(f"{server}/api/runs/{run.name}/plan").json()
 
     assert plan["ok"] is True, plan
 
 
-def test_a_missing_face_state_archive_is_never_replaced_by_its_source(
-    runs: Path, server: str, tmp_path: Path
+@STATE_FILES
+def test_a_missing_state_archive_is_never_replaced_by_its_source(
+    kind: str, missing: str, runs: Path, server: str, tmp_path: Path
 ) -> None:
-    run = _oracle_state_run(runs, tmp_path)
+    run, _ = _archived_state_run(kind, runs, tmp_path)
     assert httpx.get(f"{server}/api/runs/{run.name}/plan").json()["ok"] is True
     for archive in (run / "states").iterdir():
         archive.unlink()  # After the run was accepted: its source is still at tmp_path.
@@ -529,7 +689,7 @@ def test_a_missing_face_state_archive_is_never_replaced_by_its_source(
     plan = httpx.get(f"{server}/api/runs/{run.name}/plan").json()
 
     assert plan["ok"] is False
-    assert "E0420" in {d["code"] for d in plan["diagnostics"]}
+    assert missing in {d["code"] for d in plan["diagnostics"]}
 
 
 def test_several_histories_share_one_stream(runs: Path, server: str) -> None:
@@ -598,7 +758,9 @@ def test_stream_cursors_count_only_what_was_sent(runs: Path, server: str) -> Non
 def test_a_log_line_that_breaks_the_contract_ends_the_stream(runs: Path, server: str) -> None:
     directory = next(runs.iterdir())
     run = json.loads((directory / "run.json").read_text())
-    (directory / "run.json").write_text(json.dumps(run | {"status": "running", "finished": None}))
+    (directory / "run.json").write_text(
+        json.dumps(run | {"status": "running", "finished": None, "monitors": None})
+    )
     url = f"{server}/api/runs/{directory.name}/history/events"
     with httpx.stream("GET", url, timeout=10) as response:
         events = sse_events(response)
@@ -608,6 +770,27 @@ def test_a_log_line_that_breaks_the_contract_ends_the_stream(runs: Path, server:
         kind, reason = next(e for e in events if e[0] != "history")
     assert kind == "invalid"
     assert reason.startswith("log.jsonl")
+
+
+def test_a_run_json_its_reader_refuses_ends_the_stream(runs: Path, server: str) -> None:
+    directory = next(runs.iterdir())
+    run = json.loads((directory / "run.json").read_text())
+    url = f"{server}/api/runs/{directory.name}/history/events"
+    with httpx.stream("GET", url, timeout=10) as response:
+        events = sse_events(response)
+        assert next(events)[0] == "run"
+        # Well-formed, but not what the run computes (results.md#runjson, identity), replaced
+        # atomically so that no reader sees a half-written file.
+        (directory / ".run.json").write_text(json.dumps(run | {"identity": "0" * 64}))
+        (directory / ".run.json").replace(directory / "run.json")
+        kind, reason = next(e for e in events if e[0] not in ("history", "log"))
+    assert kind == "invalid"
+    assert reason.startswith("run.json")
+    # Refused with its reason: 409 once the registry has rejected the run, 422 before.
+    for path in ("", "/plan", "/surface"):
+        response = httpx.get(f"{server}/api/runs/{directory.name}{path}")
+        assert response.status_code in (409, 422)
+        assert response.json()["detail"]
 
 
 def test_the_wall_surface_carries_cp_and_cf_from_the_wall_solution(runs: Path, server: str) -> None:
@@ -650,6 +833,24 @@ def test_the_wall_surface_carries_cp_and_cf_from_the_wall_solution(runs: Path, s
     np.testing.assert_allclose(values("field:Cf"), 1.0, rtol=1e-5)
 
 
+def test_an_inviscid_run_shows_no_skin_friction(tmp_path: Path) -> None:
+    # Euler equations carry no wall shear: Cf is not a field of the run, not a field of zeros.
+    source = (PY / "examples" / "crm_hl.py").read_text()
+    (tmp_path / "case.py").write_text(
+        source.replace("autan.SA()", "autan.Inviscid()").replace(".wall()", ".slip()")
+    )
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    run = autan.load(tmp_path / "case.py").run(
+        mesh_info, backend=autan.FakeBackend(iterations=5), runs=tmp_path / "runs"
+    )
+
+    with serving(create_app(tmp_path / "runs", static=None)) as url:
+        message = httpx.get(f"{url}/api/runs/{run.path.name}/surface").content
+
+    header = json.loads(message[4 : 4 + int.from_bytes(message[:4], "little")])
+    assert [f["name"] for f in header["fields"]] == ["Cp", "Pressure"]
+
+
 def test_a_continued_run_measures_its_drop_from_the_original_first_line(runs: Path) -> None:
     case = autan.load(PY / "examples" / "crm_hl.py")
     mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
@@ -666,3 +867,79 @@ def test_a_continued_run_measures_its_drop_from_the_original_first_line(runs: Pa
     expected = min(math.log10(reference[k] / last[k]) for k in reference)
     assert summary["orders"] == pytest.approx(expected, abs=1e-3)
     assert summary["trend"][0] > 0  # the first line of the continuation is already below
+
+
+@pytest.mark.parametrize("outside", ["external storage", "external link"])
+def test_a_solution_is_read_only_from_its_own_file(runs: Path, server: str, outside: str) -> None:
+    # results.md#solutioncgns: one HDF5 file in the run directory. Data stored in or linked to
+    # another file would be read past the run directory's confinement.
+    import h5py  # noqa: PLC0415 -- only these tests edit a CGNS file
+
+    directory = next(runs.iterdir())
+    secret = runs.parent / "secret.cgns"
+    with h5py.File(directory / "solution.cgns", "r+") as tree:
+        pressure = tree["Base"]["Zone"]["WallSolution"]["Pressure"]
+        values = pressure[" data"][()]
+        if outside == "external storage":
+            del pressure[" data"]
+            secret.write_bytes(values.astype("<f8").tobytes())
+            pressure.create_dataset(
+                " data", shape=values.shape, dtype="<f8", external=[(str(secret), 0, values.nbytes)]
+            )
+        else:
+            # Beside the data the viewer reads, unused by it: the file still reaches outside.
+            with h5py.File(secret, "w") as other:
+                other.create_dataset("values", data=values)
+            tree["Base"]["Zone"]["Elsewhere"] = h5py.ExternalLink(str(secret), "/values")
+
+    response = httpx.get(f"{server}/api/runs/{directory.name}/surface")
+
+    assert response.status_code == 422
+
+
+def test_runs_that_differ_only_by_freestream_and_name_are_one_study(tmp_path: Path) -> None:
+    # results.md#studies: the same identity but the case's hash, and the same case without its
+    # name and freestream.
+    example = (PY / "examples" / "crm_hl.py").read_text()
+    mesh_info = autan.MeshInfo.load(PY / "tests" / "fixtures" / "crm-hl.meshinfo.json")
+    runs = tmp_path / "runs"
+
+    def run(source: str) -> str:
+        path = tmp_path / f"case{len(list(tmp_path.glob('case*.py')))}.py"
+        path.write_text(source)
+        return (
+            autan.load(path)
+            .run(mesh_info, backend=autan.FakeBackend(iterations=3), runs=runs)
+            .path.name
+        )
+
+    base = run(example)
+    swept = run(example.replace('"crm-hl"', '"crm-hl-alpha-5"').replace("aoa=19.57", "aoa=5"))
+    other = run(example.replace("every=10", "every=30"))
+
+    study = {name: s["study"] for name, s in Registry(runs).scan().summaries.items()}
+    assert study[base] == study[swept]
+    assert study[other] != study[base]
+
+
+@pytest.mark.parametrize(("kind", "host_solve"), [("cpu", True), ("cuda", False)])
+def test_a_runs_plan_counts_the_memory_of_the_devices_it_ran_on(
+    kind: str, host_solve: bool, runs: Path, server: str
+) -> None:
+    # memory.py (#358): a steady CPU run holds its Jacobian and host linear solver; a device run
+    # holds its state on the device instead. The run's devices are recorded in run.json, its
+    # identity recomputed as results.md defines it.
+    from autan.results import run_identity  # noqa: PLC0415
+
+    run = next(runs.iterdir())
+    document = json.loads((run / "run.json").read_text())
+    document["devices"] = {"kind": kind, "count": 1}
+    document["identity"] = run_identity(document)
+    (run / ".run.json").write_text(json.dumps(document))
+    (run / ".run.json").replace(run / "run.json")
+
+    plan = httpx.get(f"{server}/api/runs/{run.name}/plan").json()
+
+    components = {c["name"] for c in plan["memory"]["components"]}
+    assert ("jacobian" in components) is host_solve
+    assert plan["memory"]["device_kind"] == kind

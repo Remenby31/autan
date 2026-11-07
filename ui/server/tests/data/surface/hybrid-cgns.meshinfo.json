@@ -1,0 +1,167 @@
+{
+  "schema": "autan.mesh-info/1",
+  "source": {
+    "path": "/src/tests/data/mesh/hybrid/hybrid.cgns",
+    "format": "cgns",
+    "sha256": "906aa53313dd197f09b5d5b99ae14c7411aa3efa652978c1dffd6016b673b167",
+    "bytes": 94953,
+    "logical_bytes": 9977,
+    "descriptor_bytes": 15,
+    "zone_names_bytes": 0,
+    "filtered_bytes": 0,
+    "cgns_nodes": 110,
+    "point_list_ids": 0
+  },
+  "counts": {
+    "cells": 216,
+    "faces": 564,
+    "nodes": 133,
+    "source_nodes": 133,
+    "face_nodes": 1864,
+    "cells_by_type": {
+      "tetra": 96,
+      "pyramid": 48,
+      "prism": 64,
+      "hexa": 8,
+      "polyhedron": 0
+    },
+    "stencil_entries": 3268,
+    "vertex_stencil_entries": 8862,
+    "band_entries": 31922,
+    "boundary_fit_entries": 48489,
+    "periodic_ghosts": 0
+  },
+  "bounds": {
+    "min": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "max": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  "boundary_zones": [
+    {
+      "name": "xmin",
+      "type": null,
+      "native_type": null,
+      "faces": 24
+    },
+    {
+      "name": "xmax",
+      "type": null,
+      "native_type": null,
+      "faces": 24
+    },
+    {
+      "name": "ymin",
+      "type": null,
+      "native_type": null,
+      "faces": 20
+    },
+    {
+      "name": "ymax",
+      "type": null,
+      "native_type": null,
+      "faces": 20
+    },
+    {
+      "name": "zmin",
+      "type": null,
+      "native_type": null,
+      "faces": 24
+    },
+    {
+      "name": "zmax",
+      "type": null,
+      "native_type": null,
+      "faces": 24
+    }
+  ],
+  "cell_zones": [
+    {
+      "name": "lower",
+      "type": null,
+      "native_type": null,
+      "cells": 88
+    },
+    {
+      "name": "upper",
+      "type": null,
+      "native_type": null,
+      "cells": 128
+    }
+  ],
+  "interfaces": [
+    {
+      "zones": [
+        "lower",
+        "upper"
+      ],
+      "faces": 24
+    }
+  ],
+  "periodic": [],
+  "groups": [],
+  "groups_source": null,
+  "quality": {
+    "max_non_orthogonality_deg": 36.6992252004899,
+    "max_faces_per_cell": 6,
+    "lines": {
+      "order": "rcm",
+      "scale": 1.0,
+      "cells": 64,
+      "long_cells": 0
+    },
+    "multigrid": {
+      "cells_by_level": [
+        216,
+        29
+      ],
+      "edges_by_level": [
+        428,
+        87
+      ]
+    }
+  },
+  "partition": {
+    "ranks": 1,
+    "groups": "none",
+    "cells_by_rank": [
+      216
+    ],
+    "ghosts_by_rank": [
+      0
+    ],
+    "faces_by_rank": [
+      564
+    ],
+    "interior_faces_by_rank": [
+      428
+    ],
+    "stencil_entries_by_rank": [
+      3268
+    ],
+    "vertex_stencil_entries_by_rank": [
+      8862
+    ],
+    "band_entries_by_rank": [
+      31922
+    ],
+    "boundary_fit_entries_by_rank": [
+      48489
+    ],
+    "nodes_by_rank": [
+      133
+    ],
+    "face_nodes_by_rank": [
+      1864
+    ],
+    "sent_cells_by_rank": [
+      0
+    ]
+  }
+}

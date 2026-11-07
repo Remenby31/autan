@@ -1,8 +1,16 @@
 #include <array>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <iterator>
+#include <map>
 #include <random>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -10,6 +18,8 @@
 #include <nlohmann/json.hpp>
 
 #include "autan/core/cellwise.hpp"
+#include "autan/core/error.hpp"
+#include "autan/core/geometry.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "fixtures.hpp"
@@ -65,11 +75,22 @@ TEST_CASE("MeshInfo of the hybrid test mesh has its constructed counts", "[mesh-
   const std::string source = GENERATE("hybrid/hybrid.ascii.msh", "hybrid/polyMesh");
   CAPTURE(source);
   const fs::path path = data_dir / source;
-  const auto doc = nlohmann::json::parse(
-      autan::io::mesh_info_json(autan::io::read_mesh(path), autan::io::mesh_hash(path)));
+  const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(
+      autan::io::read_mesh(path), autan::io::mesh_hash(path), autan::io::mesh_bytes(path),
+      autan::io::mesh_logical_bytes(path), {}));
 
   CHECK(doc["schema"] == "autan.mesh-info/1");
   CHECK(doc["source"]["sha256"] == autan::io::mesh_hash(path));
+  // source.bytes: the file's size, or the sum of the polyMesh files the hash covers.
+  std::uintmax_t bytes = 0;
+  if (fs::is_directory(path)) {
+    for (const char* name : {"points", "faces", "owner", "neighbour", "boundary", "cellZones"}) {
+      if (fs::exists(path / name)) bytes += fs::file_size(path / name);
+    }
+  } else {
+    bytes = fs::file_size(path);
+  }
+  CHECK(doc["source"]["bytes"] == bytes);
   CHECK(doc["counts"]["cells"] == 216);
   const auto& types = doc["counts"]["cells_by_type"];
   CHECK(types["tetra"] == 96);
@@ -77,6 +98,9 @@ TEST_CASE("MeshInfo of the hybrid test mesh has its constructed counts", "[mesh-
   CHECK(types["prism"] == 64);
   CHECK(types["hexa"] == 8);
   CHECK(types["polyhedron"] == 0);
+  // The unit cube of generate.py, in the file's units.
+  CHECK(doc["bounds"]["min"] == nlohmann::json::array({0.0, 0.0, 0.0}));
+  CHECK(doc["bounds"]["max"] == nlohmann::json::array({1.0, 1.0, 1.0}));
   REQUIRE(doc["boundary_zones"].size() == 6);
   CHECK(doc["boundary_zones"][0]["name"] == "xmin");
   CHECK(doc["boundary_zones"][0]["faces"] == 24);
@@ -93,8 +117,9 @@ TEST_CASE("MeshInfo of the hybrid test mesh has its constructed counts", "[mesh-
 
 TEST_CASE("MeshInfo types follow the normalisation table", "[mesh-info]") {
   const fs::path path = data_dir / "hanging" / "hanging.fluent.msh";
-  const auto doc = nlohmann::json::parse(
-      autan::io::mesh_info_json(autan::io::read_mesh(path), autan::io::mesh_hash(path)));
+  const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(
+      autan::io::read_mesh(path), autan::io::mesh_hash(path), autan::io::mesh_bytes(path),
+      autan::io::mesh_logical_bytes(path), {}));
   CHECK(doc["source"]["format"] == "fluent");
   CHECK(doc["counts"]["cells_by_type"]["polyhedron"] == 1);
   CHECK(doc["counts"]["cells_by_type"]["hexa"] == 100);
@@ -109,6 +134,12 @@ TEST_CASE("MeshInfo types follow the normalisation table", "[mesh-info]") {
     }
   }
   CHECK(doc["cell_zones"][0]["type"] == "fluid");
+  const fs::path poly = data_dir / "hybrid" / "polyMesh";
+  const auto poly_doc = nlohmann::json::parse(autan::io::mesh_info_json(
+      autan::io::read_mesh(poly), autan::io::mesh_hash(poly), autan::io::mesh_bytes(poly),
+      autan::io::mesh_logical_bytes(poly), {}));
+  REQUIRE(poly_doc["cell_zones"].size() == 2);
+  for (const auto& zone : poly_doc["cell_zones"]) CHECK(zone["type"].is_null());
 }
 
 TEST_CASE("Only cells with the topology of a standard shape count as that shape", "[mesh-info]") {
@@ -130,7 +161,9 @@ TEST_CASE("Only cells with the topology of a standard shape count as that shape"
   cw.cell_zones.push_back(autan::CellZone{
       .name = "fluid", .type = "", .kind = autan::CellKind::unspecified, .provenance = {}});
   const autan::Mesh mesh = autan::assemble(autan::to_face_based(cw));
-  const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(mesh, std::string(64, '0')));
+  const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(
+      mesh, std::string(64, '0'), 1,
+      autan::io::LogicalBytes{.total = 1, .descriptors = 0, .zone_names = 0, .filtered = 0}, {}));
   CHECK(doc["counts"]["cells_by_type"]["hexa"] == 0);
   CHECK(doc["counts"]["cells_by_type"]["polyhedron"] == 1);
 }
@@ -146,8 +179,9 @@ TEST_CASE("MeshInfo omits cell zones without cells", "[mesh-info]") {
         "FoamFile { version 2.0; format ascii; class regIOobject; object cellZones; }\n"
         "2 ( fluid { type cellZone; cellLabels List<label> 27(" +
             labels + "); } unused { type cellZone; cellLabels List<label> 0(); } )\n");
-  const auto doc = nlohmann::json::parse(
-      autan::io::mesh_info_json(autan::io::read_mesh(dir), autan::io::mesh_hash(dir)));
+  const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(
+      autan::io::read_mesh(dir), autan::io::mesh_hash(dir), autan::io::mesh_bytes(dir),
+      autan::io::mesh_logical_bytes(dir), {}));
   REQUIRE(doc["cell_zones"].size() == 1);
   CHECK(doc["cell_zones"][0]["name"] == "fluid");
 }
@@ -159,7 +193,8 @@ TEST_CASE("MeshInfo lists periodic pairs and types their zones periodic", "[mesh
   cells.face_zones[1].kind = autan::BcKind::periodic;
   cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
   const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(
-      autan::assemble(autan::to_face_based(std::move(cells))), std::string(64, '0')));
+      autan::assemble(autan::to_face_based(std::move(cells))), std::string(64, '0'), 1,
+      autan::io::LogicalBytes{.total = 1, .descriptors = 0, .zone_names = 0, .filtered = 0}, {}));
   REQUIRE(doc["periodic"].size() == 1);
   CHECK(doc["periodic"][0] ==
         nlohmann::json{{"zones", {"xmin", "xmax"}},
@@ -170,4 +205,321 @@ TEST_CASE("MeshInfo lists periodic pairs and types their zones periodic", "[mesh
     const bool periodic = zone["name"] == "xmin" || zone["name"] == "xmax";
     CHECK((zone["type"] == "periodic") == periodic);
   }
+}
+
+TEST_CASE("The boundary surface closes the domain, outward, zone by zone", "[mesh-info][surface]") {
+  // Every family through OpenFOAM, and two meshes through every reader: the
+  // file parsed here by its layout alone (mesh.md, Boundary surface).
+  std::vector<std::string> files;
+  for (const char* family : {"tet", "hex", "prism", "pyramid", "poly", "hybrid"})
+    files.push_back(std::string(family) + "/polyMesh");
+  for (const char* name : {"hybrid", "tet-gmsh"}) {
+    for (const char* suffix : {".ascii.msh", ".binary.msh", ".fluent.msh", ".fluent-binary.msh"})
+      files.push_back(std::string(name) + "/" + name + suffix);
+#ifdef AUTAN_HAVE_CGNS
+    files.push_back(std::string(name) + "/" + name + ".cgns");
+#endif
+  }
+  files.emplace_back("periodic-box/periodic-box.ascii.msh");
+  for (const auto& file : files) {
+    CAPTURE(file);
+    const fs::path path = data_dir / file;
+    const autan::Mesh mesh = autan::io::read_mesh(path);
+    const std::string hash = autan::io::mesh_hash(path);
+    const std::string bytes = autan::io::surface_bytes(mesh, hash);
+
+    std::uint32_t n = 0;
+    REQUIRE(bytes.size() >= 4);
+    std::memcpy(&n, bytes.data(), 4);
+    REQUIRE((4 + n) % 8 == 0);
+    const std::string text = bytes.substr(4, n);
+    const auto end = text.find_last_of('}');
+    REQUIRE(end != std::string::npos);
+    CHECK(text.find_first_not_of(' ', end + 1) == std::string::npos);  // spaces only
+    const auto header = nlohmann::json::parse(text);
+    CHECK(header["schema"] == "autan.surface/1");
+    CHECK(header["source"]["sha256"] == hash);
+    const auto buffer = [&](const char* name, auto element) {
+      using T = decltype(element);
+      for (const auto& b : header["buffers"]) {
+        if (b["name"] != name) continue;
+        CHECK(b["dtype"] == (std::is_same_v<T, double> ? "f64" : "u32"));
+        const auto offset = b["offset"].get<std::size_t>();
+        const auto length = b["length"].get<std::size_t>();
+        CHECK(offset % 8 == 0);
+        REQUIRE(4 + n + offset + length * sizeof(T) <= bytes.size());
+        std::vector<T> out(length);
+        if (length > 0) std::memcpy(out.data(), bytes.data() + 4 + n + offset, length * sizeof(T));
+        return out;
+      }
+      FAIL("no buffer " << name);
+      return std::vector<T>{};
+    };
+    const auto positions = buffer("positions", double{});
+    const auto offsets = buffer("face_offsets", std::uint32_t{});
+    const auto nodes = buffer("face_nodes", std::uint32_t{});
+    const auto n_faces = header["faces"].get<std::size_t>();
+    REQUIRE(positions.size() == 3 * header["nodes"].get<std::size_t>());
+    REQUIRE(offsets.size() == n_faces + 1);
+    CHECK(offsets.front() == 0);
+    REQUIRE(offsets.back() == nodes.size());
+    // Nodes numbered in order of first use.
+    std::uint32_t next = 0;
+    for (const auto node : nodes) {
+      REQUIRE(node <= next);
+      if (node == next) ++next;
+    }
+    CHECK(next == header["nodes"]);
+
+    // Zones: MeshInfo's boundary zones, their faces in a row.
+    const auto info = nlohmann::json::parse(autan::io::mesh_info_json(
+        mesh, hash, 1,
+        autan::io::LogicalBytes{.total = 1, .descriptors = 0, .zone_names = 0, .filtered = 0}, {}));
+    const auto& zones = header["zones"];
+    REQUIRE(zones.size() == info["boundary_zones"].size());
+    std::size_t first = 0;
+    for (std::size_t k = 0; k < zones.size(); ++k) {
+      CHECK(zones[k]["name"] == info["boundary_zones"][k]["name"]);
+      CHECK(zones[k]["type"] == info["boundary_zones"][k]["type"]);
+      CHECK(zones[k]["native_type"] == info["boundary_zones"][k]["native_type"]);
+      CHECK(zones[k]["faces"] == info["boundary_zones"][k]["faces"]);
+      CHECK(zones[k]["first_face"] == first);
+      first += zones[k]["faces"].get<std::size_t>();
+    }
+    CHECK(first == n_faces);
+    // Each side of the box (zones xmin ... zmax) holds faces on its plane only.
+    std::array<double, 3> low{}, high{};
+    for (std::size_t d = 0; d < 3; ++d) {
+      low[d] = high[d] = positions[static_cast<std::size_t>(d)];
+      for (std::size_t i = static_cast<std::size_t>(d); i < positions.size(); i += 3) {
+        low[d] = std::min(low[d], positions[i]);
+        high[d] = std::max(high[d], positions[i]);
+      }
+    }
+    for (const auto& zone : zones) {
+      const std::string name = zone["name"];
+      if (name.size() != 4 || name[0] < 'x' || name[0] > 'z') continue;
+      const auto d = static_cast<std::size_t>(name[0] - 'x');
+      const double plane = name.substr(1) == "min" ? low[d] : high[d];
+      const auto from = zone["first_face"].get<std::size_t>();
+      for (std::size_t f = from; f < from + zone["faces"].get<std::size_t>(); ++f) {
+        for (auto i = offsets[f]; i < offsets[f + 1]; ++i)
+          CHECK(std::abs(positions[3 * std::size_t{nodes[i]} + d] - plane) <=
+                1e-12 * (high[d] - low[d]));
+      }
+    }
+
+    // Closed: every edge in exactly two faces, once each way. Outward: the
+    // area vectors (Newell) sum to zero, and the divergence theorem gives the
+    // mesh's volume with a positive sign.
+    std::map<std::pair<std::uint32_t, std::uint32_t>, int> edges;
+    std::array<double, 3> sum{};
+    double area = 0.0, volume = 0.0;
+    for (std::size_t f = 0; f < n_faces; ++f) {
+      std::array<double, 3> s{}, c{};
+      const auto k = offsets[f + 1] - offsets[f];
+      for (auto i = offsets[f]; i < offsets[f + 1]; ++i) {
+        const auto a = nodes[i], b = nodes[i + 1 < offsets[f + 1] ? i + 1 : offsets[f]];
+        REQUIRE(3 * std::size_t{a} + 2 < positions.size());
+        ++edges[{a, b}];
+        const double* p = &positions[3 * std::size_t{a}];
+        const double* q = &positions[3 * std::size_t{b}];
+        s[0] += (p[1] - q[1]) * (p[2] + q[2]);
+        s[1] += (p[2] - q[2]) * (p[0] + q[0]);
+        s[2] += (p[0] - q[0]) * (p[1] + q[1]);
+        for (std::size_t d = 0; d < 3; ++d) c[d] += p[d] / k;
+      }
+      for (std::size_t d = 0; d < 3; ++d) {
+        s[d] *= 0.5;
+        sum[d] += s[d];
+        volume += c[d] * s[d] / 3.0;
+      }
+      area += std::hypot(s[0], s[1], s[2]);
+    }
+    for (const auto& [edge, count] : edges) {
+      CHECK(count == 1);  // these boundaries are manifolds
+      CHECK(edges.contains({edge.second, edge.first}));
+    }
+    constexpr double eps = 0x1p-52;
+    for (const double s : sum) CHECK(std::abs(s) <= 64 * eps * area);
+    const autan::Geometry g = autan::compute_geometry(mesh);
+    double cells = 0.0;
+    for (const double v : g.cell_volume) cells += v;
+    CHECK(std::abs(volume - cells) <= 1e-12 * cells);
+  }
+  // Outward normals need positive cells: an inverted tetrahedron is refused.
+  autan::CellwiseMesh inverted;
+  for (const auto& p :
+       std::array<std::array<double, 3>, 4>{{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}) {
+    inverted.x.push_back(p[0]);
+    inverted.y.push_back(p[1]);
+    inverted.z.push_back(p[2]);
+  }
+  inverted.add_cell(autan::CellShape::tetra, std::array<autan::index_t, 4>{0, 2, 1, 3}, 0);
+  inverted.cell_zones.push_back(autan::CellZone{
+      .name = "fluid", .type = "", .kind = autan::CellKind::unspecified, .provenance = {}});
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(inverted));
+  try {
+    (void)autan::io::surface_bytes(mesh, std::string(64, '0'));
+    FAIL("expected E0121");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == autan::ErrorCode::geometry_non_positive_volume);
+  }
+}
+
+TEST_CASE("MeshInfo counts the nodes of every face", "[mesh-info]") {
+  // Tetrahedra have triangular faces only, hexahedra quadrilateral ones.
+  for (const auto& [mesh, nodes_per_face] :
+       {std::pair{"tet/polyMesh", 3}, std::pair{"hex/polyMesh", 4}}) {
+    CAPTURE(mesh);
+    const fs::path path = data_dir / mesh;
+    const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(
+        autan::io::read_mesh(path), autan::io::mesh_hash(path), autan::io::mesh_bytes(path),
+        autan::io::mesh_logical_bytes(path), {}));
+    CHECK(doc["counts"]["face_nodes"] ==
+          nodes_per_face * doc["counts"]["faces"].get<std::int64_t>());
+  }
+}
+
+TEST_CASE("MeshInfo counts the nodes the file holds, those no face uses too", "[mesh-info]") {
+  // tests/data/mesh/tet/polyMesh holds 27 points, every one on a face; the copy adds two that
+  // none uses, which assembly drops.
+  const fs::path original = data_dir / "tet" / "polyMesh";
+  const fs::path copy = fresh_dir("polyMesh");
+  for (const auto& entry : fs::directory_iterator(original))
+    fs::copy_file(entry.path(), copy / entry.path().filename());
+  std::ifstream in(original / "points", std::ios::binary);
+  std::string points((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const auto count = points.find("\n27\n(\n");
+  const auto end = points.rfind("\n)\n");
+  REQUIRE(count != std::string::npos);
+  REQUIRE(end != std::string::npos);
+  points.insert(end, "\n(5 5 5)\n(6 6 6)");
+  points.replace(count, 4, "\n29\n");
+  write(copy / "points", points);
+  for (const auto& [path, held] : {std::pair{original, 27}, std::pair{copy, 29}}) {
+    CAPTURE(path);
+    const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(
+        autan::io::read_mesh(path), autan::io::mesh_hash(path), autan::io::mesh_bytes(path),
+        autan::io::mesh_logical_bytes(path), {}));
+    CHECK(doc["counts"]["nodes"] == 27);
+    CHECK(doc["counts"]["source_nodes"] == held);
+  }
+}
+
+TEST_CASE("A zone-groups sidecar gives MeshInfo its groups, checked", "[mesh-info][groups]") {
+  // The hybrid mesh copied with a sidecar next to it (mesh-info.md, Zone
+  // groups): a Gmsh file's is <file>.zones.json, a polyMesh directory's
+  // <directory>.zones.json.
+  const bool directory = GENERATE(false, true);
+  CAPTURE(directory);
+  const fs::path dir = fresh_dir("groups");
+  const fs::path mesh_path = directory ? dir / "polyMesh" : dir / "hybrid.ascii.msh";
+  fs::copy(directory ? data_dir / "hybrid" / "polyMesh" : data_dir / "hybrid" / "hybrid.ascii.msh",
+           mesh_path, fs::copy_options::recursive);
+  const fs::path sidecar = mesh_path.string() + ".zones.json";
+  const autan::Mesh mesh = autan::io::read_mesh(mesh_path);
+  const std::string hash = autan::io::mesh_hash(mesh_path);
+  const auto bytes = autan::io::mesh_bytes(mesh_path);
+  const auto logical = autan::io::mesh_logical_bytes(mesh_path);
+  const auto info = [&] {
+    return nlohmann::json::parse(autan::io::mesh_info_json(
+        mesh, hash, bytes, logical, {}, autan::io::read_zone_groups(mesh_path, mesh, hash)));
+  };
+
+  // No sidecar: no group.
+  CHECK(info()["groups"] == nlohmann::json::array());
+  CHECK(info()["groups_source"].is_null());
+
+  // Groups sorted by name, overlapping, zones in MeshInfo order whatever the
+  // file's; the source is the sidecar's path and the hash of its bytes.
+  nlohmann::json doc{
+      {"schema", "autan.zone-groups/1"},
+      {"mesh_sha256", hash},
+      {"provenance", {{"url", "https://example.org/grid"}, {"note", "test"}}},
+      {"groups",
+       {{"walls", {"zmin", "ymin"}}, {"x.sides", {"xmax", "xmin"}}, {"all-x_1", {"xmin"}}}}};
+  write(sidecar, doc.dump());
+  const auto with = info();
+  CHECK(with["groups"] == nlohmann::json::parse(R"([
+    {"name": "all-x_1", "zones": ["xmin"]},
+    {"name": "walls", "zones": ["ymin", "zmin"]},
+    {"name": "x.sides", "zones": ["xmin", "xmax"]}])"));
+  CHECK(with["groups_source"]["path"] == fs::canonical(mesh_path).string() + ".zones.json");
+  // Given as its OpenFOAM case directory, the polyMesh directory's sidecar.
+  if (directory) {
+    const fs::path case_dir = dir / "case";
+    fs::create_directories(case_dir / "constant");
+    fs::rename(mesh_path, case_dir / "constant" / "polyMesh");
+    fs::rename(sidecar, case_dir / "constant" / "polyMesh.zones.json");
+    CHECK(nlohmann::json::parse(autan::io::mesh_info_json(
+              mesh, hash, bytes, logical, {},
+              autan::io::read_zone_groups(case_dir, mesh, hash)))["groups"] == with["groups"]);
+    fs::rename(case_dir / "constant" / "polyMesh", mesh_path);
+    fs::rename(case_dir / "constant" / "polyMesh.zones.json", sidecar);
+  }
+  // Through a symlink to the mesh, the sidecar next to the mesh file itself.
+  const fs::path link = dir / "link";
+  fs::create_symlink(mesh_path, link);
+  CHECK(nlohmann::json::parse(autan::io::mesh_info_json(
+            mesh, hash, bytes, logical, {},
+            autan::io::read_zone_groups(link, mesh, hash)))["groups"] == with["groups"]);
+  CHECK(with["groups_source"]["sha256"] == autan::io::mesh_hash(sidecar));
+  CHECK(with["groups_source"]["provenance"] == doc["provenance"]);
+
+  // Each fault, with its code.
+  const auto refused = [&](const std::string& text, autan::ErrorCode code) {
+    write(sidecar, text);
+    try {
+      (void)autan::io::read_zone_groups(mesh_path, mesh, hash);
+      FAIL("expected an error for " << text);
+    } catch (const autan::Error& e) {
+      CHECK(e.code() == code);
+    }
+  };
+  const auto edited = [&](const std::function<void(nlohmann::json&)>& edit) {
+    nlohmann::json d = doc;
+    edit(d);
+    return d.dump();
+  };
+  using autan::ErrorCode;
+  refused("{not json", ErrorCode::zone_groups_invalid);
+  // At most 1 MiB, the same document padded with whitespace: refused one byte over, read at it.
+  constexpr std::size_t limit = std::size_t{1} << 20;
+  const std::string compact = doc.dump();
+  refused(compact + std::string(limit + 1 - compact.size(), ' '), ErrorCode::zone_groups_invalid);
+  write(sidecar, compact + std::string(limit - compact.size(), ' '));
+  CHECK(info()["groups"] == with["groups"]);
+  refused(edited([](auto& d) { d["extra"] = 1; }), ErrorCode::zone_groups_invalid);
+  refused(edited([](auto& d) { d.erase("provenance"); }), ErrorCode::zone_groups_invalid);
+  refused(edited([](auto& d) { d["schema"] = "autan.zone-groups/2"; }),
+          ErrorCode::zone_groups_invalid);
+  refused(edited([](auto& d) { d["groups"]["walls"] = "ymin"; }), ErrorCode::zone_groups_invalid);
+  refused(edited([](auto& d) { d["mesh_sha256"] = std::string(64, '0'); }),
+          ErrorCode::zone_groups_other_mesh);
+  refused(edited([](auto& d) { d["groups"]["walls"] = {"ymin", "nowhere"}; }),
+          ErrorCode::zone_groups_bad_group);
+  refused(edited([](auto& d) { d["groups"]["walls"] = nlohmann::json::array(); }),
+          ErrorCode::zone_groups_bad_group);
+  refused(edited([](auto& d) { d["groups"]["walls"] = {"ymin", "ymin"}; }),
+          ErrorCode::zone_groups_bad_group);
+  for (const char* name : {"-walls", "wing*", "a b", ""}) {
+    CAPTURE(name);
+    refused(edited([&](auto& d) { d["groups"][name] = {"ymin"}; }),
+            ErrorCode::zone_groups_bad_group);
+  }
+  // A sidecar that is there but cannot be read: a link to itself.
+  fs::remove(sidecar);
+  fs::create_symlink(sidecar.filename(), sidecar);
+  try {
+    (void)autan::io::read_zone_groups(mesh_path, mesh, hash);
+    FAIL("expected E0136 for a looping link");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == ErrorCode::zone_groups_invalid);
+  }
+  fs::remove(sidecar);
+  // A name given twice, which a JSON parser would merge.
+  refused(R"({"schema": "autan.zone-groups/1", "mesh_sha256": ")" + hash +
+              R"(", "provenance": {}, "groups": {"walls": ["ymin"], "walls": ["zmin"]}})",
+          ErrorCode::zone_groups_duplicate_name);
 }

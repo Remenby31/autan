@@ -4,6 +4,8 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <span>
+#include <stdexcept>
 
 namespace autan::kernels {
 
@@ -15,6 +17,41 @@ Vec sub(const Vec& a, const Vec& b) { return {a[0] - b[0], a[1] - b[1], a[2] - b
 
 Vec cross(const Vec& a, const Vec& b) {
   return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+}
+
+// Planarity proven with == on the node coordinates, no tolerance: a triangle; nodes sharing one
+// coordinate (a plane x_a = c); or nodes with at most two distinct projections along an axis (two
+// parallel lines, which are coplanar: the side faces of a mesh extruded along that axis).
+template <class Point>
+bool exactly_planar(std::size_t nn, const Point& point) {
+  if (nn == 3) {
+    return true;
+  }
+  const Vec p0 = point(0);
+  for (std::size_t a = 0; a < 3; ++a) {
+    const std::size_t b = (a + 1) % 3;
+    const std::size_t c = (a + 2) % 3;
+    bool shared = true;
+    bool two_lines = true;
+    std::size_t second = 0;
+    for (std::size_t i = 1; i < nn && (shared || two_lines); ++i) {
+      const Vec q = point(i);
+      shared = shared && q[a] == p0[a];
+      if (q[b] == p0[b] && q[c] == p0[c]) {
+        continue;
+      }
+      if (second == 0) {
+        second = i;
+      } else {
+        const Vec s = point(second);
+        two_lines = two_lines && q[b] == s[b] && q[c] == s[c];
+      }
+    }
+    if (shared || two_lines) {
+      return true;
+    }
+  }
+  return false;
 }
 
 std::array<double, 9> inverse3(const std::array<double, 9>& m) {
@@ -93,7 +130,40 @@ std::vector<offset_t> incidence_twins(const Mesh& mesh) {
   return twin;
 }
 
-PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& g) {
+GlobalOrder global_order(const Mesh& mesh, const GlobalKeys& keys) {
+  const auto off = mesh.cell_face_offsets();
+  const auto own = mesh.owner();
+  const auto nei = mesh.neighbour();
+  GlobalOrder out;
+  out.cell_faces.assign(mesh.cell_faces().begin(), mesh.cell_faces().end());
+  const std::size_t nc = off.size() - 1;
+  auto by_key = [&](index_t a, index_t b) {
+    const auto ka = keys.face[static_cast<std::size_t>(a)];
+    const auto kb = keys.face[static_cast<std::size_t>(b)];
+    return ka != kb ? ka < kb : a < b;
+  };
+  for (std::size_t c = 0; c < nc; ++c) {
+    std::sort(out.cell_faces.begin() + off[c], out.cell_faces.begin() + off[c + 1], by_key);
+  }
+  out.twin.assign(out.cell_faces.size(), -1);
+  for (std::size_t c = 0; c < nc; ++c) {
+    for (auto k = off[c]; k < off[c + 1]; ++k) {
+      const index_t f = out.cell_faces[static_cast<std::size_t>(k)];
+      const auto fi = static_cast<std::size_t>(f);
+      if (fi >= nei.size()) {
+        continue;
+      }
+      const auto o =
+          static_cast<std::size_t>(static_cast<std::size_t>(own[fi]) == c ? nei[fi] : own[fi]);
+      const auto first = out.cell_faces.begin() + off[o];
+      const auto last = out.cell_faces.begin() + off[o + 1];
+      out.twin[static_cast<std::size_t>(k)] = std::find(first, last, f) - out.cell_faces.begin();
+    }
+  }
+  return out;
+}
+
+PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& g, const GlobalKeys* keys) {
   const auto nf = static_cast<std::size_t>(mesh.n_faces());
   const auto nc = static_cast<std::size_t>(mesh.n_cells());
   PackedGeometry p;
@@ -135,42 +205,86 @@ PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& g) {
     }
   }
 
-  // Face moments over the same fan as the core's geometry (triangles (m, p_i, p_i+1)).
+  // Face moments over a fan of triangles (m, p_i, p_i+1), m the node mean. The fan starts at the
+  // node of smallest (x, y, z) and runs in the face's global orientation (keys->reversed), and
+  // the sum is signed for the local one: a face gives the same bits however it is numbered.
+  // M is zero on a planar face, where the fan sum leaves only round-off (#412): it is stored as a
+  // signed zero where exactly_planar proves planarity. Any other face, planar or not, keeps its
+  // fan sum.
   const auto x = mesh.x(), y = mesh.y(), z = mesh.z();
   for (index_t f = 0; f < mesh.n_faces(); ++f) {
     const auto nodes = mesh.face_nodes(f);
-    Vec m{0.0, 0.0, 0.0};
-    for (const index_t node : nodes) {
-      const auto n = static_cast<std::size_t>(node);
-      m = {m[0] + x[n], m[1] + y[n], m[2] + z[n]};
-    }
-    const auto k = static_cast<double>(nodes.size());
-    m = {m[0] / k, m[1] / k, m[2] / k};
+    const std::size_t nn = nodes.size();
     const auto fi = static_cast<std::size_t>(f);
+    auto point = [&](std::size_t i) {
+      const auto n = static_cast<std::size_t>(nodes[i]);
+      return Vec{x[n], y[n], z[n]};
+    };
+    const bool reversed = keys != nullptr && !keys->reversed.empty() && keys->reversed[fi] != 0;
+    if (exactly_planar(nn, point)) {
+      // Signed for the local orientation like any moment: +0 in the global one on every rank.
+      for (std::size_t j = 0; j < 9; ++j) {
+        p.face_moment[j * nf + fi] = reversed ? -0.0 : 0.0;
+      }
+      continue;
+    }
+    p.all_planar = false;
+    std::size_t start = 0;
+    for (std::size_t i = 1; i < nn; ++i) {
+      if (point(i) < point(start)) {
+        start = i;
+      }
+    }
+    auto at = [&](std::size_t i) {
+      return point(reversed ? (start + nn - i % nn) % nn : (start + i) % nn);
+    };
+    Vec m{0.0, 0.0, 0.0};
+    for (std::size_t i = 0; i < nn; ++i) {
+      const Vec a = at(i);
+      m = {m[0] + a[0], m[1] + a[1], m[2] + a[2]};
+    }
+    const auto k = static_cast<double>(nn);
+    m = {m[0] / k, m[1] / k, m[2] / k};
     const Vec xf{g.face_centroid_x[fi], g.face_centroid_y[fi], g.face_centroid_z[fi]};
-    for (std::size_t i = 0; i < nodes.size(); ++i) {
-      const auto i0 = static_cast<std::size_t>(nodes[i]);
-      const auto i1 = static_cast<std::size_t>(nodes[(i + 1) % nodes.size()]);
-      const Vec a{x[i0], y[i0], z[i0]};
-      const Vec b{x[i1], y[i1], z[i1]};
+    std::array<double, 9> moment{};
+    for (std::size_t i = 0; i < nn; ++i) {
+      const Vec a = at(i);
+      const Vec b = at(i + 1);
       const Vec s = cross(sub(a, m), sub(b, m));
       const Vec c{(m[0] + a[0] + b[0]) / 3.0, (m[1] + a[1] + b[1]) / 3.0,
                   (m[2] + a[2] + b[2]) / 3.0};
       const Vec r = sub(c, xf);
       for (std::size_t u = 0; u < 3; ++u) {
         for (std::size_t v = 0; v < 3; ++v) {
-          p.face_moment[(3 * u + v) * nf + fi] += 0.5 * r[u] * s[v];
+          moment[3 * u + v] += 0.5 * r[u] * s[v];
         }
       }
+    }
+    for (std::size_t j = 0; j < 9; ++j) {
+      p.face_moment[j * nf + fi] = reversed ? -moment[j] : moment[j];
     }
   }
 
   const auto offsets = mesh.cell_face_offsets();
-  const auto cell_faces = mesh.cell_faces();
+  // Incidences in the order the topology will list them: the mesh's, or the global one.
+  const GlobalOrder order = keys != nullptr ? global_order(mesh, *keys) : GlobalOrder{};
+  const std::span<const index_t> cell_faces =
+      keys != nullptr ? std::span<const index_t>(order.cell_faces) : mesh.cell_faces();
   const auto owner = mesh.owner();
   const auto neighbour = mesh.neighbour();
   const auto ni = static_cast<std::size_t>(offsets.back());
   p.lsq_weight.assign(3 * ni, 0.0);
+  p.incidence_side.assign(ni, 1.0);
+  for (std::size_t c = 0; c + 1 < offsets.size(); ++c) {
+    for (auto k = offsets[c]; k < offsets[c + 1]; ++k) {
+      const auto f = static_cast<std::size_t>(cell_faces[static_cast<std::size_t>(k)]);
+      // +1 for the face's left cell in its global orientation (keys->reversed).
+      const bool reversed = keys != nullptr && !keys->reversed.empty() && keys->reversed[f] != 0;
+      if (f < neighbour.size() && (static_cast<std::size_t>(owner[f]) != c) != reversed) {
+        p.incidence_side[static_cast<std::size_t>(k)] = -1.0;
+      }
+    }
+  }
   std::vector<Vec> d;
   for (index_t c = 0; c < mesh.n_owned_cells(); ++c) {
     const auto ci = static_cast<std::size_t>(c);
@@ -192,7 +306,131 @@ PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& g) {
   return p;
 }
 
-CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& g, StencilKind kind) {
+namespace {
+
+// Rows of a CSR (n + 1 offsets) in slices of `slice` rows: starts (n + 1, the last the total
+// size), lengths, and the sliced position of each CSR entry.
+struct Slices {
+  std::vector<offset_t> starts;
+  std::vector<index_t> length;
+  std::vector<offset_t> position;
+};
+
+Slices slice_rows(std::span<const offset_t> offsets, int slice) {
+  if (slice < 1) {
+    throw std::invalid_argument("E1101: slice must be at least 1");
+  }
+  const std::size_t nc = offsets.size() - 1;
+  const auto w = static_cast<std::size_t>(slice);
+  Slices out;
+  out.length.resize(nc);
+  out.position.resize(static_cast<std::size_t>(offsets[nc]));
+  out.starts.resize(nc + 1);
+  offset_t start = 0;
+  for (std::size_t s = 0; s * w < nc; ++s) {
+    offset_t longest = 0;
+    for (std::size_t l = 0; l < w && s * w + l < nc; ++l) {
+      const std::size_t c = s * w + l;
+      longest = std::max(longest, offsets[c + 1] - offsets[c]);
+    }
+    for (std::size_t l = 0; l < w && s * w + l < nc; ++l) {
+      const std::size_t c = s * w + l;
+      out.starts[c] = start + static_cast<offset_t>(l);
+      out.length[c] = static_cast<index_t>(offsets[c + 1] - offsets[c]);
+      for (offset_t j = 0; j < out.length[c]; ++j) {
+        out.position[static_cast<std::size_t>(offsets[c] + j)] =
+            out.starts[c] + j * static_cast<offset_t>(slice);
+      }
+    }
+    start += longest * static_cast<offset_t>(slice);
+  }
+  out.starts[nc] = start;
+  return out;
+}
+
+}  // namespace
+
+SlicedIncidences sliced_incidences(const Topology& csr, int slice) {
+  const auto nc = static_cast<std::size_t>(csr.n_cells);
+  auto rows = slice_rows(std::span(csr.cell_face_offsets, nc + 1), slice);
+  SlicedIncidences out;
+  out.stride = slice;
+  const auto n = static_cast<std::size_t>(rows.starts[nc]);
+  out.cell_faces.assign(n, 0);
+  out.cell.assign(n, -1);
+  out.twin.assign(n, -1);
+  for (std::size_t c = 0; c < nc; ++c) {
+    for (auto k = csr.cell_face_offsets[c]; k < csr.cell_face_offsets[c + 1]; ++k) {
+      const auto p = static_cast<std::size_t>(rows.position[static_cast<std::size_t>(k)]);
+      const index_t f = csr.cell_faces[k];
+      out.cell_faces[p] = f;
+      if (f < csr.n_interior_faces) {
+        out.cell[p] = csr.owner[f] == static_cast<index_t>(c) ? csr.neighbour[f] : csr.owner[f];
+      }
+      const offset_t t = csr.incidence_twin == nullptr ? -1 : csr.incidence_twin[k];
+      out.twin[p] = t < 0 ? -1 : rows.position[static_cast<std::size_t>(t)];
+    }
+  }
+  out.cell_face_offsets = std::move(rows.starts);
+  out.length = std::move(rows.length);
+  out.position = std::move(rows.position);
+  return out;
+}
+
+std::vector<double> sliced_values(const SlicedIncidences& s, const std::vector<double>& csr,
+                                  int comps) {
+  const std::size_t ne = s.position.size();
+  const std::size_t n = s.cell_faces.size();
+  const auto nk = static_cast<std::size_t>(comps);
+  if (csr.size() != nk * ne) {
+    throw std::invalid_argument("E1101: per-incidence values of the wrong size");
+  }
+  std::vector<double> out(nk * n, 0.0);
+  for (std::size_t k = 0; k < ne; ++k) {
+    for (std::size_t i = 0; i < nk; ++i) {
+      out[i * n + static_cast<std::size_t>(s.position[k])] = csr[i * ne + k];
+    }
+  }
+  return out;
+}
+
+SlicedStencil sliced(const CellStencil& csr, int slice) {
+  auto rows = slice_rows(csr.offsets, slice);
+  SlicedStencil out;
+  out.stride = slice;
+  out.stencil.offsets = std::move(rows.starts);
+  out.length = std::move(rows.length);
+  out.position = std::move(rows.position);
+  const std::size_t nc = csr.offsets.size() - 1;
+  const auto n = static_cast<std::size_t>(out.stencil.offsets[nc]);
+  const std::size_t ne = csr.entries.size();
+  // Twins and weights only if the CSR stencil has them (a forward-only physics drops its twins;
+  // weights may come later from DeviceMesh::set_stencil_weights).
+  out.stencil.entries.assign(n, 0);
+  if (!csr.twin.empty()) {
+    out.stencil.twin.assign(n, -1);
+  }
+  if (!csr.lsq_weight.empty()) {
+    out.stencil.lsq_weight.assign(3 * n, 0.0);
+  }
+  for (std::size_t k = 0; k < ne; ++k) {
+    const auto p = static_cast<std::size_t>(out.position[k]);
+    out.stencil.entries[p] = csr.entries[k];
+    if (!csr.twin.empty()) {
+      const offset_t t = csr.twin[k];
+      out.stencil.twin[p] = t < 0 ? -1 : out.position[static_cast<std::size_t>(t)];
+    }
+    if (!csr.lsq_weight.empty()) {
+      for (std::size_t i = 0; i < 3; ++i) {
+        out.stencil.lsq_weight[i * n + p] = csr.lsq_weight[i * ne + k];
+      }
+    }
+  }
+  return out;
+}
+
+CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& g, StencilKind kind,
+                         const GlobalKeys* keys) {
   const auto nc = static_cast<std::size_t>(mesh.n_cells());
   const auto nf = static_cast<std::size_t>(mesh.n_faces());
   const auto n_owned = static_cast<std::size_t>(mesh.n_owned_cells());
@@ -209,20 +447,30 @@ CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& g, StencilKind 
     return static_cast<std::size_t>(static_cast<std::size_t>(own[f]) == c ? nei[f] : own[f]);
   };
 
-  // Cells and boundary faces touching each node (vertex stencil).
-  std::vector<std::vector<index_t>> node_cells, node_bfaces;
+  // Vertex stencil: the cells and boundary faces each node touches, a cell once per face it
+  // gives the node (CSR by node: one entry per face node and side).
+  std::vector<offset_t> node_off;
+  std::vector<index_t> node_entries;
   if (kind == StencilKind::vertex) {
-    node_cells.resize(static_cast<std::size_t>(mesh.n_points()));
-    node_bfaces.resize(node_cells.size());
+    const auto nn = static_cast<std::size_t>(mesh.n_points());
+    node_off.assign(nn + 1, 0);
     for (std::size_t f = 0; f < nf; ++f) {
       for (const index_t n : mesh.face_nodes(static_cast<index_t>(f))) {
-        auto& cells = node_cells[static_cast<std::size_t>(n)];
-        cells.push_back(own[f]);
-        if (f < nint) {
-          cells.push_back(nei[f]);
-        } else {
-          node_bfaces[static_cast<std::size_t>(n)].push_back(static_cast<index_t>(f));
-        }
+        node_off[static_cast<std::size_t>(n) + 1] += 2;
+      }
+    }
+    for (std::size_t n = 0; n < nn; ++n) {
+      node_off[n + 1] += node_off[n];
+    }
+    node_entries.resize(static_cast<std::size_t>(node_off[nn]));
+    std::vector<offset_t> next(node_off.begin(), node_off.end() - 1);
+    for (std::size_t f = 0; f < nf; ++f) {
+      for (const index_t n : mesh.face_nodes(static_cast<index_t>(f))) {
+        auto& k = next[static_cast<std::size_t>(n)];
+        node_entries[static_cast<std::size_t>(k++)] = own[f];
+        // A boundary face stands as -1 - f on the side it has no cell.
+        node_entries[static_cast<std::size_t>(k++)] =
+            f < nint ? nei[f] : -1 - static_cast<index_t>(f);
       }
     }
   }
@@ -230,42 +478,90 @@ CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& g, StencilKind 
   CellStencil st;
   st.offsets.assign(nc + 1, 0);
   std::vector<index_t> cells, bfaces;
+  // Marks of the cell being built, c: a cell or boundary face enters `cells` or `bfaces` once,
+  // so neither holds more than the final stencil however many faces or nodes two cells share.
+  std::vector<index_t> listed(nc, -1), bound_listed(nf - nint, -1);
+  auto add_cell = [&](std::size_t c, index_t n) {
+    if (listed[static_cast<std::size_t>(n)] != static_cast<index_t>(c)) {
+      listed[static_cast<std::size_t>(n)] = static_cast<index_t>(c);
+      cells.push_back(n);
+    }
+  };
+  auto add_bface = [&](std::size_t c, index_t f) {
+    auto& mark = bound_listed[static_cast<std::size_t>(f) - nint];
+    if (mark != static_cast<index_t>(c)) {
+      mark = static_cast<index_t>(c);
+      bfaces.push_back(f);
+    }
+  };
   for (std::size_t c = 0; c < nc; ++c) {
     cells.clear();
     bfaces.clear();
+    listed[c] = static_cast<index_t>(c);
     if (kind == StencilKind::vertex) {
       for (const index_t f : faces_of(c)) {
         for (const index_t n : mesh.face_nodes(f)) {
-          const auto& around = node_cells[static_cast<std::size_t>(n)];
-          cells.insert(cells.end(), around.begin(), around.end());
-          const auto& bound = node_bfaces[static_cast<std::size_t>(n)];
-          bfaces.insert(bfaces.end(), bound.begin(), bound.end());
+          const auto ni = static_cast<std::size_t>(n);
+          for (auto k = node_off[ni]; k < node_off[ni + 1]; ++k) {
+            const index_t e = node_entries[static_cast<std::size_t>(k)];
+            if (e >= 0) {
+              add_cell(c, e);
+            } else {
+              add_bface(c, -1 - e);
+            }
+          }
         }
       }
     } else {
       for (const index_t f : faces_of(c)) {
         const auto fi = static_cast<std::size_t>(f);
         if (fi >= nint) {
-          bfaces.push_back(f);
+          add_bface(c, f);
           continue;
         }
         const std::size_t n = across(c, fi);
-        cells.push_back(static_cast<index_t>(n));
+        add_cell(c, static_cast<index_t>(n));
         for (const index_t f2 : faces_of(n)) {
           const auto f2i = static_cast<std::size_t>(f2);
           if (f2i >= nint) {
-            bfaces.push_back(f2);
+            add_bface(c, f2);
           } else {
-            cells.push_back(static_cast<index_t>(across(n, f2i)));
+            add_cell(c, static_cast<index_t>(across(n, f2i)));
           }
         }
       }
     }
-    std::sort(cells.begin(), cells.end());
-    cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
-    cells.erase(std::remove(cells.begin(), cells.end(), static_cast<index_t>(c)), cells.end());
-    std::sort(bfaces.begin(), bfaces.end());
-    bfaces.erase(std::unique(bfaces.begin(), bfaces.end()), bfaces.end());
+    // Cells by (global id, translation), else index; then boundary faces by global id, else
+    // index. A periodic image shares its cell's global id: its translation tells them apart.
+    auto by_cell = [&](index_t a, index_t b) {
+      if (keys == nullptr || keys->cell.empty()) {
+        return a < b;
+      }
+      auto key = [&](index_t i) {
+        std::array<double, 3> t{};
+        const auto owned = static_cast<index_t>(n_owned);
+        if (i >= owned && !keys->shift.empty()) {
+          t = keys->shift[static_cast<std::size_t>(i - owned)];
+        }
+        return std::make_pair(keys->cell[static_cast<std::size_t>(i)], t);
+      };
+      const auto ka = key(a);
+      const auto kb = key(b);
+      return ka != kb ? ka < kb : a < b;
+    };
+    auto by = [](std::span<const std::int64_t> key) {
+      return [key](index_t a, index_t b) {
+        if (key.empty()) {
+          return a < b;
+        }
+        const auto ka = key[static_cast<std::size_t>(a)];
+        const auto kb = key[static_cast<std::size_t>(b)];
+        return ka != kb ? ka < kb : a < b;
+      };
+    };
+    std::sort(cells.begin(), cells.end(), by_cell);
+    std::sort(bfaces.begin(), bfaces.end(),
+              by(keys != nullptr ? keys->face : std::span<const std::int64_t>{}));
     st.entries.insert(st.entries.end(), cells.begin(), cells.end());
     for (const index_t f : bfaces) {
       st.entries.push_back(-f - 1);
@@ -285,7 +581,7 @@ CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& g, StencilKind 
       const auto first = st.entries.begin() + st.offsets[n];
       const auto last = st.entries.begin() + st.offsets[n + 1];
       const auto cells_end = std::find_if(first, last, [](index_t x) { return x < 0; });
-      const auto it = std::lower_bound(first, cells_end, static_cast<index_t>(c));
+      const auto it = std::find(first, cells_end, static_cast<index_t>(c));
       if (it != cells_end && *it == static_cast<index_t>(c)) {
         st.twin[static_cast<std::size_t>(k)] = it - st.entries.begin();
       }

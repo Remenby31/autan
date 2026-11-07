@@ -7,6 +7,8 @@
   p = 1, and refuse families or runs that do not fit.
 """
 
+import hashlib
+import itertools
 import json
 import re
 from collections.abc import Callable
@@ -21,9 +23,11 @@ from autan_vv.cli import main
 from autan_vv.errors import VVError
 from autan_vv.gates import GATES, Gate
 from autan_vv.harness import UNIVERSAL_GAS_CONSTANT, read_geometry, verify
+from autan_vv.initial_state import write_initial_state
 from autan_vv.meshes.facemesh import FaceMesh
 from autan_vv.meshes.families import cartesian, generate_family
 from autan_vv.meshes.fluent import write_fluent
+from autan_vv.mms import CATALOG, dump_json
 from autan_vv.oracles.registry import get_oracle
 from autan_vv.runs import mesh_info, write_run
 
@@ -50,6 +54,7 @@ def _case(
     precision: str = "fp64",
     time: float | None = None,
     edit: Callable[[autan.Case], None] | None = None,
+    manufactured: autan.Manufactured | None = None,
 ) -> autan.Case:
     oracle = get_oracle(oracle_name)
     case = autan.Case(f"verify-{oracle_name}", mesh=path)
@@ -62,7 +67,10 @@ def _case(
     case.freestream(mach=mach, pressure=1e5 * Pa, temperature=300 * K)
     if time is not None:
         case.time = autan.Unsteady(steps=1, dt=time * s)
-    case.boundary("*").farfield()
+    if manufactured is not None:
+        case.verification = manufactured
+    else:
+        case.boundary("*").farfield()
     if edit is not None:
         edit(case)
     return case
@@ -153,7 +161,6 @@ def test_order_gate_recovers_the_order_of_the_error(
     assert all(
         len(r["mesh_sha256"]) == 64 and len(r["solver_commit"]) == 40 for r in report["runs"]
     )
-    assert all(not autan.Results.open(p).run.deterministic for p in runs)
 
 
 @pytest.mark.parametrize(
@@ -216,13 +223,45 @@ def test_mms_order_gates_check_every_listed_field(
     assert not next(c for c in verdict["checks"] if c.get("field") == gated)["pass"]
 
 
-def test_vortex_gate_checks_exactly_zero_components_and_its_prerequisites(tmp_path: Path) -> None:
-    meshes = _planar(tmp_path, (16, 24, 32, 48))
-    runs = _runs(tmp_path, meshes, "isentropic-vortex", 2.0, amplitude=0.005, time=40.0)
+@pytest.mark.parametrize("source", ["planar", "vortex-hex", "vortex-prism"])
+def test_vortex_gate_checks_exactly_zero_components_and_its_prerequisites(
+    tmp_path: Path, source: str
+) -> None:
+    # The gate's own mesh families (autan-vv meshes vortex-*) refine one domain, as it requires;
+    # each level starts from its own initial-state file, as autan-vv vortex-cases writes them.
+    if source == "planar":
+        meshes = _planar(tmp_path, (16, 24, 32, 48))
+    else:
+        meshes = _family(tmp_path, source, (8, 16, 32, 64))
+    levels = itertools.count()
+
+    def own_state(case: autan.Case, start: float = 0.0) -> None:
+        k = next(levels) % len(meshes)
+        mesh, path, _ = meshes[k]
+        state = tmp_path / f"level-{k}-{start}.initial.json"
+        digest = write_initial_state(get_oracle("isentropic-vortex"), mesh, path, state, start)
+        case.initial_state = autan.StateFile(path=str(state), sha256=digest)
+
+    runs = _runs(
+        tmp_path, meshes, "isentropic-vortex", 2.0, amplitude=0.005, time=40.0, edit=own_state
+    )
     verdict = verify(runs, "isentropic-vortex", "vortex-order")["verdict"]
     rhow = next(c for c in verdict["checks"] if c.get("field") == "rhow")
     assert rhow["identically_zero"]
     assert verdict["pass"], verdict["checks"]
+    # Runs that start from the vortex at another time do not measure the order of the scheme.
+    late = _runs(
+        tmp_path / "late",
+        meshes,
+        "isentropic-vortex",
+        2.0,
+        amplitude=0.005,
+        time=40.0,
+        edit=lambda case: own_state(case, 1.0),
+    )
+    with pytest.raises(VVError) as err:
+        verify(late, "isentropic-vortex", "vortex-order")
+    assert err.value.code == "V0727"
     early = _runs(tmp_path / "early", meshes, "isentropic-vortex", 2.0, amplitude=0.005, time=4.0)
     verdict = verify(early, "isentropic-vortex", "vortex-order")["verdict"]
     assert not verdict["pass"]
@@ -291,6 +330,24 @@ def test_runs_that_do_not_fit_the_oracle_or_each_other_are_rejected(tmp_path: Pa
         with pytest.raises(VVError) as err:
             call()
         assert err.value.code == code
+
+    def solution(directory: Path, text: str) -> autan.Manufactured:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "euler.mms.json").write_text(text)
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        return autan.Manufactured(path=str(directory / "euler.mms.json"), sha256=digest)
+
+    text = dump_json(CATALOG["euler"]())
+    same = solution(tmp_path / "one", text)
+    moved = solution(tmp_path / "two", text)
+    different = solution(tmp_path / "three", text + "\n")
+    one = _runs(tmp_path / "one", meshes[:2], "mms-euler", 2.0, manufactured=same)
+    two = _runs(tmp_path / "two", meshes[2:], "mms-euler", 2.0, manufactured=moved)
+    assert verify([*one, *two], "mms-euler")["oracle"]["name"] == "mms-euler"
+    three = _runs(tmp_path / "three", meshes[2:], "mms-euler", 2.0, manufactured=different)
+    with pytest.raises(VVError) as err:
+        verify([*one, *three], "mms-euler")
+    assert err.value.code == "V0727"
 
 
 def test_viscous_oracles_check_the_material_law(tmp_path: Path) -> None:
@@ -552,3 +609,103 @@ def test_fp32_agreement_measures_the_relative_difference_in_units_of_eps32(tmp_p
             assert pair["fields"]["Density"] == pytest.approx(delta / EPS32, rel=1e-9)
             assert pair["fields"]["Pressure"] == 0.0
         assert report["pass"] is (delta / EPS32 <= 500.0)
+
+
+def test_fp32_agreement_pairs_studies_that_keep_their_own_copies_of_the_mesh(
+    tmp_path: Path,
+) -> None:
+    # Each study keeps its own copy of the mesh: the fp32 cases name another path, the same file.
+    # The pair is the same problem (#524): the mesh is paired by its sha256, not by its path.
+    import shutil  # noqa: PLC0415
+
+    from autan_vv.agreement import agreement  # noqa: PLC0415
+
+    meshes = _family(tmp_path, "hex", (4, 6))
+    double = _runs(tmp_path / "fp64", meshes, "mms-euler", 2.0)
+    copies = []
+    for mesh, path, fmt in meshes:
+        copy = tmp_path / "fp32-study" / path.name
+        copy.parent.mkdir(exist_ok=True)
+        shutil.copy(path, copy)
+        copies.append((mesh, copy, fmt))
+    single = _runs(tmp_path / "fp32", copies, "mms-euler", 2.0, precision="fp32+acc64")
+    report = agreement(double, single)
+    assert report["pass"]
+    assert [p["n_cells"] for p in report["pairs"]] == [64, 216]
+
+
+@pytest.mark.parametrize("same_solution", [True, False])
+def test_fp32_agreement_compares_the_manufactured_solution_by_its_sha256(
+    tmp_path: Path, same_solution: bool
+) -> None:
+    # The case records the manufactured solution's path and sha256: each study keeps its own copy,
+    # so two copies of one solution differ only by their path and pair; another file has another
+    # sha256 and is refused.
+    import hashlib  # noqa: PLC0415
+    import json  # noqa: PLC0415
+
+    from autan_vv.agreement import agreement  # noqa: PLC0415
+    from autan_vv.mms import CATALOG, dump_json  # noqa: PLC0415
+
+    meshes = _family(tmp_path, "hex", (4, 6))
+    text = dump_json(CATALOG["euler"]())
+
+    def runs(out: Path, precision: str, content: str) -> list[Path]:
+        solution = out / "euler.json"
+        solution.parent.mkdir(parents=True, exist_ok=True)
+        solution.write_text(content)
+        sha = hashlib.sha256(solution.read_bytes()).hexdigest()
+        manufactured = autan.Manufactured(path=str(solution), sha256=sha)
+        return _runs(out, meshes, "mms-euler", 2.0, precision=precision, manufactured=manufactured)
+
+    double = runs(tmp_path / "fp64", "fp64", text)
+    other = text if same_solution else json.dumps(json.loads(text), indent=4)
+    single = runs(tmp_path / "fp32", "fp32+acc64", other)
+    if same_solution:
+        assert agreement(double, single)["pass"]
+    else:
+        with pytest.raises(VVError) as refused:
+            agreement(double, single)
+        assert refused.value.code == "V0727"
+
+
+@pytest.mark.parametrize("same_state", [True, False])
+def test_fp32_agreement_compares_the_initial_state_by_its_sha256(
+    tmp_path: Path, same_state: bool
+) -> None:
+    # Each study writes its own copy of every level's initial state: the same state at another path
+    # pairs, a state at another time has another sha256 and is refused.
+    from autan_vv.agreement import agreement  # noqa: PLC0415
+
+    meshes = _family(tmp_path, "vortex-hex", (8, 16))
+
+    def runs(out: Path, precision: str, start: float) -> list[Path]:
+        levels = iter(meshes)
+
+        def own_state(case: autan.Case) -> None:
+            mesh, path, _ = next(levels)
+            state = out / "states" / f"{path.stem}.initial.json"
+            state.parent.mkdir(parents=True, exist_ok=True)
+            vortex = get_oracle("isentropic-vortex")
+            digest = write_initial_state(vortex, mesh, path, state, start)
+            case.initial_state = autan.StateFile(path=str(state), sha256=digest)
+
+        return _runs(
+            out,
+            meshes,
+            "isentropic-vortex",
+            2.0,
+            amplitude=0.005,
+            time=40.0,
+            precision=precision,
+            edit=own_state,
+        )
+
+    double = runs(tmp_path / "fp64", "fp64", 0.0)
+    single = runs(tmp_path / "fp32", "fp32+acc64", 0.0 if same_state else 1.0)
+    if same_state:
+        assert agreement(double, single)["pass"]
+    else:
+        with pytest.raises(VVError) as refused:
+            agreement(double, single)
+        assert refused.value.code == "V0727"

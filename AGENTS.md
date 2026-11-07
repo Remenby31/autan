@@ -66,6 +66,7 @@ The code, this file, `docs/PLAN.md`, the contracts in `docs/contracts/` and the 
 - A regression test fails on the code before the fix, for the reason the bug gives.
 - No mocks of our own classes; fakes only at external boundaries. Assert outcomes and error codes, never exact message text.
 - No redundant tests: delete a test that guards nothing another test does not.
+- Mutants run through `tools/mutate.py`, whose docstring states its input, verdicts and guards; report its verdicts by their names, `caught by timeout` apart from `caught`.
 
 ## Docs
 
@@ -102,5 +103,5 @@ Need a change in someone else's area? Say so in your PR description instead of e
 
 - Two DGX Spark (GB10, 128 GB unified memory, CUDA 13.0): `ssh spark` and `ssh spark-5359` over Tailscale. No direct ConnectX link between them: multi-node runs are for correctness only.
 - They are shared machines running other Docker stacks. Never stop, modify or inspect other containers. Build and run inside our own containers (`docker/`). No sudo.
-- Serialize GPU benchmarks with `flock /home/admin/autan-gpu/gpu.lock <cmd>` (mount `/home/admin/autan-gpu` read-only at the same path in containers; see `docs/infra/bench.md`) and check that the GPU is idle before timing. Never wait for a time slot; queue on the lock.
+- Run every GPU job under the GPU lock: `autan-bench` takes it itself; anything else runs as `/home/admin/autan-gpu/bin/autan-gpu-lock -m "AGENT: what for" -- <cmd>`, and `autan-bench` as `/home/admin/autan-gpu/bin/autan-gpu-lock -n -m "AGENT: what for" -- <autan-bench command>`; never bare `flock` (`docs/infra/bench.md#the-gpu-lock`; `docker/spark.sh` mounts the lock and its holders log). One hold per measurement or test run, at most 10 minutes (the wrapper stops the command and records an overrun in `holders.log`), at least 2 minutes between two holds, never a campaign looping under the lock. CI jobs have priority: outside CI, the wrapper and `autan-bench` wait while a CI job waits for or holds the GPU. Check that the GPU is idle before timing. Never wait for a time slot; queue on the lock.
 - GB10 FP64 throughput is very low: design for FP32 compute with FP64 accumulation where needed.

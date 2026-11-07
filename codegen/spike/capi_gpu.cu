@@ -13,6 +13,7 @@
 #include "autan/kernels/gpu.hpp"
 #include "autan/kernels/norms.cuh"
 #include "device.cuh"
+#include "face_flags_gpu.cuh"
 #include "gradients_gpu.cuh"
 #include "roe_gpu.cuh"
 #include "spike.hpp"
@@ -22,9 +23,7 @@ namespace {
 using autan::kernels::index_t;
 using autan::kernels::offset_t;
 using autan::spike::DeviceArray;
-using autan::spike::DeviceGeom;
 using autan::spike::DeviceMesh;
-using autan::spike::GeomCopy;
 using autan::spike::guarded;
 using autan::spike::SpikeMesh;
 using autan::spike::strategy_of;
@@ -52,8 +51,6 @@ void advdiff_residual(const SpikeMesh& m, gpu::Strategy strategy, int block, con
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   const auto nf = static_cast<std::size_t>(m.topo.n_faces);
   DeviceMesh dm(m, block);
-  GeomCopy<P> hg(m.packed);
-  DeviceGeom<P> g(hg);
   DeviceArray<typename P::state> qs(converted_in<typename P::state>(q, nc));
   DeviceArray<typename P::state> qbs(converted_in<typename P::state>(q_b, nf));
   DeviceArray<typename P::state> ss(converted_in<typename P::state>(source, nc));
@@ -63,16 +60,12 @@ void advdiff_residual(const SpikeMesh& m, gpu::Strategy strategy, int block, con
   d.topo = dm.topo;
   d.q = qs.get();
   d.q_b = qbs.get();
-  autan::spike::bind(d.lsq_weight, g.lsq_weight);
-  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
+  dm.bind(d);
   d.grad = gs.get();
   d.source = ss.get();
-  autan::spike::bind(d.cell_volume, g.cell_volume);
+  dm.bind(d);
   d.res = rs.get();
-  autan::spike::bind(d.cell_centroid, g.cell_centroid);
-  autan::spike::bind(d.face_centroid, g.face_centroid);
-  autan::spike::bind(d.face_area, g.face_area);
-  autan::spike::bind(d.face_moment, g.face_moment);
+  dm.bind(d);
   for (int i = 0; i < 3; ++i) {
     d.velocity[i] = typename P::param(velocity[i]);
   }
@@ -94,6 +87,40 @@ void advdiff_residual(const SpikeMesh& m, gpu::Strategy strategy, int block, con
   *norm = std::sqrt(sum.download()[0]);
 }
 
+/// Test kernel codegen/tests/kernels/face_flags.py on the device: as autan_spike_face_flags,
+/// the face loop reading keep in `strategy`.
+template <class P>
+void face_flags(const SpikeMesh& m, gpu::Strategy strategy, int block, const double* q,
+                std::uint8_t* keep, double* jump, double* res) {
+  namespace ff = autan::kernels::face_flags;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  DeviceMesh dm(m, block);
+  DeviceArray<typename P::state> qs(converted_in<typename P::state>(q, nc));
+  DeviceArray<std::uint8_t> ks(std::vector<std::uint8_t>(2 * nf, 255));
+  DeviceArray<typename P::state> js(nf);
+  DeviceArray<typename P::residual> rs(nc);
+  ff::Data<P> d{};
+  d.topo = dm.topo;
+  d.q = qs.get();
+  d.keep = ks.get();
+  d.jump = js.get();
+  d.res = rs.get();
+  dm.bind(d);
+  ff::gpu_loops::interior_flags(d, dm.schedule);
+  ff::gpu_loops::boundary_flags_loop(d, dm.schedule);
+  if (res != nullptr) {
+    ff::gpu_loops::picked(d, strategy, dm.schedule);
+  }
+  synchronise();
+  const auto k = ks.download();
+  std::copy(k.begin(), k.end(), keep);
+  copy_out(js.download(), jump);
+  if (res != nullptr) {
+    copy_out(rs.download(), res);
+  }
+}
+
 template <class P>
 void gradients(const SpikeMesh& m, std::string_view method, gpu::Strategy strategy, int block,
                const double* q, const double* q_b, int iterations, double* grad, double* qmin,
@@ -102,8 +129,6 @@ void gradients(const SpikeMesh& m, std::string_view method, gpu::Strategy strate
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   const auto nf = static_cast<std::size_t>(m.topo.n_faces);
   DeviceMesh dm(m, block);
-  GeomCopy<P> hg(m.packed);
-  DeviceGeom<P> g(hg);
   DeviceArray<typename P::state> qs(converted_in<typename P::state>(q, nc));
   DeviceArray<typename P::state> qbs(converted_in<typename P::state>(q_b, nf));
   DeviceArray<typename P::grad> gs(converted_in<typename P::grad>(grad, 3 * nc));
@@ -117,13 +142,7 @@ void gradients(const SpikeMesh& m, std::string_view method, gpu::Strategy strate
   d.qmin = mins.get();
   d.qmax = maxs.get();
   d.gg_sum = acc.get();
-  autan::spike::bind(d.lsq_weight, g.lsq_weight);
-  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
-  autan::spike::bind(d.cell_volume, g.cell_volume);
-  autan::spike::bind(d.cell_centroid, g.cell_centroid);
-  autan::spike::bind(d.face_centroid, g.face_centroid);
-  autan::spike::bind(d.face_area, g.face_area);
-  autan::spike::bind(d.face_moment, g.face_moment);
+  dm.bind(d);
   if (method == "lsq") {
     gr::gpu_loops::lsq_gradient_bounds(d, dm.schedule);
   } else {
@@ -146,8 +165,6 @@ void advection(const SpikeMesh& m, gpu::Strategy strategy, int block, const doub
   namespace av = autan::kernels::advection;
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   DeviceMesh dm(m, block);
-  GeomCopy<P> hg(m.packed);
-  DeviceGeom<P> g(hg);
   DeviceArray<typename P::state> qs(converted_in<typename P::state>(q, nc));
   DeviceArray<typename P::grad> gs(converted_in<typename P::grad>(grad, 3 * nc));
   DeviceArray<typename P::residual> rs(nc);
@@ -156,10 +173,7 @@ void advection(const SpikeMesh& m, gpu::Strategy strategy, int block, const doub
   d.q = qs.get();
   d.grad = gs.get();
   d.res = rs.get();
-  autan::spike::bind(d.face_r_left, g.face_r_left);
-  autan::spike::bind(d.face_r_right, g.face_r_right);
-  autan::spike::bind(d.face_normal, g.face_normal);
-  autan::spike::bind(d.face_area_magnitude, g.face_area_magnitude);
+  dm.bind(d);
   for (int i = 0; i < 3; ++i) {
     d.velocity[i] = typename P::param(velocity[i]);
   }
@@ -176,8 +190,6 @@ void roe(const SpikeMesh& m, gpu::Strategy strategy, int block, int mode, const 
   using R = typename P::residual;
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   DeviceMesh dm(m, block);
-  GeomCopy<P> hg(m.packed);
-  DeviceGeom<P> g(hg);
   DeviceArray<S> us(converted_in<S>(u, 5 * nc));
   DeviceArray<S> u_tan(converted_in<S>(seed, 5 * nc));
   DeviceArray<R> r_adj(converted_in<R>(seed, 5 * nc));
@@ -188,8 +200,7 @@ void roe(const SpikeMesh& m, gpu::Strategy strategy, int block, int mode, const 
   d.face_jac = js.get();
   d.u_cons = us.get();
   d.res = rs.get();
-  autan::spike::bind(d.face_normal, g.face_normal);
-  autan::spike::bind(d.face_area_magnitude, g.face_area_magnitude);
+  dm.bind(d);
   d.u_cons_tan = u_tan.get();
   d.res_tan = r_tan.get();
   d.res_adj = r_adj.get();
@@ -221,8 +232,6 @@ void advdiff_adjoint(const SpikeMesh& m, gpu::Strategy strategy, int block, cons
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   const auto nf = static_cast<std::size_t>(m.topo.n_faces);
   DeviceMesh dm(m, block);
-  GeomCopy<P> hg(m.packed);
-  DeviceGeom<P> g(hg);
   DeviceArray<S> qs(converted_in<S>(q, nc)), qbs(converted_in<S>(q_b, nf)),
       ss(converted_in<S>(source, nc));
   DeviceArray<typename P::grad> gs(3 * nc);
@@ -231,16 +240,12 @@ void advdiff_adjoint(const SpikeMesh& m, gpu::Strategy strategy, int block, cons
   d.topo = dm.topo;
   d.q = qs.get();
   d.q_b = qbs.get();
-  autan::spike::bind(d.lsq_weight, g.lsq_weight);
-  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
+  dm.bind(d);
   d.grad = gs.get();
   d.source = ss.get();
-  autan::spike::bind(d.cell_volume, g.cell_volume);
+  dm.bind(d);
   d.res = rs.get();
-  autan::spike::bind(d.cell_centroid, g.cell_centroid);
-  autan::spike::bind(d.face_centroid, g.face_centroid);
-  autan::spike::bind(d.face_area, g.face_area);
-  autan::spike::bind(d.face_moment, g.face_moment);
+  dm.bind(d);
   d.res_adj = r_adj.get();
   d.q_adj = q_adj.get();
   d.grad_adj = g_adj.get();
@@ -277,8 +282,6 @@ void lsq_bounds_adjoint(const SpikeMesh& m, gpu::Strategy strategy, int block, c
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   const auto nf = static_cast<std::size_t>(m.topo.n_faces);
   DeviceMesh dm(m, block);
-  GeomCopy<P> hg(m.packed);
-  DeviceGeom<P> g(hg);
   DeviceArray<S> qs(converted_in<S>(q, nc)), qbs(converted_in<S>(q_b, nf));
   DeviceArray<typename P::grad> gs(3 * nc);
   DeviceArray<S> lo(nc), hi(nc);
@@ -291,8 +294,7 @@ void lsq_bounds_adjoint(const SpikeMesh& m, gpu::Strategy strategy, int block, c
   d.grad = gs.get();
   d.qmin = lo.get();
   d.qmax = hi.get();
-  autan::spike::bind(d.lsq_weight, g.lsq_weight);
-  autan::spike::bind(d.stencil_lsq_weight, g.stencil_lsq_weight);
+  dm.bind(d);
   d.grad_adj = g_adj.get();
   d.qmin_adj = lo_adj.get();
   d.qmax_adj = hi_adj.get();
@@ -328,6 +330,213 @@ int autan_spike_gpu_sum_of_squares(const double* x, std::int64_t n, double* out,
     gpu::sum_of_squares(dx.get(), n, partials.get(), sum.get(), nullptr);
     synchronise();
     *out = sum.download()[0];
+  });
+}
+
+/// Cells per slice of the stencil layout of the following device calls (0: CSR).
+void autan_spike_set_stencil_slice(int slice) { autan::spike::stencil_slice() = slice; }
+
+/// Cells per slice of the incidence layout of the following device calls (0: CSR).
+void autan_spike_set_incidence_slice(int slice) { autan::spike::incidence_slice() = slice; }
+
+/// Binds a Data-like struct holding built-in face_area (read-only) and a physics' own writable
+/// cell_volume: out[0] = 1 if face_area was bound, out[1] = 1 if cell_volume was left alone.
+int autan_spike_gpu_bind_check(const void* mesh, int* out, char* err, std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return guarded(err, err_len, [&] {
+    struct Data {
+      autan::kernels::Topology topo;
+      const double* face_area = nullptr;
+      double* cell_volume = nullptr;
+    } d;
+    double own = 0.0;
+    d.cell_volume = &own;
+    // Staged in chunks of 7 values, so that every field crosses chunk boundaries.
+    gpu::DeviceMesh dm(m->mesh, m->packed, nullptr, {.block = 128, .upload_chunk = 7});
+    dm.bind(d);
+    out[0] = d.face_area != nullptr ? 1 : 0;
+    out[1] = d.cell_volume == &own ? 1 : 0;
+    std::vector<double> area(m->packed.face_area.size());
+    gpu::check(
+        cudaMemcpy(area.data(), d.face_area, sizeof(double) * area.size(), cudaMemcpyDeviceToHost),
+        "download");
+    out[2] = area == m->packed.face_area ? 1 : 0;
+    // After release_host(): an uploaded field still binds, one never uploaded is refused.
+    dm.release_host();
+    Data again{};
+    again.cell_volume = &own;
+    dm.bind(again);
+    out[3] = again.face_area == d.face_area ? 1 : 0;
+    struct Late {
+      autan::kernels::Topology topo;
+      const double* cell_centroid = nullptr;
+    } late;
+    try {
+      dm.bind(late);
+      out[4] = 0;
+    } catch (const std::invalid_argument& e) {
+      out[4] = std::string_view(e.what()).starts_with("E1101") ? 1 : 0;
+    }
+    // A forward-only stencil (no twins, weights given later), sliced: no twin array.
+    auto stencil =
+        autan::kernels::cell_stencil(m->mesh, m->packed, autan::kernels::StencilKind::face2);
+    const std::vector<double> weights = stencil.lsq_weight;
+    stencil.twin.clear();
+    stencil.lsq_weight.clear();
+    gpu::DeviceMesh lean(m->mesh, m->packed, &stencil,
+                         {.block = 128,
+                          .incidence_scratch_width = DeviceMesh::kIncidenceScratchWidth,
+                          .stencil_slice = 4});
+    autan::kernels::advection_diffusion::Data<autan::kernels::fp64> ad{};
+    lean.set_stencil_weights<decltype(ad)>(weights);
+    out[5] = lean.topology().stencil_twin == nullptr && lean.topology().stencil != nullptr ? 1 : 0;
+    // A deterministic reduction adjoint over that stencil needs the twins: refused (E1106).
+    lean.bind(ad);
+    try {
+      autan::kernels::advection_diffusion::gpu_loops::lsq_gradient_stencil_adjoint(
+          ad, gpu::Strategy::gather_recompute, lean.schedule());
+      out[6] = 0;
+    } catch (const std::invalid_argument& e) {
+      out[6] = std::string_view(e.what()).starts_with("E1106") ? 1 : 0;
+    }
+    // A range whose end wraps around size_t is refused, not copied.
+    gpu::DeviceArray<double> small(8);
+    const double two[]{1.0, 2.0};
+    try {
+      small.upload_part(two, std::size_t(-1));
+      out[7] = 0;
+    } catch (const std::invalid_argument& e) {
+      out[7] = std::string_view(e.what()).starts_with("E1101") ? 1 : 0;
+    }
+    // Weights given after release_host() reach the device in the sliced layout (the reference
+    // mesh places them from the stencil itself); a pointer bound before keeps the old ones.
+    struct Weights {
+      autan::kernels::Topology topo;
+      const double* stencil_lsq_weight = nullptr;
+    } before, after, expected;
+    lean.bind(before);
+    lean.release_host();
+    std::vector<double> doubled(weights);
+    for (auto& w : doubled) w *= 2.0;
+    lean.set_stencil_weights<Weights>(doubled);
+    lean.bind(after);
+    auto full =
+        autan::kernels::cell_stencil(m->mesh, m->packed, autan::kernels::StencilKind::face2);
+    gpu::DeviceMesh ref(m->mesh, m->packed, &full,
+                        {.block = 128,
+                         .incidence_scratch_width = DeviceMesh::kIncidenceScratchWidth,
+                         .stencil_slice = 4});
+    ref.bind(expected);
+    const std::size_t n = 3 * static_cast<std::size_t>(ref.topology().n_stencil);
+    const auto host = [n](const double* p) {
+      std::vector<double> v(n);
+      gpu::check(cudaMemcpy(v.data(), p, sizeof(double) * n, cudaMemcpyDeviceToHost), "download");
+      return v;
+    };
+    const auto want = host(expected.stencil_lsq_weight);
+    std::vector<double> want2(want);
+    for (auto& w : want2) w *= 2.0;
+    out[8] = after.stencil_lsq_weight != before.stencil_lsq_weight &&
+                     host(after.stencil_lsq_weight) == want2 &&
+                     host(before.stencil_lsq_weight) == want
+                 ? 1
+                 : 0;
+    // The weights live on the device only, in the type they were set for: on a mesh not
+    // released, another type is refused until weights are set for it; set for float from the
+    // double values, CSR in chunks of 7 and sliced, they equal the float conversion.
+    struct FloatWeights {
+      autan::kernels::Topology topo;
+      const float* stencil_lsq_weight = nullptr;
+    };
+    const std::vector<float> csr32(doubled.begin(), doubled.end());
+    const std::vector<float> sliced32(want2.begin(), want2.end());
+    bool typed_ok = true;
+    for (const int slice : {0, 4}) {
+      gpu::DeviceMesh typed(m->mesh, m->packed, &stencil,
+                            {.block = 128,
+                             .incidence_scratch_width = DeviceMesh::kIncidenceScratchWidth,
+                             .stencil_slice = slice,
+                             .upload_chunk = 7});
+      typed.set_stencil_weights<Weights>(doubled);
+      FloatWeights narrow;
+      bool refused = false;
+      try {
+        typed.bind(narrow);
+      } catch (const std::invalid_argument& e) {
+        refused = std::string_view(e.what()).starts_with("E1101");
+      }
+      typed.set_stencil_weights<FloatWeights>(doubled);
+      typed.bind(narrow);
+      const auto& want32 = slice == 0 ? csr32 : sliced32;
+      std::vector<float> got32(want32.size());
+      gpu::check(cudaMemcpy(got32.data(), narrow.stencil_lsq_weight, sizeof(float) * got32.size(),
+                            cudaMemcpyDeviceToHost),
+                 "download");
+      typed_ok = typed_ok && refused && got32 == want32;
+    }
+    out[9] = typed_ok ? 1 : 0;
+    // bind_and_release(): the fields bound equal the host's (in chunks of 7 values, each freed
+    // once uploaded); a field it did not upload is refused afterwards.
+    gpu::DeviceMesh once(m->mesh, m->packed, nullptr, {.block = 128, .upload_chunk = 7});
+    Data last{};
+    last.cell_volume = &own;
+    once.bind_and_release(last);
+    std::vector<double> area2(m->packed.face_area.size());
+    gpu::check(cudaMemcpy(area2.data(), last.face_area, sizeof(double) * area2.size(),
+                          cudaMemcpyDeviceToHost),
+               "download");
+    bool late_refused = false;
+    try {
+      once.bind(late);
+    } catch (const std::invalid_argument& e) {
+      late_refused = std::string_view(e.what()).starts_with("E1101");
+    }
+    out[10] = area2 == m->packed.face_area && last.cell_volume == &own && late_refused ? 1 : 0;
+    // A refused bind_and_release() (one member in a type the weights were not set for) uploads
+    // and frees nothing: a later bind still gets the whole geometry.
+    gpu::DeviceMesh mixed(m->mesh, m->packed, &stencil,
+                          {.block = 128,
+                           .incidence_scratch_width = DeviceMesh::kIncidenceScratchWidth,
+                           .upload_chunk = 7});
+    mixed.set_stencil_weights<Weights>(weights);
+    struct Mixed {
+      autan::kernels::Topology topo;
+      const double* face_area = nullptr;
+      const float* stencil_lsq_weight = nullptr;
+    } mx;
+    bool mixed_refused = false;
+    try {
+      mixed.bind_and_release(mx);
+    } catch (const std::invalid_argument& e) {
+      mixed_refused = std::string_view(e.what()).starts_with("E1101");
+    }
+    Data whole{};
+    whole.cell_volume = &own;
+    mixed.bind(whole);
+    std::vector<double> area3(m->packed.face_area.size());
+    gpu::check(cudaMemcpy(area3.data(), whole.face_area, sizeof(double) * area3.size(),
+                          cudaMemcpyDeviceToHost),
+               "download");
+    out[11] = mixed_refused && mx.face_area == nullptr && area3 == m->packed.face_area ? 1 : 0;
+  });
+}
+
+/// gpu::min of n doubles and of the same values as floats; gpu::first_index of n flags, given
+/// as bytes and as doubles.
+int autan_spike_gpu_reductions(const double* x, const std::uint8_t* flags, std::int64_t n,
+                               double* min64, float* min32, std::int64_t* first,
+                               std::int64_t* first64, char* err, std::size_t err_len) {
+  return guarded(err, err_len, [&] {
+    const auto count = static_cast<std::size_t>(n);
+    std::vector<float> xf(x, x + count);
+    DeviceArray<double> dx(x, count);
+    DeviceArray<float> dxf(xf);
+    DeviceArray<std::uint8_t> df(flags, count);
+    DeviceArray<double> df64(std::vector<double>(flags, flags + count));
+    *min64 = gpu::min(static_cast<index_t>(n), dx.get());
+    *min32 = gpu::min(static_cast<index_t>(n), dxf.get());
+    *first = gpu::first_index(static_cast<index_t>(n), df.get());
+    *first64 = gpu::first_index(static_cast<index_t>(n), df64.get());
   });
 }
 
@@ -378,6 +587,17 @@ int autan_spike_gpu_advdiff_residual(const void* mesh, const char* policy, const
     autan::spike::with_policy(policy, [&](auto p) {
       advdiff_residual<decltype(p)>(*m, s, block, q, q_b, source, velocity, nu, res, grad, norm);
     });
+  });
+}
+
+int autan_spike_gpu_face_flags(const void* mesh, const char* policy, const char* strategy,
+                               int block, const double* q, std::uint8_t* keep, double* jump,
+                               double* res, char* err, std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return guarded(err, err_len, [&] {
+    const auto s = strategy_of(strategy);
+    autan::spike::with_policy(
+        policy, [&](auto p) { face_flags<decltype(p)>(*m, s, block, q, keep, jump, res); });
   });
 }
 

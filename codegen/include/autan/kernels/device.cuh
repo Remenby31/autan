@@ -1,0 +1,550 @@
+#pragma once
+
+// Device copies of what generated loops read besides a physics' own datasets, and exact device
+// reductions. CUDA and HIP translation units only.
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <ranges>
+#include <span>
+#include <string>
+#include <type_traits>
+#include <typeindex>
+#include <utility>
+#include <vector>
+
+#include "autan/core/device_memory.hpp"
+#include "autan/core/mesh.hpp"
+#include "autan/kernels/colouring.hpp"
+#include "autan/kernels/geometry.hpp"
+#include "autan/kernels/gpu.hpp"
+#include "autan/kernels/runtime.hpp"
+
+namespace autan::kernels::gpu {
+
+namespace detail {
+// Every allocation is recorded in autan::device_memory, with its size again at its release.
+#if defined(AUTAN_GPU_HIP)
+inline error_t allocate(void** p, std::size_t bytes) {
+  const error_t e = hipMalloc(p, bytes);
+  if (e == hipSuccess) device_memory::allocated(bytes);
+  return e;
+}
+inline void release(void* p, std::size_t bytes) {
+  static_cast<void>(hipFree(p));
+  device_memory::released(bytes);
+}
+inline error_t zero(void* p, std::size_t bytes, stream_t s) {
+  return hipMemsetAsync(p, 0, bytes, s);
+}
+inline error_t to_device(void* d, const void* h, std::size_t bytes, stream_t s) {
+  return hipMemcpyAsync(d, h, bytes, hipMemcpyHostToDevice, s);
+}
+inline error_t to_host(void* h, const void* d, std::size_t bytes, stream_t s) {
+  return hipMemcpyAsync(h, d, bytes, hipMemcpyDeviceToHost, s);
+}
+inline error_t synchronize(stream_t s) { return hipStreamSynchronize(s); }
+#else
+inline error_t allocate(void** p, std::size_t bytes) {
+  const error_t e = cudaMalloc(p, bytes);
+  if (e == cudaSuccess) device_memory::allocated(bytes);
+  return e;
+}
+inline void release(void* p, std::size_t bytes) {
+  static_cast<void>(cudaFree(p));
+  device_memory::released(bytes);
+}
+inline error_t zero(void* p, std::size_t bytes, stream_t s) {
+  return cudaMemsetAsync(p, 0, bytes, s);
+}
+inline error_t to_device(void* d, const void* h, std::size_t bytes, stream_t s) {
+  return cudaMemcpyAsync(d, h, bytes, cudaMemcpyHostToDevice, s);
+}
+inline error_t to_host(void* h, const void* d, std::size_t bytes, stream_t s) {
+  return cudaMemcpyAsync(h, d, bytes, cudaMemcpyDeviceToHost, s);
+}
+inline error_t synchronize(stream_t s) { return cudaStreamSynchronize(s); }
+#endif
+}  // namespace detail
+
+/// Owning device array of n values, zero-filled. Copies run on `stream` and return once done,
+/// so host buffers may be reused at once.
+template <class T>
+class DeviceArray {
+  static_assert(std::is_trivially_copyable_v<T>);
+
+ public:
+  DeviceArray() = default;
+  explicit DeviceArray(std::size_t n, stream_t stream = nullptr) : n_(n) {
+    check(detail::allocate(reinterpret_cast<void**>(&p_), std::max<std::size_t>(n, 1) * sizeof(T)),
+          "device allocation");
+    check(detail::zero(p_, std::max<std::size_t>(n, 1) * sizeof(T), stream), "device zero");
+    check(detail::synchronize(stream), "device zero");
+  }
+  explicit DeviceArray(std::span<const T> host, stream_t stream = nullptr)
+      : DeviceArray(host.size(), stream) {
+    upload(host, stream);
+  }
+  DeviceArray(const DeviceArray&) = delete;
+  DeviceArray& operator=(const DeviceArray&) = delete;
+  DeviceArray(DeviceArray&& o) noexcept : p_(std::exchange(o.p_, nullptr)), n_(o.n_) {}
+  DeviceArray& operator=(DeviceArray&& o) noexcept {
+    std::swap(p_, o.p_);
+    std::swap(n_, o.n_);
+    return *this;
+  }
+  ~DeviceArray() {
+    if (p_ != nullptr) {
+      detail::release(p_, std::max<std::size_t>(n_, 1) * sizeof(T));
+    }
+  }
+  void upload(std::span<const T> host, stream_t stream = nullptr) {
+    if (host.size() != n_) {
+      throw std::invalid_argument("E1101: upload of " + std::to_string(host.size()) +
+                                  " values into a device array of " + std::to_string(n_));
+    }
+    check(detail::to_device(p_, host.data(), n_ * sizeof(T), stream), "upload");
+    check(detail::synchronize(stream), "upload");
+  }
+  /// Copies `host` to positions [first, first + host.size()).
+  void upload_part(std::span<const T> host, std::size_t first, stream_t stream = nullptr) {
+    if (first > n_ || host.size() > n_ - first) {
+      throw std::invalid_argument("E1101: upload past the end of a device array of " +
+                                  std::to_string(n_));
+    }
+    check(detail::to_device(p_ + first, host.data(), host.size() * sizeof(T), stream), "upload");
+    check(detail::synchronize(stream), "upload");
+  }
+  void download(std::span<T> host, stream_t stream = nullptr) const {
+    if (host.size() != n_) {
+      throw std::invalid_argument("E1101: download of a device array of " + std::to_string(n_) +
+                                  " values into " + std::to_string(host.size()));
+    }
+    check(detail::to_host(host.data(), p_, n_ * sizeof(T), stream), "download");
+    check(detail::synchronize(stream), "download");
+  }
+  [[nodiscard]] std::vector<T> download(stream_t stream = nullptr) const {
+    std::vector<T> v(n_);
+    download(std::span<T>(v), stream);
+    return v;
+  }
+  [[nodiscard]] T* get() const { return p_; }
+  [[nodiscard]] std::size_t size() const { return n_; }
+
+ private:
+  T* p_ = nullptr;
+  std::size_t n_ = 0;
+};
+
+/// What the generated loops of any module read besides the physics' own datasets: topology
+/// (owned-face prefixes, incidence twins, cell stencil and its twins), built-in geometry,
+/// colourings of the owned face ranges, store-gather and incidence scratch, and the Schedule.
+/// Not tied to a policy: geometry is uploaded in the type each generated Data member stores.
+class DeviceMesh {
+ public:
+  struct Options {
+    int block = 256;
+    int face_scratch_width = 0;       ///< components per face of the widest store-gather loop
+    int incidence_scratch_width = 0;  ///< per entry, of the widest deterministic reduction adjoint
+    stream_t stream = nullptr;
+    /// Cells per slice of the sliced stencil layout (Topology::stencil_stride), 0 for CSR. Same
+    /// results bit for bit; a warp then reads its cells' stencil entries contiguously.
+    int stencil_slice = 0;
+    /// The partition's global numbering (incidences by global face id, reversed faces evaluated
+    /// in their global orientation), for results that do not depend on the partition; the
+    /// geometry and stencil passed must then be built with the same keys. Null: the mesh's order.
+    const GlobalKeys* global = nullptr;
+    /// Cells per slice of the sliced incidence layout (Topology::incidence_stride, with the
+    /// column index incidence_cell), 0 for CSR. Same results bit for bit. 32 for the block
+    /// solvers (kernels/blocks.py: the product reaches 88-93 % of GB10 peak, CSR 31-68 %); CSR
+    /// by default, the explicit Euler step being no faster sliced (+0.4 % tet, +1.1 % hex).
+    int incidence_slice = 0;
+    /// Values converted and uploaded per step when bind() stages built-in geometry: the host
+    /// holds at most one such chunk in the device type beside the FP64 geometry.
+    std::size_t upload_chunk = std::size_t(1) << 20;
+  };
+
+  /// `geometry` is kept until release_host() (move it in to avoid a copy); `stencil` may be
+  /// null (no stencil reductions) and is read during construction only, its weights kept. A
+  /// stencil may come without twins (then Topology::stencil_twin is null: no reduction
+  /// adjoint over it) and without weights (then set_stencil_weights() provides them).
+  DeviceMesh(const Mesh& mesh, PackedGeometry geometry, const CellStencil* stencil, Options options)
+      : geometry_(std::move(geometry)), chunk_(options.upload_chunk), stream_(options.stream) {
+    if (chunk_ == 0) {
+      throw std::invalid_argument("E1101: DeviceMesh upload_chunk must be at least 1");
+    }
+    Topology host = kernels::topology(mesh.view());
+    GlobalOrder order;
+    if (options.global != nullptr) {
+      order = global_order(mesh, *options.global);
+      host.cell_faces = order.cell_faces.data();
+    } else {
+      order.twin = incidence_twins(mesh);
+    }
+    auto& twins = order.twin;
+    host.incidence_twin = twins.data();
+    // Sliced incidences: host arrays held only until uploaded, below.
+    SlicedIncidences incidences;
+    if (options.incidence_slice > 0) {
+      incidences = sliced_incidences(host, options.incidence_slice);
+      geometry_.lsq_weight = sliced_values(incidences, geometry_.lsq_weight, 3);
+      geometry_.incidence_side = sliced_values(incidences, geometry_.incidence_side, 1);
+      twins = incidences.twin;
+      host.incidence_twin = twins.data();
+      host.n_incidences = static_cast<offset_t>(incidences.cell_faces.size());
+      host.cell_face_offsets = incidences.cell_face_offsets.data();
+      host.cell_faces = incidences.cell_faces.data();
+      host.incidence_stride = incidences.stride;
+      host.incidence_length = incidences.length.data();
+      host.incidence_cell = incidences.cell.data();
+    }
+    // The sliced stencil is built here; a CSR one is read in place.
+    CellStencil sliced_stencil;
+    const CellStencil* st = stencil;
+    if (stencil != nullptr) {
+      csr_entries_ = stencil->entries.size();
+      if (options.stencil_slice > 0) {
+        auto s = sliced(*stencil, options.stencil_slice);
+        sliced_stencil = std::move(s.stencil);
+        position_ = std::move(s.position);
+        length_ = std::move(s.length);
+        host.stencil_stride = s.stride;
+        host.stencil_length = length_.data();
+        st = &sliced_stencil;
+        geometry_.stencil_lsq_weight = std::move(sliced_stencil.lsq_weight);
+      } else {
+        geometry_.stencil_lsq_weight = stencil->lsq_weight;
+      }
+      stencil_entries_n_ = st->entries.size();
+      host.n_stencil = static_cast<offset_t>(st->entries.size());
+      host.stencil_offsets = st->offsets.data();
+      host.stencil = st->entries.data();
+      host.stencil_twin = st->twin.data();
+    }
+    const auto nf = static_cast<std::size_t>(host.n_faces);
+    owner_ = copy(std::span(host.owner, nf));
+    neighbour_ = copy(std::span(host.neighbour, static_cast<std::size_t>(host.n_interior_faces)));
+    offsets_ = copy(std::span(host.cell_face_offsets, static_cast<std::size_t>(host.n_cells) + 1));
+    cell_faces_ = copy(std::span(host.cell_faces, static_cast<std::size_t>(host.n_incidences)));
+    twin_ = copy(std::span<const offset_t>(twins));
+    interior_ = colour_faces(host, 0, host.n_owned_interior_faces);
+    boundary_ = colour_faces(host, host.n_interior_faces, host.n_owned_faces);
+    interior_faces_ = copy(std::span<const index_t>(interior_.faces));
+    boundary_faces_ = copy(std::span<const index_t>(boundary_.faces));
+    topo_ = host;
+    topo_.owner = owner_.get();
+    topo_.neighbour = neighbour_.get();
+    topo_.cell_face_offsets = offsets_.get();
+    topo_.cell_faces = cell_faces_.get();
+    topo_.incidence_twin = twin_.get();
+    if (options.global != nullptr && !options.global->reversed.empty()) {
+      reversed_ = copy(options.global->reversed);
+      topo_.face_reversed = reversed_.get();
+    }
+    topo_.rank_independent = options.global != nullptr;
+    if (options.incidence_slice > 0) {
+      incidence_length_ = copy(std::span<const index_t>(incidences.length));
+      incidence_cell_ = copy(std::span<const index_t>(incidences.cell));
+      topo_.incidence_length = incidence_length_.get();
+      topo_.incidence_cell = incidence_cell_.get();
+    }
+    if (stencil != nullptr) {
+      stencil_offsets_ = copy(std::span<const offset_t>(st->offsets));
+      stencil_entries_ = copy(std::span<const index_t>(st->entries));
+      topo_.stencil_offsets = stencil_offsets_.get();
+      topo_.stencil = stencil_entries_.get();
+      // Twins serve the reductions' deterministic adjoints only; a stencil without them
+      // leaves stencil_twin null.
+      if (!st->twin.empty()) {
+        stencil_twin_ = copy(std::span<const offset_t>(st->twin));
+        topo_.stencil_twin = stencil_twin_.get();
+      } else {
+        topo_.stencil_twin = nullptr;
+      }
+      if (!length_.empty()) {
+        stencil_length_ = copy(std::span<const index_t>(length_));
+        topo_.stencil_length = stencil_length_.get();
+      }
+    }
+    // Scratch holds compute values (face) or accumulation values (incidence): at most 8 bytes.
+    face_scratch_ = DeviceArray<double>(
+        static_cast<std::size_t>(std::max(options.face_scratch_width, 0)) * nf, stream_);
+    incidence_scratch_ = DeviceArray<double>(
+        static_cast<std::size_t>(std::max(options.incidence_scratch_width, 0)) *
+            static_cast<std::size_t>(std::max(host.n_incidences, host.n_stencil)),
+        stream_);
+    schedule_.block = options.block;
+    schedule_.interior = {interior_faces_.get(), interior_.offsets};
+    schedule_.boundary = {boundary_faces_.get(), boundary_.offsets};
+    schedule_.face_scratch = face_scratch_.get();
+    schedule_.face_scratch_width = options.face_scratch_width;
+    schedule_.incidence_scratch = incidence_scratch_.get();
+    schedule_.incidence_scratch_width = options.incidence_scratch_width;
+    schedule_.stream = stream_;
+  }
+  DeviceMesh(const DeviceMesh&) = delete;
+  DeviceMesh& operator=(const DeviceMesh&) = delete;
+
+  [[nodiscard]] const Topology& topology() const { return topo_; }
+  [[nodiscard]] const Schedule& schedule() const { return schedule_; }
+
+  /// Sets d.topo and points every built-in geometry member of a generated Data struct at a
+  /// device copy in that member's own type (P::geom or P::geom_value), uploaded on first use.
+  /// Built-in geometry is read-only (`const T*`); a physics' own dataset of the same name is
+  /// writable and left alone. Every member is checked before any is uploaded: a refused member
+  /// (E1101) leaves the mesh as it was.
+  template <class Data>
+  void bind(Data& d) {
+    bind_fields<true>(d);
+    d.topo = topo_;
+    bind_fields<false>(d);
+  }
+
+  /// Replaces what bind() gives Data::stencil_lsq_weight: `weights`, 3 x n numbers in the
+  /// entry order of the stencil given at construction (component-major, n its entries),
+  /// whatever the device layout, as a sized contiguous range of numbers. They are converted to that
+  /// member's type and uploaded at once, `Options::upload_chunk` values at a time (one component at
+  /// a time for a sliced stencil); no host copy is kept, so a Data struct whose stencil_lsq_weight
+  /// has another type is refused (E1101). Data structs bound before keep the previous weights,
+  /// still allocated, until bound again.
+  template <class Data, class R>
+    requires std::ranges::contiguous_range<const R> && std::ranges::sized_range<const R>
+  void set_stencil_weights(const R& weights) {
+    using T = std::remove_cvref_t<decltype(*std::declval<Data&>().stencil_lsq_weight)>;
+    const auto w = std::span(std::ranges::data(weights), std::ranges::size(weights));
+    if (w.size() != 3 * csr_entries_) {
+      throw std::invalid_argument("E1101: stencil weights of the wrong size");
+    }
+    const std::size_t n = position_.empty() ? csr_entries_ : stencil_entries_n_;
+    DeviceArray<std::byte> a(3 * n * sizeof(T), stream_);
+    std::vector<T> part;
+    if (position_.empty()) {
+      for (std::size_t first = 0; first < w.size(); first += chunk_) {
+        const auto count = std::min(chunk_, w.size() - first);
+        const auto from = w.subspan(first, count);
+        part.assign(from.begin(), from.end());
+        a.upload_part(std::as_bytes(std::span<const T>(part)), first * sizeof(T), stream_);
+      }
+    } else {
+      for (std::size_t i = 0; i < 3; ++i) {
+        part.assign(n, T(0));
+        for (std::size_t k = 0; k < csr_entries_; ++k) {
+          part[static_cast<std::size_t>(position_[k])] = static_cast<T>(w[i * csr_entries_ + k]);
+        }
+        a.upload_part(std::as_bytes(std::span<const T>(part)), i * n * sizeof(T), stream_);
+      }
+    }
+    for (auto it = fields_.begin(); it != fields_.end();) {
+      if (it->first.first == "stencil_lsq_weight") {
+        retired_.push_back(std::move(it->second));
+        it = fields_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    fields_.emplace(std::make_pair(std::string("stencil_lsq_weight"), std::type_index(typeid(T))),
+                    std::move(a));
+    std::vector<double>().swap(geometry_.stencil_lsq_weight);
+    device_weights_ = true;
+  }
+
+  /// Frees the host copy of the built-in geometry once the physics has bound its Data structs:
+  /// fields already uploaded stay bound; binding one not uploaded yet then throws E1101.
+  /// set_stencil_weights() still works (it brings its own weights).
+  void release_host() {
+    geometry_ = PackedGeometry{};
+    released_ = true;
+  }
+
+  /// bind(d) then release_host(), freeing each host field d binds as soon as it is uploaded (or
+  /// found already uploaded): the host copy and the device copy of the geometry never coexist
+  /// whole. For the last Data struct bound before the run. If an upload fails, the fields freed
+  /// so far are refused (E1101) by later binds.
+  template <class Data>
+  void bind_and_release(Data& d) {
+    consume_ = true;
+    try {
+      bind(d);
+    } catch (...) {
+      consume_ = false;
+      released_ = true;
+      throw;
+    }
+    consume_ = false;
+    release_host();
+  }
+
+ private:
+  template <class T>
+  DeviceArray<T> copy(std::span<const T> host) {
+    return DeviceArray<T>(host, stream_);
+  }
+
+  /// With Check, refuses (E1101) each built-in member of d that cannot be bound; otherwise binds
+  /// them.
+  template <bool Check, class Data>
+  void bind_fields(Data& d) {
+#define AUTAN_BIND_GEOMETRY(name)                                             \
+  if constexpr (requires { d.name; }) {                                       \
+    if constexpr (std::is_const_v<std::remove_pointer_t<decltype(d.name)>>) { \
+      using T = std::remove_cvref_t<decltype(*d.name)>;                       \
+      if constexpr (Check) {                                                  \
+        check<T>(#name, geometry_.name);                                      \
+      } else {                                                                \
+        d.name = field<T>(#name, geometry_.name);                             \
+      }                                                                       \
+    }                                                                         \
+  }
+    AUTAN_BIND_GEOMETRY(face_area)
+    AUTAN_BIND_GEOMETRY(face_centroid)
+    AUTAN_BIND_GEOMETRY(face_normal)
+    AUTAN_BIND_GEOMETRY(face_area_magnitude)
+    AUTAN_BIND_GEOMETRY(face_r_left)
+    AUTAN_BIND_GEOMETRY(face_r_right)
+    AUTAN_BIND_GEOMETRY(face_moment)
+    AUTAN_BIND_GEOMETRY(cell_centroid)
+    AUTAN_BIND_GEOMETRY(cell_volume)
+    AUTAN_BIND_GEOMETRY(lsq_weight)
+    AUTAN_BIND_GEOMETRY(incidence_side)
+    AUTAN_BIND_GEOMETRY(stencil_lsq_weight)
+#undef AUTAN_BIND_GEOMETRY
+  }
+
+  template <class T>
+  void check(const std::string& name, const std::vector<double>& host) const {
+    if (fields_.contains(std::make_pair(name, std::type_index(typeid(T))))) {
+      return;
+    }
+    if (released_ && host.empty()) {
+      throw std::invalid_argument("E1101: " + name +
+                                  " bound after release_host() without being uploaded before");
+    }
+    if (device_weights_ && name == "stencil_lsq_weight") {
+      throw std::invalid_argument(
+          "E1101: stencil_lsq_weight bound in a type set_stencil_weights() was not given");
+    }
+  }
+
+  template <class T>
+  const T* field(const std::string& name, std::vector<double>& host) {
+    const auto key = std::make_pair(name, std::type_index(typeid(T)));
+    auto it = fields_.find(key);
+    if (it == fields_.end()) {
+      check<T>(name, host);
+      DeviceArray<std::byte> a(host.size() * sizeof(T), stream_);
+      std::vector<T> part;
+      for (std::size_t first = 0; first < host.size(); first += chunk_) {
+        const std::size_t count = std::min(chunk_, host.size() - first);
+        part.assign(host.begin() + static_cast<std::ptrdiff_t>(first),
+                    host.begin() + static_cast<std::ptrdiff_t>(first + count));
+        a.upload_part(std::as_bytes(std::span<const T>(part)), first * sizeof(T), stream_);
+      }
+      it = fields_.emplace(key, std::move(a)).first;
+    }
+    if (consume_) {
+      std::vector<double>().swap(host);
+    }
+    return reinterpret_cast<const T*>(it->second.get());
+  }
+
+  PackedGeometry geometry_;
+  std::size_t csr_entries_ = 0;
+  std::size_t stencil_entries_n_ = 0;  // entries of the device stencil (sliced: with padding)
+  std::size_t chunk_ = 0;
+  bool released_ = false;
+  bool consume_ = false;            // bind_and_release(): free each host field once uploaded
+  bool device_weights_ = false;     // set_stencil_weights() put the weights on the device only
+  std::vector<offset_t> position_;  // sliced layout: where each CSR entry went
+  std::vector<index_t> length_;
+  stream_t stream_;
+  DeviceArray<index_t> owner_, neighbour_, cell_faces_, interior_faces_, boundary_faces_;
+  DeviceArray<offset_t> offsets_, twin_;
+  DeviceArray<std::uint8_t> reversed_;
+  DeviceArray<offset_t> stencil_offsets_, stencil_twin_;
+  DeviceArray<index_t> stencil_entries_, stencil_length_;
+  DeviceArray<index_t> incidence_length_, incidence_cell_;
+  HostColouring interior_, boundary_;
+  DeviceArray<double> face_scratch_, incidence_scratch_;
+  std::map<std::pair<std::string, std::type_index>, DeviceArray<std::byte>> fields_;
+  std::vector<DeviceArray<std::byte>> retired_;  // replaced weights some Data may still point at
+  Topology topo_{};
+  Schedule schedule_;
+};
+
+namespace detail {
+
+// Ties between -0 and +0 go to -0, so the result does not depend on the order of comparisons.
+template <class T>
+__device__ inline bool before(T a, T b) {
+  return a < b || (a == b && std::signbit(a) && !std::signbit(b));
+}
+
+template <class T>
+__global__ void min_blocks(index_t n, const T* __restrict__ v, T* __restrict__ out) {
+  __shared__ T s[256];
+  const auto t = static_cast<int>(threadIdx.x);
+  T m = infinity<T>();
+  for (auto i = static_cast<offset_t>(blockIdx.x) * 256 + t; i < n;
+       i += static_cast<offset_t>(gridDim.x) * 256) {
+    if (before(v[i], m)) {
+      m = v[i];
+    }
+  }
+  s[t] = m;
+  __syncthreads();
+  for (int h = 128; h > 0; h /= 2) {
+    if (t < h && before(s[t + h], s[t])) {
+      s[t] = s[t + h];
+    }
+    __syncthreads();
+  }
+  if (t == 0) {
+    out[blockIdx.x] = s[0];
+  }
+}
+
+template <class F>
+__global__ void first_flag(index_t n, const F* __restrict__ flags, index_t* __restrict__ out) {
+  const auto i = static_cast<offset_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i < n && flags[i] != F(0)) {
+    atomicMin(out, static_cast<index_t>(i));
+  }
+}
+
+}  // namespace detail
+
+/// Smallest of values[0..n) (NaN never selected; -0 before +0); +infinity when n == 0. The
+/// result is exact, so it does not depend on the launch.
+template <class T>
+T min(index_t n, const T* values, stream_t stream = nullptr) {
+  constexpr int blocks = 256;
+  DeviceArray<T> partial(blocks, stream);
+  if (n > 0) {
+    detail::min_blocks<T><<<blocks, 256, 0, stream>>>(n, values, partial.get());
+    detail::min_blocks<T><<<1, 256, 0, stream>>>(blocks, partial.get(), partial.get());
+    check(last_error(), "gpu::min");
+  }
+  std::vector<T> h(blocks);
+  partial.download(std::span<T>(h), stream);
+  return n > 0 ? h[0] : infinity<T>();
+}
+
+/// Smallest i < n with flags[i] != 0, or n if none; flags of any arithmetic type (a generated
+/// cell dataset written 0 or 1, for instance).
+template <class F>
+index_t first_index(index_t n, const F* flags, stream_t stream = nullptr) {
+  DeviceArray<index_t> out(1, stream);
+  out.upload(std::span<const index_t>(&n, 1), stream);
+  if (n > 0) {
+    detail::first_flag<F>
+        <<<static_cast<unsigned>((offset_t(n) + 255) / 256), 256, 0, stream>>>(n, flags, out.get());
+    check(last_error(), "gpu::first_index");
+  }
+  index_t r = n;
+  out.download(std::span<index_t>(&r, 1), stream);
+  return r;
+}
+
+}  // namespace autan::kernels::gpu

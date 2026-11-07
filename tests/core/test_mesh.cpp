@@ -2,19 +2,28 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <fstream>
 #include <functional>
 #include <limits>
 #include <string>
 #include <vector>
 
+#if defined(__linux__)
+#include <malloc.h>
+#endif
+
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
 #include "autan/core/renumber.hpp"
 #include "fixtures.hpp"
+
+using Catch::Matchers::WithinRel;
 
 using autan::index_t;
 using autan::offset_t;
@@ -73,7 +82,7 @@ autan::MeshInput two_cubes() {
                       .provenance = {}}};
   in.cell_zones = {autan::CellZone{
       .name = "fluid", .type = "", .kind = autan::CellKind::unspecified, .provenance = {}}};
-  in.source = autan::MeshSource{.format = "memory", .path = ""};
+  in.source = autan::MeshSource{.format = "memory", .path = "", .nodes = 0};
   return in;
 }
 
@@ -195,17 +204,45 @@ TEST_CASE("Invalid meshes are rejected with their documented code", "[mesh]") {
     auto in = two_cubes();
     in.face_zone.pop_back();
     require_error(ErrorCode::mesh_inconsistent_sizes, [&] { (void)autan::assemble(in); });
+    // As many ghosts as cells leaves no owned cell.
+    auto ghosts = two_cubes();
+    ghosts.n_ghost_cells = 2;
+    require_error(ErrorCode::mesh_inconsistent_sizes, [&] { (void)autan::assemble(ghosts); });
   }
   SECTION("E0102 node index out of range") {
     auto in = two_cubes();
     in.face_nodes[5] = 12;
     require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)autan::assemble(in); });
+    auto cell = two_cubes();
+    cell.face_cell0[1] = 2;
+    require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)autan::assemble(cell); });
+    auto zone = two_cubes();
+    zone.face_zone[0] = 2;
+    require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)autan::assemble(zone); });
+    auto cell_zone = two_cubes();
+    cell_zone.cell_zone[1] = 1;
+    require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)autan::assemble(cell_zone); });
+    // A node index equal to the node count, in a cell face and in a labelled face.
+    auto cw = autan::test::box(1, autan::test::BoxFill::hexa, 0.0, false);
+    const auto past = static_cast<index_t>(cw.x.size());
+    auto cell_face = cw;
+    cell_face.face_nodes[0] = past;
+    require_error(ErrorCode::mesh_index_out_of_range,
+                  [&] { (void)autan::to_face_based(cell_face); });
+    cw.face_zones.push_back(autan::FaceZone{
+        .name = "side", .bc_type = "", .kind = autan::BcKind::unspecified, .provenance = {}});
+    cw.add_labelled_face(std::array<index_t, 4>{0, 2, 6, past}, 0);
+    require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)autan::to_face_based(cw); });
   }
   SECTION("E0103 face with fewer than 3 nodes") {
-    auto in = two_cubes();
-    in.face_nodes.erase(in.face_nodes.begin() + 2, in.face_nodes.begin() + 4);
-    for (std::size_t f = 1; f < in.face_node_offsets.size(); ++f) in.face_node_offsets[f] -= 2;
-    require_error(ErrorCode::mesh_face_too_few_nodes, [&] { (void)autan::assemble(in); });
+    // Two nodes left, or none: equal offsets do not decrease.
+    for (const int removed : {2, 4}) {
+      auto in = two_cubes();
+      in.face_nodes.erase(in.face_nodes.begin() + 4 - removed, in.face_nodes.begin() + 4);
+      for (std::size_t f = 1; f < in.face_node_offsets.size(); ++f)
+        in.face_node_offsets[f] -= removed;
+      require_error(ErrorCode::mesh_face_too_few_nodes, [&] { (void)autan::assemble(in); });
+    }
   }
   SECTION("E0104 repeated node") {
     auto in = two_cubes();
@@ -284,8 +321,12 @@ TEST_CASE("Invalid meshes are rejected with their documented code", "[mesh]") {
     auto cw = autan::test::box(1, autan::test::BoxFill::hexa, 0.0, false);
     cw.face_zones.push_back(autan::FaceZone{
         .name = "side", .bc_type = "", .kind = autan::BcKind::unspecified, .provenance = {}});
+    auto past = cw;
     cw.add_labelled_face(std::array<index_t, 4>{0, 2, 6, 4}, -1);
     require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)autan::to_face_based(cw); });
+    past.add_labelled_face(std::array<index_t, 4>{0, 2, 6, 4},
+                           static_cast<index_t>(past.face_zones.size()));
+    require_error(ErrorCode::mesh_index_out_of_range, [&] { (void)autan::to_face_based(past); });
   }
   SECTION("E0109 labels on both interior and boundary faces") {
     auto cw = autan::test::box(2, autan::test::BoxFill::hexa, 0.0, false);
@@ -479,4 +520,142 @@ TEST_CASE("Faces of owned cells come first, then the halo faces of ghost cells",
   // Renumbering keeps each ghost's translation with it.
   const autan::Mesh same = autan::renumber_cells(mesh, std::array<index_t, 2>{0, 1});
   CHECK(same.ghost_translation()[0] == std::array<double, 3>{1.0, 0.0, 0.0});
+
+  // An owned face in a higher zone than the ghost's faces still precedes them, in either
+  // input order of the faces.
+  in.face_zones.push_back(autan::FaceZone{
+      .name = "outlet", .bc_type = "", .kind = autan::BcKind::outlet, .provenance = {}});
+  in.face_zone[1] = 2;  // cube 0's face at x = 0
+  autan::MeshInput reversed = in;
+  reversed.face_node_offsets = {0};
+  reversed.face_nodes.clear();
+  for (std::size_t f = in.face_cell0.size(); f-- > 0;) {
+    reversed.face_nodes.insert(reversed.face_nodes.end(),
+                               in.face_nodes.begin() + in.face_node_offsets[f],
+                               in.face_nodes.begin() + in.face_node_offsets[f + 1]);
+    reversed.face_node_offsets.push_back(static_cast<offset_t>(reversed.face_nodes.size()));
+  }
+  std::ranges::reverse(reversed.face_cell0);
+  std::ranges::reverse(reversed.face_cell1);
+  std::ranges::reverse(reversed.face_zone);
+  for (const autan::MeshInput& input : {in, reversed}) {
+    const autan::Mesh zoned = autan::assemble(input);
+    CHECK(zoned.n_owned_faces() == 6);
+    CHECK(std::ranges::equal(zoned.boundary_zone_offsets(), std::array<index_t, 4>{1, 5, 5, 6}));
+    CHECK(std::ranges::equal(zoned.halo_boundary_zone_offsets(),
+                             std::array<index_t, 4>{6, 11, 11, 11}));
+    for (index_t f = zoned.n_interior_faces(); f < zoned.n_faces(); ++f) {
+      CHECK((zoned.owner()[static_cast<std::size_t>(f)] == 1) == (f >= 6));
+    }
+  }
 }
+
+TEST_CASE("A scaled mesh keeps its topology, scales lengths and periodic translations", "[mesh]") {
+  autan::CellwiseMesh cells = autan::test::box(3, autan::test::BoxFill::hybrid, 0.2);
+  cells.face_zones[0].kind = autan::BcKind::periodic;
+  cells.face_zones[1].kind = autan::BcKind::periodic;
+  cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(std::move(cells)));
+  const double scale = 0.0254;
+  const autan::Mesh s = autan::scaled(mesh, scale);
+  REQUIRE(s.n_points() == mesh.n_points());
+  for (std::size_t i = 0; i < static_cast<std::size_t>(mesh.n_points()); ++i) {
+    CHECK(s.x()[i] == mesh.x()[i] * scale);
+    CHECK(s.z()[i] == mesh.z()[i] * scale);
+  }
+  CHECK(std::ranges::equal(s.face_nodes(), mesh.face_nodes()));
+  CHECK(std::ranges::equal(s.owner(), mesh.owner()));
+  CHECK(std::ranges::equal(s.neighbour(), mesh.neighbour()));
+  CHECK(std::ranges::equal(s.cell_global_id(), mesh.cell_global_id()));
+  REQUIRE(s.periodic_pairs().size() == 1);
+  CHECK(s.periodic_pairs()[0].translation[0] == scale);
+  const autan::Geometry g0 = autan::compute_geometry(mesh), g1 = autan::compute_geometry(s);
+  for (std::size_t c = 0; c < g0.cell_volume.size(); ++c)
+    CHECK_THAT(g1.cell_volume[c], WithinRel(g0.cell_volume[c] * scale * scale * scale, 1e-13));
+  for (const double bad : {0.0, -1.0, std::numeric_limits<double>::infinity()}) {
+    CAPTURE(bad);
+    try {
+      (void)autan::scaled(mesh, bad);
+      FAIL("expected E0102");
+    } catch (const autan::Error& e) {
+      CHECK(e.code() == autan::ErrorCode::mesh_index_out_of_range);
+    }
+  }
+}
+
+#if defined(__linux__)
+namespace {
+
+std::int64_t status_bytes(const std::string& key) {
+  std::ifstream in("/proc/self/status");
+  for (std::string line; std::getline(in, line);) {
+    if (line.rfind(key + ":", 0) == 0) return std::stoll(line.substr(key.size() + 1)) * 1024;
+  }
+  return -1;
+}
+
+// The peak resident memory `run` adds while it runs.
+template <class Run>
+std::int64_t peak_of(const Run& run) {
+  malloc_trim(0);
+  const std::int64_t before = status_bytes("VmRSS");
+  std::ofstream("/proc/self/clear_refs") << "5";  // VmHWM := VmRSS
+  run();
+  return status_bytes("VmHWM") - before;
+}
+
+// One cell: a prism over a k-gon, its caps of k nodes, k side quadrilaterals.
+autan::MeshInput polygon_prism(index_t k) {
+  autan::MeshInput in;
+  const double step = 2.0 * std::acos(-1.0) / static_cast<double>(k);
+  for (int level = 0; level < 2; ++level) {
+    for (index_t i = 0; i < k; ++i) {
+      in.x.push_back(std::cos(step * static_cast<double>(i)));
+      in.y.push_back(std::sin(step * static_cast<double>(i)));
+      in.z.push_back(level);
+    }
+  }
+  in.face_node_offsets.push_back(0);
+  const auto close = [&] {
+    in.face_node_offsets.push_back(static_cast<offset_t>(in.face_nodes.size()));
+    in.face_cell0.push_back(0);
+    in.face_cell1.push_back(autan::no_cell);
+    in.face_zone.push_back(0);
+  };
+  for (index_t i = k; i-- > 0;) in.face_nodes.push_back(i);  // bottom, normal -z
+  close();
+  for (index_t i = 0; i < k; ++i) in.face_nodes.push_back(k + i);  // top, normal +z
+  close();
+  for (index_t i = 0; i < k; ++i) {
+    const index_t j = (i + 1) % k;
+    in.face_nodes.insert(in.face_nodes.end(), {i, j, k + j, k + i});
+    close();
+  }
+  in.cell_zone = {0};
+  in.face_zones = {autan::FaceZone{
+      .name = "walls", .bc_type = "wall", .kind = autan::BcKind::wall, .provenance = {}}};
+  in.cell_zones = {autan::CellZone{
+      .name = "fluid", .type = "", .kind = autan::CellKind::unspecified, .provenance = {}}};
+  in.source = autan::MeshSource{.format = "memory", .path = "", .nodes = 0};
+  return in;
+}
+
+}  // namespace
+
+TEST_CASE("Checking that a cell is closed costs 16 bytes an edge of its largest cell", "[mesh]") {
+  // setup-memory.md, Assembly: the edge records are sized once for the cell with the most face
+  // nodes. One cell of 6k edges, 6k just above 2^20: grown edge by edge, they would hold 2^20 and
+  // 2^21 records at once, three times 16 bytes an edge.
+  constexpr index_t k = 174763;
+  const std::int64_t edges = 6 * static_cast<std::int64_t>(k);
+  const autan::MeshInput in = polygon_prism(k);
+  (void)autan::assemble(polygon_prism(3));
+  std::int64_t cells = 0;
+  const std::int64_t peak = peak_of([&] { cells = autan::assemble(in).n_cells(); });
+  CHECK(cells == 1);
+  CAPTURE(peak, edges);
+  // 16 bytes an edge for the records, under 48 for the mesh and assemble's other arrays at this
+  // shape; grown, the records alone would add 32 more at their last reallocation.
+  CHECK(peak <= 64 * edges);
+}
+#endif

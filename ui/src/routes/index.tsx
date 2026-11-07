@@ -10,15 +10,11 @@ import {
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  RUN_STATUSES,
-  type Run,
-  type RunSettings,
-  type RunStatus,
-  type RunSummary,
-} from "../api/contracts";
+import { RUN_STATUSES, type Run, type RunStatus, type RunSummary } from "../api/contracts";
+import { finalCoefficients } from "../api/polars";
 import { runsQuery } from "../api/runs";
-import { degrees } from "../api/units";
+import { groupByStudy, shortName, study } from "../api/studies";
+import { coefficient, degrees } from "../api/units";
 import { Peek } from "../components/runs/Peek";
 import { SelectionBar } from "../components/runs/SelectionBar";
 import { SelectionContext, useSelection } from "../components/runs/selection";
@@ -78,8 +74,9 @@ function matches(run: Run, search: Search): boolean {
   );
 }
 
+// Below 768 px a row keeps its run, state and drop; the other cells are `max-md:hidden`.
 const COLUMNS =
-  "grid grid-cols-[minmax(180px,1.4fr)_minmax(140px,1fr)_minmax(150px,1fr)_88px_minmax(130px,1fr)_100px_40px] items-center gap-4";
+  "grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_minmax(5rem,1fr)] md:grid-cols-[minmax(140px,1.4fr)_minmax(140px,1fr)_40px_56px_64px_64px_minmax(100px,1fr)_64px_88px_40px] items-center gap-3 md:gap-4";
 
 function Runs() {
   const search = Route.useSearch();
@@ -104,11 +101,7 @@ function Runs() {
     () => [...new Set((data?.runs ?? []).map((r) => r.case.name))].sort(),
     [data],
   );
-  const groups = useMemo(() => {
-    const byCase = new Map<string, Run[]>();
-    for (const run of runs) byCase.set(run.case.name, [...(byCase.get(run.case.name) ?? []), run]);
-    return [...byCase.entries()];
-  }, [runs]);
+  const groups = useMemo(() => groupByStudy(runs, data?.summaries), [runs, data]);
   const setSearch = (patch: Partial<Search>) =>
     void navigate({ search: (s: Search) => ({ ...s, ...patch }), replace: true });
 
@@ -169,7 +162,7 @@ function Runs() {
     <SelectionContext.Provider value={{ selected, toggle, peek }}>
       <TopBar crumbs={[{ label: "Runs" }]} />
       <div className="min-h-0 flex-1 overflow-auto">
-        <div className="mx-auto flex max-w-[1200px] flex-col gap-5 px-6 py-8">
+        <div className="flex flex-col gap-5 px-8 py-6">
           <h1 className="m-0 font-semibold text-2xl tracking-tight">Runs</h1>
           <div className="flex flex-wrap items-center gap-2">
             <SearchInput
@@ -208,7 +201,7 @@ function Runs() {
                 onClick={() => setSearch({ flat: grouped ? true : undefined })}
                 className="ml-auto aria-pressed:bg-bg-3"
               >
-                Group by case
+                Group by study
               </Button>
             )}
           </div>
@@ -265,17 +258,25 @@ function Runs() {
                   >
                     <span>{grouped && !filtered ? "Run" : "Case"}</span>
                     <span>State</span>
-                    <span>Residuals</span>
-                    <span className="text-right">Iteration</span>
-                    <span>Devices</span>
-                    <span className="text-right">Started</span>
-                    <span />
+                    <span className="text-right max-md:hidden">M</span>
+                    <span className="text-right max-md:hidden">α</span>
+                    <span className="text-right max-md:hidden">CL</span>
+                    <span className="text-right max-md:hidden">CD</span>
+                    <span>Drop (orders)</span>
+                    <span className="text-right max-md:hidden">Iteration</span>
+                    <span className="text-right max-md:hidden">Started</span>
+                    <span className="max-md:hidden" />
                   </div>
                 }
               >
                 {grouped && !filtered ? (
-                  groups.map(([name, members]) => (
-                    <Group key={name} name={name} runs={members} summaries={data.summaries} />
+                  groups.map((group) => (
+                    <Group
+                      key={group.key}
+                      names={group.names}
+                      runs={group.runs}
+                      summaries={data.summaries}
+                    />
                   ))
                 ) : (
                   <AnimatePresence initial={false}>
@@ -289,7 +290,7 @@ function Runs() {
           )}
 
           {data?.rejected.length ? (
-            <div className="rounded-lg border border-line bg-bg-0" data-testid="rejected">
+            <div className="border-line border-y" data-testid="rejected">
               <Collapse
                 title={
                   <span className="flex items-center gap-2">
@@ -336,8 +337,8 @@ function Runs() {
 
 function TableFrame({ header, children }: { header?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="overflow-x-auto rounded-lg border border-line bg-bg-0">
-      <div className="min-w-[980px]">
+    <div className="overflow-x-auto border-line border-y">
+      <div className="md:min-w-[980px]">
         {header}
         <ul aria-label="Runs" data-testid="runs" className="m-0 list-none p-0">
           {children}
@@ -348,11 +349,11 @@ function TableFrame({ header, children }: { header?: React.ReactNode; children: 
 }
 
 function Group({
-  name,
+  names,
   runs,
   summaries,
 }: {
-  name: string;
+  names: string[];
   runs: Run[];
   summaries: Record<string, RunSummary>;
 }) {
@@ -360,36 +361,51 @@ function Group({
   const navigate = useNavigate();
   const latest = runs[0];
   const sweep = study(runs.map((run) => summaries[run.run_id]?.settings));
+  const header = (
+    <button
+      type="button"
+      aria-expanded={open}
+      onClick={() => setOpen(!open)}
+      className="flex h-full min-w-0 flex-1 items-center gap-2 px-4 text-left transition-colors hover:bg-bg-2"
+    >
+      <ChevronRight
+        className={cn(
+          "size-4 flex-none text-fg-3 transition-transform duration-[var(--dur-base)]",
+          open && "rotate-90",
+        )}
+      />
+      <span className="min-w-0 truncate font-medium" data-testid="study-name">
+        {shortName(names)}
+      </span>
+      {names.length > 1 && <span className="sr-only">: {names.join(", ")}</span>}
+      <span className="flex-none whitespace-nowrap text-fg-3">
+        {runs.length} {runs.length === 1 ? "run" : "runs"}
+      </span>
+      {sweep && (
+        <span className="flex min-w-0 items-center gap-2" data-testid="study">
+          <Badge tone="purple">study</Badge>
+          <span className="truncate font-mono text-fg-2 text-xs">{sweep}</span>
+        </span>
+      )}
+      {latest && (
+        <span className="ml-auto flex flex-none items-center gap-2 text-fg-3">
+          latest <StateGlyph status={latest.status} />{" "}
+          <RelativeTime iso={latest.started} card={false} />
+        </span>
+      )}
+    </button>
+  );
   return (
     <li className="border-line border-t first:border-t-0">
       <div className="flex h-10 items-center gap-2 bg-bg-1 pr-2 text-sm">
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={() => setOpen(!open)}
-          className="flex h-full min-w-0 flex-1 items-center gap-2 px-4 text-left transition-colors hover:bg-bg-2"
-        >
-          <ChevronRight
-            className={cn(
-              "size-4 flex-none text-fg-3 transition-transform duration-[var(--dur-base)]",
-              open && "rotate-90",
-            )}
-          />
-          <span className="font-medium">{name}</span>
-          <span className="text-fg-3">{runs.length} runs</span>
-          {sweep && (
-            <span className="flex min-w-0 items-center gap-2" data-testid="study">
-              <Badge tone="purple">study</Badge>
-              <span className="truncate font-mono text-fg-2 text-xs">{sweep}</span>
-            </span>
-          )}
-          {latest && (
-            <span className="ml-auto flex flex-none items-center gap-2 text-fg-3">
-              latest <StateGlyph status={latest.status} />{" "}
-              <RelativeTime iso={latest.started} card={false} />
-            </span>
-          )}
-        </button>
+        {/* Several case names: the header, hovered or focused, lists them all. */}
+        {names.length > 1 ? (
+          <Tooltip content={names.join(" · ")} side="bottom">
+            {header}
+          </Tooltip>
+        ) : (
+          header
+        )}
         {runs.length > 1 && (
           <Button
             size="sm"
@@ -418,39 +434,6 @@ function Group({
   );
 }
 
-/** "α 7.05–21.47 deg" for the settings that vary across a group; null when none does. Angles
- * are compared in degrees, whatever unit each case wrote. */
-export function study(settings: (RunSettings | undefined)[]): string | null {
-  const parts: string[] = [];
-  const labels = {
-    aoa: "α",
-    sideslip: "β",
-    mach: "Mach",
-    re: "Re",
-    turbulence: "turbulence",
-    precision: "precision",
-  };
-  for (const key of ["aoa", "sideslip", "mach", "re", "turbulence", "precision"] as const) {
-    const raw = settings.map((s) => s?.[key]).filter((v) => v != null);
-    const angle = key === "aoa" || key === "sideslip";
-    const numbers = raw.map((v) => {
-      const n = angle ? degrees(String(v)) : typeof v === "number" ? v : null;
-      // Equal settings written in other units must not look like a sweep after conversion.
-      return n === null ? null : Math.round(n * 1e9) / 1e9;
-    });
-    if (numbers.length && numbers.every((n) => n !== null)) {
-      const distinct = [...new Set(numbers as number[])];
-      if (distinct.length < 2) continue;
-      const range = `${Math.min(...distinct)}–${Math.max(...distinct)}`;
-      parts.push(`${labels[key]} ${range}${angle ? " deg" : ""}`);
-    } else {
-      const distinct = [...new Set(raw.map(String))];
-      if (distinct.length > 1) parts.push(`${labels[key]} ${distinct.join(" · ")}`);
-    }
-  }
-  return parts.length ? parts.join(", ") : null;
-}
-
 function duration(run: Run): string {
   const end = run.finished ? new Date(run.finished).getTime() : Date.now();
   return formatDuration(end - new Date(run.started).getTime());
@@ -471,6 +454,10 @@ function RunRow({
   useTicker(run.status === "running");
   const iteration = summary?.iteration ?? run.iterations;
   const target = summary?.target_orders ?? undefined;
+  const alpha = degrees(summary?.settings?.aoa);
+  const shownAlpha = alpha === null ? "" : String(Number(alpha.toFixed(2)));
+  // The final coefficients once the run has ended (results.md#runjson); greyed unless converged.
+  const coefficients = run.status === "running" ? "still running" : finalCoefficients(run);
   return (
     <motion.li
       data-run-row
@@ -489,7 +476,7 @@ function RunRow({
         className={cn(
           COLUMNS,
           isSelected && "bg-accent-soft hover:bg-accent-soft",
-          "h-12 pr-4 pl-10 outline-none transition-colors duration-[var(--dur-fast)] hover:bg-bg-1 focus-visible:bg-bg-1 focus-visible:shadow-[inset_2px_0_0_var(--accent)]",
+          "h-12 pr-4 pl-10 outline-none transition-colors duration-[var(--dur-fast)] hover:bg-bg-2 focus-visible:bg-bg-2 focus-visible:shadow-[inset_2px_0_0_var(--accent)]",
         )}
       >
         <span className="flex min-w-0 items-baseline gap-2">
@@ -497,13 +484,73 @@ function RunRow({
           <span className={cn("truncate font-mono", grouped ? "text-fg" : "text-fg-3 text-sm")}>
             {run.run_id.slice(-8)}
           </span>
-        </span>
-        <span className="flex min-w-0 items-center gap-2">
-          <Status status={run.status} duration={duration(run)} />
-          {run.diagnostics[0] && (
-            <span className="font-mono text-danger text-xs">{run.diagnostics[0].code}</span>
+          {run.solver.backend === "fake" && (
+            <Tooltip content="Synthetic results from the fake backend">
+              <span className="rounded-xs bg-warning-soft px-1 text-warning text-xs">fake</span>
+            </Tooltip>
           )}
         </span>
+        <span className="flex min-w-0 items-center gap-2">
+          {/* The status shrinks first: the diagnostic's code always shows whole. */}
+          <span className="min-w-0 overflow-hidden whitespace-nowrap">
+            <Status status={run.status} duration={duration(run)} />
+          </span>
+          {run.diagnostics[0] && (
+            <>
+              <Tooltip content={run.diagnostics[0].message}>
+                <span className="flex-none font-mono text-danger text-xs">
+                  {run.diagnostics[0].code}
+                </span>
+              </Tooltip>
+              <span className="sr-only">: {run.diagnostics[0].message}</span>
+            </>
+          )}
+        </span>
+        <span className="text-right font-mono text-sm tabular-nums max-md:hidden">
+          <span className="sr-only">Mach </span>
+          <span data-testid="mach">
+            {summary?.settings?.mach == null
+              ? "—"
+              : String(Number(summary.settings.mach.toPrecision(3)))}
+          </span>
+        </span>
+        <span className="text-right font-mono text-sm tabular-nums max-md:hidden">
+          <span className="sr-only">angle of attack </span>
+          <span data-testid="alpha">{alpha === null ? "—" : `${shownAlpha}°`}</span>
+        </span>
+        {typeof coefficients === "string" ? (
+          <>
+            <span className="text-right text-fg-3 max-md:hidden">
+              —<span className="sr-only"> CL: {coefficients}</span>
+            </span>
+            <span className="text-right text-fg-3 max-md:hidden">
+              —<span className="sr-only"> CD: {coefficients}</span>
+            </span>
+          </>
+        ) : (
+          <>
+            <span
+              className={cn(
+                "text-right font-mono text-sm tabular-nums max-md:hidden",
+                run.status !== "converged" && "text-fg-3",
+              )}
+            >
+              <span className="sr-only">CL </span>
+              <span data-testid="cl">{coefficient(coefficients.cl)}</span>
+              {run.status !== "converged" && <span className="sr-only">, not converged</span>}
+            </span>
+            <span
+              className={cn(
+                "text-right font-mono text-sm tabular-nums max-md:hidden",
+                run.status !== "converged" && "text-fg-3",
+              )}
+            >
+              <span className="sr-only">CD </span>
+              <span data-testid="cd">{coefficient(coefficients.cd)}</span>
+              {run.status !== "converged" && <span className="sr-only">, not converged</span>}
+            </span>
+          </>
+        )}
         <span className="flex items-center gap-2">
           <Sparkline
             values={summary?.trend ?? []}
@@ -524,23 +571,13 @@ function RunRow({
             </span>
           )}
         </span>
-        <span className="text-right font-mono tabular-nums" data-testid="iterations">
+        <span className="text-right font-mono tabular-nums max-md:hidden" data-testid="iterations">
           {iteration.toLocaleString("en")}
         </span>
-        <span className="flex min-w-0 items-center gap-1.5 whitespace-nowrap font-mono text-fg-2 text-sm">
-          {run.devices.count}× {run.devices.kind}
-          <span className="text-fg-3">·</span>
-          <span className="truncate">{run.precision}</span>
-          {run.solver.backend === "fake" && (
-            <Tooltip content="Synthetic results from the fake backend">
-              <span className="rounded-xs bg-warning-soft px-1 text-warning text-xs">fake</span>
-            </Tooltip>
-          )}
-        </span>
-        <span className="text-right text-fg-2 text-sm">
+        <span className="text-right text-fg-2 text-sm max-md:hidden">
           <RelativeTime iso={run.started} card={false} />
         </span>
-        <span />
+        <span className="max-md:hidden" />
       </Link>
       <div
         className={cn(

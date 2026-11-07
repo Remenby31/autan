@@ -5,6 +5,8 @@
 #include <cstdlib>
 #include <numeric>
 #include <random>
+#include <span>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -16,6 +18,7 @@
 #include "fixtures.hpp"
 
 using autan::index_t;
+using Catch::Matchers::WithinAbs;
 using Catch::Matchers::WithinRel;
 
 namespace {
@@ -67,6 +70,33 @@ TEST_CASE("RCM orders a chain of cells with bandwidth 1", "[renumber]") {
   CHECK(bandwidth(ordered) == 1);
 }
 
+TEST_CASE("RCM starts from a pseudo-peripheral cell", "[renumber]") {
+  // Prisms on seven triangles: triangle 0 between two wings, each a triangle cut into three
+  // around its centroid, cells {1, 3, 5} and {2, 4, 6}, where 1 and 2 touch cell 0. Cell 0 has
+  // the lowest degree and index but eccentricity 2; cells 3, 5, 4 and 6 are 4 apart across it.
+  autan::CellwiseMesh cw;
+  const std::array<std::array<double, 2>, 7> xy{
+      {{0, 0}, {2, 0}, {1, 2}, {1, -2}, {1, -2.0 / 3}, {3, 2}, {2, 4.0 / 3}}};
+  for (int k = 0; k < 2; ++k)
+    for (const auto& [x, y] : xy) {
+      cw.x.push_back(x);
+      cw.y.push_back(y);
+      cw.z.push_back(k);
+    }
+  const std::array<std::array<index_t, 3>, 7> triangles{
+      {{0, 1, 2}, {1, 0, 4}, {2, 1, 6}, {0, 3, 4}, {1, 5, 6}, {3, 1, 4}, {5, 2, 6}}};
+  for (const auto& [a, b, c] : triangles) {
+    cw.add_cell(autan::CellShape::prism, std::array<index_t, 6>{a, b, c, a + 7, b + 7, c + 7}, 0);
+  }
+  cw.cell_zones.push_back(autan::CellZone{
+      .name = "fluid", .type = "", .kind = autan::CellKind::unspecified, .provenance = {}});
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(cw));
+  REQUIRE(mesh.n_interior_faces() == 8);
+  // Reversal puts the start cell last.
+  const index_t start = autan::rcm_order(mesh).back();
+  CHECK((start == 3 || start == 4 || start == 5 || start == 6));
+}
+
 TEST_CASE("Renumbering permutes cells and keeps the mesh", "[renumber]") {
   const autan::Mesh mesh =
       autan::assemble(autan::to_face_based(autan::test::box(4, autan::test::BoxFill::hybrid, 0.3)));
@@ -83,7 +113,8 @@ TEST_CASE("Renumbering permutes cells and keeps the mesh", "[renumber]") {
   CHECK(bandwidth(renumbered) < bandwidth(shuffled_mesh));
   CHECK(autan::rcm_order(shuffled_mesh) == autan::rcm_order(shuffled_mesh));
 
-  const autan::Mesh again = autan::renumber_cells(mesh, order);
+  autan::AssemblyMap map;
+  const autan::Mesh again = autan::renumber_cells(mesh, order, &map);
   const autan::Geometry g0 = autan::compute_geometry(mesh);
   const autan::Geometry g1 = autan::compute_geometry(again);
   REQUIRE(again.n_faces() == mesh.n_faces());
@@ -95,6 +126,53 @@ TEST_CASE("Renumbering permutes cells and keeps the mesh", "[renumber]") {
   for (std::size_t z = 0; z + 1 < mesh.boundary_zone_offsets().size(); ++z) {
     CHECK(again.boundary_zone_offsets()[z + 1] - again.boundary_zone_offsets()[z] ==
           mesh.boundary_zone_offsets()[z + 1] - mesh.boundary_zone_offsets()[z]);
+  }  // The map names each face's source: the same nodes, zone and cells (by
+  // global id), each source once.
+  REQUIRE(map.face_source.size() == at(again.n_faces()));
+  std::vector<int> seen(at(mesh.n_faces()), 0);
+  const auto nodes = [](const autan::Mesh& m, index_t f) {
+    const auto n = m.face_nodes(f);
+    std::vector<index_t> v(n.begin(), n.end());
+    std::sort(v.begin(), v.end());
+    return v;
+  };
+  const auto cells = [](const autan::Mesh& m, index_t f) {
+    std::vector<std::int64_t> c{m.cell_global_id()[at(m.owner()[at(f)])]};
+    if (f < m.n_interior_faces()) c.push_back(m.cell_global_id()[at(m.neighbour()[at(f)])]);
+    std::sort(c.begin(), c.end());
+    return c;
+  };
+  for (index_t f = 0; f < again.n_faces(); ++f) {
+    const index_t source = map.face_source[at(f)];
+    ++seen[at(source)];
+    CHECK(nodes(again, f) == nodes(mesh, source));
+    CHECK(again.face_zone()[at(f)] == mesh.face_zone()[at(source)]);
+    CHECK(cells(again, f) == cells(mesh, source));
+  }
+  CHECK(std::all_of(seen.begin(), seen.end(), [](int k) { return k == 1; }));
+
+  // The geometry carried over: the source's bits, and to round-off what
+  // compute_geometry gives on the renumbered mesh, area vectors oriented
+  // from its owners as there.
+  const autan::Geometry carried = autan::renumber_geometry(g0, order, map);
+  for (std::size_t i = 0; i < order.size(); ++i) {
+    CHECK(carried.cell_volume[i] == g0.cell_volume[at(order[i])]);
+    CHECK_THAT(carried.cell_centroid_y[i], WithinAbs(g1.cell_centroid_y[i], 1e-14));
+  }
+  for (std::size_t f = 0; f < at(again.n_faces()); ++f) {
+    CHECK(carried.face_area[f] == g0.face_area[at(map.face_source[f])]);
+    for (const auto& [a, b] : {std::pair{&carried.face_area_x, &g1.face_area_x},
+                               std::pair{&carried.face_area_y, &g1.face_area_y},
+                               std::pair{&carried.face_area_z, &g1.face_area_z}}) {
+      CHECK_THAT((*a)[f], WithinAbs((*b)[f], 1e-14 * g1.face_area[f]));
+    }
+  }
+  CHECK(std::ranges::any_of(map.face_reversed, [](std::uint8_t r) { return r != 0; }));
+  try {
+    (void)autan::renumber_geometry(g0, std::span(order).first(order.size() - 1), map);
+    FAIL("expected E0102");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == autan::ErrorCode::mesh_index_out_of_range);
   }
 }
 

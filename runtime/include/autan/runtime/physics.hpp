@@ -29,6 +29,9 @@ struct StepReport {
   /// First cell whose state or residual is non-finite or non-physical; set
   /// when the solution diverged.
   std::optional<index_t> diverged_cell;
+  /// The step solved a provisional discretisation (a first-order start): its residuals do not
+  /// count towards a round-off plateau (case-schema.md#time).
+  bool provisional = false;
 };
 
 /// Force and moment the fluid exerts on a monitor's surfaces (results.md,
@@ -78,7 +81,7 @@ struct PhysicsContext {
   const Geometry& geometry;
   const SolverInput& input;
   Log& log;
-  const StartState* start;  ///< null unless input.start
+  const StartState* start;  ///< null unless input.start; valid during construction only
   GhostExchange& ghosts;
   /// The ranks of the run; norms and loads reduce over them.
   Ranks& ranks;
@@ -86,15 +89,46 @@ struct PhysicsContext {
   /// its owned boundary faces in mesh order, component-major: density, velocity x, y, z,
   /// pressure (SI), 5 x the zone's faces (face-states.md, paired by the runtime).
   const std::map<index_t, std::vector<double>>& boundary_states;
+  /// input.initial_state: Density, VelocityX/Y/Z and Pressure (SI) of the owned cells, paired
+  /// from the initial-state file (initial-state.md); NaN in solid cells, which keep their zone's
+  /// state. Null without one; the physics then starts from the zones' `initial`. Valid during
+  /// construction only.
+  const std::vector<io::Field>* initial = nullptr;
   /// devices.kind = cuda: this rank's CUDA device, current on the calling thread, and its
   /// stream (a cudaStream_t) for the physics' work and ghost exchanges. -1 and null on the CPU.
   int device = -1;
   void* stream = nullptr;
+  /// For each face of `mesh`, its face in the mesh the run read and whether it runs against it
+  /// (1: owner and neighbour swapped, area vector negated): with mesh.cell_global_id() and
+  /// mesh.ghost_translation(), the keys a physics orders its sums by under reproducibility
+  /// "ranks", so that its bits do not depend on the partition (solver-input.md).
+  std::span<const std::int64_t> face_global_id;
+  std::span<const std::uint8_t> face_reversed;
+  /// The colour of each cell of `mesh` (owned and ghosts) in the global distance-1 colouring of
+  /// the mesh (colour_cells: neighbours across faces and periodic pairs never share one), and
+  /// the number of colours: the same on any number of ranks and in any cell order, so a
+  /// smoother that sweeps them, exchanging ghosts after each colour, repeats its bits.
+  std::span<const std::int32_t> cell_colours;
+  std::int32_t n_colours = 0;
+  /// With a physics that gives partition groups (PhysicsRegistry::Entry::groups): the groups
+  /// this rank owns, as CSR over the owned cells of `mesh`, by increasing least
+  /// cell_global_id, each group's cells in the order the physics gave them; and the colour of
+  /// each cell of `mesh` (owned and ghosts) in the global colouring of the groups
+  /// (colour_cells with groups: a cell outside every group is its own node), with the number of
+  /// colours. A line smoother that sweeps these colours, each line in its order, exchanging
+  /// ghosts after each colour, repeats its bits on any number of ranks. Empty otherwise.
+  std::span<const offset_t> group_offsets;
+  std::span<const index_t> group_cells;
+  std::span<const std::int32_t> cell_group_colours;
+  std::int32_t n_group_colours = 0;
 };
 
-// case-schema.md#time: C * eps32 with C = 0.5, at least 4.3 times the round-off plateaus
-// measured on a NACA 0012 slice, manufactured solutions and Ni's transonic bump.
+// case-schema.md#time: the round-off floor is C * eps32 times an equation's flux scale, C = 0.5.
+// Round-off plateaus lie between 1/15 (fp32+acc64 NACA 0012, #473) and 1.5 times (NS
+// manufactured solution on tetrahedra, #467) of it: an equation converges at a plateau at most
+// round_off_band floors high.
 inline constexpr double round_off_floor = 0.5 * 0x1p-23;
+inline constexpr double round_off_band = 10.0;
 
 /// A discretisation of the case's equations. The runtime owns the iteration
 /// loop, convergence, signals and outputs; an implementation owns its state
@@ -115,8 +149,8 @@ class Physics {
   [[nodiscard]] virtual std::vector<io::Field> fields(bool mean) const = 0;
   /// A constant flux scale per equation of residual_names(input), in that
   /// order, finite and >= 0; empty for none. Called once, after
-  /// construction: in fp32+acc64, an equation converges at a residual of
-  /// round_off_floor times its scale at the latest (docs/contracts/runtime.md).
+  /// construction: in fp32+acc64, an equation also converges at a round-off plateau at most
+  /// round_off_band times round_off_floor times its scale high (case-schema.md#time).
   [[nodiscard]] virtual std::vector<double> residual_scales() const = 0;
   /// Cell-centred state beyond fields(false) that a `continue` needs to go
   /// on bit for bit (earlier time levels, averaging sums); empty when none.
@@ -146,6 +180,9 @@ struct PhysicsRefusal {
   std::string message;
   std::string path;              ///< document path of the offending key; also `data.path`
   std::string data_json = "{}";  ///< machine-readable details: the text of a JSON object
+  /// The registry code reported: E0706 (no implementation for the input) unless another code
+  /// says more, as E1109 for a reproducibility the physics cannot honour.
+  std::string code = "E0706";
 };
 
 /// What a physics supports beyond its key (media, zones, conditions, the number of ranks the
@@ -153,6 +190,26 @@ struct PhysicsRefusal {
 /// reports what it refuses as a PhysicsRefusal.
 using PhysicsScope =
     std::function<std::optional<PhysicsRefusal>(const SolverInput& input, int ranks)>;
+
+/// Groups of cells of the global mesh that the partition keeps on one rank, as CSR
+/// (PartitionOptions::group_offsets and group_cells).
+struct CellGroups {
+  std::vector<offset_t> offsets;
+  std::vector<index_t> cells;
+};
+
+/// The groups a physics needs whole on one rank (a smoother's lines), from the global mesh and
+/// its geometry. Every rank calls it once with the same mesh before partitioning, on any number
+/// of ranks, so it must be deterministic; invalid groups are E0140. The physics receives them
+/// as PhysicsContext::group_offsets and group_cells, coloured.
+using PartitionGroups =
+    std::function<CellGroups(const SolverInput& input, const Mesh& mesh, const Geometry& geometry)>;
+
+/// The names of the RestartState arrays the physics writes for `input`, in order, after a run
+/// that averaged or not (Physics::restart_fields). A continued start is read only when its
+/// RestartState holds exactly these (E0707).
+using RestartNames =
+    std::function<std::vector<std::string>(const SolverInput& input, bool averaging)>;
 
 /// The physics a build of autan-run provides; the first matching key wins.
 class PhysicsRegistry {
@@ -163,9 +220,11 @@ class PhysicsRegistry {
     /// Whether it runs on several ranks: its norms, loads and other sums
     /// reduce over PhysicsContext::ranks (runtime.md, Ranks).
     bool several_ranks = false;
+    PartitionGroups groups;  ///< empty: no group
+    RestartNames restart;    ///< empty: no RestartState
   };
   void add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope = {},
-           bool several_ranks = false);
+           bool several_ranks = false, PartitionGroups groups = {}, RestartNames restart = {});
   /// The entry for `input`, or null when this build has none (E0706).
   [[nodiscard]] const Entry* find(const SolverInput& input) const;
 

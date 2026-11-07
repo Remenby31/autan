@@ -1,10 +1,22 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Command } from "cmdk";
-import { Box, CornerDownLeft, ListTree, Monitor, Moon, Search, Sun } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
+import {
+  Box,
+  CornerDownLeft,
+  FilePlus2,
+  GitCompareArrows,
+  ListTree,
+  Monitor,
+  Moon,
+  Search,
+  Sun,
+} from "lucide-react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import type { Run } from "../api/contracts";
+import { devicesLabel } from "../api/devices";
 import { runsQuery } from "../api/runs";
+import { studies } from "../api/studies";
 import { setTheme } from "./shell/theme";
 import { Kbd } from "./ui/Kbd";
 import { formatRelative } from "./ui/RelativeTime";
@@ -22,6 +34,7 @@ export function CommandPalette({
 }) {
   const navigate = useNavigate();
   const { data } = useQuery(runsQuery);
+  const offered = useMemo(() => (open ? studies(data) : []), [open, data]);
   const [value, setValue] = useState("");
 
   useEffect(() => {
@@ -85,12 +98,42 @@ export function CommandPalette({
               onSelect={() => close(() => navigate({ to: "/" }))}
             />
             <Item
+              value="go compare"
+              icon={<GitCompareArrows className="size-4" />}
+              title="Compare"
+              onSelect={() => close(() => navigate({ to: "/compare", search: { runs: [] } }))}
+            />
+            <Item
               value="go analysis"
               icon={<Box className="size-4" />}
               title="Analysis"
               onSelect={() => close(() => navigate({ to: "/viewer" }))}
             />
+            <Item
+              value="new case"
+              icon={<FilePlus2 className="size-4" />}
+              title="New case"
+              onSelect={() => close(() => navigate({ to: "/cases/new" }))}
+            />
           </Command.Group>
+          {offered.length > 0 && (
+            <Command.Group heading="Compare a study">
+              {offered.map((s) => (
+                <Item
+                  key={s.key}
+                  // Its value is the study's key: the same as runs come and go, another study's
+                  // never, even under the same case name; its names and label are searched.
+                  value={`compare study ${s.key}`}
+                  keywords={["compare", s.name, s.label]}
+                  icon={<GitCompareArrows className="size-4" />}
+                  title={`${s.name} · ${s.label}`}
+                  onSelect={() =>
+                    close(() => navigate({ to: "/compare", search: { runs: s.ids } }))
+                  }
+                />
+              ))}
+            </Command.Group>
+          )}
           <Command.Group heading="Theme">
             <Item
               value="theme system"
@@ -180,9 +223,7 @@ function Preview({ run, orders }: { run: Run; orders: number[] }) {
         <dt className="text-fg-3">Precision</dt>
         <dd className="m-0 font-mono">{run.precision}</dd>
         <dt className="text-fg-3">Devices</dt>
-        <dd className="m-0 font-mono">
-          {run.devices.count}× {run.devices.kind}
-        </dd>
+        <dd className="m-0 font-mono">{devicesLabel(run.devices)}</dd>
         <dt className="text-fg-3">Backend</dt>
         <dd className="m-0 font-mono">{run.solver.backend}</dd>
       </dl>

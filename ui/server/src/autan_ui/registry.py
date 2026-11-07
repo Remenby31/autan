@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import re
@@ -9,7 +10,10 @@ from stat import S_ISREG
 from typing import Any
 
 import autan
-from autan.errors import CaseError
+from autan.errors import CaseError, Location
+from autan.meshinfo import MeshInfo
+from autan.results import IdentityParts, check_run_json, run_identity_parts
+from autan.schema import CaseSpec
 
 from autan_ui.confine import Folder, is_link
 from autan_ui.summary import Summaries
@@ -37,11 +41,18 @@ class Snapshot:
     runs: dict[str, dict[str, Any]] = field(default_factory=dict)
     rejected: dict[str, str] = field(default_factory=dict)
     summaries: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Runs whose solution.cgns is a result: ended and written (results.md).
+    solutions: list[str] = field(default_factory=list)
 
     def document(self) -> dict[str, Any]:
         runs = sorted(self.runs.values(), key=lambda run: run["started"], reverse=True)
         rejected = [{"dir": name, "reason": reason} for name, reason in self.rejected.items()]
-        return {"runs": runs, "rejected": rejected, "summaries": self.summaries}
+        return {
+            "runs": runs,
+            "rejected": rejected,
+            "summaries": self.summaries,
+            "solutions": self.solutions,
+        }
 
 
 class Registry:
@@ -89,6 +100,9 @@ class Registry:
                         snapshot.rejected[child.name] = outcome
                     else:
                         snapshot.runs[child.name] = outcome
+                        solved = (child / "solution.cgns").is_file()
+                        if outcome["status"] != "running" and solved:
+                            snapshot.solutions.append(child.name)
                         try:
                             with Folder(child) as folder:
                                 live = outcome["status"] == "running"
@@ -99,7 +113,7 @@ class Registry:
                                     live=live,
                                     reference=start.get("residual_reference"),
                                     woken=start.get("woken"),
-                                    floors=(outcome.get("convergence") or {}).get("floor"),
+                                    plateau=(outcome.get("convergence") or {}).get("plateau"),
                                     target=self._budgets.get(child.name, {}).get("target_orders"),
                                 )
                         except (OSError, ValueError, ArithmeticError) as error:
@@ -138,6 +152,7 @@ class Registry:
                     "target_orders": time.get("residual_orders"),
                     "max_iterations": time.get("max_iterations", time.get("steps")),
                     "settings": _settings(case),
+                    "study": _study(run_identity_parts(results.run, results.case)),
                 }
             except CaseError as error:
                 outcome = "; ".join(f"{d.code} {d.message}" for d in error.diagnostics)
@@ -179,6 +194,14 @@ def _inside(root: Path, directory: Path) -> bool:
     )
 
 
+def _study(parts: IdentityParts) -> str:
+    """The study a run belongs to (results.md#studies): runs of one study have the same identity
+    fields but the case's hash, and the same case without its name and freestream."""
+    fields = {k: v for k, v in parts.fields.items() if k != "case.sha256"}
+    key = json.dumps([fields, parts.case_without_freestream], sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
 def _settings(case: dict[str, Any]) -> dict[str, Any]:
     """The settings a study usually sweeps, as the case writes them, for labels and polars."""
     freestream = case.get("freestream", {})
@@ -194,19 +217,32 @@ def _settings(case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _stat(path: Path) -> tuple[int, int] | None:
+def _stat(path: Path) -> tuple[int, int, int, int] | None:
+    # The inode and change time too: a replacement that keeps the modification time and size
+    # still changes them.
     try:
         stat = path.stat()
     except OSError:
         return None
-    return (stat.st_mtime_ns, stat.st_size)
+    return (stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
 
 
 def read_run(folder: Folder) -> dict[str, Any]:
-    """run.json, checked against the SDK's model of its fields; ValueError otherwise."""
+    """run.json, checked as `autan.Results.open` checks it against the stored case and
+    MeshInfo (results.md#runjson), all read through `folder`; ValueError otherwise."""
     try:
-        document = json.loads(folder.read("run.json"))
-        return autan.RunInfo.model_validate(document).document()
-    except (OSError, ValueError) as error:
+        document = json.loads(folder.read("run.json").decode())
+        case = CaseSpec.from_document(
+            tomllib.loads(folder.read("case.toml").decode()), Location(file="case.toml")
+        )
+        mesh_info = MeshInfo.from_document(
+            json.loads(folder.read("mesh-info.json").decode()), Location(file="mesh-info.json")
+        )
+    except (OSError, ValueError, CaseError) as error:
         msg = f"run.json: {error}"
         raise ValueError(msg) from error
+    problems = check_run_json(document, case, mesh_info)
+    if problems:
+        msg = f"run.json: {'; '.join(problems)}"
+        raise ValueError(msg)
+    return autan.RunInfo.model_validate(document).document()
