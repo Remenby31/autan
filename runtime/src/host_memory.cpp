@@ -138,14 +138,18 @@ std::vector<Mount> cgroup_mounts(const fs::path& proc, bool v2) {
 
 // The least limit less usage of `group` and of each of its ancestors, each read in the mount
 // that shows it: a parent's limit binds the group even when another mount shows the group. The
-// usage includes the page cache, whose inactive part reclaim takes first: it counts as available
-// (memory.stat inactive_file; total_inactive_file on v1, hierarchical as its usage is). Active
-// file pages may not be reclaimable and do not count.
+// usage includes the page cache, whose inactive part reclaim takes first: in the process's own
+// group it counts as available (memory.stat inactive_file; total_inactive_file on v1,
+// hierarchical as its usage is). Only there: an ancestor's cache may belong to a sibling that
+// memory.min or memory.low protects from reclaim, whereas a v2 group holding processes has no
+// memory-controlled children and v1 has no protection. Active file pages may not be
+// reclaimable and do not count.
 std::optional<std::int64_t> cgroup_available(const fs::path& proc, const fs::path& group, bool v2,
                                              std::vector<std::string>& unseen) {
   const auto mounts = cgroup_mounts(proc, v2);
   std::optional<std::int64_t> available;
-  for (fs::path cg = group.lexically_normal();; cg = cg.parent_path()) {
+  const fs::path own = group.lexically_normal();
+  for (fs::path cg = own;; cg = cg.parent_path()) {
     const Mount* shown = nullptr;
     for (const auto& m : mounts) {
       const bool contains = std::ranges::mismatch(m.root, cg).in1 == m.root.end();
@@ -163,10 +167,13 @@ std::optional<std::int64_t> cgroup_available(const fs::path& proc, const fs::pat
       if (limit && (v2 || *limit < (std::int64_t{1} << 62))) {
         const auto used = number_in(dir / (v2 ? "memory.current" : "memory.usage_in_bytes"));
         if (!used) throw std::runtime_error("no memory usage beside the limit in " + dir.string());
-        const auto cache =
-            stat_in(dir / "memory.stat", v2 ? "inactive_file" : "total_inactive_file");
-        const std::int64_t left = std::clamp<std::int64_t>(
-            *limit - *used + std::max<std::int64_t>(0, cache.value_or(0)), 0, *limit);
+        std::int64_t left = std::clamp<std::int64_t>(*limit - *used, 0, *limit);
+        if (cg == own) {
+          const auto cache =
+              stat_in(dir / "memory.stat", v2 ? "inactive_file" : "total_inactive_file");
+          const std::int64_t credit = std::max<std::int64_t>(0, cache.value_or(0));
+          left = credit > *limit - left ? *limit : left + credit;
+        }
         available = std::min(available.value_or(left), left);
       }
     }

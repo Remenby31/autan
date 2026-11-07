@@ -105,6 +105,27 @@ TEST_CASE("The memory a host can still give is the least of MemAvailable and its
     write(cg / "job" / "memory.max", std::to_string(6 * gib) + "\n");
     write(cg / "job" / "memory.stat", "inactive_file " + std::to_string(8 * gib) + "\n");
     CHECK(autan::runtime::host_memory(proc).available == 6 * gib);
+    // A limit near the largest count: the credit saturates at the limit instead of overflowing.
+    write(cg / "job" / "memory.max",
+          std::to_string(std::numeric_limits<std::int64_t>::max() - 8191) + "\n");
+    write(cg / "job" / "memory.current", "4096\n");
+    write(cg / "job" / "memory.stat", "inactive_file 16384\n");
+    CHECK(autan::runtime::host_memory(proc).available == host);
+  }
+  SECTION("cgroup v2: an ancestor's page cache does not count") {
+    // The parent's 5 GiB of cache may be a sibling's that memory.min protects from reclaim: the
+    // parent's limit less its usage binds the job (Linux mm/vmscan.c, protected cgroups skipped).
+    const fs::path cg = dir / "sys" / "cgroup";
+    write(proc / "self" / "cgroup", "0::/tenant/job\n");
+    write(proc / "self" / "mountinfo", "24 1 0:22 / " + cg.string() + " rw - cgroup2 cgroup2 rw\n");
+    write(cg / "tenant" / "memory.max", std::to_string(8 * gib) + "\n");
+    write(cg / "tenant" / "memory.current", std::to_string(7 * gib) + "\n");
+    write(cg / "tenant" / "memory.stat", "inactive_file " + std::to_string(5 * gib) + "\n");
+    write(cg / "tenant" / "job" / "memory.max", "max\n");
+    write(cg / "tenant" / "job" / "memory.current", std::to_string(2 * gib) + "\n");
+    write(cg / "tenant" / "job" / "memory.stat",
+          "anon " + std::to_string(2 * gib) + "\ninactive_file 0\n");
+    CHECK(autan::runtime::host_memory(proc).available == gib);
   }
   SECTION("cgroup v2 whose parent limits it through another mount") {
     // The root hierarchy at cg and the group /tenant/job also at job: the job has no limit, but

@@ -10,8 +10,10 @@ namespace autan::runtime {
 
 /// What this process can still allocate on its host: `available` bytes and the memory cgroups
 /// whose limits it cannot see. On Linux, the lower of MemAvailable and, for every memory cgroup
-/// above the process with a limit, the limit less its usage: cgroup v2 memory.max and
-/// memory.current, cgroup v1 memory.limit_in_bytes and memory.usage_in_bytes, found through
+/// above the process with a limit, the limit less its usage, plus in the process's own cgroup its
+/// inactive page cache, at most the limit (solver-input.md, `memory`): cgroup v2 memory.max,
+/// memory.current and memory.stat inactive_file, cgroup v1 memory.limit_in_bytes,
+/// memory.usage_in_bytes and memory.stat total_inactive_file, found through
 /// `proc`/self/cgroup and the mounts of `proc`/self/mountinfo. A cgroup of that chain that no
 /// mount shows (the root excepted, which has no limit) is in `unseen_cgroups`: its limit, if it
 /// has one, is not in `available`. In a cgroup namespace other than the initial one
