@@ -183,19 +183,20 @@ TEST_CASE("y+ of a wall face from the wall state by hand", "[navier-stokes]") {
   // and y+ = 0.831112; at 250 K, y+ = 1.05099; with a constant mu of 1.8e-5 Pa s at 300 K,
   // 0.852313.
   constexpr double eps = std::numeric_limits<double>::epsilon();
-  const Transport air{};
-  CHECK_THAT(autan::physics::viscosity(air, 300.0), WithinRel(1.8459162511975804e-05, 64 * eps));
-  CHECK_THAT(autan::physics::wall_y_plus(1e-5, 2.0, 101325.0, 300.0, 287.0, air),
+  const Transport sutherland_air{};
+  CHECK_THAT(autan::physics::viscosity(sutherland_air, 300.0),
+             WithinRel(1.8459162511975804e-05, 64 * eps));
+  CHECK_THAT(autan::physics::wall_y_plus(1e-5, 2.0, 101325.0, 300.0, 287.0, sutherland_air),
              WithinRel(0.8311123484984475, 64 * eps));
-  CHECK_THAT(autan::physics::wall_y_plus(1e-5, 2.0, 101325.0, 250.0, 287.0, air),
+  CHECK_THAT(autan::physics::wall_y_plus(1e-5, 2.0, 101325.0, 250.0, 287.0, sutherland_air),
              WithinRel(1.0509925978906687, 64 * eps));
-  Transport constant = air;
+  Transport constant = sutherland_air;
   constant.sutherland = false;
   constant.mu_ref = 1.8e-5;
   CHECK_THAT(autan::physics::wall_y_plus(1e-5, 2.0, 101325.0, 300.0, 287.0, constant),
              WithinRel(0.8523132170357062, 64 * eps));
   // A slip face carries no shear: y+ 0.
-  CHECK(autan::physics::wall_y_plus(1e-5, 0.0, 101325.0, 300.0, 287.0, air) == 0.0);
+  CHECK(autan::physics::wall_y_plus(1e-5, 0.0, 101325.0, 300.0, 287.0, sutherland_air) == 0.0);
 }
 
 // With velocity and temperature linear, the least-squares gradients and the corrected face
