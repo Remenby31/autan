@@ -25,6 +25,7 @@ Verification tooling only: nothing outside codegen/tests imports it.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from fractions import Fraction
 
@@ -150,3 +151,98 @@ def cast(x: Cert, fmt: Format, *, narrowing: bool = True) -> Cert:
             raise Invalid(msg)
         return Cert(x.value, x.radius, fmt)
     return _rounded(x.value, x.radius, fmt)
+
+
+# The two operations beyond the four rules (ADR 0003 amendment, decided on #43).
+
+ROOT_BITS = 80  # precision of the rational root witnesses, beyond the radicand's scale
+
+
+def _root_floor(q: Fraction) -> Fraction:
+    """A rational l >= 0 with l^2 <= q: proposed by an integer square root, validated exactly."""
+    if q <= 0:
+        return Fraction(0)
+    n = q.numerator * 4**ROOT_BITS // q.denominator
+    out = Fraction(math.isqrt(n), 2**ROOT_BITS)
+    if out * out > q:
+        msg = "a lower root witness failed its exact check"
+        raise Invalid(msg)
+    return out
+
+
+def _root_ceil(q: Fraction) -> Fraction:
+    """A rational U >= 0 with U^2 >= q: proposed by an integer square root, validated exactly."""
+    if q <= 0:
+        return Fraction(0)
+    n = -(-q.numerator * 4**ROOT_BITS // q.denominator)
+    root = math.isqrt(n)
+    if root * root < n:
+        root += 1
+    out = Fraction(root, 2**ROOT_BITS)
+    if out * out < q:
+        msg = "an upper root witness failed its exact check"
+        raise Invalid(msg)
+    return out
+
+
+def _enclose_root(q: Fraction) -> tuple[Fraction, Fraction]:
+    """A rational centre mu and radius rho with (mu - rho)^2 <= q <= (mu + rho)^2, mu - rho >= 0."""
+    lo, hi = _root_floor(q), _root_ceil(q)
+    mu, rho = (lo + hi) / 2, (hi - lo) / 2
+    if mu - rho < 0 or not ((mu - rho) ** 2 <= q <= (mu + rho) ** 2):
+        msg = "a root enclosure failed its exact check"
+        raise Invalid(msg)
+    return mu, rho
+
+
+def sqrt(x: Cert, fmt: Format) -> Cert:
+    """Correctly rounded square root of an executed x with |X - x| <= r, X - r > 0:
+    |y - sqrt(X)| <= r / (l + m) + u U (+ eta), with l^2 <= X - r, m^2 <= X, U^2 >= X + r; the
+    certified value is a rational centre mu with rho >= |mu - sqrt(X)|."""
+    big_x, r = x.value, x.radius
+    if big_x - r <= 0:
+        msg = f"{fmt.name}: sqrt of an interval that reaches zero or below"
+        raise Invalid(msg)
+    ell, m, big_u = _root_floor(big_x - r), _root_floor(big_x), _root_ceil(big_x + r)
+    if ell <= 0 or m <= 0:
+        msg = f"{fmt.name}: sqrt witnesses are not positive"
+        raise Invalid(msg)
+    mu, rho = _enclose_root(big_x)
+    radius = rho + r / (ell + m) + fmt.u * big_u
+    if mu - radius < fmt.normal_min:
+        radius += fmt.eta
+    return Cert(mu, radius, fmt)
+
+
+def hypot_checked(
+    executed: tuple[float, ...], args: tuple[Cert, ...], h: float, k: int, fmt: Format
+) -> Cert:
+    """An executed hypot result h of the executed arguments, with no assumption on the library:
+    h^2 (1 - eps)^2 <= S <= h^2 (1 + eps)^2 is checked exactly, S the rational sum of squares of
+    the executed arguments and eps = k u, which certifies |h - sqrt(S)| <= eps h. The arguments'
+    uncertainty is propagated to the exact value sqrt(V), V the sum of squares of their exact
+    values. Any failed check makes the instance invalid."""
+    if len(executed) != len(args):
+        msg = "hypot: as many executed arguments as certificates"
+        raise ValueError(msg)
+    for a, cert in zip(executed, args, strict=True):
+        if not math.isfinite(a) or abs(Fraction(a) - cert.value) > cert.radius:
+            msg = "hypot: an executed argument lies outside its certificate"
+            raise Invalid(msg)
+    if not math.isfinite(h) or h < 0:
+        msg = "hypot: the executed result is not finite and nonnegative"
+        raise Invalid(msg)
+    hh, eps = Fraction(h), k * fmt.u
+    s_exec = sum((Fraction(a) ** 2 for a in executed), Fraction(0))
+    if not (hh * hh * (1 - eps) ** 2 <= s_exec <= hh * hh * (1 + eps) ** 2):
+        msg = f"hypot: the executed result is not within (1 +- {k}u) of the root of its arguments' sum of squares"
+        raise Invalid(msg)
+    big_v = sum((cert.value**2 for cert in args), Fraction(0))
+    spread = sum((2 * abs(cert.value) * cert.radius + cert.radius**2 for cert in args), Fraction(0))
+    lower = _root_floor(big_v - spread) if big_v - spread > 0 else Fraction(0)
+    m = _root_floor(big_v)
+    d = (
+        spread / (lower + m) if lower + m > 0 else _root_ceil(spread)
+    )  # |sqrt a - sqrt b| <= sqrt|a - b|
+    mu, rho = _enclose_root(big_v) if big_v > 0 else (Fraction(0), Fraction(0))
+    return Cert(mu, rho + d + eps * hh, fmt)
