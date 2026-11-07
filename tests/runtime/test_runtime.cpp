@@ -1318,6 +1318,15 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
         [](Json& m) { m["cell_zones"][0]["cells"] = m["cell_zones"][0]["cells"].get<int>() + 1; },
         [](Json& m) { m["boundary_zones"][0]["type"] = "outflow"; },
         [](Json& m) { m["boundary_zones"].push_back(m["boundary_zones"][0]); },
+        // first_cell_height (mesh-info.md): null exactly without faces, 0 <= min <= median <=
+        // max, three equal numbers for one face.
+        [](Json& m) { m["boundary_zones"][0].erase("first_cell_height"); },
+        [](Json& m) { m["boundary_zones"][0]["first_cell_height"] = nullptr; },
+        [](Json& m) { m["boundary_zones"][0]["first_cell_height"]["min"] = -1.0; },
+        [](Json& m) {
+          auto& h = m["boundary_zones"][0]["first_cell_height"];
+          h["median"] = h["max"].get<double>() * 2;
+        },
         [](Json& m) { m["bounds"]["min"][0] = 1e9; },
         [](Json& m) { m["quality"]["lines"]["long_cells"] = m["counts"]["cells"].get<int>() + 1; },
         [](Json& m) {

@@ -229,7 +229,7 @@ void read_mesh_info(const Json& info, SolverInput& in) {
   const Json& boundary = list(root, "boundary_zones");
   for (std::size_t i = 0; i < boundary.size(); ++i) {
     const Object z(boundary[i], indexed(root.at("boundary_zones"), i),
-                   {"name", "type", "native_type", "faces"});
+                   {"name", "type", "native_type", "faces", "first_cell_height"});
     const std::string n = name(z);
     if (!boundary_names.insert(n).second) invalid(z.at("name"), "is not unique");
     const std::string type = null_or_tag(
@@ -238,6 +238,24 @@ void read_mesh_info(const Json& info, SolverInput& in) {
     if (!z.is_null("native_type")) (void)z.string("native_type");
     zone_faces[n] = count(z, "faces");
     boundary_faces += zone_faces[n];
+    // mesh-info.md: 0 <= min <= median <= max for a zone with faces, all equal for one face and
+    // the median the mean of the two for two; null without faces.
+    if (z.is_null("first_cell_height") == (zone_faces[n] > 0)) {
+      invalid(z.at("first_cell_height"),
+              zone_faces[n] > 0 ? "must not be null here" : "must be null here");
+    }
+    if (zone_faces[n] > 0) {
+      const Object h(z.get("first_cell_height"), z.at("first_cell_height"),
+                     {"min", "median", "max"});
+      const double least = h.number("min"), median = h.number("median"), most = h.number("max");
+      if (!(0.0 <= least && least <= median && median <= most)) {
+        invalid(z.at("first_cell_height"), "expected 0 <= min <= median <= max");
+      }
+      if ((zone_faces[n] == 1 && !(least == most)) ||
+          (zone_faces[n] == 2 && !(median == (least + most) / 2))) {
+        invalid(z.at("first_cell_height"), "does not fit the zone's face count");
+      }
+    }
     if (type == "periodic") periodic_zones.insert(n);
     zone_order[n] = i;
   }
