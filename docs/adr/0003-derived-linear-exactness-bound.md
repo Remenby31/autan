@@ -1,6 +1,6 @@
 # 0003: Linear exactness is judged against certified per-cell radii, not a fixed 64 ε
 
-**Status:** proposed, 2026-11-07, revision 3 (after the second review on #577). Not accepted. The orchestrator has it reviewed again before any verdict changes, and no PASS is recorded before that review and the held-out validation below. **Decided by:** to be decided by the orchestrator, for the lead's delegate. **Issues:** #43, #566 (scope decision 3).
+**Status:** proposed, 2026-11-07, revision 4 (after the third review on #577; accepted once these changes are in, the orchestrator decided, with Codex re-checking them in the freeze-commit review). Not accepted. The orchestrator has it reviewed again before any verdict changes, and no PASS is recorded before that review and the held-out validation below. **Decided by:** to be decided by the orchestrator, for the lead's delegate. **Issues:** #43, #566 (scope decision 3).
 
 ## Context
 
@@ -78,7 +78,8 @@ The gate "linear fields exact to 64 ε" becomes four mandatory checks per instan
 
 1. **Topology and orientation, derived independently.** The oracle derives the topology from the **cells' own node lists**: the outward polygons each builder of `codegen/spike/meshes.py` returns per cell, before `to_faces` merges them. It does not use the face-based arrays.
    - Each cell's polygons must form a closed surface, every edge traversed exactly twice, once in each direction (`docs/contracts/mesh.md`, rule 5).
-   - The cell's exact signed volume, by the divergence theorem on those polygons, must be positive. That certifies "outward".
+   - The polygons must form **exactly one connected component** (connected through shared edges), and that component's exact signed volume, by the divergence theorem, must be positive. Cancelling edges plus a positive *total* volume would not suffice: two disjoint shells of +8 and −1 pass that test.
+   - **Boundary validity:** every boundary face belongs to exactly one cell. The domain's boundary surface is closed and consistently oriented, every edge traversed as often in one direction as in the other (`docs/contracts/mesh.md`, surface output). Its exact signed volume equals the sum of the cells'.
    - Each face of the kernels' mesh must match polygons of exactly two cells, with opposite node orders (interior), or of one cell (boundary).
    - Owner and neighbour follow the contract's convention: the face's right-hand normal points from owner to neighbour, interior faces have owner < neighbour, and a face is outward for c iff owner[f] = c.
    - After agglomeration, the merged cell's polygons are those of its parts minus the shared ones.
@@ -95,13 +96,23 @@ The gate "linear fields exact to 64 ε" becomes four mandatory checks per instan
    Then |ĝ_u − G_u| ≤ R_c,u, where R propagates everything from the exact data (nodes, a, G): the field's evaluation and storage, the geometry, the weights, the casts and the kernel arithmetic.
    R replaces "T_arith + T_data + T_geom". The coordinate and injected-gradient terms of GG are inside R by construction, not added by hand. For reporting, R is also propagated with one source class at a time (field, geometry, gradient injection, arithmetic). Each such radius bounds that class alone; the gate uses the joint R.
 
+**Fail-closed.** PASS requires all of the following:
+- every instance in the manifest is valid and passes checks 1–4;
+- every positive fixture passes;
+- every corruption control is demonstrated and fails as stated.
+
+Any invalid instance, any control "not demonstrated", or any failed or missing item **blocks PASS, and M1 stays FAIL**. Nothing is skipped, substituted or weakened to obtain a PASS.
+
 No check claims to detect every defect. A PASS establishes consistency with the intended operator within the certified envelope, for the declared sequences, on the instances run.
 
-### Exact fixtures
+### Positive fixtures (must PASS)
 
-- **Hex fixtures:** uniform hexahedral meshes with dyadic node coordinates, dyadic G and a.
-- **Constant fields:** G = 0.
-- **Certification:** a fixture is *certified exact* when the propagation, with its exactness refinement, gives R = 0 for every cell and component. The check is then ĝ = G exactly. Dyadic inputs alone do not certify anything: a fixture whose propagation gives R > 0 anywhere is not counted as exact, and is reported with its R.
+These are separate from the corruption controls below. The nonzero-difference rule of the controls does not apply to them.
+
+- **Exact fixtures:** uniform hexahedral meshes with dyadic node coordinates, dyadic G and a, and constant fields (G = 0).
+  - A fixture is *certified exact* when the propagation, with its exactness refinement, gives R = 0 for every cell and component. The check is then ĝ = G exactly. Dyadic inputs alone certify nothing.
+  - The manifest lists an approved set of exact fixtures. That set **must be non-empty**, and every fixture in it must certify R = 0. A listed fixture that does not certify, or that fails ĝ = G, blocks acceptance.
+- **Boundary cases:** cells with only boundary faces, a single boundary face, a zero gradient component, the constant field. Each must pass checks 1–4.
 
 ### Defect controls
 
@@ -109,22 +120,21 @@ Each control must FAIL the stated check, and its failure is **proven at the outp
 
 So, for every control, the oracle evaluates exactly the declared sequence on the *corrupted* inputs (exact value y_c) and certifies its radius r_c. It proves that the whole interval [y_c − r_c, y_c + r_c] lies outside the stated check's acceptance interval [centre − R, centre + R]: |y_c − centre| > R + r_c. Only then is the control run, and the run must fail.
 
-The fields of the controls have every neighbour difference q_k − q_c nonzero, checked exactly per cell, so no corrupted weight can be multiplied by zero. A control whose proof cannot be established on a declared case is reported as **not demonstrated**, never as passed.
+The fields of the corruption controls have every neighbour difference q_k − q_c nonzero, checked exactly per cell, so no corrupted weight can be multiplied by zero. A control whose proof cannot be established on a declared case is reported as **not demonstrated**, never as passed.
 
 | # | corruption | must fail |
 |---|---|---|
 | 1 | one stored LSQ weight component doubled | 2, and 3 where the output proof holds |
 | 2 | one weight's sign flipped | 2, and 3 where the output proof holds |
 | 3 | one incidence dropped from a cell | 1 and 3 |
-| 4 | one face area component moved by K units in the last place of its stored type (representable by construction). K is the smallest integer ≥ 1 with \|s′ − s\| > 2 r_s computed exactly after rounding, so K = 1 when r_s = 0 | 2 |
+| 4 | one face area component moved by K units in the last place of its stored type. K is the smallest integer ≥ 1 with \|s′ − s\| > 2 r_s, computed exactly after rounding (K = 1 when r_s = 0). The target must be finite and valid in the model: the corrupted component is chosen with \|s\| ≥ the smallest normal, and the step must not cross zero or reach a subnormal | 2 |
 | 5 | s, M and V of every face and cell scaled by 2 together (closure stays zero) | 2 |
 | 6 | one cell volume changed by more than 2 r_V | 2 |
 | 7 | one face moment changed by more than 2 r_M | 2 |
 | 8 | one cell centroid moved by more than 2 r_x | 2 |
 | 9 | one interior face's owner and neighbour swapped, its area not negated | 1 |
 | 10 | the kernel's output offset to the representable value beyond G ± R (the next float past the interval's far side, so it is outside whatever its sign or R = 0) | 4 |
-| 11 | wrong precision: the gradient evaluated with its accumulation narrowed to binary32 under fp32+acc64. Inexact binary32 intermediates do not imply a wrong output ((1, 2⁻²⁵, −2⁻²⁵) sums to 1 in both precisions). So a fixture qualifies only if **exact emulation** of the narrowed sequence, step by step in binary32 under round-to-nearest, gives a final output outside both the D1 interval and the bound interval of fp32+acc64. Fixtures are searched in a declared, frozen family; if none qualifies, the control is reported not demonstrated | 3 and 4 |
-| 12 | boundary cases: cells with only boundary faces, a single boundary face, a zero gradient component, the constant field | run as fixtures; each must pass |
+| 11 | wrong precision: the gradient evaluated with its accumulation narrowed to binary32 under fp32+acc64. Inexact binary32 intermediates do not imply a wrong output ((1, 2⁻²⁵, −2⁻²⁵) sums to 1 in both precisions). So a fixture qualifies only if **exact emulation** of the narrowed sequence, step by step in binary32 under round-to-nearest, gives a final output outside both the D1 interval and the bound interval of fp32+acc64. Its witness is that **exactly emulated, rounded output itself**: a singleton, radius 0, not the generic unrounded centre with its radius. The generic rule cannot show the failure of a mutation that changes only precision. Fixtures are searched in a declared, frozen family; if none qualifies, the control is not demonstrated | 3 and 4 |
 
 ### Prospective protocol
 
@@ -142,7 +152,7 @@ The held-out cases are disjoint from step B:
 
 None of these cases has been evaluated by the kernels or the oracle in this analysis. The commit states so.
 
-Every run is kept, failed ones included, with its raw output. Any amendment after the freeze, to an equation, the code, the build or the manifest, needs a new prior approval and a new disjoint case set. The ADR is accepted only if every held-out case is valid and passes checks 1–4, every certified-exact fixture meets ĝ = G, and every control fails as stated.
+Every run is kept, failed ones included, with its raw output. Any amendment after the freeze, to an equation, the code, the build or the manifest, needs a new prior approval and a new disjoint case set. The validation passes only under the fail-closed rule above, on the frozen manifest.
 
 ## Consequences
 
