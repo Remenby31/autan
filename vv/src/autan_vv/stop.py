@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import statistics
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -18,10 +19,11 @@ if TYPE_CHECKING:
 ZERO_FLOOR = 1e-12
 PLATEAU_RATIO = 0.9
 PLATEAU_STEPS = 100
+PLATEAU_WINDOW = 100
 BAND = 10.0
 # euler.md#time-stepping: the first-order start, the only iterations a physics marks provisional,
-# ends after 200 steps at the latest.
-MAX_PROVISIONAL = 200
+# ends with its 201st step at the latest.
+MAX_PROVISIONAL = 201
 
 
 @dataclass(frozen=True)
@@ -42,9 +44,24 @@ class _Disagreement:
     equation: str | None = None
 
 
-def _first_stop(h: _History, provisional: int) -> tuple[int | None, list[int]]:
+def _levels(h: _History) -> list[list[float]]:
+    """Per line and equation, the median of the residuals of that line and the 99 before it;
+    NaN on the first 99 lines."""
+    levels = [[math.nan] * len(h.reference) for _ in h.residuals]
+    for e in range(len(h.reference)):
+        series = [line[e] for line in h.residuals]
+        for i in range(PLATEAU_WINDOW - 1, len(series)):
+            levels[i][e] = statistics.median(series[i - PLATEAU_WINDOW + 1 : i + 1])
+    return levels
+
+
+def _first_stop(
+    h: _History, provisional: int, levels: list[list[float]]
+) -> tuple[int | None, list[int]]:
     """The first line meeting the rule and the equations met there on a plateau, the first
-    `provisional` lines counting towards no plateau."""
+    `provisional` lines counting towards no plateau. A residual's level is the median of its
+    last 100 counted residuals, and its plateau reference the first level, then each level
+    below 0.9 times the reference before it."""
     n = len(h.reference)
     plateau_ref, since = [math.inf] * n, [0] * n
     for i, line in enumerate(h.residuals):
@@ -52,10 +69,10 @@ def _first_stop(h: _History, provisional: int) -> tuple[int | None, list[int]]:
         met_all, on_plateau = True, []
         for e, r in enumerate(line):
             flat = False
-            if h.floors is not None and counted >= 1:
-                if r < PLATEAU_RATIO * plateau_ref[e]:
-                    plateau_ref[e], since[e] = r, counted
-                flat = counted - since[e] >= PLATEAU_STEPS
+            if h.floors is not None and counted >= PLATEAU_WINDOW:
+                if levels[i][e] < PLATEAU_RATIO * plateau_ref[e]:
+                    plateau_ref[e], since[e] = levels[i][e], counted
+                flat = since[e] > 0 and counted - since[e] >= PLATEAU_STEPS
             met = i < h.exempt_until[e] or r <= h.reference[e] * h.drop
             plateau = h.floors is not None and flat and r <= BAND * h.floors[e]
             if not met and plateau:
@@ -66,8 +83,10 @@ def _first_stop(h: _History, provisional: int) -> tuple[int | None, list[int]]:
     return None, []
 
 
-def _disagreement(h: _History, run: RunInfo, budget: int, provisional: int) -> _Disagreement | None:
-    stop, on_plateau = _first_stop(h, provisional)
+def _disagreement(
+    h: _History, run: RunInfo, budget: int, provisional: int, levels: list[list[float]]
+) -> _Disagreement | None:
+    stop, on_plateau = _first_stop(h, provisional, levels)
     last = len(h.residuals) - 1
     if stop is not None and stop < last:
         return _Disagreement(
@@ -125,15 +144,17 @@ def check_stop(results: autan.Results) -> None:
     The rule is case-schema.md#time, implemented here from that text and not by the solver: a
     `converged` run's last history line is the first one where every equation has dropped
     `residual_orders` from its reference (iteration 1, or `start.residual_reference` of a
-    continuation), is identically zero and still at its floor, or in `fp32+acc64` sits on a
+    continuation; for one identically zero there, the largest of its kind), is identically zero
+    and still at its floor, or in `fp32+acc64` sits on a
     round-off plateau within 10 floors, at most at `max_iterations`; a `completed` run has no
     such line and ends at `max_iterations`. `convergence.plateau` and the `W0710` diagnostics must be the ones the
     history gives. Other statuses and unsteady runs are not judged.
 
     Not guaranteed: the history does not say which iterations were provisional (a first-order
-    start), so a verdict is accepted when some provisional prefix of 0 to 200 iterations gives
+    start), so a verdict is accepted when some provisional prefix of 0 to 201 iterations gives
     it. The drop, the exemption, W0710 and the budget are exact; a plateau is checked as the
-    band and 100 iterations without a new reference, not from its exact start. The floors are
+    band and 100 counted iterations without a new reference of the residual's level, not from
+    its exact start. The floors are
     run.json's `convergence.floor`, not recomputed from the mesh.
     """
     run, time = results.run, results.case.time
@@ -162,6 +183,18 @@ def check_stop(results: autan.Results) -> None:
             exempt_until[e] = len(residuals) if above is None else above
             if above is not None:
                 wakes.add((name, iterations[above]))
+    # A woken equation drops from the largest first residual of its kind: the momentum components
+    # share units, every other equation takes the largest of all (case-schema.md#time).
+    reference = [
+        max(
+            r
+            for k, r in enumerate(reference)
+            if not name.startswith("momentum-") or equations[k].startswith("momentum-")
+        )
+        if reference[e] < zero
+        else reference[e]
+        for e, name in enumerate(equations)
+    ]
     reported = {
         (str(d.data.get("equation")), int(d.data.get("iteration", -1)))
         for d in run.diagnostics
@@ -191,9 +224,10 @@ def check_stop(results: autan.Results) -> None:
         [floors[e] for e in equations] if floors is not None else None,
     )
     prefixes = range(min(MAX_PROVISIONAL, len(residuals)) + 1) if floors is not None else [0]
+    levels = _levels(h) if floors is not None else []
     first: _Disagreement | None = None
     for provisional in prefixes:
-        found = _disagreement(h, run, time.max_iterations, provisional)
+        found = _disagreement(h, run, time.max_iterations, provisional, levels)
         if found is None:
             return
         first = first or found

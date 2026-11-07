@@ -432,6 +432,8 @@ def _family_problem(opened: list[autan.Results]) -> list[str]:
             if condition.get("kind") == "oracle-state":
                 condition.pop("path", None)
                 condition.pop("sha256", None)
+        if doc.get("verification") is not None:
+            doc["verification"]["manufactured"].pop("path", None)
         return doc
 
     first = opened[0]

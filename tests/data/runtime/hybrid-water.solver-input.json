@@ -39,6 +39,9 @@
         "polyhedron": 0
       },
       "stencil_entries": 3268,
+      "vertex_stencil_entries": 8862,
+      "band_entries": 31922,
+      "boundary_fit_entries": 48489,
       "periodic_ghosts": 0
     },
     "bounds": {
