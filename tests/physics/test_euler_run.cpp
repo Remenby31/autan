@@ -285,18 +285,42 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   }
 }
 
-TEST_CASE("a run takes the planar loops exactly when every face of the mesh is planar", "[euler]") {
+TEST_CASE("a run takes the planar loops exactly when every face is planar and the flow inviscid",
+          "[euler]") {
   // EulerPhysics logs its choice (#412): the loops without the warped-face terms on the
-  // axis-aligned hexahedra, never on the polyhedra's warped faces.
+  // axis-aligned hexahedra, never on the polyhedra's warped faces, and never for Navier-Stokes,
+  // whose no-slip walls the planar boundary loops would send to the Riemann solver (#540). Closed
+  // by no-slip walls and the symmetry plane zmax, a laminar flow keeps its mass: after explicit
+  // steps sum(rho V) is the initial rho sum(V), within each step's round-off.
   const bool hex = GENERATE(true, false);
+  const bool viscous = GENERATE(false, true);
   const fs::path path = data_dir / "mesh" / (hex ? "hex/hex.ascii.msh" : "poly/polyMesh");
-  INFO(path);
+  INFO(path << (viscous ? " laminar" : " inviscid"));
   const auto mesh = autan::io::read_mesh(path);
-  const bool planar = autan::kernels::pack_geometry(mesh, autan::compute_geometry(mesh)).all_planar;
+  const auto geometry = autan::compute_geometry(mesh);
+  const bool planar = autan::kernels::pack_geometry(mesh, geometry).all_planar;
   REQUIRE(planar == hex);
+  const int steps = 5;
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
-    inviscid_along_x(d, "fp64");
-    d["time"]["max_iterations"] = 2;
+    Json wall;
+    for (const auto& b : d["boundaries"]) {
+      if (b["kind"] == "wall") wall = b;
+    }
+    if (viscous) {
+      laminar_along_x(d, "fp64");
+      for (auto& b : d["boundaries"]) {
+        if (b["zone"] == "zmax") continue;
+        Json w = wall;
+        w["zone"] = b["zone"];
+        b = w;
+      }
+      d["time"] = {{"kind", "unsteady"}, {"steps", steps},
+                   {"dt", nullptr},      {"cfl", 0.8},
+                   {"average_from", 1},  {"checkpoint", {{"seconds", 1800.0}}}};
+    } else {
+      inviscid_along_x(d, "fp64");
+      d["time"]["max_iterations"] = 2;
+    }
     d["mesh"]["path"] = fs::absolute(path).string();
     d["mesh"]["sha256"] = autan::io::mesh_hash(path);
     Json zone = d["cell_zones"][0];
@@ -306,7 +330,20 @@ TEST_CASE("a run takes the planar loops exactly when every face of the mesh is p
   const auto out = run(doc);
   INFO(out.err);
   REQUIRE(out.status == ExitStatus::finished);
-  CHECK(planar_events(out.run) == (planar ? 1 : 0));
+  CHECK(planar_events(out.run) == (planar && !viscous ? 1 : 0));
+  if (!viscous) return;
+  const double rho = doc["cell_zones"][0]["initial"]["density"].is_number()
+                         ? doc["cell_zones"][0]["initial"]["density"].get<double>()
+                         : doc["freestream"]["density"].get<double>();
+  const auto density = field(out.run, "Density");
+  REQUIRE(density.size() == geometry.cell_volume.size());
+  double mass = 0.0, volume = 0.0;
+  for (std::size_t c = 0; c < density.size(); ++c) {
+    mass += density[c] * geometry.cell_volume[c];
+    volume += geometry.cell_volume[c];
+  }
+  CHECK(std::abs(mass - rho * volume) <=
+        64.0 * steps * std::numeric_limits<double>::epsilon() * rho * volume);
 }
 
 // Two runs of `doc`, one with the default cadence and one with a checkpoint after every
