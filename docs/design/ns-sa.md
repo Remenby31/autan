@@ -18,7 +18,7 @@ R_c = R_c^Euler − Σ_f F_v · S_f, with F_v = (0, τ n, u · τ n + k ∇T · 
 
 The viscous terms take the Euler linear least-squares gradient (unlimited, face2 stencil). The convective reconstruction takes the quadratic gradient in every cell ([euler.md](euler.md#quadratic-gradient)), and the limiter acts on it only.
 
-On a CUDA device, the stepper `make_device_stepper` of a `NavierStokes<P>` (`physics/src/navier_stokes_device.cu`) runs the same generated loops after the device Euler residual, from the host's boundary fit and eddy viscosity. Under the mesh's own numbering as global keys, both sides gather each cell's faces in the same order. With the generated loops built with `--fmad=false` (#571), the device residual then has the host's bits wherever no `exp` or `log` is evaluated: state, slip, outlet and wall conditions (#586, `tests/physics/test_navier_stokes_device.cpp`). `autan-run` does not use it yet (#586).
+On a CUDA device, the stepper `make_device_stepper` of a `NavierStokes<P>` (`physics/src/navier_stokes_device.cu`) runs the same generated loops after the device Euler residual, from the host's boundary fit and eddy viscosity. Under the mesh's own numbering as global keys (identity keys, one rank), both sides gather each cell's faces in the same order. With the generated loops built with `--fmad=false` (#571), the device residual then has the host's bits wherever no `exp` or `log` is evaluated: state, slip, outlet and wall conditions (#586, `tests/physics/test_navier_stokes_device.cpp`). `autan-run` does not use it yet (#586).
 
 ## Boundary conditions
 
