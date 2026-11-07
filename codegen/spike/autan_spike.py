@@ -92,6 +92,24 @@ def mesh(fa: FaceArrays, n_ghost_cells: int = 0) -> Mesh:
     return _wrap(h)
 
 
+def mesh_nodes(m: Mesh) -> tuple[F64, npt.NDArray[np.int64], npt.NDArray[np.int32]]:
+    """The assembled mesh's points (n, 3) and face node lists (offsets, nodes): read-only."""
+    err = ctypes.create_string_buffer(512)
+    counts = np.zeros(2, dtype=np.int64)
+    rc = lib().autan_spike_mesh_nodes(
+        m.handle, _p(counts), None, None, None, err, ctypes.c_size_t(len(err))
+    )
+    _check(rc, err)
+    xyz = np.zeros(3 * int(counts[0]))
+    offsets = np.zeros(m.n_faces + 1, dtype=np.int64)
+    nodes = np.zeros(int(counts[1]), dtype=np.int32)
+    rc = lib().autan_spike_mesh_nodes(
+        m.handle, _p(counts), _p(xyz), _p(offsets), _p(nodes), err, ctypes.c_size_t(len(err))
+    )
+    _check(rc, err)
+    return xyz.reshape(-1, 3), offsets, nodes
+
+
 def partition(m: Mesh, parts: npt.NDArray[np.int32], n_parts: int, rank: int, layers: int) -> Mesh:
     """Part `rank` of `parts` (one per cell of the unpartitioned `m`) with `layers` ghost layers,
     ghost geometry filled from `m` (autan::extract_partition)."""

@@ -524,6 +524,42 @@ std::unique_ptr<SpikeMesh> finish(autan::Mesh mesh) {
 
 extern "C" {
 
+/// The assembled mesh's points (xyz, 3 per point) and face node lists, read-only, for an
+/// independent topology check (ADR 0003, check 1): counts gets n_points and the number of
+/// face-node entries; each array is filled when it is not null.
+int autan_spike_mesh_nodes(const void* mesh, std::int64_t* counts, double* xyz,
+                           std::int64_t* offsets, std::int32_t* nodes, char* err,
+                           std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return guarded(err, err_len, [&] {
+    const autan::Mesh& mm = m->mesh;
+    const auto x = mm.x();
+    const auto y = mm.y();
+    const auto z = mm.z();
+    const auto node_offsets = mm.face_node_offsets();
+    const auto node_list = mm.face_nodes();
+    counts[0] = static_cast<std::int64_t>(x.size());
+    counts[1] = static_cast<std::int64_t>(node_list.size());
+    if (xyz != nullptr) {
+      for (std::size_t i = 0; i < x.size(); ++i) {
+        xyz[3 * i] = x[i];
+        xyz[3 * i + 1] = y[i];
+        xyz[3 * i + 2] = z[i];
+      }
+    }
+    if (offsets != nullptr) {
+      for (std::size_t i = 0; i < node_offsets.size(); ++i) {
+        offsets[i] = static_cast<std::int64_t>(node_offsets[i]);
+      }
+    }
+    if (nodes != nullptr) {
+      for (std::size_t i = 0; i < node_list.size(); ++i) {
+        nodes[i] = static_cast<std::int32_t>(node_list[i]);
+      }
+    }
+  });
+}
+
 /// Builds a mesh from face-based arrays (face_cell1 = -1 on the boundary), the last
 /// n_ghost_cells cells being ghosts; all boundary faces in one zone. Returns 0 and a handle in
 /// *out, or 1 with a coded message in err.
