@@ -145,11 +145,29 @@ string(
   "${shipped_input}"
 )
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/hybrid.solver-input.json "${shipped_input}")
+# The same case with SST, which no physics of this autan-run registers, on any build or device.
+set(sst_input "${shipped_input}")
+foreach(
+  pair
+  "\"model\": \"sa\"|\"model\": \"sst\""
+  "\"nu_tilde_ratio\": 3.0|\"nu_tilde_ratio\": null"
+  "\"intensity\": null|\"intensity\": 0.001"
+  "\"viscosity_ratio\": null|\"viscosity_ratio\": 0.009"
+  "\"k\": null|\"k\": 1.0"
+  "\"omega\": null|\"omega\": 100.0"
+)
+  string(REPLACE "|" ";" pair "${pair}")
+  list(GET pair 0 from)
+  list(GET pair 1 to)
+  string(REPLACE "${from}" "${to}" sst_input "${sst_input}")
+endforeach()
+string(REGEX REPLACE "\"nu_tilde\": [0-9.e+-]+" "\"nu_tilde\": null" sst_input "${sst_input}")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/hybrid-sst.solver-input.json "${sst_input}")
 add_test(
   NAME autan-run.no-physics
   COMMAND
     ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:autan-run>
-    "-DARGS=--input;${CMAKE_CURRENT_BINARY_DIR}/hybrid.solver-input.json;--runs;${CMAKE_CURRENT_BINARY_DIR}/runs"
+    "-DARGS=--input;${CMAKE_CURRENT_BINARY_DIR}/hybrid-sst.solver-input.json;--runs;${CMAKE_CURRENT_BINARY_DIR}/runs"
     -DEXPECT_CODE=2 "-DEXPECT=E0706" -P ${PROJECT_SOURCE_DIR}/tests/io/run_cli.cmake
 )
 add_test(

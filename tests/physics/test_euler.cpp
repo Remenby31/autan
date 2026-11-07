@@ -535,13 +535,19 @@ TEMPLATE_TEST_CASE("a linear flow through a thin tetrahedron has the exact mass 
   }
   Scheme s = second_order(Flux::roe, 0.3);
   s.limiter = false;
+  s.gradient_fit = autan::physics::GradientFit::quadratic;
   Euler<P> e(c.mesh, c.geometry, air, s);
   e.set_boundary(std::vector<BoundaryKind>(nb, BoundaryKind::state), data);
   const auto u = stored(e, uniform(Prim{1.0, {a * c.geometry.cell_centroid_x[0], 0.0, 0.0}, p}, 1));
   std::vector<typename P::residual> r(5);
-  e.residual(std::span<const typename P::state>(u), r);
+  e.residual(u, r);
   const double v = c.geometry.cell_volume[0];
   CHECK(std::abs(static_cast<double>(r[0]) - a * v) <= 64 * eps<P>() * a * c.cell_surface()[0]);
+  // Its only neighbours are its four faces: too few for the quadratic fit, so it keeps the linear
+  // one, and says so.
+  const auto linear = e.linear_cells();
+  CHECK(linear.count == 1);
+  CHECK(linear.first == 0);
 }
 
 TEMPLATE_TEST_CASE("a one-cell-thick slab keeps a flow without spanwise velocity planar", "[euler]",
@@ -663,6 +669,120 @@ TEMPLATE_TEST_CASE("a one-cell-thick slab keeps a flow without spanwise velocity
     // The y planes carry p A each way: their round-off bounds the y-momentum residual.
     CHECK(std::abs(static_cast<double>(r[2 * nc + i])) <= 64 * eps<P>() * 1.2 * p0 * surface[i]);
   }
+}
+
+// In every cell the reconstruction's gradient is that of a quadratic fit to the values at cell and
+// face centroids (docs/design/euler.md, Quadratic gradient): with a density that is a quadratic
+// field, the solver's density gradient is the field's exact gradient at each cell centroid, where
+// the linear least-squares fit is off by O(h) next to the boundary.
+TEMPLATE_TEST_CASE("the quadratic gradient of a quadratic field is exact in every cell", "[euler]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  using P = TestType;
+  const auto* file = GENERATE(from_range(meshes));
+  CAPTURE(file);
+  const auto mesh = autan::io::read_mesh(mesh_dir / file);
+  const auto g = autan::compute_geometry(mesh);
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  auto phi = [](const std::array<double, 3>& x) {
+    return 10.0 + 2.0 * x[0] - 3.0 * x[1] + x[2] + 0.5 * x[0] * x[0] + x[0] * x[1] -
+           2.0 * x[1] * x[2] + 1.5 * x[2] * x[2] - 0.75 * x[1] * x[1] + 0.25 * x[0] * x[2];
+  };
+  auto exact = [](const std::array<double, 3>& x) {
+    return std::array<double, 3>{2.0 + x[0] + x[1] + 0.25 * x[2],
+                                 -3.0 + x[0] - 2.0 * x[2] - 1.5 * x[1],
+                                 1.0 - 2.0 * x[1] + 3.0 * x[2] + 0.25 * x[0]};
+  };
+  const std::array<double, 3> v{80.0, -10.0, 5.0};
+  constexpr double p = 1e5;
+  std::vector<double> data(5 * nb);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const auto f = ni + b;
+    const std::array<double, 5> w{
+        phi({g.face_centroid_x[f], g.face_centroid_y[f], g.face_centroid_z[f]}), v[0], v[1], v[2],
+        p};
+    for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = w[j];
+  }
+  Scheme scheme = second_order(Flux::roe, 0.3);
+  scheme.limiter = false;
+  scheme.gradient_fit = autan::physics::GradientFit::quadratic;
+  Euler<P> e(mesh, g, air, scheme);
+  e.set_boundary(std::vector<BoundaryKind>(nb, BoundaryKind::state), data);
+  std::vector<double> value(n), u(5 * n);
+  for (std::size_t c = 0; c < n; ++c) {
+    value[c] = phi({g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]});
+    const auto uc = conserved({value[c], v, p});
+    for (std::size_t k = 0; k < 5; ++k) u[k * n + c] = uc[k];
+  }
+  std::vector<typename P::residual> r(5 * n);
+  e.residual(stored(e, u), r);
+  REQUIRE(e.linear_cells().count == 0);
+  const auto grad = e.arrays().grad;
+  // The round-off the fit carries: sum_k |w_k| (|phi_k| + |phi_c|), from its weights.
+  const auto band = e.quadratic_gradient();
+  const auto nst = band.entries.size();
+  double worst = 0.0;
+  for (std::size_t c = 0; c < n; ++c) {
+    REQUIRE(band.fitted[c] == 1.0);
+    double magnitude = 0.0;
+    for (auto k = static_cast<std::size_t>(band.offsets[c]);
+         k < static_cast<std::size_t>(band.offsets[c + 1]); ++k) {
+      const auto en = band.entries[k];
+      const auto f = static_cast<std::size_t>(-en - 1);
+      const double pk =
+          en >= 0 ? value[static_cast<std::size_t>(en)]
+                  : phi({g.face_centroid_x[f], g.face_centroid_y[f], g.face_centroid_z[f]});
+      for (std::size_t j = 0; j < 3; ++j) {
+        magnitude += std::abs(band.weights[j * nst + k]) * (std::abs(pk) + std::abs(value[c]));
+      }
+    }
+    const auto expected = exact({g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]});
+    for (std::size_t j = 0; j < 3; ++j) {
+      const double error = std::abs(static_cast<double>(grad[j * n + c]) - expected[j]) / magnitude;
+      if (!std::isnan(worst) && !(error <= worst)) worst = error;  // NaN sticks
+    }
+  }
+  // Round-off of the stored state, of the weights (QR in scaled coordinates, then stored in the
+  // policy's geometry type) and of the sum, relative to its terms.
+  CHECK(worst <= 1024 * eps<P>());
+}
+
+// Under the quadratic gradient the linear one stays available (viscous terms that keep it), the
+// same bits as the linear fit's own.
+TEMPLATE_TEST_CASE("the linear gradient is the same under either fit", "[euler]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  using P = TestType;
+  const auto* file = GENERATE(from_range(meshes));
+  CAPTURE(file);
+  const Case c(file);
+  const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
+  const auto nc = static_cast<std::size_t>(c.mesh.n_cells());
+  std::vector<double> data(5 * nb);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const std::array<double, 5> w{1.2, 80.0, -10.0, 5.0, 1e5};
+    for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = w[j];
+  }
+  Scheme s = second_order(Flux::roe, 0.3);
+  Euler<P> face2(c.mesh, c.geometry, air, s);
+  s.gradient_fit = autan::physics::GradientFit::quadratic;
+  Euler<P> quadratic(c.mesh, c.geometry, air, s);
+  const std::vector<BoundaryKind> kind(nb, BoundaryKind::state);
+  face2.set_boundary(kind, data);
+  quadratic.set_boundary(kind, data);
+  auto u = uniform(Prim{1.2, {80.0, -10.0, 5.0}, 1e5}, nc);
+  for (std::size_t i = 0; i < u.size(); ++i)
+    u[i] *= 1.0 + 0.01 * std::sin(0.7 * static_cast<double>(i));
+  const auto st = stored(face2, u);
+  std::vector<typename P::residual> r(5 * nc);
+  face2.residual(std::span<const typename P::state>(st), r);
+  quadratic.residual(std::span<const typename P::state>(st), r);
+  std::vector<typename P::grad> a(15 * nc), b(15 * nc);
+  face2.linear_gradient(a);
+  quadratic.linear_gradient(b);
+  CHECK(a == b);
+  CHECK(quadratic.linear_cells().count == 0);
+  CHECK(face2.quadratic_gradient().entries.empty());
 }
 
 TEST_CASE("the point-vortex farfield state is the freestream plus the Prandtl-Glauert vortex",
