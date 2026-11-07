@@ -76,6 +76,7 @@ def _check_moments(fa: meshes.FaceArrays) -> npt.NDArray[np.bool_]:
         proven[f] = _provably_planar(pts)
         if proven[f]:
             assert np.all(m.face_moment[f] == 0.0)
+    assert s.all_planar(m) == bool(proven.all())
     return proven
 
 
