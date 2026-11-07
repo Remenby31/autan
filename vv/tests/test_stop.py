@@ -133,7 +133,7 @@ def test_an_identically_zero_equation_is_exempt_until_it_leaves_its_floor(
         "freestream",
     )
     # At iteration 2 momentum-z rises above 1e-12 of the largest residual: W0710, and from then on
-    # it has to drop from its reference of 0 like the others, which it never does.
+    # it has to drop 8 orders from the largest first momentum residual, 1: 1e-6 is above 1e-8.
     first = {**dict.fromkeys(EQUATIONS, 1.0), **zero}
     woke = lines(first, {"momentum-z": 1e-6})
     run = freestream_run(max_iterations=2, status="completed", residuals=woke)
@@ -147,6 +147,12 @@ def test_an_identically_zero_equation_is_exempt_until_it_leaves_its_floor(
         ],
         "freestream",
     )
+    # Once at 1e-9 it has: the run converges at iteration 3, and saying so at 1e-7 is refused.
+    fell = lines(first, {"momentum-z": 1e-6}, {"momentum-z": 1e-9})
+    verify([freestream_run(residuals=fell, diagnostics=(w0710,))], "freestream")
+    early = lines(first, {"momentum-z": 1e-6}, {"momentum-z": 1e-7})
+    run = freestream_run(residuals=early, diagnostics=(w0710,))
+    assert refused(run) == {"iteration": 3, "equation": "momentum-z"}
 
 
 def test_an_fp32_run_may_converge_on_a_round_off_plateau_within_ten_floors(
