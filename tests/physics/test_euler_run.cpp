@@ -774,21 +774,33 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
   CHECK(diagnostic["location"]["path"] == expected.at(reason).second);
 }
 
-TEST_CASE("a Navier-Stokes case with periodic pairs is refused before any directory exists",
+TEST_CASE("a Navier-Stokes case outside the physics' scope is refused before any directory exists",
           "[navier-stokes]") {
-  // The viscous terms fill no ghosts of their own, steady or not: E0706 at `periodic`.
+  // The viscous terms fill no ghosts of their own, steady or not: E0706 at `periodic`. Their face
+  // loops and boundary fit follow the local order, so reproducibility "ranks", which promises the
+  // same bits in every cell order, is refused too: E1109 (#587), laminar and SA alike.
+  const auto [model, ranks] =
+      GENERATE(std::pair{"laminar", false}, std::pair{"laminar", true}, std::pair{"sa", true});
+  INFO(model << (ranks ? " under reproducibility ranks" : " through periodic pairs"));
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
-    periodic_box(d, "fp64");
-    d["physics"]["turbulence"]["model"] = "laminar";
-    unsteady_through_pairs(d, 2);
+    if (!ranks) {
+      periodic_box(d, "fp64");
+      unsteady_through_pairs(d, 2);
+      d["physics"]["turbulence"]["model"] = "laminar";
+      return;
+    }
+    // The hybrid case is SA; laminar_along_x makes it laminar.
+    if (std::string(model) == "laminar") laminar_along_x(d, "fp64");
+    d["reproducibility"] = "ranks";
+    d["time"]["linear_solver"] = "gauss-seidel";
   });
   const auto out = run(doc);
   INFO(out.err);
   CHECK(out.status == ExitStatus::invalid_input);
   CHECK(!fs::exists(out.runs));
   const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
-  CHECK(diagnostic["code"] == "E0706");
-  CHECK(diagnostic["location"]["path"] == "periodic");
+  CHECK(diagnostic["code"] == (ranks ? "E1109" : "E0706"));
+  CHECK(diagnostic["location"]["path"] == (ranks ? "reproducibility" : "periodic"));
 }
 
 TEST_CASE("a case with an initial-state file starts from the file's states", "[euler]") {
