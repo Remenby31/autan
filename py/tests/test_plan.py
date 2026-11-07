@@ -274,14 +274,14 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
         return {c.name for c in estimate.components}
 
     cpu = memory(device_kind="cpu")
-    assert names(cpu) >= {
-        "mesh",
-        "physics",
-        "jacobian",
-        "multigrid",
-        "boundary state tangent",
-        "solution output",
-    }
+    assert names(cpu) >= {"mesh", "physics", "jacobian", "multigrid", "solution output"}
+    # The inviscid Krylov operator's derivative of the boundary values the fit keeps: neither a
+    # viscous run's (above) nor a Gauss-Seidel run's.
+    inviscid = CRM_HL.replace("autan.SA()", "autan.Inviscid()").replace(".wall()", ".slip()")
+    assert "boundary state tangent" in names(memory(inviscid, device_kind="cpu"))
+    assert "boundary state tangent" not in names(cpu)
+    gs_inviscid = inviscid + "case.time = autan.Steady(linear_solver='gauss-seidel')\n"
+    assert "boundary state tangent" not in names(memory(gs_inviscid, device_kind="cpu"))
     assert cpu.bytes_device == 0
     # The peak: every persistent component and the largest transient one.
     persistent = sum(c.bytes_host for c in cpu.components if not c.transient)
