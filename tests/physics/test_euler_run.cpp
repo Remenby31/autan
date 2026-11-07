@@ -35,6 +35,7 @@ extern char** environ;
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/physics/euler_physics.hpp"
+#include "autan/physics/first_order_start.hpp"
 #include "autan/physics/manufactured.hpp"
 #include "autan/runtime/physics.hpp"
 #include "autan/runtime/run.hpp"
@@ -330,6 +331,29 @@ TEST_CASE("checkpoints change no Euler result", "[euler]") {
                    {"average_from", 4},  {"checkpoint", {{"seconds", 1800.0}}}};
     }
   }));
+}
+
+TEST_CASE("a steady run whose transverse momenta wake at iteration 2 converges", "[euler]") {
+  // #432: from a state along x the transverse momenta are round-off at iteration 1, below the
+  // exemption threshold, and wake at iteration 2 (W0710); they then fall with the other
+  // equations, so a reachable reference lets the run converge within its budget.
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, "fp64");
+    for (auto& b : d["boundaries"]) b["kind"] = "farfield";
+    // Pressure and density 1.3 times the freestream's, at its temperature.
+    for (auto& z : d["cell_zones"]) {
+      for (const char* key : {"pressure", "density"})
+        z["initial"][key] = 1.3 * z["initial"][key].get<double>();
+    }
+    d["time"]["max_iterations"] = 1000;
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  const Json info = Json::parse(read(out.run / "run.json"));
+  CHECK(info["status"] == "converged");
+  CHECK(std::ranges::count_if(info["diagnostics"],
+                              [](const Json& d) { return d["code"] == "W0710"; }) == 2);
 }
 
 TEST_CASE("a verification case converges to its discrete solution", "[euler]") {
@@ -1215,7 +1239,8 @@ TEST_CASE("an equation at the round-off floor does not set the steady CFL number
   INFO("histories differ by " << worst);
   CHECK(worst <= 1.0);
   // A continuation carries the exemption: from 20 steps, without `start.woken` it repeats the
-  // uninterrupted run; with the z-momentum woken, that equation's round-off sets the CFL again.
+  // uninterrupted run. With the z-momentum woken, that equation drops from the largest momentum
+  // residual (#432), against which its round-off is nothing: the CFL law still ignores it.
   auto half = doc(1e-20);
   half["time"]["max_iterations"] = 20;
   const auto first = run(half);
@@ -1231,7 +1256,7 @@ TEST_CASE("an equation at the round-off floor does not set the steady CFL number
   rest["start"]["woken"] = {"momentum-z"};
   const auto woken = run(rest);
   REQUIRE(woken.status == ExitStatus::finished);
-  CHECK(read(woken.run / "history.jsonl") != read(plain.run / "history.jsonl"));
+  CHECK(read(woken.run / "history.jsonl") == read(plain.run / "history.jsonl"));
   CHECK(noisy);  // the injected noise did reach the z-momentum residual
 }
 
@@ -1851,3 +1876,21 @@ TEST_CASE("on a device, a diverged run names the cell whose stored state is not 
   CHECK((*d107)["data"]["zone"] == "lower");
 }
 #endif
+
+TEST_CASE("the first-order start ends with its 201st step or earlier on a drop or a stall",
+          "[euler]") {
+  // euler.md#time-stepping. Each sequence gives the step the start ends with.
+  const auto ends_with = [](const auto& drop) {
+    autan::physics::FirstOrderStart start;
+    for (int step = 1; step <= 1000; ++step) {
+      if (start.ends_after(drop(step))) return step;
+    }
+    return 0;
+  };
+  // Never three orders down, a new plateau reference every 50 steps (0.85 < 0.9): the 201st.
+  CHECK(ends_with([](int step) { return 0.5 * std::pow(0.85, (step - 1) / 50); }) == 201);
+  // The same drop throughout: 100 steps without a new reference after the first.
+  CHECK(ends_with([](int) { return 0.5; }) == 101);
+  // Three orders down at once.
+  CHECK(ends_with([](int) { return 1e-4; }) == 1);
+}

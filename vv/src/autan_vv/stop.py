@@ -20,8 +20,8 @@ PLATEAU_RATIO = 0.9
 PLATEAU_STEPS = 100
 BAND = 10.0
 # euler.md#time-stepping: the first-order start, the only iterations a physics marks provisional,
-# ends after 200 steps at the latest.
-MAX_PROVISIONAL = 200
+# ends with its 201st step at the latest.
+MAX_PROVISIONAL = 201
 
 
 @dataclass(frozen=True)
@@ -125,13 +125,14 @@ def check_stop(results: autan.Results) -> None:
     The rule is case-schema.md#time, implemented here from that text and not by the solver: a
     `converged` run's last history line is the first one where every equation has dropped
     `residual_orders` from its reference (iteration 1, or `start.residual_reference` of a
-    continuation), is identically zero and still at its floor, or in `fp32+acc64` sits on a
+    continuation; for one identically zero there, the largest of its kind), is identically zero
+    and still at its floor, or in `fp32+acc64` sits on a
     round-off plateau within 10 floors, at most at `max_iterations`; a `completed` run has no
     such line and ends at `max_iterations`. `convergence.plateau` and the `W0710` diagnostics must be the ones the
     history gives. Other statuses and unsteady runs are not judged.
 
     Not guaranteed: the history does not say which iterations were provisional (a first-order
-    start), so a verdict is accepted when some provisional prefix of 0 to 200 iterations gives
+    start), so a verdict is accepted when some provisional prefix of 0 to 201 iterations gives
     it. The drop, the exemption, W0710 and the budget are exact; a plateau is checked as the
     band and 100 iterations without a new reference, not from its exact start. The floors are
     run.json's `convergence.floor`, not recomputed from the mesh.
@@ -162,6 +163,18 @@ def check_stop(results: autan.Results) -> None:
             exempt_until[e] = len(residuals) if above is None else above
             if above is not None:
                 wakes.add((name, iterations[above]))
+    # A woken equation drops from the largest first residual of its kind: the momentum components
+    # share units, every other equation takes the largest of all (case-schema.md#time).
+    reference = [
+        max(
+            r
+            for k, r in enumerate(reference)
+            if not name.startswith("momentum-") or equations[k].startswith("momentum-")
+        )
+        if reference[e] < zero
+        else reference[e]
+        for e, name in enumerate(equations)
+    ]
     reported = {
         (str(d.data.get("equation")), int(d.data.get("iteration", -1)))
         for d in run.diagnostics
