@@ -75,12 +75,13 @@ jobs:
       - name: "#532's probe alone, then the file as CI runs it, each bounded"
         timeout-minutes: 15
         run: |
+          set +e
           probe=tests/test_naca0012.py::test_probe_the_committed_slab_is_this_platforms_level_32
           for args in "$probe" "-ra tests/test_naca0012.py"; do
             start=$(date +%s)
             # shellcheck disable=SC2086 # args holds several pytest arguments on purpose
-            timeout 300 uv run --locked --no-sync pytest -p no:cacheprovider -o faulthandler_timeout=60 $args < /dev/null > out.txt 2>&1
+            timeout -s INT 200 uv run --locked --no-sync pytest -p no:cacheprovider -o faulthandler_timeout=60 $args < /dev/null > out.txt 2>&1
             rc=$?
             echo "rc=$rc $(( $(date +%s) - start ))s pytest $args"
-            grep -E '^E |File "|Timeout|Thread|passed|failed|Skipping|index' out.txt | cut -c1-300 | head -60
+            tail -n 80 out.txt | cut -c1-300
           done
