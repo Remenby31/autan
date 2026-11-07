@@ -193,8 +193,10 @@ def test_the_tmr_naca0012_grid_passes_n1_to_n4_and_converts_to_a_closed_slab(
     assert mesh.n_cells == (ni - 1) * (x.shape[0] - 1)
     zones = {z.name: z for z in mesh.zones}
     assert set(zones) == {"airfoil", "farfield", "sides"}
-    # Only the airfoil's faces remain on j = 0: the wake's are interior.
+    # Only the airfoil's faces remain on j = 0: the wake's are interior, in no zone.
     assert zones["airfoil"].count == ni - 1 - 2 * w
+    assert zones["farfield"].count == ni - 1 + 2 * (x.shape[0] - 1)
+    assert zones["sides"].count == 2 * mesh.n_cells
 
 
 def test_a_run_that_writes_no_grid_fails_even_beside_an_earlier_grid(tmp_path: Path) -> None:
