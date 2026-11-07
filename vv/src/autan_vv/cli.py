@@ -299,11 +299,13 @@ def _cmd_su2_flatplate(args: argparse.Namespace) -> None:
             msg = "su2-flatplate prepare takes --published (SU2's turb_SA_flatplate.cfg)"
             raise VVError(msg, code="V0903")
         for run in flatplate.prepare(
-            args.cache, args.published, args.root, args.su2_mesh, args.max_iterations
+            args.cache, args.published, args.root, args.su2_mesh, args.max_iterations, args.absolute
         ):
             _say(str(run.relative_to(args.root)))
         return
-    report = flatplate.results(args.root, args.cache, tuple(args.models), args.reference)
+    report = flatplate.results(
+        args.root, args.cache, tuple(args.models), args.reference, args.absolute
+    )
     if args.out is not None:
         args.out.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
     for model, data in report["models"].items():
@@ -325,17 +327,48 @@ def _cmd_su2_flatplate(args: argparse.Namespace) -> None:
             )
             _say(f"{model} continuum {key}: {value}")
         _say(f"{model} gate M3: {'PASS' if data['pass'] else 'FAIL'}")
-        if "amended" in data:
-            amended = data["amended"]
-            iterations = [lv["amended"]["iterations"] for lv in data["levels"]]
-            _say(f"{model} amended criterion: converged at {iterations}")
-            for key, est in amended["continuum"].items():
+        for reading in ("amended", "absolute"):
+            if reading not in data:
+                continue
+            iterations = [lv[reading]["iterations"] for lv in data["levels"]]
+            _say(f"{model} {reading} criterion: converged at {iterations}")
+            for key, est in data[reading]["continuum"].items():
                 value = f"{est['estimate']:.6e}" if "estimate" in est else est["error"]
-                _say(f"{model} amended continuum {key}: {value}")
-            _say(f"{model} amended gate M3: {'PASS' if amended['pass'] else 'FAIL'}")
-    readings = [r for data in report["models"].values() for r in (data, data.get("amended", data))]
+                _say(f"{model} {reading} continuum {key}: {value}")
+            _say(f"{model} {reading} gate M3: {'PASS' if data[reading]['pass'] else 'FAIL'}")
+    # With --absolute, the reading of #493 decides; otherwise every reading must pass.
+    readings = [
+        r for data in report["models"].values()
+        for r in ([data["absolute"]] if "absolute" in data
+                  else [data, data.get("amended", data)])
+    ]  # fmt: skip
     if not all(r["pass"] for r in readings):
         raise SystemExit(1)
+
+
+def _cmd_su2_accuracy(args: argparse.Namespace) -> None:
+    from autan_vv.su2 import accuracy  # noqa: PLC0415
+
+    report = accuracy.study(args.autan, args.su2)
+    if args.out is not None:
+        args.out.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+    for row in report["levels"]:
+        parts = [f"n{row['n']}"]
+        for code in ("autan", "su2"):
+            lv = row[code]
+            if lv is not None:
+                state = f"converged at {lv['iterations']}" if lv["converged"] else "NOT converged"
+                parts.append(f"{code} {state}, CL {lv['cl']:.6f}, CD {lv['cd']:.7f}")
+        _say("; ".join(parts))
+    for code, est in report["continuum"].items():
+        if "error" in est:
+            _say(f"{code} continuum: {est['error']}")
+            continue
+        values = ", ".join(
+            f"{k.upper()} {v['estimate']:.7f}" if "estimate" in v else f"{k.upper()} {v['error']}"
+            for k, v in est.items() if k != "levels"
+        )  # fmt: skip
+        _say(f"{code} continuum ({est['levels']}): {values}")
 
 
 def _cmd_sections(args: argparse.Namespace) -> None:
@@ -599,6 +632,12 @@ def main(argv: list[str] | None = None) -> int:
         help="results: the models to report",
     )
     p.add_argument(
+        "--absolute",
+        type=Path,
+        help="root of the published configuration's runs: prepare writes the absolute criterion"
+        " of #493 into each case; results also judges every run by it",
+    )
+    p.add_argument(
         "--reference",
         type=Path,
         help="results: root of the published configuration's runs, for the amended criterion",
@@ -606,6 +645,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--cache", type=Path, default=Path("~/.cache/autan-vv").expanduser())
     p.add_argument("--out", type=Path, help="results: report JSON (exit 1 if a gate fails)")
     p.set_defaults(func=_cmd_su2_flatplate)
+
+    p = sub.add_parser(
+        "su2-accuracy",
+        help="one NACA 0012 condition, Autan's runs against SU2's on the same mesh files (#387)",
+    )
+    p.add_argument("--autan", type=Path, nargs="+", required=True, help="Autan run directories")
+    p.add_argument("--su2", type=Path, nargs="+", required=True, help="SU2 case directories")
+    p.add_argument("--out", type=Path, help="report JSON (autan.su2-accuracy/1)")
+    p.set_defaults(func=_cmd_su2_accuracy)
 
     p = sub.add_parser(
         "order", help="observed order from errors on a mesh family (JSON in, JSON out)"
