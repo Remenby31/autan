@@ -58,7 +58,7 @@ from autan.solver_input import (
 )
 from autan.solver_input import freestream_state as closed_freestream
 from autan.units import metres_per, si
-from autan.version import COMMIT, __version__
+from autan.version import COMMIT, DIRTY, __version__
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -239,7 +239,9 @@ class FakeBackend:
             raise CaseError(d for d in result.diagnostics if d.severity == "error")
         spec = case.spec
         started = utc_now()
-        solver = Solver(version=__version__, commit=COMMIT, backend="fake", binary_sha256=None)
+        solver = Solver(
+            version=__version__, commit=COMMIT, dirty=DIRTY, backend="fake", binary_sha256=None
+        )
         devices = Devices(kind="cpu", count=1)
         groups = mesh_info.groups_source.sha256 if mesh_info.groups_source else None
         info = RunInfo(
