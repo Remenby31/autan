@@ -50,12 +50,18 @@ endif()
 # The Euler physics through autan-run's run_case; the runtime needs CGNS.
 if(AUTAN_ENABLE_CGNS)
   FetchContent_GetProperties(picosha2)
-  add_executable(autan_euler_run_tests test_euler_run.cpp)
+  add_executable(
+    autan_euler_run_tests
+    test_euler_run.cpp
+    ${PROJECT_SOURCE_DIR}/tests/core/fixtures.cpp
+  )
+  target_include_directories(autan_euler_run_tests PRIVATE ${PROJECT_SOURCE_DIR}/tests/core)
   target_include_directories(autan_euler_run_tests SYSTEM PRIVATE ${picosha2_SOURCE_DIR})
   target_link_libraries(
     autan_euler_run_tests
     PRIVATE
       autan::physics_runtime
+      autan::kernels
       autan::mesh_counts
       autan_cgns
       nlohmann_json::nlohmann_json
