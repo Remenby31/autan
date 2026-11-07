@@ -24,7 +24,10 @@ A fixed absolute 64 ε cannot hold for these operators on these inputs as the me
 ## Arithmetic model and definitions
 
 - **Format and rounding.** IEEE 754 binary64 and binary32, round to nearest even, no FMA contraction on the host (`-ffp-contract=off`, CMakeLists.txt). Unit roundoff u_t of format t: 2⁻⁵³ or 2⁻²⁴. Machine epsilon ε_t = 2u_t.
-- **Range.** Every operation's exact result is either 0 or of magnitude at least the smallest normal of its format, and finite. Zero results and zero inputs are allowed. A nonzero subnormal or an overflow makes the instance **invalid**: reported, never a pass.
+- **Range and limits.** IEEE 754 round to nearest even **with gradual underflow**: flush-to-zero and denormals-are-zero are excluded, and so are evaluation changes such as x87 extended precision or an FMA the compiler contracts unless the declared sequence states it as one operation.
+  - Overflow, a divisor its radius may reach, or a widening cast from an undeclared format makes the instance **invalid**: reported, never a pass.
+  - Zero results and zero inputs are allowed. Where an interval reaches the subnormal band, the rounding term adds Higham's underflow constant η = 2^(emin − p), an exact rational per format: 2⁻¹⁰⁷⁵ in binary64, 2⁻¹⁵⁰ in binary32. It is kept for + and − too, conservatively (approved in the review of #579).
+  - The certificate bounds a distance: the sign of a zero result is outside it.
 - **Roles and casts per policy** (`runtime.hpp`, `emit_cpp.py`):
 
 | policy | state | compute | accumulation | gradient | geometry read through `rel` | other geometry in bodies |
@@ -44,7 +47,7 @@ Every quantity X carries its **exact value** x and a **radius** r ≥ 0. The rad
 | operation | radius of the result |
 |---|---|
 | input given exactly | 0 |
-| X ± Y | (1 + u)(r_x + r_y) + u·\|x ± y\| |
+| X ± Y | (1 + u)(r_x + r_y) + u·\|x ± y\| (+ η near underflow, for every rule) |
 | X · Y | (1 + u)(\|x\| r_y + \|y\| r_x + r_x r_y) + u·\|x y\| |
 | X / Y, valid only if r_y < \|y\| | (1 + u)·(r_x + \|x/y\| r_y)/(\|y\| − r_y) + u·\|x/y\| |
 | cast to a narrower format (unit u_t) | (1 + u_t) r_x + u_t \|x\| |
