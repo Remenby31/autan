@@ -254,7 +254,7 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     inviscid_along_x(d, precision);
     // fp32+acc64 starts at round-off: it converges once its residuals are on a plateau
-    // (case-schema.md#time), after the first-order start's provisional steps and 100 more.
+    // (case-schema.md#time), after the first-order start's provisional steps and 200 more.
     d["monitors"][0]["every"] = 1;
     if (steady) {
       d["time"]["max_iterations"] = 400;
@@ -410,9 +410,9 @@ void check_checkpoints_change_nothing(Json doc) {
 TEST_CASE("a continued steady run ends its first-order start where the uninterrupted one does",
           "[euler]") {
   // results.md: a `continue` run gives the uninterrupted run's history, bit for bit. A uniform
-  // flow's first-order drop is round-off, so its first-order start ends on the plateau rule of
-  // case-schema.md#time, about 100 steps in: a continuation from iteration 60 must carry that
-  // count over.
+  // flow's first-order drop is round-off, so its first-order start ends on its stall
+  // (euler.md#time-stepping), about 100 steps in: a continuation from iteration 60 must carry
+  // that count over.
   auto doc = input("hybrid.solver-input.json", [](Json& d) {
     inviscid_along_x(d, "fp64");
     d["time"]["max_iterations"] = 200;
