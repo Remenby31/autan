@@ -9,9 +9,10 @@
 The cause was analysed on paper before any value was computed (#43, step A, revised after review), then measured as an exploration (#43, step B). Both were on main b3683284, on the host, in exact rational arithmetic on the kernels' stored inputs.
 
 - **The kernels are not at fault.** In every instance the LSQ and GG kernels lie within the arithmetic bound of their generated operation graph, at worst 0.44 (LSQ) and 0.25 (GG) of it (D1). The stored geometry closes at the roundoff of its storage type (G2).
-- **The 64 ε gap comes from the inputs.** For LSQ it is the rounding of the stored field values, e_data = Σₖ ŵₖ(ηₖ − η_c). It roughly doubles with each doubling of the cells per direction and is proportional to the field's offset a, while the stencil conditioning h·Σ|ŵ| stays between 1.1 and 5.5. For GG, the same-cell decomposition is in #43 (field data, coordinate rounding, the injected gradient's rounding, the closure term a z + Z G, and the kernel's own arithmetic).
+- **Where the 64 ε gap comes from.** For LSQ it is the rounding of the stored field values, e_data = Σₖ ŵₖ(ηₖ − η_c). It roughly doubles with each doubling of the cells per direction and is proportional to the field's offset a, while the stencil conditioning h·Σ|ŵ| stays between 1.1 and 5.5.
+- **For GG it is the inputs and the kernel's own rounding together.** The exact same-cell decomposition (https://github.com/Remenby31/autan/issues/43#issuecomment-6710945756) attributes the worst cell's input error to the field data on clean meshes and to the closure term a z + Z G on perturbed ones. Coordinate rounding (fp32 only, ≤ 17.4 ε) and the injected gradient's rounding (≤ 0.32 ε) are smaller. The kernel's arithmetic, within its bound, is of the same order as the input terms (up to 252.8 ε in one cell).
 
-A fixed 64 ε relative to |G| is therefore not a property any kernel reading these inputs can guarantee: the inputs already deviate from the linear field by more than that.
+For LSQ, a fixed 64 ε relative to |G| is therefore not a property any kernel reading these inputs can guarantee: the inputs already deviate from the linear field by more than that. For GG the same holds of the inputs, and the kernel's rounding, which grows with a, adds to it. Hence a per-cell bound with an arithmetic term, rather than a fixed multiple of ε.
 
 **This change comes after exploration.** It is proposed after step B's values were seen. To keep it from being fitted to them:
 - every constant below is derived from operation counts, not from B's values;
