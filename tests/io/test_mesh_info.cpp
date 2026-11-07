@@ -4,6 +4,8 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <iterator>
 #include <map>
 #include <random>
 #include <string>
@@ -73,11 +75,22 @@ TEST_CASE("MeshInfo of the hybrid test mesh has its constructed counts", "[mesh-
   const std::string source = GENERATE("hybrid/hybrid.ascii.msh", "hybrid/polyMesh");
   CAPTURE(source);
   const fs::path path = data_dir / source;
-  const auto doc = nlohmann::json::parse(
-      autan::io::mesh_info_json(autan::io::read_mesh(path), autan::io::mesh_hash(path)));
+  const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(
+      autan::io::read_mesh(path), autan::io::mesh_hash(path), autan::io::mesh_bytes(path),
+      autan::io::mesh_logical_bytes(path), {}));
 
   CHECK(doc["schema"] == "autan.mesh-info/1");
   CHECK(doc["source"]["sha256"] == autan::io::mesh_hash(path));
+  // source.bytes: the file's size, or the sum of the polyMesh files the hash covers.
+  std::uintmax_t bytes = 0;
+  if (fs::is_directory(path)) {
+    for (const char* name : {"points", "faces", "owner", "neighbour", "boundary", "cellZones"}) {
+      if (fs::exists(path / name)) bytes += fs::file_size(path / name);
+    }
+  } else {
+    bytes = fs::file_size(path);
+  }
+  CHECK(doc["source"]["bytes"] == bytes);
   CHECK(doc["counts"]["cells"] == 216);
   const auto& types = doc["counts"]["cells_by_type"];
   CHECK(types["tetra"] == 96);
@@ -104,8 +117,9 @@ TEST_CASE("MeshInfo of the hybrid test mesh has its constructed counts", "[mesh-
 
 TEST_CASE("MeshInfo types follow the normalisation table", "[mesh-info]") {
   const fs::path path = data_dir / "hanging" / "hanging.fluent.msh";
-  const auto doc = nlohmann::json::parse(
-      autan::io::mesh_info_json(autan::io::read_mesh(path), autan::io::mesh_hash(path)));
+  const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(
+      autan::io::read_mesh(path), autan::io::mesh_hash(path), autan::io::mesh_bytes(path),
+      autan::io::mesh_logical_bytes(path), {}));
   CHECK(doc["source"]["format"] == "fluent");
   CHECK(doc["counts"]["cells_by_type"]["polyhedron"] == 1);
   CHECK(doc["counts"]["cells_by_type"]["hexa"] == 100);
@@ -141,7 +155,9 @@ TEST_CASE("Only cells with the topology of a standard shape count as that shape"
   cw.cell_zones.push_back(autan::CellZone{
       .name = "fluid", .type = "", .kind = autan::CellKind::unspecified, .provenance = {}});
   const autan::Mesh mesh = autan::assemble(autan::to_face_based(cw));
-  const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(mesh, std::string(64, '0')));
+  const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(
+      mesh, std::string(64, '0'), 1,
+      autan::io::LogicalBytes{.total = 1, .descriptors = 0, .zone_names = 0, .filtered = 0}, {}));
   CHECK(doc["counts"]["cells_by_type"]["hexa"] == 0);
   CHECK(doc["counts"]["cells_by_type"]["polyhedron"] == 1);
 }
@@ -157,8 +173,9 @@ TEST_CASE("MeshInfo omits cell zones without cells", "[mesh-info]") {
         "FoamFile { version 2.0; format ascii; class regIOobject; object cellZones; }\n"
         "2 ( fluid { type cellZone; cellLabels List<label> 27(" +
             labels + "); } unused { type cellZone; cellLabels List<label> 0(); } )\n");
-  const auto doc = nlohmann::json::parse(
-      autan::io::mesh_info_json(autan::io::read_mesh(dir), autan::io::mesh_hash(dir)));
+  const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(
+      autan::io::read_mesh(dir), autan::io::mesh_hash(dir), autan::io::mesh_bytes(dir),
+      autan::io::mesh_logical_bytes(dir), {}));
   REQUIRE(doc["cell_zones"].size() == 1);
   CHECK(doc["cell_zones"][0]["name"] == "fluid");
 }
@@ -170,7 +187,8 @@ TEST_CASE("MeshInfo lists periodic pairs and types their zones periodic", "[mesh
   cells.face_zones[1].kind = autan::BcKind::periodic;
   cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
   const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(
-      autan::assemble(autan::to_face_based(std::move(cells))), std::string(64, '0')));
+      autan::assemble(autan::to_face_based(std::move(cells))), std::string(64, '0'), 1,
+      autan::io::LogicalBytes{.total = 1, .descriptors = 0, .zone_names = 0, .filtered = 0}, {}));
   REQUIRE(doc["periodic"].size() == 1);
   CHECK(doc["periodic"][0] ==
         nlohmann::json{{"zones", {"xmin", "xmax"}},
@@ -248,7 +266,9 @@ TEST_CASE("The boundary surface closes the domain, outward, zone by zone", "[mes
     CHECK(next == header["nodes"]);
 
     // Zones: MeshInfo's boundary zones, their faces in a row.
-    const auto info = nlohmann::json::parse(autan::io::mesh_info_json(mesh, hash));
+    const auto info = nlohmann::json::parse(autan::io::mesh_info_json(
+        mesh, hash, 1,
+        autan::io::LogicalBytes{.total = 1, .descriptors = 0, .zone_names = 0, .filtered = 0}, {}));
     const auto& zones = header["zones"];
     REQUIRE(zones.size() == info["boundary_zones"].size());
     std::size_t first = 0;
@@ -339,4 +359,161 @@ TEST_CASE("The boundary surface closes the domain, outward, zone by zone", "[mes
   } catch (const autan::Error& e) {
     CHECK(e.code() == autan::ErrorCode::geometry_non_positive_volume);
   }
+}
+
+TEST_CASE("MeshInfo counts the nodes of every face", "[mesh-info]") {
+  // Tetrahedra have triangular faces only, hexahedra quadrilateral ones.
+  for (const auto& [mesh, nodes_per_face] :
+       {std::pair{"tet/polyMesh", 3}, std::pair{"hex/polyMesh", 4}}) {
+    CAPTURE(mesh);
+    const fs::path path = data_dir / mesh;
+    const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(
+        autan::io::read_mesh(path), autan::io::mesh_hash(path), autan::io::mesh_bytes(path),
+        autan::io::mesh_logical_bytes(path), {}));
+    CHECK(doc["counts"]["face_nodes"] ==
+          nodes_per_face * doc["counts"]["faces"].get<std::int64_t>());
+  }
+}
+
+TEST_CASE("MeshInfo counts the nodes the file holds, those no face uses too", "[mesh-info]") {
+  // tests/data/mesh/tet/polyMesh holds 27 points, every one on a face; the copy adds two that
+  // none uses, which assembly drops.
+  const fs::path original = data_dir / "tet" / "polyMesh";
+  const fs::path copy = fresh_dir("polyMesh");
+  for (const auto& entry : fs::directory_iterator(original))
+    fs::copy_file(entry.path(), copy / entry.path().filename());
+  std::ifstream in(original / "points", std::ios::binary);
+  std::string points((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const auto count = points.find("\n27\n(\n");
+  const auto end = points.rfind("\n)\n");
+  REQUIRE(count != std::string::npos);
+  REQUIRE(end != std::string::npos);
+  points.insert(end, "\n(5 5 5)\n(6 6 6)");
+  points.replace(count, 4, "\n29\n");
+  write(copy / "points", points);
+  for (const auto& [path, held] : {std::pair{original, 27}, std::pair{copy, 29}}) {
+    CAPTURE(path);
+    const auto doc = nlohmann::json::parse(autan::io::mesh_info_json(
+        autan::io::read_mesh(path), autan::io::mesh_hash(path), autan::io::mesh_bytes(path),
+        autan::io::mesh_logical_bytes(path), {}));
+    CHECK(doc["counts"]["nodes"] == 27);
+    CHECK(doc["counts"]["source_nodes"] == held);
+  }
+}
+
+TEST_CASE("A zone-groups sidecar gives MeshInfo its groups, checked", "[mesh-info][groups]") {
+  // The hybrid mesh copied with a sidecar next to it (mesh-info.md, Zone
+  // groups): a Gmsh file's is <file>.zones.json, a polyMesh directory's
+  // <directory>.zones.json.
+  const bool directory = GENERATE(false, true);
+  CAPTURE(directory);
+  const fs::path dir = fresh_dir("groups");
+  const fs::path mesh_path = directory ? dir / "polyMesh" : dir / "hybrid.ascii.msh";
+  fs::copy(directory ? data_dir / "hybrid" / "polyMesh" : data_dir / "hybrid" / "hybrid.ascii.msh",
+           mesh_path, fs::copy_options::recursive);
+  const fs::path sidecar = mesh_path.string() + ".zones.json";
+  const autan::Mesh mesh = autan::io::read_mesh(mesh_path);
+  const std::string hash = autan::io::mesh_hash(mesh_path);
+  const auto bytes = autan::io::mesh_bytes(mesh_path);
+  const auto logical = autan::io::mesh_logical_bytes(mesh_path);
+  const auto info = [&] {
+    return nlohmann::json::parse(autan::io::mesh_info_json(
+        mesh, hash, bytes, logical, {}, autan::io::read_zone_groups(mesh_path, mesh, hash)));
+  };
+
+  // No sidecar: no group.
+  CHECK(info()["groups"] == nlohmann::json::array());
+  CHECK(info()["groups_source"].is_null());
+
+  // Groups sorted by name, overlapping, zones in MeshInfo order whatever the
+  // file's; the source is the sidecar's path and the hash of its bytes.
+  nlohmann::json doc{
+      {"schema", "autan.zone-groups/1"},
+      {"mesh_sha256", hash},
+      {"provenance", {{"url", "https://example.org/grid"}, {"note", "test"}}},
+      {"groups",
+       {{"walls", {"zmin", "ymin"}}, {"x.sides", {"xmax", "xmin"}}, {"all-x_1", {"xmin"}}}}};
+  write(sidecar, doc.dump());
+  const auto with = info();
+  CHECK(with["groups"] == nlohmann::json::parse(R"([
+    {"name": "all-x_1", "zones": ["xmin"]},
+    {"name": "walls", "zones": ["ymin", "zmin"]},
+    {"name": "x.sides", "zones": ["xmin", "xmax"]}])"));
+  CHECK(with["groups_source"]["path"] == fs::canonical(mesh_path).string() + ".zones.json");
+  // Given as its OpenFOAM case directory, the polyMesh directory's sidecar.
+  if (directory) {
+    const fs::path case_dir = dir / "case";
+    fs::create_directories(case_dir / "constant");
+    fs::rename(mesh_path, case_dir / "constant" / "polyMesh");
+    fs::rename(sidecar, case_dir / "constant" / "polyMesh.zones.json");
+    CHECK(nlohmann::json::parse(autan::io::mesh_info_json(
+              mesh, hash, bytes, logical, {},
+              autan::io::read_zone_groups(case_dir, mesh, hash)))["groups"] == with["groups"]);
+    fs::rename(case_dir / "constant" / "polyMesh", mesh_path);
+    fs::rename(case_dir / "constant" / "polyMesh.zones.json", sidecar);
+  }
+  // Through a symlink to the mesh, the sidecar next to the mesh file itself.
+  const fs::path link = dir / "link";
+  fs::create_symlink(mesh_path, link);
+  CHECK(nlohmann::json::parse(autan::io::mesh_info_json(
+            mesh, hash, bytes, logical, {},
+            autan::io::read_zone_groups(link, mesh, hash)))["groups"] == with["groups"]);
+  CHECK(with["groups_source"]["sha256"] == autan::io::mesh_hash(sidecar));
+  CHECK(with["groups_source"]["provenance"] == doc["provenance"]);
+
+  // Each fault, with its code.
+  const auto refused = [&](const std::string& text, autan::ErrorCode code) {
+    write(sidecar, text);
+    try {
+      (void)autan::io::read_zone_groups(mesh_path, mesh, hash);
+      FAIL("expected an error for " << text);
+    } catch (const autan::Error& e) {
+      CHECK(e.code() == code);
+    }
+  };
+  const auto edited = [&](const std::function<void(nlohmann::json&)>& edit) {
+    nlohmann::json d = doc;
+    edit(d);
+    return d.dump();
+  };
+  using autan::ErrorCode;
+  refused("{not json", ErrorCode::zone_groups_invalid);
+  // At most 1 MiB, the same document padded with whitespace: refused one byte over, read at it.
+  constexpr std::size_t limit = std::size_t{1} << 20;
+  const std::string compact = doc.dump();
+  refused(compact + std::string(limit + 1 - compact.size(), ' '), ErrorCode::zone_groups_invalid);
+  write(sidecar, compact + std::string(limit - compact.size(), ' '));
+  CHECK(info()["groups"] == with["groups"]);
+  refused(edited([](auto& d) { d["extra"] = 1; }), ErrorCode::zone_groups_invalid);
+  refused(edited([](auto& d) { d.erase("provenance"); }), ErrorCode::zone_groups_invalid);
+  refused(edited([](auto& d) { d["schema"] = "autan.zone-groups/2"; }),
+          ErrorCode::zone_groups_invalid);
+  refused(edited([](auto& d) { d["groups"]["walls"] = "ymin"; }), ErrorCode::zone_groups_invalid);
+  refused(edited([](auto& d) { d["mesh_sha256"] = std::string(64, '0'); }),
+          ErrorCode::zone_groups_other_mesh);
+  refused(edited([](auto& d) { d["groups"]["walls"] = {"ymin", "nowhere"}; }),
+          ErrorCode::zone_groups_bad_group);
+  refused(edited([](auto& d) { d["groups"]["walls"] = nlohmann::json::array(); }),
+          ErrorCode::zone_groups_bad_group);
+  refused(edited([](auto& d) { d["groups"]["walls"] = {"ymin", "ymin"}; }),
+          ErrorCode::zone_groups_bad_group);
+  for (const char* name : {"-walls", "wing*", "a b", ""}) {
+    CAPTURE(name);
+    refused(edited([&](auto& d) { d["groups"][name] = {"ymin"}; }),
+            ErrorCode::zone_groups_bad_group);
+  }
+  // A sidecar that is there but cannot be read: a link to itself.
+  fs::remove(sidecar);
+  fs::create_symlink(sidecar.filename(), sidecar);
+  try {
+    (void)autan::io::read_zone_groups(mesh_path, mesh, hash);
+    FAIL("expected E0136 for a looping link");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == ErrorCode::zone_groups_invalid);
+  }
+  fs::remove(sidecar);
+  // A name given twice, which a JSON parser would merge.
+  refused(R"({"schema": "autan.zone-groups/1", "mesh_sha256": ")" + hash +
+              R"(", "provenance": {}, "groups": {"walls": ["ymin"], "walls": ["zmin"]}})",
+          ErrorCode::zone_groups_duplicate_name);
 }

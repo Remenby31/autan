@@ -9,9 +9,18 @@ from typing import Annotated, Any, Literal, Self
 
 import pint
 import rfc8785
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_validator,
+)
 
 from autan.errors import CaseError, Diagnostic, Location, diagnostic
+from autan.texts import bounded
 from autan.units import K, UnitOfLength, deg, fail, m, quantity, s, si, validate_number
 
 SCHEMA_ID = "autan.case/1"
@@ -42,8 +51,8 @@ PositiveNumber = Annotated[
 Gamma = Annotated[float, Field(gt=1), BeforeValidator(lambda v: validate_number(v, positive=True))]
 Count = Annotated[int, Field(strict=True, ge=1, le=MAX_INTEGER)]
 Index = Annotated[int, Field(strict=True, ge=0, le=MAX_INTEGER)]
-Pattern = Annotated[str, Field(min_length=1)]
-Name = Annotated[str, Field(min_length=1)]
+Pattern = Annotated[str, Field(min_length=1), AfterValidator(bounded)]
+Name = Annotated[str, Field(min_length=1), AfterValidator(bounded)]
 
 _RANGE_ERRORS = frozenset({"greater_than", "greater_than_equal", "less_than", "less_than_equal"})
 _TAGS = ("kind", "model", "law")
@@ -352,12 +361,36 @@ class Symmetry(Spec):
     kind: Literal["symmetry"] = "symmetry"
 
 
+def _one_of(key: str) -> ConfigDict:
+    """The model's JSON Schema requires exactly one of ``key`` and ``group``."""
+
+    def extra(schema: dict[str, Any]) -> None:
+        schema["oneOf"] = [{"required": [key]}, {"required": ["group"]}]
+
+    return ConfigDict(**Spec.model_config, json_schema_extra=extra)
+
+
+def one_selector(zones: str | None, group: str | None, key: str) -> None:
+    """A zone selection gives exactly one of a glob over zone names (``key``) and ``group``."""
+    if (zones is None) == (group is None):
+        fail("E0003", "give exactly one of {key} or group", key=key)
+
+
 class PointVortex(Spec):
     """The point-vortex correction of a 2D farfield: the far field of a vortex at ``center``
-    whose circulation is that of the lift on the wall and slip zones matching ``surfaces``."""
+    whose circulation is that of the lift on the wall and slip zones matching ``surfaces``
+    (or the zones of the groups matching ``group``)."""
 
-    surfaces: Pattern
+    surfaces: Pattern | None = None
+    group: Pattern | None = None
     center: tuple[Coordinate, Coordinate, Coordinate]
+
+    model_config = _one_of("surfaces")
+
+    @model_validator(mode="after")
+    def _selector(self) -> Self:
+        one_selector(self.surfaces, self.group, "surfaces")
+        return self
 
 
 class Farfield(Spec):
@@ -397,8 +430,16 @@ Condition = Annotated[
 
 
 class BoundaryRule(Spec):
-    zones: Pattern
+    zones: Pattern | None = None
+    group: Pattern | None = None
     condition: Condition
+
+    model_config = _one_of("zones")
+
+    @model_validator(mode="after")
+    def _selector(self) -> Self:
+        one_selector(self.zones, self.group, "zones")
+        return self
 
 
 class State(Spec):
@@ -430,16 +471,25 @@ class CellZoneRule(Spec):
 
 
 class Forces(Spec):
-    """Integrated forces and moments over the boundary zones matching ``surfaces``."""
+    """Integrated forces and moments over the boundary zones matching ``surfaces`` (or the
+    zones of the groups matching ``group``)."""
 
     kind: Literal["forces"] = "forces"
     name: Name = "forces"
-    surfaces: Pattern
+    surfaces: Pattern | None = None
+    group: Pattern | None = None
     every: Count = 1
     ref_area: Area | None = None
     moment_center: tuple[Coordinate, Coordinate, Coordinate] = Field(
         default_factory=lambda: (0.0 * m, 0.0 * m, 0.0 * m)
     )
+
+    model_config = _one_of("surfaces")
+
+    @model_validator(mode="after")
+    def _selector(self) -> Self:
+        one_selector(self.surfaces, self.group, "surfaces")
+        return self
 
 
 Monitor = Annotated[Forces, Field(discriminator="kind")]

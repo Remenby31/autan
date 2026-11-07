@@ -364,7 +364,7 @@ def test_runner_stops_su2_where_the_criterion_is_met(tmp_path: Path) -> None:
     assert program == _watcher("campaign.sh")
     (tmp_path / "watch.awk").write_text(program)
 
-    def stops(residuals: dict[str, np.ndarray]) -> bool:
+    def stops(residuals: dict[str, np.ndarray], skip_zero: int = 0) -> bool:
         _history_csv(tmp_path / "history.csv", residuals)
         cmd = [
             "awk",
@@ -373,6 +373,8 @@ def test_runner_stops_su2_where_the_criterion_is_met(tmp_path: Path) -> None:
             "orders=10",
             "-v",
             "stall=2000",
+            "-v",
+            f"skipzero={skip_zero}",
             "-f",
             "watch.awk",
             "history.csv",
@@ -395,6 +397,15 @@ def test_runner_stops_su2_where_the_criterion_is_met(tmp_path: Path) -> None:
     # A residual that stops falling is a stall.
     flat = np.maximum(1e-2 * 0.99 ** np.arange(4000.0), 1e-6)
     assert stops({"d": flat, "u": flat, "w": flat, "e": flat})
+    # An exempt equation that wakes to 1e-11 and stays there: by default its drop never improves
+    # and stops the run; with skipzero=1 the stall is judged on the others, still falling, and the
+    # woken equation still has to meet the criterion, so a run whose other equations have met it
+    # goes on.
+    woken = np.full(4000, 1e-11)
+    woken[0] = 1e-15
+    assert stops({"d": slow, "u": slow, "w": woken, "e": slow})
+    assert not stops({"d": slow, "u": slow, "w": woken, "e": slow}, skip_zero=1)
+    assert not stops({**met, "w": woken[:600]}, skip_zero=1)
 
 
 def _geometric_like(residuals: dict[str, np.ndarray]) -> history.History:
@@ -514,9 +525,9 @@ def test_compare_autan_with_an_su2_study(tmp_path: Path) -> None:
         _write_run(run, cl, cd, converged=True)
     (tmp_path / "su2.json").write_text(json.dumps(su2.study(su2_runs)))
 
-    def autan_run(case: autan.Case, level: int) -> Path:
+    def autan_run(case: autan.Case, level: int, scale: float = 1.0) -> Path:
         path = tmp_path / "family" / family.levels[level].file
-        info = mesh_info(meshes[level], path, "gmsh")
+        info = mesh_info(meshes[level], path, "gmsh", scale)
         return case.run(info, backend=autan.FakeBackend(), runs=tmp_path / "autan").path
 
     def mesh(level: int) -> str:
@@ -587,7 +598,7 @@ def test_compare_autan_with_an_su2_study(tmp_path: Path) -> None:
     millimetres.monitor(
         autan.forces("airfoil", ref_area=1.0 * m * m, moment_center=(0.25 * m, 0 * m, 0 * m))
     )
-    scaled = autan_run(millimetres, 0)
+    scaled = autan_run(millimetres, 0, 1e-3)
     odd_runs = (autan_run(plain, 0), autan_run(cases.case("m050-a125", mesh(0)), 0), loose, scaled)
     for odd in odd_runs:
         with pytest.raises(VVError) as err:
@@ -680,3 +691,231 @@ def test_wall_cp_is_compared_face_by_face(tmp_path: Path) -> None:
     assert moved["shock_upper"]["su2"] > moved["shock_upper"]["autan"]
     assert moved["all"]["max_abs"] == pytest.approx(0.5, abs=1e-9)
     assert moved["outside_shocks"]["max_abs"] < 1e-9
+
+
+def _plot3d_2d(path: Path, x: np.ndarray, y: np.ndarray) -> None:
+    jd, id_ = x.shape
+    values = " ".join(f"{v:.17g}" for v in np.concatenate([x.ravel(), y.ravel()]))
+    path.write_text(f"1\n{id_} {jd}\n{values}\n")
+
+
+def test_flat_plate_grid_converts_with_the_tmr_boundaries(tmp_path: Path) -> None:
+    from autan_vv.su2 import flatplate  # noqa: PLC0415
+
+    # A 2DZP-like grid: x from -1/3 to 2 with the plate from x = 0, y from 0 up to 1, stretched.
+    xs = np.array([-1.0 / 3.0, -0.1, 0.0, 0.5, 1.0, 1.5, 2.0])
+    ys = np.array([0.0, 0.01, 0.1, 0.4, 1.0])
+    x, y = np.meshgrid(xs, ys)
+    grid = tmp_path / "plate.p2dfmt"
+    _plot3d_2d(grid, x, y)
+    record = flatplate.convert(grid, tmp_path / "plate.su2")
+    dim, elements, points, markers = _read_su2_mesh(tmp_path / "plate.su2")
+    assert dim == 2
+    assert (record.idim, record.jdim) == (7, 5)
+    assert record.file_sha256 == hashlib.sha256((tmp_path / "plate.su2").read_bytes()).hexdigest()
+    assert len(elements) == 6 * 4
+    areas = np.array([_shoelace(points[q, :2]) for q in elements[:, 1:5]])
+    assert np.all(areas > 0.0)
+    assert areas.sum() == pytest.approx((2.0 + 1.0 / 3.0) * 1.0, rel=1e-14)
+
+    def nodes(name: str) -> np.ndarray:
+        return points[np.unique(markers[name][:, 1:]), :2]
+
+    assert {k: len(v) for k, v in markers.items()} == {
+        "inlet": 4, "outlet": 4, "farfield": 6, "symmetry": 2, "wall": 4
+    }  # fmt: skip
+    assert np.all(nodes("wall")[:, 1] == 0.0)
+    assert (nodes("wall")[:, 0].min(), nodes("wall")[:, 0].max()) == (0.0, 2.0)
+    assert np.all(nodes("symmetry")[:, 0] <= 0.0)
+    assert np.all(nodes("inlet")[:, 0] == -1.0 / 3.0)
+    assert np.all(nodes("outlet")[:, 0] == 2.0)
+    assert np.all(nodes("farfield")[:, 1] == 1.0)
+    # Every boundary edge keeps the domain on its left, as in its counterclockwise quadrangle.
+    directed = {(int(q[k]), int(q[(k + 1) % 4])) for q in elements[:, 1:5] for k in range(4)}
+    for marker in markers.values():
+        assert all((int(a), int(b)) in directed for _, a, b in marker)
+    # The same grid written otherwise (points renumbered, farfield edges reversed, as in SU2's own
+    # 137x97 file) is the same grid; a moved point is not.
+    perm = np.random.default_rng(0).permutation(len(points))
+    new = np.empty_like(perm)
+    new[perm] = np.arange(len(perm))
+
+    def rewrite(path: Path, pts: np.ndarray) -> None:
+        lines = ["NDIME= 2", f"NELEM= {len(elements)}"]
+        lines += [f"9 {' '.join(str(new[v]) for v in q[1:5])} {k}" for k, q in enumerate(elements)]
+        lines += [f"NPOIN= {len(pts)}"]
+        lines += [f"{pts[p, 0]:.17g} {pts[p, 1]:.17g} {k}" for k, p in enumerate(perm)]
+        lines += [f"NMARK= {len(markers)}"]
+        for name, m in markers.items():
+            edges = m[:, [2, 1]] if name == "farfield" else m[:, 1:]
+            lines += [f"MARKER_TAG= {name}", f"MARKER_ELEMS= {len(m)}"]
+            lines += [f"3 {new[a]} {new[b]}" for a, b in edges]
+        path.write_text("\n".join(lines) + "\n")
+
+    pts = points[:, :2].astype(float)
+    rewrite(tmp_path / "theirs.su2", pts)
+    check = flatplate.same_grid(tmp_path / "plate.su2", tmp_path / "theirs.su2")
+    assert check["same"]
+    assert check["markers_oriented_otherwise"] == ["farfield"]
+    moved = pts.copy()
+    moved[markers["wall"][0, 2], 0] += 1e-3
+    rewrite(tmp_path / "moved.su2", moved)
+    assert not flatplate.same_grid(tmp_path / "plate.su2", tmp_path / "moved.su2")["same"]
+    # A grid whose plate does not reach x = 2 is not the 2DZP case.
+    _plot3d_2d(grid, x * 0.9, y)
+    with pytest.raises(VVError) as err:
+        flatplate.convert(grid, tmp_path / "short.su2")
+    assert err.value.code == "V0902"
+
+
+def test_flat_plate_configuration_and_skin_friction(tmp_path: Path) -> None:
+    from autan_vv.su2 import flatplate  # noqa: PLC0415
+
+    published = (
+        "% published\nSOLVER= RANS\nKIND_TURB_MODEL= SA\nMACH_NUMBER= 0.2\n"
+        "MARKER_HEATFLUX= ( wall, 0.0 )\nMARKER_INLET= ( inlet, 302.4, 118309.784, 1.0, 0.0, 0.0 )\n"
+        "MARKER_OUTLET= ( outlet, 115056.0, farfield, 115056.0 )\nMARKER_SYM= ( symmetry )\n"
+        "CFL_NUMBER= 1000.0\nMESH_FILENAME= theirs.su2\nITER= 1000\n"
+    )
+    before = config.options(published)
+    after = config.options(flatplate.configure(published, "plate.su2"))
+    may_change = {"MESH_FILENAME", "MESH_FORMAT", "ITER", "CONV_FIELD", "CONV_RESIDUAL_MINVAL",
+                  "HISTORY_OUTPUT", "TABULAR_FORMAT", "CONV_FILENAME", "OUTPUT_FILES",
+                  "OUTPUT_WRT_FREQ", "SURFACE_FILENAME", "VOLUME_OUTPUT",
+                  "WRT_RESTART_COMPACT"}  # fmt: skip
+    assert {k: v for k, v in before.items() if k not in may_change} == {
+        k: v for k, v in after.items() if k not in may_change
+    }
+    standard = config.options(flatplate.configure(published, "plate.su2", sa_options="WITHFT2"))
+    assert {k: v for k, v in standard.items() if k != "SA_OPTIONS"} == after
+    assert standard["SA_OPTIONS"] == "WITHFT2"
+    assert after["MESH_FILENAME"] == "plate.su2"
+    assert "REL_RMS_NU_TILDE" in after["CONV_FIELD"]
+    with pytest.raises(VVError) as err:
+        flatplate.configure(published.replace("( symmetry )", "( bottom )"), "plate.su2")
+    assert err.value.code == "V0903"
+    # cf at the TMR station, linear between the wall nodes around it.
+    surface = tmp_path / "surface.csv"
+    xs = np.linspace(0.0, 2.0, 9)
+    rows = ['"PointID","x","y","Skin_Friction_Coefficient_x"']
+    rows += [f"{k}, {xv:.17g}, 0.0, {0.004 - 0.001 * xv:.17g}" for k, xv in enumerate(xs[::-1])]
+    surface.write_text("\n".join(rows) + "\n")
+    # TMR's station (cf_convergence.dat).
+    assert flatplate.CF_STATION == 0.970084071
+    assert flatplate.skin_friction(surface) == pytest.approx(0.004 - 0.001 * 0.970084071, rel=1e-14)
+    # SU2 v8.6.0's own outputs of the 35x25 grid, configured by `configure`: the surface file
+    # carries the skin friction, the history the SA residual.
+    real = DATA / "su2-v8.6.0-flatplate-35x25-surface.csv"
+    with real.open() as f:
+        wall = sorted(
+            (float(r["x"]), float(r["Skin_Friction_Coefficient_x"]))
+            for r in csv.DictReader(f, skipinitialspace=True)
+        )
+    left = max(w for w in wall if w[0] <= flatplate.CF_STATION)
+    right = min(w for w in wall if w[0] > flatplate.CF_STATION)
+    cf = flatplate.skin_friction(real)
+    assert min(left[1], right[1]) <= cf <= max(left[1], right[1])
+    run = history.read_su2(DATA / "su2-v8.6.0-flatplate-35x25-history.csv")
+    assert set(run.residuals) == {"density", "momentum-x", "momentum-z", "energy", "nu-tilde"}
+    assert history.converged_at(run, 10.0) == len(run.iterations) - 1
+
+
+# TMR, FlatPlate/SA/cf_convergence.dat and drag_convergence.dat: CFL3D on the five grids (cells).
+CFL3D_CF = {816: 0.279568508e-2, 3264: 0.272834697e-2, 13056: 0.271115173e-2,
+            52224: 0.270673749e-2, 208896: 0.270562153e-2}  # fmt: skip
+CFL3D_CD = {816: 0.295438152e-2, 3264: 0.288437885e-2, 13056: 0.286620917e-2,
+            52224: 0.286130951e-2, 208896: 0.285985288e-2}  # fmt: skip
+
+
+def _flat_plate_run(
+    run: Path, model: str, cells: int, drop: float, first: float = -2.0, nu: float = 0.0
+) -> None:
+    from autan_vv.su2 import flatplate  # noqa: PLC0415
+
+    run.mkdir(parents=True)
+    (run / "m.su2").write_text(f"mesh {cells}\n")
+    (run / "case.cfg").write_text("MESH_FILENAME= m.su2\n")
+    sha = {f: hashlib.sha256((run / f).read_bytes()).hexdigest() for f in ("m.su2", "case.cfg")}
+    (run / "level.json").write_text(json.dumps({
+        "model": model, "cells": cells, "case_sha256": sha["case.cfg"],
+        "published_sha256": flatplate.PUBLISHED_SHA256,
+        "mesh": {"file_sha256": sha["m.su2"], "source_sha256": "s"},
+    }))  # fmt: skip
+    (run / "provenance.json").write_text(json.dumps({
+        "case_sha256": sha["case.cfg"], "mesh_sha256": sha["m.su2"], "exit_status": 0,
+        "su2": "v8.6.0", "image_id": "sha256:i",
+    }))  # fmt: skip
+    header = (DATA / "su2-v8.6.0-flatplate-35x25-history.csv").read_text().split("\n")[0]
+    names = [h.strip().strip('"') for h in header.split(",")]
+    lines = [header]
+    for i in range(30):
+        rms = first - drop * i / 29
+        row = {"Inner_Iter": i, "Time(sec)": 0.01, "CD": CFL3D_CD[cells]}
+        lines.append(",".join(
+            str(row.get(n, rms + nu * (n == "rms[nu]") if n.startswith("rms[") else 0.0))
+            for n in names
+        ))  # fmt: skip
+    (run / "history.csv").write_text("\n".join(lines) + "\n")
+    rows = ['"PointID","x","y","Skin_Friction_Coefficient_x"']
+    rows += [f"{k}, {x}, 0.0, {CFL3D_CF[cells]!r}" for k, x in enumerate((0.0, 0.5, 1.5, 2.0))]
+    (run / f"{flatplate.SURFACE}.csv").write_text("\n".join(rows) + "\n")
+
+
+def test_flat_plate_report_against_tmr(tmp_path: Path) -> None:
+    from autan_vv.su2 import flatplate  # noqa: PLC0415
+
+    cache = tmp_path / "cache"
+    (cache / flatplate.CASE).mkdir(parents=True)
+    for name in ("cf_convergence.dat", "drag_convergence.dat"):
+        shutil.copy(DATA / f"tmr-flatplate-sa-{name}", cache / flatplate.CASE / name)
+    root = tmp_path / "plate"
+    for model in flatplate.MODELS:
+        for cells in CFL3D_CF:
+            _flat_plate_run(root / model / f"n{cells}", model, cells, drop=11.0)
+    out = tmp_path / "report.json"
+    # SU2 giving CFL3D's values on every grid has CFL3D's continuum (acceptance.md: cf 2.70524e-3,
+    # CD 2.85924e-3), no gap to CFL3D, and passes the gate.
+    argv = ["su2-flatplate", "results", str(root), "--cache", str(cache), "--out", str(out)]
+    assert main(argv) == 0
+    model = json.loads(out.read_text())["models"]["sa-noft2"]
+    assert model["continuum"]["cf"]["estimate"] == pytest.approx(2.70524e-3, abs=5e-9)
+    assert model["continuum"]["cd"]["estimate"] == pytest.approx(2.85924e-3, abs=5e-9)
+    assert all(lv["gap"]["CFL3D"] == {"cf": 0.0, "cd": 0.0} for lv in model["levels"])
+    assert model["pass"]
+    # A variant whose first residuals are three orders lower stops 8.5 orders down, at or below the
+    # levels the published runs had at the criterion: not converged by the protocol's rule, so no
+    # estimate, but converged by the amended one (#195), with CFL3D's continuum again. The
+    # published runs meet the criterion at row 27 (-2 - 11 * 27/29 <= -12), at -12.24; the variant
+    # reaches that at row 25 (-5 - 8.5 * 25/29), its 26th iteration.
+    variant = tmp_path / "variant"
+    for cells in CFL3D_CF:
+        _flat_plate_run(variant / "sa-noft2" / f"n{cells}", "sa-noft2", cells, drop=8.5, first=-5.0)
+    with pytest.raises(SystemExit):
+        main(["su2-flatplate", "results", str(variant), "--cache", str(cache), "--models",
+              "sa-noft2", "--reference", str(root), "--out", str(out)])  # fmt: skip
+    model = json.loads(out.read_text())["models"]["sa-noft2"]
+    assert model["continuum"]["cf"] == {"error": "not converged"}
+    assert [lv["amended"]["iterations"] for lv in model["levels"]] == [26] * 5
+    assert model["amended"]["continuum"]["cf"]["estimate"] == pytest.approx(2.70524e-3, abs=5e-9)
+    assert model["amended"]["pass"]
+    # On the finest grid the SA residual alone stays above its threshold: not converged, no estimate.
+    shutil.rmtree(variant / "sa-noft2" / "n208896")
+    _flat_plate_run(
+        variant / "sa-noft2" / "n208896", "sa-noft2", 208896, drop=8.5, first=-5.0, nu=2.0
+    )
+    report = flatplate.results(variant, cache, ("sa-noft2",), reference=root)["models"]["sa-noft2"]
+    assert not report["levels"][-1]["amended"]["converged"]
+    assert report["amended"]["continuum"]["cf"] == {"error": "not converged"}
+    # A finest run that did not converge gives no estimate, not one from coarser grids.
+    shutil.rmtree(root / "sa" / "n208896")
+    _flat_plate_run(root / "sa" / "n208896", "sa", 208896, drop=5.0)
+    with pytest.raises(SystemExit):
+        main(argv)
+    report = flatplate.results(root, cache)["models"]["sa"]
+    assert report["continuum"]["cf"] == {"error": "not converged"}
+    assert not report["pass"]
+    # A configuration changed after the run is refused.
+    (root / "sa" / "n816" / "case.cfg").write_text("MESH_FILENAME= m.su2\nCFL_NUMBER= 5\n")
+    with pytest.raises(VVError) as err:
+        flatplate.results(root, cache)
+    assert err.value.code == "V0904"

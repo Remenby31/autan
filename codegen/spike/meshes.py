@@ -62,6 +62,67 @@ def to_faces(
     )
 
 
+def fan_pair(m: int) -> FaceArrays:
+    """Two polyhedral cells, the slabs z in [0, 1] and [1, 2] over [0, m] x [0, 1], sharing the
+    m + 1 triangles of a fan about the node (0, 0, 1): every shared face touches that node."""
+    pts = [(0.0, 0.0, 0.0), (m, 0.0, 0.0), (m, 1.0, 0.0), (0.0, 1.0, 0.0)]
+    pts += [(0.0, 0.0, 2.0), (m, 0.0, 2.0), (m, 1.0, 2.0), (0.0, 1.0, 2.0)]
+    hub, corner = 8, 9
+    pts += [(0.0, 0.0, 1.0), (m, 0.0, 1.0)]
+    rim = list(range(10, 10 + m + 1))
+    pts += [(float(i), 1.0, 1.0) for i in range(m + 1)]
+    fan = [[hub, rim[i + 1], rim[i]] for i in range(m)] + [[hub, corner, rim[m]]]
+    lower = [
+        [0, 3, 2, 1],
+        [0, 1, corner, hub],
+        [3, *rim, 2],
+        [0, hub, rim[0], 3],
+        [1, 2, rim[m], corner],
+        *fan,
+    ]
+    upper = [
+        [4, 5, 6, 7],
+        [hub, corner, 5, 4],
+        [rim[0], 7, 6, *rim[:0:-1]],
+        [hub, 4, 7, rim[0]],
+        [corner, rim[m], 6, 5],
+        *([t[0], t[2], t[1]] for t in fan),
+    ]
+    return to_faces(np.array(pts, dtype=np.float64), [lower, upper])
+
+
+def hub_row(d: int) -> FaceArrays:
+    """A hub cell [0, d] x [0, 1] x [0, 1] with d unit cubes on its top, cube i over [i, i + 1]:
+    every cube shares one face with the hub and its sides with its neighbours."""
+    pts = [(0.0, 0.0, 0.0), (d, 0.0, 0.0), (d, 1.0, 0.0), (0.0, 1.0, 0.0)]
+
+    def at(i: int, y: int, z: int) -> int:  # node (i, y, z) for z in {1, 2}
+        return 4 + 4 * i + 2 * (z - 1) + y
+
+    for i in range(d + 1):
+        pts += [(i, 0.0, 1.0), (i, 1.0, 1.0), (i, 0.0, 2.0), (i, 1.0, 2.0)]
+    hub = [
+        [0, 3, 2, 1],
+        [0, 1, *(at(i, 0, 1) for i in range(d, -1, -1))],
+        [3, *(at(i, 1, 1) for i in range(d + 1)), 2],
+        [0, at(0, 0, 1), at(0, 1, 1), 3],
+        [1, 2, at(d, 1, 1), at(d, 0, 1)],
+        *([at(i, 0, 1), at(i + 1, 0, 1), at(i + 1, 1, 1), at(i, 1, 1)] for i in range(d)),
+    ]
+    cubes = [
+        [
+            [at(i, 0, 1), at(i, 1, 1), at(i + 1, 1, 1), at(i + 1, 0, 1)],
+            [at(i, 0, 2), at(i + 1, 0, 2), at(i + 1, 1, 2), at(i, 1, 2)],
+            [at(i, 0, 1), at(i + 1, 0, 1), at(i + 1, 0, 2), at(i, 0, 2)],
+            [at(i, 1, 1), at(i, 1, 2), at(i + 1, 1, 2), at(i + 1, 1, 1)],
+            [at(i, 0, 1), at(i, 0, 2), at(i, 1, 2), at(i, 1, 1)],
+            [at(i + 1, 0, 1), at(i + 1, 1, 1), at(i + 1, 1, 2), at(i + 1, 0, 2)],
+        ]
+        for i in range(d)
+    ]
+    return to_faces(np.array(pts, dtype=np.float64), [hub, *cubes])
+
+
 def _grid(n: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]:
     g = np.linspace(0.0, 1.0, n + 1)
     x, y, z = np.meshgrid(g, g, g, indexing="ij")

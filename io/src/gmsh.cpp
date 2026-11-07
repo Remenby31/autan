@@ -19,6 +19,7 @@
 #include "autan/core/cellwise.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "cursor.hpp"
+#include "text_limit.hpp"
 
 namespace autan::io {
 namespace {
@@ -82,6 +83,7 @@ class GmshReader {
     while (c_.peek() != '\0') {
       const std::string_view name = c_.token();
       if (name.empty() || name.front() != '$') c_.fail("expected a section header");
+      check_text(c_.path(), "section name", name.size() - 1);  // before any copy (E0122)
       const std::string section(name.substr(1));
       if (section == "MeshFormat") {
         mesh_format();
@@ -91,12 +93,16 @@ class GmshReader {
       } else if (section == "PhysicalNames") {
         physical_names();
       } else if (section == "Entities") {
-        entities();
+        // Read once the elements say which entities they use (entities_used).
+        entities_at_ = c_.position();
+        skip_section(section);
+        continue;
       } else if (section == "Nodes") {
         nodes();
         seen_nodes = true;
       } else if (section == "Elements") {
         if (!seen_nodes) c_.fail("$Elements before $Nodes");
+        if (entities_at_ != std::string::npos) block_entities();
         elements();
         seen_elements = true;
       } else if (section == "Periodic") {
@@ -170,10 +176,10 @@ class GmshReader {
         }
       }
       const auto group = [&](int entity) {
-        const auto it = entity_physical_.find({2, entity});
-        if (it == entity_physical_.end() || it->second == 0)
+        const int physical = physical_of(2, entity);
+        if (physical == 0)
           c_.fail("periodic surface " + std::to_string(entity) + " is in no physical group");
-        return it->second;
+        return physical;
       };
       const std::array<double, 3> t{a[3], a[7], a[11]};
       const auto [it, added] = periodic_links_.try_emplace({group(master), group(tag)}, t);
@@ -189,18 +195,58 @@ class GmshReader {
     c_.advance(at + end.size() - c_.position());
   }
 
+  void sort_entities() {
+    if (entities_sorted_) return;
+    std::ranges::stable_sort(entity_physical_, {},
+                             [](const auto& e) { return std::pair(e[0], e[1]); });
+    entities_sorted_ = true;
+  }
+
+  // The physical group of entity (dim, tag), 0 when it has none.
+  int physical_of(int dim, int tag) {
+    sort_entities();
+    const auto key = std::pair(dim, tag);
+    const auto last = std::ranges::upper_bound(entity_physical_, key, {},
+                                               [](const auto& e) { return std::pair(e[0], e[1]); });
+    if (last == entity_physical_.begin()) return 0;
+    const auto& e = *std::prev(last);
+    return std::pair(e[0], e[1]) == key ? e[2] : 0;
+  }
+
+  // $PhysicalNames comes before the elements that use them: the section is checked here and
+  // read again once the zones are known, so that a name no zone takes is never kept.
   void physical_names() {
-    const auto n = c_.integer<std::size_t>(10, "");
+    names_at_ = c_.position();
+    for_each_name(c_, [](int, int, std::string_view) {});
+  }
+
+  template <class Visit>
+  void for_each_name(Cursor& c, const Visit& visit) const {
+    const auto n = c.integer<std::size_t>(10, "");
     for (std::size_t i = 0; i < n; ++i) {
-      const int dim = c_.integer<int>(10, "");
-      const int tag = c_.integer<int>(10, "");
-      if (tag <= 0) c_.fail("non-positive physical tag " + std::to_string(tag));
-      c_.skip_space();
-      const std::string_view name = c_.line();
+      const int dim = c.integer<int>(10, "");
+      const int tag = c.integer<int>(10, "");
+      if (tag <= 0) c.fail("non-positive physical tag " + std::to_string(tag));
+      c.skip_space();
+      const std::string_view name = c.line();
       if (name.size() < 2 || name.front() != '"' || name.back() != '"')
-        c_.fail("unquoted physical name");
-      names_[{dim, tag}] = std::string(name.substr(1, name.size() - 2));
+        c.fail("unquoted physical name");
+      check_text(c.path(), "physical name", name.size() - 2);
+      // An empty name is no name: the group is named by its tag (mesh-info.md, names are
+      // non-empty).
+      const std::string tag_name = std::to_string(tag);
+      visit(dim, tag,
+            name.size() > 2 ? name.substr(1, name.size() - 2) : std::string_view(tag_name));
     }
+  }
+
+  // Every physical name, as for_each_name gives them, when the file has the section.
+  template <class Visit>
+  void names(const Visit& visit) const {
+    if (names_at_ == std::string::npos) return;
+    Cursor c(data_, c_.path());
+    c.advance(names_at_);
+    for_each_name(c, visit);
   }
 
   // Integers stored as int in binary files, ASCII text otherwise.
@@ -215,7 +261,61 @@ class GmshReader {
     return values * (binary_ ? 4 : 2);
   }
 
-  void entities() {
+  // The physical groups of the entities of dimension 2 or 3 that a block of elements names
+  // (entities): the blocks' (dim, tag) are gathered max_block_entities distinct at a time, in
+  // storage sized once, and looked up in $Entities, so what is held beside the groups kept is
+  // fixed. The blocks' elements are read past.
+  void block_entities() {
+    constexpr std::size_t max_block_entities = std::size_t{1} << 16U;
+    const Cursor at = c_;
+    if (binary_) (void)c_.line();
+    const std::uint64_t n_blocks = next_size();
+    (void)next_size();
+    (void)next_size();
+    (void)next_size();
+    c_.check_fits(n_blocks, min_bytes(4));
+    std::vector<std::pair<int, int>> used;
+    used.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(n_blocks, max_block_entities)));
+    const auto distinct = [&] {
+      std::ranges::sort(used);
+      used.erase(std::ranges::unique(used).begin(), used.end());
+    };
+    const auto flush = [&] {
+      distinct();
+      entities(used);
+      used.clear();
+    };
+    for (std::uint64_t b = 0; b < n_blocks; ++b) {
+      const int dim = next_int();
+      const int entity = next_int();
+      const int type = next_int();
+      const std::uint64_t n = next_size();
+      ElementType et{};
+      c_.check_fits(n, min_bytes(2));
+      if (!element_type(type, et))
+        c_.unsupported("element type " + std::to_string(type) + " (linear elements only)");
+      // Points and curves label nothing, nor does a block without elements.
+      if (dim >= 2 && n > 0) {
+        used.emplace_back(dim, entity);
+        if (used.size() == max_block_entities) {
+          distinct();
+          if (used.size() > max_block_entities / 2) flush();
+        }
+      }
+      for (std::uint64_t v = 0; v < n * (1 + static_cast<std::uint64_t>(et.nodes)); ++v) {
+        (void)next_size();
+      }
+    }
+    flush();
+    c_ = at;
+  }
+
+  // $Entities, from where it starts: the physical group of each entity of dimension 2 or 3 that
+  // an element block names (`used`). An entity no block names labels nothing: not kept.
+  void entities(const std::vector<std::pair<int, int>>& used) {
+    const Cursor after = c_;
+    c_ = Cursor(data_, c_.path());
+    c_.advance(entities_at_);
     if (binary_) (void)c_.line();
     std::uint64_t counts[4];
     for (auto& n : counts) n = next_size();
@@ -243,11 +343,15 @@ class GmshReader {
                         ") belongs to several physical groups",
                     ErrorCode::io_ambiguous_zone);
           }
-          entity_physical_[{dim, tag}] = physicals.empty() ? 0 : physicals.front();
+          // An entity in no group labels nothing: not kept (physical_of gives it 0).
+          if (!physicals.empty() && std::ranges::binary_search(used, std::pair(dim, tag))) {
+            entity_physical_.push_back({dim, tag, physicals.front()});
+            entities_sorted_ = false;
+          }
         }
       }
     }
-    if (binary_) c_.skip_space();
+    c_ = after;
   }
 
   void nodes() {
@@ -344,8 +448,7 @@ class GmshReader {
       if (!element_type(type, et))
         c_.unsupported("element type " + std::to_string(type) + " (linear elements only)");
       if (et.dim != dim) c_.fail("element type does not match its entity dimension");
-      const auto physical_it = entity_physical_.find({dim, entity});
-      const int physical = physical_it == entity_physical_.end() ? 0 : physical_it->second;
+      const int physical = physical_of(dim, entity);
       nodes.resize(et.nodes);
       for (std::uint64_t e = 0; e < n; ++e) {
         (void)next_size();
@@ -358,11 +461,6 @@ class GmshReader {
       }
     }
     if (binary_) c_.skip_space();
-  }
-
-  std::string zone_name(int dim, int physical) {
-    const auto it = names_.find({dim, physical});
-    return it != names_.end() ? it->second : std::to_string(physical);
   }
 
   index_t cell_zone(int physical) {
@@ -402,11 +500,15 @@ class GmshReader {
     if (mesh_.cell_zone.empty()) c_.fail("no volume elements");
     // Declared surface groups are zones even without elements, so that their
     // names stay visible; names are resolved once every section is read.
-    for (const auto& [key, name] : names_) {
-      if (key.first == 2) (void)face_zone(key.second);
-    }
-    for (const auto& [key, physical] : entity_physical_) {
-      if (key.first == 2 && physical != 0) (void)face_zone(physical);
+    std::vector<int> surfaces;  // each a zone: what MeshInfo's zones count
+    names([&](int dim, int tag, std::string_view) {
+      if (dim == 2) surfaces.push_back(tag);
+    });
+    std::ranges::sort(surfaces);
+    for (const int tag : surfaces) (void)face_zone(tag);
+    sort_entities();
+    for (const auto& [dim, tag, physical] : entity_physical_) {
+      if (dim == 2) (void)face_zone(physical);
     }
     for (const auto& [groups, t] : periodic_links_) {
       const index_t a = face_zone(groups.first), b = face_zone(groups.second);
@@ -414,13 +516,20 @@ class GmshReader {
       mesh_.face_zones[static_cast<std::size_t>(b)].kind = BcKind::periodic;
       mesh_.periodic.push_back({.zone_a = a, .zone_b = b, .translation = t});
     }
-    for (auto& zone : mesh_.cell_zones) {
-      if (zone.provenance.source_id > 0)
-        zone.name = zone_name(3, static_cast<int>(zone.provenance.source_id));
-    }
-    for (auto& zone : mesh_.face_zones) {
-      zone.name = zone_name(2, static_cast<int>(zone.provenance.source_id));
-    }
+    // A name names the zone of its group, the last one given winning, as a map would keep it.
+    names([&](int dim, int tag, std::string_view name) {
+      if (dim == 3) {
+        const auto it = cell_zone_index_.find(tag);
+        if (it != cell_zone_index_.end()) {
+          mesh_.cell_zones[static_cast<std::size_t>(it->second)].name = std::string(name);
+        }
+      } else if (dim == 2) {
+        const auto it = face_zone_index_.find(tag);
+        if (it != face_zone_index_.end()) {
+          mesh_.face_zones[static_cast<std::size_t>(it->second)].name = std::string(name);
+        }
+      }
+    });
     const std::size_t n = tags_.size();
     mesh_.x.resize(n);
     mesh_.y.resize(n);
@@ -430,15 +539,20 @@ class GmshReader {
       mesh_.y[p] = xyz_[3 * p + 1];
       mesh_.z[p] = xyz_[3 * p + 2];
     }
-    mesh_.source = MeshSource{.format = "gmsh", .path = c_.path()};
+    mesh_.source = MeshSource{.format = "gmsh", .path = c_.path(), .nodes = 0};
     return to_face_based(std::move(mesh_));
   }
 
   std::string data_;
   Cursor c_;
   bool binary_ = false;
-  std::map<std::pair<int, int>, std::string> names_;
-  std::map<std::pair<int, int>, int> entity_physical_;
+  std::size_t names_at_ = std::string::npos;
+  std::size_t entities_at_ = std::string::npos;  // where $Entities starts, when given  // where
+                                                 // $PhysicalNames starts, when given
+  // (dim, tag, physical group) of the entities of dimension 2 and 3 in a group: 12 bytes each,
+  // fewer than their record in the file. Sorted on first lookup, the last record of a key winning.
+  std::vector<std::array<int, 3>> entity_physical_;
+  bool entities_sorted_ = false;
   std::map<std::pair<int, int>, std::array<double, 3>> periodic_links_;  // (master, slave) groups
   std::vector<std::uint64_t> tags_;
   std::vector<index_t> order_;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -42,9 +43,15 @@ struct Gas {
 /// every cell sharing a node.
 enum class GradientStencil : std::uint8_t { face2, vertex };
 
+/// Reconstruction gradient (docs/design/euler.md, Quadratic gradient): the linear least squares
+/// over the GradientStencil, or the quadratic fit of quadratic_gradient in every cell. Chosen by
+/// the physics: the Euler physics keeps the linear one, Navier-Stokes takes the quadratic one.
+enum class GradientFit : std::uint8_t { linear, quadratic };
+
 struct Scheme {
   Flux flux = Flux::roe;
   GradientStencil gradient = GradientStencil::face2;
+  GradientFit gradient_fit = GradientFit::linear;
   /// Linear reconstruction with least-squares gradients; first order otherwise.
   bool second_order = true;
   /// Venkatakrishnan limiter with threshold eps_k^2 = (K h / length)^3 scale_k^2, h^3 = V.
@@ -108,6 +115,29 @@ class Euler {
   /// where their condition gives the state there, and in the cells whose interior stencil alone
   /// cannot determine a gradient.
   [[nodiscard]] std::vector<double> gradient_weights() const;
+  /// With GradientFit::quadratic, the quadratic gradient (kernels/euler.py, band_gradients) of
+  /// every cell (empty with linear): per cell 1 where it replaces the linear one, else 0; its
+  /// stencil (n_cells + 1 offsets, entries as kernels::Topology::stencil) and weights (3 x
+  /// entries, the layout of gradient_weights). They depend on set_boundary. A cell whose two
+  /// vertex rings cannot determine the fit keeps the linear gradient (0 there).
+  struct QuadraticGradient {
+    std::vector<double> fitted;
+    std::vector<std::int64_t> offsets;
+    std::vector<index_t> entries;
+    std::vector<double> weights;
+  };
+  [[nodiscard]] QuadraticGradient quadratic_gradient() const;
+  /// With GradientFit::quadratic, the cells that keep the linear gradient: how many, and the
+  /// first (-1 if none). They depend on set_boundary.
+  struct LinearCells {
+    std::size_t count = 0;
+    index_t first = -1;
+  };
+  [[nodiscard]] LinearCells linear_cells() const noexcept;
+  /// After a second-order residual: the linear least-squares gradient of its primitives into
+  /// `out` (15 x n_cells, the reconstruction's layout), the reconstruction's own under
+  /// GradientFit::linear.
+  void linear_gradient(std::span<typename P::grad> out);
   /// Sets the volume source s (5 x n_cells), per unit volume; zero by default.
   void set_source(std::span<const double> source);
 

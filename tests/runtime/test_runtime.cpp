@@ -2,7 +2,9 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <climits>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -10,11 +12,13 @@
 #include <initializer_list>
 #include <iterator>
 #include <map>
+#include <optional>
 #include <random>
 #include <regex>
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -31,6 +35,13 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <malloc.h>
+#endif
+
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 #include "../io/outside_data.hpp"
 #include "autan/core/geometry.hpp"
@@ -41,6 +52,7 @@
 #include "autan/physics/euler_physics.hpp"
 #include "autan/runtime/input.hpp"
 #include "autan/runtime/run.hpp"
+#include "planned.hpp"
 #include "relaxation.hpp"
 
 extern char** environ;
@@ -82,7 +94,7 @@ Json input(const std::function<void(Json&)>& edit = {},
   if (doc["verification"].is_object())
     doc["verification"]["path"] = fs::absolute(mms_path).string();
   if (edit) edit(doc);
-  return doc;
+  return autan_test::planned(doc, mesh_path);
 }
 
 struct Outcome {
@@ -92,15 +104,15 @@ struct Outcome {
   std::string err;
 };
 
-Outcome run(const Json& doc, const autan::runtime::PhysicsRegistry& registry,
-            const fs::path& stop_file = {}) {
-  const fs::path dir = fresh_dir();
+Outcome run_in(const fs::path& dir, const Json& doc,
+               const autan::runtime::PhysicsRegistry& registry, const fs::path& stop_file = {},
+               const autan::runtime::MemoryPolicy& memory = {}) {
   const fs::path input_file = dir / "solver-input.json";
   std::ofstream(input_file) << doc.dump();
   std::FILE* out = std::tmpfile();
   std::FILE* err = std::tmpfile();
-  const ExitStatus status =
-      autan::runtime::run_case(input_file, dir / "runs", registry, build, out, err, stop_file);
+  const ExitStatus status = autan::runtime::run_case(input_file, dir / "runs", registry, build, out,
+                                                     err, stop_file, memory);
   auto text = [](std::FILE* f) {
     std::rewind(f);
     std::string s;
@@ -111,6 +123,11 @@ Outcome run(const Json& doc, const autan::runtime::PhysicsRegistry& registry,
   std::string printed = text(out);
   if (!printed.empty() && printed.back() == '\n') printed.pop_back();
   return Outcome{.status = status, .runs = dir / "runs", .run = printed, .err = text(err)};
+}
+
+Outcome run(const Json& doc, const autan::runtime::PhysicsRegistry& registry,
+            const fs::path& stop_file = {}, const autan::runtime::MemoryPolicy& memory = {}) {
+  return run_in(fresh_dir(), doc, registry, stop_file, memory);
 }
 
 Outcome run(const Json& doc, autan_test::RelaxationOptions options = {},
@@ -221,6 +238,36 @@ std::vector<std::string> field_list(const fs::path& file) {
   return names;
 }
 
+// The PointList of solution.cgns's WallSolution subregion; empty without one.
+std::vector<cgsize_t> wall_point_list(const fs::path& file) {
+  int fn = 0;
+  REQUIRE(cg_open(file.string().c_str(), CG_MODE_READ, &fn) == CG_OK);
+  struct Closer {
+    explicit Closer(int f) : fn(f) {}
+    Closer(const Closer&) = delete;
+    Closer& operator=(const Closer&) = delete;
+    ~Closer() { cg_close(fn); }
+    int fn;
+  };
+  const Closer closer(fn);
+  int regions = 0;
+  REQUIRE(cg_nsubregs(fn, 1, 1, &regions) == CG_OK);
+  std::vector<cgsize_t> points;
+  for (int r = 1; r <= regions; ++r) {
+    char name[33];
+    int dim = 0, bc_len = 0, gc_len = 0;
+    CGNS_ENUMT(GridLocation_t) location{};
+    CGNS_ENUMT(PointSetType_t) ptset{};
+    cgsize_t npnts = 0;
+    REQUIRE(cg_subreg_info(fn, 1, 1, r, name, &dim, &location, &ptset, &npnts, &bc_len, &gc_len) ==
+            CG_OK);
+    if (std::string(name) != "WallSolution") continue;
+    points.resize(static_cast<std::size_t>(npnts));
+    REQUIRE(cg_subreg_ptset_read(fn, 1, 1, r, points.data()) == CG_OK);
+  }
+  return points;
+}
+
 void require_error(const Outcome& o, const std::string& code) {
   CHECK(o.status == ExitStatus::invalid_input);
   CHECK(o.run.empty());
@@ -268,12 +315,67 @@ void inviscid(Json& d) {
 }
 
 // `doc` written to a fresh file; the solver input's initial_state names it.
-Json with_initial_state(Json input_doc, const Json& doc) {
+Json with_initial_state(Json input_doc, const std::string& text) {
   const fs::path file = fresh_dir() / "initial.json";
-  std::ofstream(file) << doc.dump();
+  std::ofstream(file) << text;
   input_doc["initial_state"] = {{"path", file.string()}, {"sha256", file_sha256(file)}};
   return input_doc;
 }
+
+Json with_initial_state(Json input_doc, const Json& doc) {
+  return with_initial_state(std::move(input_doc), doc.dump());
+}
+
+// `text` (compact JSON) with an empty `member` array added after the first full one found from
+// `from` on: a member twice, the last empty, which a reader keeping the last would take.
+std::string emptied_twice(std::string text, const std::string& member, std::size_t from = 0) {
+  const std::string key = "\"" + member + "\":[";
+  std::size_t i = text.find(key, from);
+  REQUIRE(i != std::string::npos);
+  int depth = 0;
+  for (i += key.size() - 1; i < text.size(); ++i) {
+    depth += text[i] == '[' ? 1 : (text[i] == ']' ? -1 : 0);
+    if (depth == 0) break;
+  }
+  text.insert(i + 1, "," + key + "]");
+  return text;
+}
+
+// `text` (compact JSON) with the first number of its first `member` row written in `length`
+// characters, zeros added to its fraction: the same value, a longer token.
+std::string padded_number(std::string text, const std::string& member, std::size_t length) {
+  const std::size_t key = text.find("\"" + member + "\":[[");
+  REQUIRE(key != std::string::npos);
+  const std::size_t first = key + member.size() + 5;
+  const std::size_t last = text.find_first_not_of("0123456789+-.eE", first);
+  std::string number = text.substr(first, last - first);
+  const std::size_t e = number.find_first_of("eE");
+  std::string mantissa = number.substr(0, e),
+              exponent = e == std::string::npos ? "" : number.substr(e);
+  if (mantissa.find('.') == std::string::npos) mantissa += '.';
+  REQUIRE(mantissa.size() + exponent.size() <= length);
+  mantissa.append(length - mantissa.size() - exponent.size(), '0');
+  return text.replace(first, last - first, mantissa + exponent);
+}
+
+#if defined(__linux__)
+// The peak resident memory `run` adds while it runs (the runtime runs in this process).
+template <class Run>
+std::int64_t peak_of(const Run& run) {
+  const auto status = [](const std::string& key) -> std::int64_t {
+    std::ifstream in("/proc/self/status");
+    for (std::string line; std::getline(in, line);) {
+      if (line.rfind(key + ":", 0) == 0) return std::stoll(line.substr(key.size() + 1)) * 1024;
+    }
+    return -1;
+  };
+  malloc_trim(0);
+  const std::int64_t before = status("VmRSS");
+  std::ofstream("/proc/self/clear_refs") << "5";  // VmHWM := VmRSS
+  run();
+  return status("VmHWM") - before;
+}
+#endif
 
 // The `start` the SDK writes for a run that starts from `previous`
 // (solver-input.md): its run.json, the hash of its solution and, for a
@@ -329,13 +431,13 @@ struct Spawned {
 };
 
 Spawned spawn_until(const Json& doc, const std::vector<std::string>& env,
-                    const std::function<bool(const fs::path&)>& ready, int poll_us = 2000) {
+                    const std::function<bool(const fs::path&)>& ready, int poll_us = 2000,
+                    const std::string& executable = AUTAN_RUN_RELAXATION) {
   const fs::path dir = fresh_dir();
   const fs::path input_file = dir / "solver-input.json";
   std::ofstream(input_file) << doc.dump();
   const std::string runs = (dir / "runs").string();
-  std::vector<std::string> args{AUTAN_RUN_RELAXATION, "--input", input_file.string(), "--runs",
-                                runs};
+  std::vector<std::string> args{executable, "--input", input_file.string(), "--runs", runs};
   std::vector<char*> argv;
   for (auto& a : args) argv.push_back(a.data());
   argv.push_back(nullptr);
@@ -345,8 +447,7 @@ Spawned spawn_until(const Json& doc, const std::vector<std::string>& env,
   for (auto& e : all) envp.push_back(e.data());
   envp.push_back(nullptr);
   Spawned s;
-  REQUIRE(posix_spawn(&s.pid, AUTAN_RUN_RELAXATION, nullptr, nullptr, argv.data(), envp.data()) ==
-          0);
+  REQUIRE(posix_spawn(&s.pid, executable.c_str(), nullptr, nullptr, argv.data(), envp.data()) == 0);
   for (int attempt = 0; attempt < 10'000'000 / poll_us; ++attempt) {
     if (fs::exists(runs)) {
       for (const auto& entry : fs::directory_iterator(runs)) {
@@ -506,6 +607,59 @@ TEST_CASE("A run killed while it writes a checkpoint keeps the previous one whol
   CHECK(Json::parse(read(cont.run / "run.json"))["iterations"] == k + 3);
 }
 
+TEST_CASE("Failed checkpoint writes take one W0714 in run.json however many", "[runtime]") {
+  // results.md#checkpointcgns: run.json and the RunMetadata do not grow with the failures; the
+  // log has one line each. Every write fails: a directory stands at the staging path.
+  const auto failing = [](std::int64_t steps) {
+    const fs::path dir = fresh_dir();
+    const Json doc = input(
+        [&](Json& d) {
+          d["time"]["steps"] = steps;
+          d["time"]["checkpoint"] = Json{{"iterations", 1}};
+        },
+        "hybrid-unsteady.solver-input.json");
+    autan_test::RelaxationOptions options;
+    options.block_checkpoints_in = (dir / "runs").string();
+    const Outcome o = run_in(dir, doc, autan_test::relaxation_registry(options));
+    INFO(o.err);
+    REQUIRE(o.status == ExitStatus::finished);
+    return o;
+  };
+  std::vector<std::size_t> run_json, metadata, entry;
+  for (const std::int64_t steps : {5, 60}) {
+    CAPTURE(steps);
+    const Outcome o = failing(steps);
+    const Json info = Json::parse(read(o.run / "run.json"));
+    const auto lines = history(o.run);
+    std::vector<Json> warnings;
+    for (const auto& d : info["diagnostics"]) {
+      if (d["code"] == "W0714") warnings.push_back(d);
+    }
+    REQUIRE(warnings.size() == 1);
+    entry.push_back(warnings[0].dump().size());
+    // A checkpoint follows every iteration but the last.
+    CHECK(warnings[0]["data"] ==
+          Json{{"failures", steps - 1},
+               {"first_iteration", 1},
+               {"first_time", lines[0]["time"]},
+               {"last_iteration", steps - 1},
+               {"last_time", lines[static_cast<std::size_t>(steps - 2)]["time"]}});
+    std::int64_t logged = 0;
+    for (const auto& line : lines_of(o.run / "log.jsonl")) {
+      if (Json::parse(line)["code"] == "W0714") ++logged;
+    }
+    CHECK(logged == steps - 1);
+    CHECK(!fs::exists(o.run / "checkpoint.cgns"));
+    run_json.push_back(read(o.run / "run.json").size());
+    const std::string stored = autan::io::read_solution(o.run / "solution.cgns").run_metadata;
+    CHECK(!Json::parse(stored).contains("diagnostics"));
+    metadata.push_back(stored.size());
+  }
+  // Twelve times the failures: less than one more W0714 (timings and paths vary by a few digits).
+  CHECK(run_json[1] < run_json[0] + entry[0]);
+  CHECK(metadata[1] < metadata[0] + entry[0]);
+}
+
 TEST_CASE("A checkpoint names its iteration, and a start checks it", "[runtime]") {
   // A start from a checkpoint whose iteration is not start.iterations exits 2 (E0707), as does
   // a final solution read as a checkpoint.
@@ -529,6 +683,103 @@ TEST_CASE("A checkpoint names its iteration, and a start checks it", "[runtime]"
   CHECK(off.status == ExitStatus::invalid_input);
   CHECK(off.run.empty());
   CHECK(off.err.find("E0707") != std::string::npos);
+}
+
+// The SHA-256 of `file` by CMake's implementation, independent of the runtime's.
+std::string sha256_of(const std::string& file) {
+  const auto quoted = [](const std::string& s) {
+    std::string q = "'";
+    for (const char c : s) q += c == '\'' ? std::string("'\\''") : std::string(1, c);
+    return q + "'";
+  };
+  const std::string command = quoted(AUTAN_TEST_CMAKE) + " -E sha256sum " + quoted(file);
+  std::FILE* pipe = popen(command.c_str(), "r");
+  REQUIRE(pipe != nullptr);
+  std::array<char, 65> hex{};
+  const std::size_t got = std::fread(hex.data(), 1, 64, pipe);
+  REQUIRE(pclose(pipe) == 0);
+  REQUIRE(got == 64);
+  return std::string(hex.data(), 64);
+}
+
+// This test executable's.
+std::string own_sha256() {
+#ifdef __APPLE__
+  std::uint32_t size = 0;
+  (void)_NSGetExecutablePath(nullptr, &size);
+  std::string self(size, '\0');
+  REQUIRE(_NSGetExecutablePath(self.data(), &size) == 0);
+  self.resize(std::char_traits<char>::length(self.c_str()));
+  return sha256_of(self);
+#else
+  // Opens even if the file was replaced since; /proc/self would be cmake's own.
+  return sha256_of("/proc/" + std::to_string(getpid()) + "/exe");
+#endif
+}
+
+TEST_CASE("An executable's cached hash serves only that unchanged file", "[runtime]") {
+  // AUTAN_BINARY_HASH_CACHE keeps run.json's solver.binary_sha256 across processes, keyed by the
+  // file's device, inode, size, mtime and ctime. A file changed less than 2 s ago is not stored:
+  // a coarse timestamp could miss a second change within the same tick.
+  const fs::path dir = fresh_dir();
+  const fs::path exe = dir / "autan-run";
+  fs::copy_file(AUTAN_RUN_RELAXATION, exe);
+  fs::permissions(exe, fs::status(AUTAN_RUN_RELAXATION).permissions());
+  const fs::path cache = dir / "cache";
+  fs::path last_run;
+  const auto recorded = [&](const fs::path& cache_dir) {
+    const Spawned s = spawn_until(
+        input(), {"AUTAN_BINARY_HASH_CACHE=" + cache_dir.string()},
+        [](const fs::path&) { return true; }, 2000, exe.string());
+    int status = 0;
+    REQUIRE(waitpid(s.pid, &status, 0) == s.pid);
+    REQUIRE(WIFEXITED(status));
+    REQUIRE(WEXITSTATUS(status) == 0);
+    last_run = s.run;
+    return Json::parse(read(s.run / "run.json"))["solver"]["binary_sha256"].get<std::string>();
+  };
+  const auto entries = [&] {
+    std::vector<fs::path> files;
+    if (fs::exists(cache)) {
+      for (const auto& e : fs::directory_iterator(cache)) files.push_back(e.path());
+    }
+    return files;
+  };
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(2100));
+  const std::string hash = sha256_of(exe.string());
+  CHECK(recorded(cache) == hash);
+  REQUIRE(entries().size() == 1);
+  CHECK(read(entries()[0]) == hash + "\n");
+
+  // The entry is what a later process reads: a forged one is believed.
+  const std::string forged(64, 'f');
+  std::ofstream(entries()[0], std::ios::trunc) << forged << '\n';
+  CHECK(recorded(cache) == forged);
+
+  // A changed file has another key: its own hash is recorded, and any entry stored for it (once
+  // its ctime is 2 s old) holds that hash.
+  const fs::path forged_entry = entries()[0];
+  std::ofstream(exe, std::ios::binary | std::ios::app) << "autan";
+  const std::string changed = sha256_of(exe.string());
+  CHECK(changed != hash);
+  CHECK(recorded(cache) == changed);
+  for (const fs::path& e : entries()) {
+    CAPTURE(e);
+    CHECK(read(e) == (e == forged_entry ? forged : changed) + "\n");
+  }
+
+  // A cache it cannot use (a file where the directory should be) is logged, never silent.
+  const fs::path not_a_dir = dir / "file";
+  std::ofstream(not_a_dir) << "x";
+  CHECK(recorded(not_a_dir) == changed);
+  bool logged = false;
+  for (const std::string& line : lines_of(last_run / "log.jsonl")) {
+    const Json l = Json::parse(line);
+    logged =
+        logged || (l["level"] == "warning" && l["data"].value("cache", "") == not_a_dir.string());
+  }
+  CHECK(logged);
 }
 
 TEST_CASE("A converging run writes the run directory of results.md", "[runtime]") {
@@ -568,20 +819,28 @@ TEST_CASE("A converging run writes the run directory of results.md", "[runtime]"
   CHECK(std::regex_match(info["finished"].get<std::string>(),
                          std::regex("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z")));
   CHECK(info["mesh"]["path"] == fs::absolute(mesh_path).lexically_normal().string());
-  CHECK(info["solver"] == Json{{"version", "0.0.0"}, {"commit", build.commit}, {"backend", "cpu"}});
-  // identity: SHA-256 of the eight fields joined by "\n" (results.md); the
-  // cell order is RCM by default.
+  CHECK(info["solver"] == Json{{"version", "0.0.0"},
+                               {"commit", build.commit},
+                               {"backend", "cpu"},
+                               {"binary_sha256", info["solver"]["binary_sha256"]}});
+  // The executable that ran, hashed once per process: a second run records the same.
+  CHECK(info["solver"]["binary_sha256"] == own_sha256());
+  const Outcome again = run(doc);
+  REQUIRE(again.status == ExitStatus::finished);
+  CHECK(Json::parse(read(again.run / "run.json"))["solver"]["binary_sha256"] ==
+        info["solver"]["binary_sha256"]);
+  // identity: SHA-256 of the nine fields joined by "\n" (results.md), the zone groups' hash
+  // empty without a sidecar; the cell order is RCM by default.
   CHECK(info["cell_order"] == "rcm");
   std::string expected;
   picosha2::hash256_hex_string(doc["case"]["sha256"].get<std::string>() + "\n" +
-                                   doc["mesh"]["sha256"].get<std::string>() + "\n" + build.commit +
-                                   "\nfp32+acc64\ncpu\ncpu\n1\nrcm",
+                                   doc["mesh"]["sha256"].get<std::string>() + "\n\n" +
+                                   build.commit + "\nfp32+acc64\ncpu\ncpu\n1\nrcm",
                                expected);
   CHECK(info["identity"] == expected);
   CHECK(read(o.run / "case.toml") == doc["case"]["toml"].get<std::string>());
-  CHECK(read(o.run / "mesh-info.json") ==
-        autan::io::mesh_info_json(autan::io::read_mesh(mesh_path),
-                                  doc["mesh"]["sha256"].get<std::string>()));
+  // solver-input.md, mesh_info: written as planned, not computed again.
+  CHECK(read(o.run / "mesh-info.json") == doc["mesh_info"].dump(2));
 
   const auto lines = history(o.run);
   REQUIRE(lines.size() == 28);
@@ -619,6 +878,15 @@ TEST_CASE("A converging run writes the run directory of results.md", "[runtime]"
   REQUIRE(density.size() == static_cast<std::size_t>(mesh.n_cells()));
   for (const double rho : density)
     CHECK_THAT(rho, WithinRel(doc["freestream"]["density"].get<double>(), 1e-15));
+  // WallSolution covers every wall and slip face, face j as element 1 + j: ymin's, the one wall.
+  std::vector<cgsize_t> wall;
+  const auto offsets = mesh.boundary_zone_offsets();
+  for (std::size_t z = 0; z < mesh.face_zones().size(); ++z) {
+    if (mesh.face_zones()[z].name != "ymin") continue;
+    for (auto f = offsets[z]; f < offsets[z + 1]; ++f) wall.push_back(static_cast<cgsize_t>(f + 1));
+  }
+  CHECK(wall.size() == 20);
+  CHECK(wall_point_list(o.run / "solution.cgns") == wall);
 }
 
 TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]") {
@@ -716,6 +984,19 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(info["monitors"].is_null());
     CHECK(info["timing"].is_null());
   }
+  SECTION("failed writing the solution file: E0704, no solution") {
+    // A directory stands at the solution's staging path.
+    const fs::path dir = fresh_dir();
+    autan_test::RelaxationOptions options;
+    options.factor = 0.5;
+    options.block_solution_in = (dir / "runs").string();
+    const Outcome o = run_in(dir, input(), autan_test::relaxation_registry(options));
+    CHECK(o.status == ExitStatus::failed);
+    const Json info = Json::parse(read(o.run / "run.json"));
+    CHECK(info["status"] == "failed");
+    CHECK(info["diagnostics"][0]["code"] == "E0704");
+    CHECK_FALSE(fs::exists(o.run / "solution.cgns"));
+  }
   SECTION("diverged: D0107 with the iteration, cell and zone") {
     const Outcome o = run(input(), {.factor = 0.9, .diverge_at = 7, .diverge_cell = 3});
     CHECK(o.status == ExitStatus::finished);
@@ -742,9 +1023,29 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     const Json info = Json::parse(read(o.run / "run.json"));
     CHECK(info["status"] == "failed");
     CHECK(info["diagnostics"][0]["code"] == "E0704");
+    CHECK(info["diagnostics"][0]["data"] == Json::object());  // one rank: no data.rank
     CHECK(history(o.run).size() == 3);
     CHECK(info["monitors"].is_null());
     CHECK(info["timing"].is_null());  // a failed run is not timed
+    const auto log = lines_of(o.run / "log.jsonl");
+    REQUIRE_FALSE(log.empty());
+    CHECK(Json::parse(log.back())["level"] == "error");
+  }
+  SECTION("failed creating the run directory: E0704 on stderr, exit 1") {
+    const fs::path dir = fresh_dir();
+    std::ofstream(dir / "runs") << "x";
+    const Outcome o = run_in(dir, input(), autan_test::relaxation_registry({}));
+    CHECK(o.status == ExitStatus::failed);
+    CHECK(o.run.empty());
+    // Warnings (W0713) may come first; the last diagnostic is the failure.
+    std::vector<Json> diagnostics;
+    std::istringstream err_lines(o.err);
+    for (std::string line; std::getline(err_lines, line);)
+      if (line.starts_with("{")) diagnostics.push_back(Json::parse(line));
+    REQUIRE(!diagnostics.empty());
+    for (std::size_t k = 0; k + 1 < diagnostics.size(); ++k)
+      CHECK(diagnostics[k]["severity"] == "warning");
+    CHECK(diagnostics.back()["code"] == "E0704");
   }
   SECTION("unsteady with averaging: time, averaging and FlowSolutionMean") {
     // Written by `autan prepare` with time = Unsteady(steps=6, dt=0.01 s,
@@ -781,10 +1082,17 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
   }
   SECTION("E0705 missing key") {
     require_error(run(input([](Json& d) { d["freestream"].erase("speed"); })), "E0705");
+    // The keys that choose an object's shape.
+    require_error(
+        run(input([](Json& d) { d["cell_zones"][0]["medium"]["viscosity"].erase("law"); })),
+        "E0705");
+    require_error(run(input([](Json& d) { d["time"].erase("kind"); })), "E0705");
   }
   SECTION("E0705 value a kind forbids") {
     require_error(run(input([](Json& d) { d["boundaries"][0]["static_pressure"] = 1e5; })),
                   "E0705");
+    // Only a wall takes a temperature: here on a farfield.
+    require_error(run(input([](Json& d) { d["boundaries"][0]["temperature"] = 300.0; })), "E0705");
   }
   SECTION("E0705 states on a condition that takes none") {
     require_error(run(input([](Json& d) {
@@ -835,11 +1143,107 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
                   })),
                   "E0705");
   }
+  SECTION("E0705 point vortex zones that are not a list") {
+    require_error(run(input([](Json& d) {
+                    d["boundaries"][0]["point_vortex"] = {{"zones", "ymin"},
+                                                          {"center", {0.0, 0.0, 0.0}}};
+                  })),
+                  "E0705");
+  }
   SECTION("E0705 zone absent from the mesh") {
     require_error(run(input([](Json& d) { d["boundaries"][0]["zone"] = "nowhere"; })), "E0705");
   }
+  SECTION("E0705 a zone with faces and no condition; none needed without faces") {
+    require_error(run(input([](Json& d) { d["boundaries"].erase(std::size_t{0}); })), "E0705");
+    // The hybrid mesh with one more patch, declared without faces.
+    const fs::path copy = fresh_dir() / "polyMesh";
+    fs::copy(mesh_path, copy);
+    std::string boundary = read(copy / "boundary");
+    const std::string count = "6 // entry0";
+    REQUIRE(boundary.find(count) != std::string::npos);
+    boundary.replace(boundary.find(count), count.size(), "7");
+    boundary.insert(boundary.rfind("\n)"),
+                    "\n    unused\n    {\n        type            patch;\n        nFaces          "
+                    "0;\n        startFace       564;\n    }");
+    std::ofstream(copy / "boundary") << boundary;
+    const Outcome o = run(input([&](Json& d) {
+      d["mesh"]["path"] = copy.string();
+      d["mesh"]["sha256"] = autan::io::mesh_hash(copy);
+    }));
+    INFO(o.err);
+    CHECK(o.status == ExitStatus::finished);
+  }
   SECTION("E0203 mesh hash") {
-    require_error(run(input([](Json& d) { d["mesh"]["sha256"] = std::string(64, '0'); })), "E0203");
+    // The file read is not the one the input and its MeshInfo name.
+    Json other = input();
+    other["mesh"]["sha256"] = std::string(64, '0');
+    other["mesh_info"]["source"]["sha256"] = std::string(64, '0');
+    require_error(run(other), "E0203");
+  }
+  SECTION("mesh_info: planned for this mesh, in the run's cell order") {
+    // solver-input.md, mesh_info: written as the run's mesh-info.json, so it must describe the
+    // mesh read (E0203) and give the lines of the order the run computes in (E0705).
+    Json other = input();
+    other["mesh_info"]["source"]["sha256"] = std::string(64, '0');
+    require_error(run(other), "E0203");
+    // Its source.bytes is the size of the mesh read: another is another mesh, 0 none.
+    Json other_size = input();
+    other_size["mesh_info"]["source"]["bytes"] =
+        other_size["mesh_info"]["source"]["bytes"].get<std::int64_t>() + 1;
+    require_error(run(other_size), "E0203");
+    other_size["mesh_info"]["source"]["bytes"] = 0;
+    require_error(run(other_size), "E0705");
+    require_error(run(autan_test::planned(input(), mesh_path, "input")), "E0705");
+    for (const Json& broken :
+         {Json(nullptr), Json::object(), Json{{"schema", "autan.mesh-info/2"}}}) {
+      CAPTURE(broken.dump());
+      Json d = input();
+      d["mesh_info"] = broken;
+      require_error(run(d), "E0705");
+    }
+    Json other_scale = input();
+    other_scale["mesh_info"]["quality"]["lines"]["scale"] = 0.0254;
+    require_error(run(other_scale), "E0705");
+    // The whole contract of mesh-info.md, which Results.open checks on the archived document:
+    // each of these breaks one of its members or rules.
+    const std::vector<std::function<void(Json&)>> breaks{
+        [](Json& m) { m["quality"].erase("lines"); },
+        [](Json& m) { m.erase("counts"); },
+        [](Json& m) { m["unknown"] = 1; },
+        [](Json& m) { m["counts"]["stencil_entries"] = -1; },
+        [](Json& m) {
+          m["counts"]["cells_by_type"]["hexa"] =
+              m["counts"]["cells_by_type"]["hexa"].get<int>() + 1;
+        },
+        [](Json& m) { m["cell_zones"][0]["cells"] = m["cell_zones"][0]["cells"].get<int>() + 1; },
+        [](Json& m) { m["boundary_zones"][0]["type"] = "outflow"; },
+        [](Json& m) { m["boundary_zones"].push_back(m["boundary_zones"][0]); },
+        [](Json& m) { m["bounds"]["min"][0] = 1e9; },
+        [](Json& m) { m["quality"]["lines"]["long_cells"] = m["counts"]["cells"].get<int>() + 1; },
+        [](Json& m) {
+          auto& edges = m["quality"]["multigrid"]["edges_by_level"][0];
+          edges = edges.get<int>() + 1;
+        },
+        [](Json& m) {
+          const int cells = m["counts"]["cells"].get<int>();
+          m["partition"] = {{"ranks", 2},
+                            {"groups", "none"},
+                            {"cells_by_rank", {cells, 0}},
+                            {"ghosts_by_rank", {0}},
+                            {"faces_by_rank", {0, 0}},
+                            {"interior_faces_by_rank", {0, 0}},
+                            {"stencil_entries_by_rank", {0, 0}},
+                            {"nodes_by_rank", {0, 0}},
+                            {"face_nodes_by_rank", {0, 0}},
+                            {"sent_cells_by_rank", {0, 0}}};
+        },
+    };
+    for (std::size_t k = 0; k < breaks.size(); ++k) {
+      CAPTURE(k);
+      Json d = input();
+      breaks[k](d["mesh_info"]);
+      require_error(run(d), "E0705");
+    }
   }
   SECTION("E0706 no physics in the build") {
     require_error(run(input(), autan::runtime::PhysicsRegistry{}), "E0706");
@@ -1057,7 +1461,10 @@ TEST_CASE("Forces monitors report the loads and their coefficients", "[runtime]"
     d["freestream"]["sideslip"] = beta;
   });
   const Outcome o = run(doc, {.factor = 0.5, .pressure_offset = dp});
-  const Json f = history(o.run)[4]["monitors"]["forces"];
+  REQUIRE(o.status == ExitStatus::finished);
+  const auto lines = history(o.run);
+  REQUIRE(lines.size() > 4);
+  const Json f = lines[4]["monitors"]["forces"];
   const double q = 0.5 * doc["freestream"]["density"].get<double>() *
                    std::pow(doc["freestream"]["speed"].get<double>(), 2);
   const std::array<double, 3> force{0.0, -dp, 0.0};
@@ -1118,6 +1525,12 @@ TEST_CASE("The input reader enforces the solver-input rules", "[runtime]") {
                   })),
                   "E0705");
   }
+  SECTION("a boundary's rule is an index or null") {
+    for (const Json& rule : {Json(-1), Json(1.5), Json("0")}) {
+      CAPTURE(rule);
+      require_error(run(input([&](Json& d) { d["boundaries"][0]["rule"] = rule; })), "E0705");
+    }
+  }
   SECTION("the mesh scale is finite and positive") {
     for (const double scale : {0.0, -0.0254}) {
       CAPTURE(scale);
@@ -1154,6 +1567,25 @@ TEST_CASE("The input reader enforces the solver-input rules", "[runtime]") {
   }
   SECTION("hashes are 64 lowercase hexadecimal characters") {
     require_error(run(input([](Json& d) { d["case"]["sha256"] = "ABC"; })), "E0705");
+  }
+  SECTION("a number is a JSON number, alone or in a vector") {
+    require_error(run(input([](Json& d) { d["freestream"]["speed"] = "34"; })), "E0705");
+    require_error(run(input([](Json& d) { d["freestream"]["velocity"][0] = "1"; })), "E0705");
+  }
+  SECTION("an ideal gas has gamma above 1") {
+    require_error(run(input([](Json& d) { d["cell_zones"][0]["medium"]["gamma"] = 1.0; })),
+                  "E0705");
+  }
+  SECTION("a checkpoint every 60 s at the shortest") {
+    const Outcome o =
+        run(input([](Json& d) { d["time"]["checkpoint"] = Json{{"seconds", 60.0}}; }));
+    INFO(o.err);
+    CHECK(o.status == ExitStatus::finished);
+  }
+  SECTION("averaging starts before the last step") {
+    require_error(run(input([](Json& d) { d["time"]["average_from"] = d["time"]["steps"]; },
+                            "hybrid-unsteady.solver-input.json")),
+                  "E0705");
   }
   SECTION("a number beyond double range") {
     std::string text = input().dump();
@@ -1238,6 +1670,17 @@ TEST_CASE("A verification case archives its manufactured solution", "[runtime]")
         }
       }
     }
+    // * before +, left to right, and a parenthesis one level above its content: each 1025 deep.
+    for (const std::string& expr :
+         {"x" + repeat(" * x", 1023) + " + x", "(x" + repeat(" + x", 1023) + ")",
+          repeat("(", 1021) + "x" + repeat(")", 1021) + " + x + x + x"}) {
+      require_error(run(with_mms(deep(expr))), "E0208");
+    }
+    // An output is bounded as a subexpression is.
+    Json wrapped = Json::parse(fixture);
+    Json& rho = wrapped["fields"]["outputs"]["rho"];
+    rho = repeat("(", 1024) + rho.get<std::string>() + repeat(")", 1024);
+    require_error(run(with_mms(wrapped.dump())), "E0208");
     // Unfinished, the parser would recurse through all of it before reporting the syntax.
     require_error(run(with_mms(deep(repeat("(", 100000) + "x"))), "E0208");
     require_error(run(with_mms(deep(repeat("-", 100000)))), "E0208");
@@ -1289,6 +1732,9 @@ TEST_CASE("log.jsonl records the run's events in the results.md shape", "[runtim
   // The physics' own line, after the runtime's (the cell order).
   CHECK(std::ranges::any_of(
       lines, [](const Json& l) { return l["message"] == "relaxation physics ready"; }));
+  // runtime.md#ranks: one rank logs no partition and, in "run", no rank-count event.
+  CHECK(std::ranges::none_of(lines, [](const Json& l) { return l["source"] == "mpi"; }));
+  CHECK(std::ranges::none_of(lines, [](const Json& l) { return l["data"].contains("mode"); }));
   // The run.json diagnostic appears with its code and data.
   const Json info = Json::parse(read(o.run / "run.json"));
   const auto d0107 =
@@ -1297,6 +1743,7 @@ TEST_CASE("log.jsonl records the run's events in the results.md shape", "[runtim
   CHECK((*d0107)["data"] == info["diagnostics"][0]["data"]);
   CHECK((*d0107)["iteration"] == 4);
   CHECK(lines.back()["data"]["status"] == "diverged");
+  CHECK(lines.back()["level"] == "info");
 }
 
 TEST_CASE("A continued run goes on bit for bit from the run it continues", "[runtime]") {
@@ -1340,7 +1787,7 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
   // In another cell order than the run it continues, whose bits it would
   // change from the restart on, a continuation is refused.
   REQUIRE(setenv("AUTAN_CELL_ORDER", "input", 1) == 0);
-  const Outcome other_order = run(second, options);
+  const Outcome other_order = run(autan_test::planned(second, mesh_path), options);
   unsetenv("AUTAN_CELL_ORDER");
   require_error(other_order, "E0708");
 
@@ -1363,12 +1810,12 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
   // timing counts this run's iterations only.
   CHECK(info["timing"]["iterations"] ==
         info["iterations"].get<std::int64_t>() - second["start"]["iterations"].get<std::int64_t>());
-  // identity: the eight parts, then the start's identity, mode, iterations
+  // identity: the nine parts, then the start's identity, mode, iterations
   // and solution hash, joined by "\n" (results.md).
   const auto& s = second["start"];
   std::string identity;
   picosha2::hash256_hex_string(second["case"]["sha256"].get<std::string>() + "\n" +
-                                   second["mesh"]["sha256"].get<std::string>() + "\n" +
+                                   second["mesh"]["sha256"].get<std::string>() + "\n\n" +
                                    build.commit + "\nfp32+acc64\ncpu\ncpu\n1\nrcm\n" +
                                    s["identity"].get<std::string>() + "\ncontinue\n" +
                                    std::to_string(s["iterations"].get<int>()) + "\n" +
@@ -1422,6 +1869,10 @@ TEST_CASE("An initial-state file gives each fluid cell its state", "[runtime]") 
     Json other = state;
     other["variables"] = {"density", "velocity-x", "velocity-y", "velocity-z", "temperature"};
     require_error(run(with_initial_state(input(inviscid), other)), "E0508");
+    // Density and pressure > 0.
+    Json empty = state;
+    empty["values"][0][0] = 0.0;
+    require_error(run(with_initial_state(input(inviscid), empty)), "E0508");
   }
   SECTION("E0508: an unknown key, or a mesh hash that is no SHA-256") {
     Json extra = state;
@@ -1430,6 +1881,38 @@ TEST_CASE("An initial-state file gives each fluid cell its state", "[runtime]") 
     Json malformed = state;
     malformed["mesh_sha256"] = "not-a-sha256";
     require_error(run(with_initial_state(input(inviscid), malformed)), "E0508");
+    // A rows member inside a row: no second member opens there.
+    Json nested = state;
+    nested["centroids"][0] = Json::array({Json{{"values", Json::array()}}});
+    require_error(run(with_initial_state(input(inviscid), nested)), "E0508");
+  }
+  SECTION("E0508: a number over 64 characters") {
+    // initial-state.md: refused before the parser reads it; the same value in 64 accepted.
+    require_error(
+        run(with_initial_state(input(inviscid), padded_number(state.dump(), "values", 65))),
+        "E0508");
+    const Outcome at_limit =
+        run(with_initial_state(input(inviscid), padded_number(state.dump(), "values", 64)));
+    INFO(at_limit.err);
+    CHECK(at_limit.status == ExitStatus::finished);
+  }
+  SECTION("E0508: an oracle over 4096 bytes") {
+    // initial-state.md: the oracle, as every member name, at most 4096 bytes.
+    Json long_oracle = state;
+    long_oracle["oracle"] = std::string(4097, 'o');
+    require_error(run(with_initial_state(input(inviscid), long_oracle)), "E0508");
+    Json longest = state;
+    longest["oracle"] = std::string(4096, 'o');
+    const Outcome at_limit = run(with_initial_state(input(inviscid), longest));
+    INFO(at_limit.err);
+    CHECK(at_limit.status == ExitStatus::finished);
+  }
+  SECTION("E0508: a member twice, the last empty") {
+    for (const char* member : {"centroids", "values"}) {
+      CAPTURE(member);
+      require_error(run(with_initial_state(input(inviscid), emptied_twice(state.dump(), member))),
+                    "E0508");
+    }
   }
   SECTION("E0705: a turbulence model, whose variables the file lacks") {
     require_error(run(with_initial_state(input(), state)), "E0705");
@@ -1445,6 +1928,27 @@ TEST_CASE("An initial-state file gives each fluid cell its state", "[runtime]") 
     other["values"].erase(other["values"].size() - 1);
     other["cells"] = n - 1;
     require_error(run(with_initial_state(input(inviscid), other)), "E0510");
+    // One row, the fewest a document may hold.
+    Json one = state;
+    one["centroids"] = Json::array({state["centroids"][0]});
+    one["values"] = Json::array({state["values"][0]});
+    one["cells"] = 1;
+    require_error(run(with_initial_state(input(inviscid), one)), "E0510");
+  }
+  SECTION("rows anywhere within the tolerance of their cells") {
+    // Each row moved by 0.999 times the tolerance, 1e-9 times the box's 1 m extent, along x, y or
+    // z in turn: still its cell's row.
+    Json moved = state;
+    for (std::size_t r = 0; r < n; ++r) {
+      Json& x = moved["centroids"][r][r % 3];
+      x = x.get<double>() + 0.999e-9;
+    }
+    const Outcome near = run(with_initial_state(input(inviscid), moved));
+    INFO(near.err);
+    REQUIRE(near.status == ExitStatus::finished);
+    const auto density = solution_field(near.run / "solution.cgns", "FlowSolution", "Density");
+    REQUIRE(density.size() == n);
+    for (std::size_t c = 0; c < n; ++c) CHECK(density[c] == 1.0 + 1e-3 * static_cast<double>(c));
   }
   SECTION("E0511: a row far from every cell, or two rows on one cell") {
     Json far = state;
@@ -1453,6 +1957,59 @@ TEST_CASE("An initial-state file gives each fluid cell its state", "[runtime]") 
     Json twice = state;
     twice["centroids"][3] = twice["centroids"][4];
     require_error(run(with_initial_state(input(inviscid), twice)), "E0511");
+  }
+  SECTION("E0511: one row within the tolerance of two cells, the first of them cell 0") {
+    // The hex box flattened to 3 layers 1.5e-9 m thick: the tolerance is 1e-9 times its 1 m
+    // extent, so a row half-way between cell 0 and the next cell of its column lies within it of
+    // both, and each cell within it of its own row only. That next cell's row is moved away.
+    const fs::path hex = data_dir / "mesh" / "hex" / "polyMesh";
+    const fs::path flat = fresh_dir() / "polyMesh";
+    fs::copy(hex, flat);
+    {
+      std::ifstream in(hex / "points");
+      std::ostringstream out;
+      const std::regex point(R"(^\(([^ ]+) ([^ ]+) ([^ ]+)\)$)");
+      char buffer[96];
+      for (std::string line; std::getline(in, line);) {
+        std::smatch m;
+        if (std::regex_match(line, m, point)) {
+          std::snprintf(buffer, sizeof buffer, "(%s %s %.17g)", m[1].str().c_str(),
+                        m[2].str().c_str(), std::stod(m[3]) * 4.5e-9);
+          line = buffer;
+        }
+        out << line << '\n';
+      }
+      std::ofstream(flat / "points") << out.str();
+    }
+    Json doc_flat = input([&](Json& d) {
+      d["mesh"]["path"] = flat.string();
+      d["mesh"]["sha256"] = autan::io::mesh_hash(flat);
+      Json zone = d["cell_zones"][0];
+      zone["zone"] = "fluid";
+      d["cell_zones"] = Json::array({zone});
+    });
+    inviscid(doc_flat);
+    Json shared = initial_state_document(flat);
+    const auto rows = shared["cells"].get<std::size_t>();
+    const auto centroid = [&](std::size_t c) { return shared["centroids"][rows - 1 - c]; };
+    std::size_t above = 1;
+    const auto distance = [&](std::size_t c) {
+      return std::hypot(centroid(c)[0].get<double>() - centroid(0)[0].get<double>(),
+                        centroid(c)[1].get<double>() - centroid(0)[1].get<double>(),
+                        centroid(c)[2].get<double>() - centroid(0)[2].get<double>());
+    };
+    for (std::size_t c = 2; c < rows; ++c) {
+      if (distance(c) < distance(above)) above = c;
+    }
+    REQUIRE(distance(above) > 1e-9);
+    REQUIRE(distance(above) < 2e-9);
+    Json midpoint = Json::array();
+    for (std::size_t k = 0; k < 3; ++k) {
+      midpoint.push_back(0.5 * (centroid(0)[k].get<double>() + centroid(above)[k].get<double>()));
+    }
+    shared["centroids"][rows - 1] = midpoint;
+    shared["centroids"][rows - 1 - above] = Json::array({-1.0, -1.0, -1.0});
+    require_error(run(with_initial_state(doc_flat, shared)), "E0511");
   }
   SECTION("E0705: initial_state with start") {
     Json both = doc;
@@ -1482,6 +2039,29 @@ TEST_CASE("A warm start takes the previous state and counts from 1", "[runtime]"
              WithinRel(doc["freestream"]["density"].get<double>() * std::pow(1.25, 5.0), 1e-14));
 }
 
+TEST_CASE("A start from a run with the longest case name and mesh path is honoured", "[runtime]") {
+  // results.md, RunMetadata: a case name of 4096 control bytes, which ensure_ascii writes as
+  // \u00XX (6 bytes each), and a mesh path as long as the system allows (about 4000 bytes on
+  // Linux; PATH_MAX is 1024 on macOS) stay under its 64 KiB.
+  const std::size_t longest = std::min<std::size_t>(3800, PATH_MAX - 300);
+  fs::path deep = fresh_dir();
+  while (deep.string().size() < longest) deep /= std::string(200, 'd');
+  fs::create_directories(deep);
+  const fs::path mesh = deep / "polyMesh";
+  fs::copy(data_dir / "mesh" / "hybrid" / "polyMesh", mesh, fs::copy_options::recursive);
+  const auto edit = [&](Json& d) {
+    d["case"]["name"] = std::string(4096, '\x01');
+    d["mesh"]["path"] = fs::absolute(mesh).string();
+    d["mesh"]["sha256"] = autan::io::mesh_hash(mesh);
+    d["time"]["max_iterations"] = 2;
+  };
+  const Outcome a = run(input(edit));
+  REQUIRE(a.status == ExitStatus::finished);
+  Json doc = input(edit);
+  doc["start"] = start_from(a.run, "warm");
+  CHECK(run(doc).status == ExitStatus::finished);
+}
+
 TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[runtime]") {
   const Outcome a = run(input([](Json& d) { d["time"]["max_iterations"] = 4; }));
   const auto from = [&](const std::function<void(Json&)>& edit) {
@@ -1497,8 +2077,84 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
   SECTION("the previous run has no solution") {
     require_error(from([&](Json& d) { d["start"]["run"] = fresh_dir().string(); }), "E0707");
   }
+#if defined(__linux__)
+  SECTION("the previous run's solution cannot be read") {
+    // A directory in its place: opened, then each read fails (EISDIR).
+    const fs::path previous = fresh_dir();
+    fs::create_directory(previous / "solution.cgns");
+    require_error(from([&](Json& d) { d["start"]["run"] = previous.string(); }), "E0707");
+  }
+#endif
   SECTION("the previous run used another precision") {
     require_error(from([](Json& d) { d["precision"] = "fp64"; }), "E0708");
+  }
+  SECTION("a solution holding what the writer does not write") {
+    // results.md, Sizes a reader accepts: a descriptor beside RunMetadata and ZoneNames, one
+    // family more than the mesh has zones, or a RestartState holding one array more than the
+    // physics writes is refused before the CGNS library loads the file or any array.
+    const fs::path solution = a.run / "solution.cgns";
+    const int kind = GENERATE(0, 1, 2);
+    CAPTURE(kind);
+    int fn = 0;
+    REQUIRE(cg_open(solution.string().c_str(), CG_MODE_MODIFY, &fn) == CG_OK);
+    if (kind == 0) {
+      REQUIRE(cg_goto(fn, 1, "end") == CG_OK);
+      REQUIRE(cg_descriptor_write("About", "a note") == CG_OK);
+    } else if (kind == 1) {
+      int family = 0;
+      REQUIRE(cg_family_write(fn, 1, "Extra", &family) == CG_OK);
+    } else {
+      char name[33];
+      cgsize_t size[3] = {};
+      REQUIRE(cg_zone_read(fn, 1, 1, name, size) == CG_OK);
+      int solutions = 0, restart = 0;
+      REQUIRE(cg_nsols(fn, 1, 1, &solutions) == CG_OK);
+      for (int s = 1; s <= solutions; ++s) {
+        CGNS_ENUMT(GridLocation_t) location{};
+        REQUIRE(cg_sol_info(fn, 1, 1, s, name, &location) == CG_OK);
+        if (std::string_view(name) == "RestartState") restart = s;
+      }
+      REQUIRE(restart > 0);
+      const std::vector<double> zeros(static_cast<std::size_t>(size[1]), 0.0);
+      int field = 0;
+      REQUIRE(cg_field_write(fn, 1, 1, restart, CGNS_ENUMV(RealDouble), "Extra", zeros.data(),
+                             &field) == CG_OK);
+    }
+    REQUIRE(cg_close(fn) == CG_OK);
+    require_error(from([](Json&) {}), "E0707");
+  }
+  SECTION("RunMetadata of 64 KiB, not 64 KiB + 1") {
+    // results.md, RunMetadata: at most 64 KiB, sized before it is read. The previous run's own
+    // metadata, padded with spaces after its opening brace: the same document.
+    const fs::path solution = a.run / "solution.cgns";
+    for (const std::size_t bytes : {std::size_t{64} << 10, (std::size_t{64} << 10) + 1}) {
+      CAPTURE(bytes);
+      int fn = 0;
+      REQUIRE(cg_open(solution.string().c_str(), CG_MODE_MODIFY, &fn) == CG_OK);
+      REQUIRE(cg_goto(fn, 1, "end") == CG_OK);
+      int count = 0;
+      REQUIRE(cg_ndescriptors(&count) == CG_OK);
+      std::string metadata;
+      for (int d = 1; d <= count; ++d) {
+        char name[33];
+        char* text = nullptr;
+        REQUIRE(cg_descriptor_read(d, name, &text) == CG_OK);
+        if (std::string_view(name) == "RunMetadata") metadata = Json::parse(text).dump();
+        cg_free(text);
+      }
+      REQUIRE(!metadata.empty());
+      REQUIRE(metadata.size() < bytes);
+      const std::string padded =
+          "{" + std::string(bytes - metadata.size(), ' ') + metadata.substr(1);
+      REQUIRE(cg_descriptor_write("RunMetadata", padded.c_str()) == CG_OK);
+      REQUIRE(cg_close(fn) == CG_OK);
+      const Outcome o = from([](Json&) {});
+      if (bytes == std::size_t{64} << 10) {
+        CHECK(o.status == ExitStatus::finished);
+      } else {
+        require_error(o, "E0707");
+      }
+    }
   }
   SECTION("the previous run solved other variables") {
     require_error(from([](Json& d) {
@@ -1522,27 +2178,33 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
     require_error(run(doc), "E0203");
   }
   SECTION("the previous solution lacks run metadata the continuation needs") {
-    // A solution.cgns whose RunMetadata has no `averaging`, with its hash.
-    const autan::Mesh mesh = autan::io::read_mesh(mesh_path);
-    Json metadata = Json::parse(read(a.run / "run.json"));
-    metadata.erase("averaging");
-    autan::io::Solution solution;
-    solution.run_metadata = metadata.dump();
-    solution.boundary_bc_types.assign(autan::io::meshinfo_zones(mesh).boundary.size(),
-                                      "BCFarfield");
-    for (const auto& name :
-         autan::runtime::field_names(autan::runtime::parse_solver_input(input().dump()))) {
-      solution.fields.push_back(
-          {.name = name,
-           .values = solution_field(a.run / "solution.cgns", "FlowSolution", name.c_str())});
+    // results.md, RunMetadata: `averaging` is null or the four bounds of the interval. The
+    // previous run's own solution, its RunMetadata without `averaging` or with one bound only.
+    const bool absent = GENERATE(true, false);
+    CAPTURE(absent);
+    const fs::path solution = a.run / "solution.cgns";
+    int fn = 0;
+    REQUIRE(cg_open(solution.string().c_str(), CG_MODE_MODIFY, &fn) == CG_OK);
+    REQUIRE(cg_goto(fn, 1, "end") == CG_OK);
+    int count = 0;
+    REQUIRE(cg_ndescriptors(&count) == CG_OK);
+    Json metadata;
+    for (int d = 1; d <= count; ++d) {
+      char name[33];
+      char* text = nullptr;
+      REQUIRE(cg_descriptor_read(d, name, &text) == CG_OK);
+      if (std::string_view(name) == "RunMetadata") metadata = Json::parse(text);
+      cg_free(text);
     }
-    const fs::path previous = fresh_dir();
-    autan::io::write_solution(previous / "solution.cgns", mesh, solution);
-    require_error(from([&](Json& d) {
-                    d["start"]["run"] = previous.string();
-                    d["start"]["solution_sha256"] = file_sha256(previous / "solution.cgns");
-                  }),
-                  "E0707");
+    REQUIRE(metadata.contains("averaging"));
+    if (absent) {
+      metadata.erase("averaging");
+    } else {
+      metadata["averaging"] = Json{{"from_step", 1}};
+    }
+    REQUIRE(cg_descriptor_write("RunMetadata", metadata.dump().c_str()) == CG_OK);
+    REQUIRE(cg_close(fn) == CG_OK);
+    require_error(from([](Json&) {}), "E0707");
   }
   SECTION("the previous solution keeps data in another file") {
     // mesh.md, E0134, in each form (tests/io/outside_data.hpp), refused from the file's
@@ -1590,7 +2252,41 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
     require_error(from([](Json& d) { d["start"]["woken"] = Json::array({"vorticity"}); }), "E0705");
     require_error(from([](Json& d) { d["start"]["woken"] = Json::array({"energy", "density"}); }),
                   "E0705");
+    require_error(from([](Json& d) { d["start"]["time"] = 0.0; }), "E0705");
+    const Outcome u =
+        run(input([](Json& d) { d["time"]["steps"] = 4; }, "hybrid-unsteady.solver-input.json"));
+    REQUIRE(u.status == ExitStatus::finished);
+    const auto unsteady = [&](double time) {
+      Json doc =
+          input([](Json& d) { d["time"]["steps"] = 6; }, "hybrid-unsteady.solver-input.json");
+      doc["start"] = start_from(u.run, "continue");
+      doc["start"]["time"] = time;
+      return run(doc);
+    };
+    require_error(unsteady(-1.0), "E0705");
+    CHECK(unsteady(0.0).status == ExitStatus::finished);
+    require_error(from([](Json& d) { d["start"]["woken"] = Json::array({"density", "density"}); }),
+                  "E0705");
   }
+}
+
+TEST_CASE("A run reads nothing on its standard input and runs with it closed", "[runtime]") {
+  // solver-input.md, Invocation: the run's own files may then take descriptor 0.
+  const fs::path dir = fresh_dir();
+  const fs::path input_file = dir / "solver-input.json";
+  std::ofstream(input_file) << input().dump();
+  std::FILE* out = std::tmpfile();
+  std::FILE* err = std::tmpfile();
+  const int saved = ::dup(0);
+  REQUIRE(saved >= 0);
+  ::close(0);
+  const ExitStatus status = autan::runtime::run_case(
+      input_file, dir / "runs", autan_test::relaxation_registry({}), build, out, err, {}, {});
+  REQUIRE(::dup2(saved, 0) == 0);
+  ::close(saved);
+  std::fclose(out);
+  std::fclose(err);
+  CHECK(status == ExitStatus::finished);
 }
 
 TEST_CASE("A periodic mesh runs through its image ghosts", "[runtime][periodic]") {
@@ -1677,15 +2373,16 @@ TEST_CASE("A run moves periodic nodes matched within the tolerance and reports i
 }
 
 // face-states.md: tests/data/mesh/ringleb, its states written by autan-vv, on the four in-plane
-// sides; `edit` changes the document before it is written beside the input.
-Json ringleb_input(const std::function<void(Json&)>& edit = {}) {
+// sides; `edit` changes the document, then `rewrite` its compact text, before it is written
+// beside the input.
+Json ringleb_input(const std::function<void(Json&)>& edit = {},
+                   const std::function<std::string(std::string)>& rewrite = {}) {
   const fs::path mesh = data_dir / "mesh" / "ringleb" / "ringleb-n004.msh";
   Json states = Json::parse(read(data_dir / "mesh" / "ringleb" / "ringleb-n004.states.json"));
   std::string bytes = read(data_dir / "mesh" / "ringleb" / "ringleb-n004.states.json");
-  if (edit) {
-    edit(states);
-    bytes = states.dump();
-  }
+  if (edit) edit(states);
+  if (edit || rewrite) bytes = states.dump();
+  if (rewrite) bytes = rewrite(bytes);
   const fs::path file = fresh_dir() / "ringleb.states.json";
   std::ofstream(file, std::ios::binary) << bytes;
   std::string sha;
@@ -1725,6 +2422,15 @@ TEST_CASE("Face states pair with their zone's faces and are archived with the ru
   const std::string sha = doc["boundaries"][0]["states"]["sha256"];
   CHECK(read(o.run / "states" / (sha + ".json")) ==
         read(data_dir / "mesh" / "ringleb" / "ringleb-n004.states.json"));
+  // results.md, BCType: an oracle-state zone is BCDirichlet in solution.cgns.
+  const autan::Mesh back = autan::io::read_mesh(o.run / "solution.cgns");
+  int oracle_zones = 0;
+  for (const auto& zone : back.face_zones()) {
+    if (!zone.boundary || zone.name == "back" || zone.name == "front") continue;
+    CHECK(zone.bc_type == "BCDirichlet");
+    ++oracle_zones;
+  }
+  CHECK(oracle_zones == 4);
 }
 
 TEST_CASE("Face states that do not fit the case exit 2 before any directory", "[runtime]") {
@@ -1739,11 +2445,107 @@ TEST_CASE("Face states that do not fit the case exit 2 before any directory", "[
     require_error(run(ringleb_input([](Json& s) { s["extra"] = 1; })), "E0420");
     require_error(run(ringleb_input([](Json& s) { s.erase("oracle"); })), "E0420");
     require_error(run(ringleb_input([](Json& s) { s["mesh_sha256"] = "abc"; })), "E0420");
+    require_error(run(ringleb_input([](Json& s) { s["zones"] = Json::array(); })), "E0420");
+    // face-states.md: the oracle and every member name, zone names included, at most 4096 bytes;
+    // a longer zone name is refused as text before it is matched with the mesh's zones (E0421).
+    require_error(run(ringleb_input([](Json& s) { s["oracle"] = std::string(4097, 'o'); })),
+                  "E0420");
+    require_error(run(ringleb_input(
+                      [](Json& s) { s["zones"][std::string(4097, 'z')] = s["zones"]["inflow"]; })),
+                  "E0420");
+    const Outcome longest =
+        run(ringleb_input([](Json& s) { s["oracle"] = std::string(4096, 'o'); }));
+    INFO(longest.err);
+    CHECK(longest.status == ExitStatus::finished);
+    // A number of at most 64 characters: refused before the parser reads it, the same value in
+    // 64 characters accepted.
+    require_error(
+        run(ringleb_input({}, [](std::string b) { return padded_number(b, "values", 65); })),
+        "E0420");
+    const Outcome padded =
+        run(ringleb_input({}, [](std::string b) { return padded_number(b, "values", 64); }));
+    INFO(padded.err);
+    CHECK(padded.status == ExitStatus::finished);
+#if defined(__linux__)
+    // Nested deeper than its structure (5 levels): refused before the parser keeps a level, so
+    // 2^22 levels cost what as long a number does, which the scan refuses as well, not the
+    // parser's stacks.
+    constexpr std::size_t levels = std::size_t{1} << 22;
+    const auto oracle_as = [&](const std::string& value) {
+      return ringleb_input({}, [&](std::string b) {
+        const std::size_t at = b.find("\"oracle\":");
+        REQUIRE(at != std::string::npos);
+        const std::size_t first = at + 9, end = b.find(',', first);
+        return b.replace(first, end - first, value);
+      });
+    };
+    const Json deep = oracle_as(std::string(levels, '[') + std::string(levels, ']'));
+    const Json digits = oracle_as(std::string(2 * levels, '1'));
+    const std::int64_t baseline = peak_of([&] { require_error(run(digits), "E0420"); });
+    const std::int64_t peak = peak_of([&] { require_error(run(deep), "E0420"); });
+    CAPTURE(baseline, peak);
+    CHECK(peak - baseline <= std::int64_t{1} << 20);
+    // A string longer than 4096 bytes written in 6 each: refused before the lexer, which holds
+    // a token twice, reads it; it costs what as long a number does.
+    const Json string = oracle_as("\"" + std::string(2 * levels - 2, 'o') + "\"");
+    const std::int64_t text = peak_of([&] { require_error(run(string), "E0420"); });
+    CAPTURE(text);
+    CHECK(text - baseline <= std::int64_t{1} << 20);
+    // More than 16 384 zones, each a valid empty zone the run does not use: refused as text
+    // (E0420), before any zone is read.
+    require_error(run(ringleb_input([](Json& s) {
+                    for (int z = 0; z <= 16384; ++z) {
+                      s["zones"]["z" + std::to_string(z)] = {
+                          {"faces", 0}, {"centroids", Json::array()}, {"values", Json::array()}};
+                    }
+                  })),
+                  "E0420");
+    // 16 384 zones, one named "values", and the oracle named "values": past the scan, which
+    // counts rows members, not strings, to the mesh hash (E0422).
+    require_error(run(ringleb_input([](Json& s) {
+                    s["oracle"] = "values";
+                    s["mesh_sha256"] = std::string(64, '0');
+                    for (auto z = s["zones"].size(); z < 16384; ++z) {
+                      const std::string name = z == 16383 ? "values" : "z" + std::to_string(z);
+                      s["zones"][name] = {
+                          {"faces", 0}, {"centroids", Json::array()}, {"values", Json::array()}};
+                    }
+                    REQUIRE(s["zones"].size() == 16384);
+                  })),
+                  "E0422");
+#endif
+    // Rows, read as they stream: each an array of 3 (centroids) or 5 (values) finite numbers,
+    // one per face of the zone.
+    for (const auto& edit : std::vector<std::function<void(Json&)>>{
+             [](Json& rows) { rows["centroids"][0].push_back(0.0); },
+             [](Json& rows) { rows["values"][1][2] = "fast"; },
+             [](Json& rows) { rows["values"][0][0] = Json::array({1.0}); },
+             [](Json& rows) { rows["centroids"].erase(rows["centroids"].size() - 1); },
+             [](Json& rows) { rows["values"] = Json::object(); },
+             // A rows member inside a row: no second member opens there.
+             [](Json& rows) {
+               rows["centroids"][0] = Json::array({Json{{"values", Json::array()}}});
+             }}) {
+      require_error(run(ringleb_input([&](Json& s) { edit(s["zones"]["inflow"]); })), "E0420");
+    }
+    // Density and pressure > 0.
+    require_error(run(ringleb_input([](Json& s) { s["zones"]["inflow"]["values"][0][0] = 0.0; })),
+                  "E0420");
     require_error(run(ringleb_input([](Json& s) {
                     s["zones"]["unused"] =
                         Json{{"faces", "two"}, {"centroids", {}}, {"values", {}}};
                   })),
                   "E0420");
+  }
+  SECTION("E0420 a zone's member twice, the last empty") {
+    for (const char* member : {"centroids", "values"}) {
+      CAPTURE(member);
+      require_error(run(ringleb_input({},
+                                      [&](std::string text) {
+                                        return emptied_twice(text, member, text.find("\"inflow\""));
+                                      })),
+                    "E0420");
+    }
   }
   SECTION("E0420 a path that is not a regular file") {
     Json doc = ringleb_input();
@@ -1833,8 +2635,9 @@ TEST_CASE("An equation at round-off from iteration 1 does not hold back converge
   CHECK(info["status"] == "converged");
   CHECK(info["iterations"] == 28);
 
-  // From iteration 10 it is 1e-3, above the floor: W0710 once, and the run
-  // cannot converge on it any more.
+  // From iteration 10 it is 1e-3, above the floor: W0710 once. It then drops from the largest
+  // momentum residual at iteration 1, momentum-z's 4 (#432): 1e-3 is above 4e-8, so the run
+  // cannot converge.
   autan_test::RelaxationOptions waking = quiet;
   waking.wake_at = 10;
   const Outcome w = run(input([](Json& d) { d["time"]["max_iterations"] = 100; }), waking);
@@ -1856,14 +2659,31 @@ TEST_CASE("An equation at round-off from iteration 1 does not hold back converge
   CHECK(warnings[0]["data"]["iteration"] == 10);
   CHECK(warnings[0]["data"]["residual"] == 1e-3);
   CHECK(warnings[0]["data"]["floor"] == 1e-12 * 6.0);
+
+  // Just below that target the run converges with the other equations; just above it does not.
+  waking.awake_value = 3.9e-8;
+  const Outcome below = run(input([](Json& d) { d["time"]["max_iterations"] = 100; }), waking);
+  REQUIRE(below.status == ExitStatus::finished);
+  const Json info_below = Json::parse(read(below.run / "run.json"));
+  CHECK(info_below["status"] == "converged");
+  CHECK(info_below["iterations"] == 28);
+  waking.awake_value = 4.1e-8;
+  const Outcome above = run(input([](Json& d) { d["time"]["max_iterations"] = 100; }), waking);
+  REQUIRE(above.status == ExitStatus::finished);
+  CHECK(Json::parse(read(above.run / "run.json"))["status"] == "completed");
 }
 
 TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]") {
-  // momentum-x leaves its floor at iterations 10-14, then falls back: it is
-  // no longer exempt, so the run cannot converge (budget 40). A run
-  // continued from iteration 20 must do the same, through start.woken.
+  // momentum-x leaves its floor at iterations 10-14, then falls back to round-off or to exactly
+  // zero, which its reference then holds (results.md, `start`): woken, it drops from momentum-z's
+  // 4 at iteration 1, and the run converges with the others at k = 28. A run continued from
+  // iteration 12, while it is still above its floor, must do the same through start.woken:
+  // without it, iteration 13 would report a second W0710.
+  const double silent = GENERATE(1e-15, 0.0);
+  CAPTURE(silent);
   autan_test::RelaxationOptions options;
   options.silent_equation = 1;
+  options.silent_residual = silent;
   options.wake_at = 10;
   options.sleep_at = 15;
   const auto doc = [](std::int64_t n) {
@@ -1873,14 +2693,17 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
     });
   };
   const Outcome whole = run(doc(40), options);
-  const Outcome a = run(doc(20), options);
+  const Outcome a = run(doc(12), options);
   Json next = doc(40);
   next["start"] = start_from(a.run, "continue");
   CHECK(next["start"]["woken"] == Json::array({"momentum-x"}));
+  CHECK(next["start"]["residual_reference"]["momentum-x"] == silent);
   const Outcome b = run(next, options);
+  INFO(b.err);
   REQUIRE(b.status == ExitStatus::finished);
   const Json info = Json::parse(read(b.run / "run.json"));
-  CHECK(info["status"] == "completed");
+  CHECK(info["status"] == "converged");
+  CHECK(info["iterations"] == 28);
   CHECK(info["start"]["woken"] == Json::array({"momentum-x"}));
   // The equation woke in the first run: no new W0710 in the continuation.
   CHECK(info["diagnostics"].empty());
@@ -1890,42 +2713,195 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
   CHECK(chain == lines_of(whole.run / "history.jsonl"));
 }
 
-TEST_CASE("In fp32+acc64 an equation converges at its floor at the latest", "[runtime]") {
-  // Residuals (e + 1) 0.5^(k-1); scales 1e4 (e + 1) give floors
-  // 0.5 2^-23 1e4 (e + 1) = 5.96e-4 (e + 1), reached at k = 12 for every
-  // equation, before the 8-order drop at k = 28 (case-schema.md#time).
-  const std::string precision = GENERATE("fp32+acc64", "fp64");
-  CAPTURE(precision);
-  autan_test::RelaxationOptions scaled;
-  for (int e = 0; e < 6; ++e) scaled.scales.push_back(1e4 * (e + 1));
-  const Outcome o = run(input([&](Json& d) { d["precision"] = precision; }), scaled);
-  REQUIRE(o.status == ExitStatus::finished);
-  const Json info = Json::parse(read(o.run / "run.json"));
-  CHECK(info["status"] == "converged");
-  if (precision == "fp64") {
-    CHECK(info["iterations"] == 28);
-    CHECK(info["convergence"].is_null());
-    return;
-  }
-  CHECK(info["iterations"] == 12);
+TEST_CASE("In fp32+acc64 an equation converges on a round-off plateau near its floor",
+          "[runtime]") {
+  // case-schema.md#time. Residuals (e + 1) max(0.5^(k-1), p) and scales 1e4 (e + 1) give floors
+  // f_e = 0.5 2^-23 1e4 (e + 1) = 5.96e-4 (e + 1). A plateau is 100 steps without a value below
+  // 0.9 times the least before; an equation converges on one at most 10 f_e high.
   const std::vector<std::string> equations{"density",    "momentum-x", "momentum-y",
                                            "momentum-z", "energy",     "nu-tilde"};
-  REQUIRE(info["convergence"]["floor"].size() == equations.size());
-  for (std::size_t e = 0; e < equations.size(); ++e) {
-    CHECK(info["convergence"]["floor"][equations[e]] ==
-          std::ldexp(0.5, -23) * 1e4 * static_cast<double>(e + 1));
+  autan_test::RelaxationOptions scaled;
+  for (int e = 0; e < 6; ++e) scaled.scales.push_back(1e4 * (e + 1));
+  const double floor = std::ldexp(0.5, -23) * 1e4;
+  auto run_json = [&](const autan_test::RelaxationOptions& options, const std::string& precision,
+                      std::int64_t budget = 10000) {
+    const Outcome o = run(input([&](Json& d) {
+                            d["precision"] = precision;
+                            d["time"]["max_iterations"] = budget;
+                          }),
+                          options);
+    REQUIRE(o.status == ExitStatus::finished);
+    return Json::parse(read(o.run / "run.json"));
+  };
+
+  SECTION("a residual that crosses its floor while still falling converges by its drop") {
+    // The floors are crossed at k = 12 (0.5^11 = 4.9e-4 < 5.96e-4); the residuals go on halving
+    // to the 8-order drop at k = 28 (0.5^27 = 7.5e-9 <= 1e-8 < 0.5^26), in either precision.
+    for (const std::string precision : {"fp32+acc64", "fp64"}) {
+      CAPTURE(precision);
+      const Json info = run_json(scaled, precision);
+      CHECK(info["status"] == "converged");
+      CHECK(info["iterations"] == 28);
+      if (precision == "fp64") {
+        CHECK(info["convergence"].is_null());
+        continue;
+      }
+      REQUIRE(info["convergence"]["floor"].size() == equations.size());
+      for (std::size_t e = 0; e < equations.size(); ++e) {
+        CHECK(info["convergence"]["floor"][equations[e]] == floor * static_cast<double>(e + 1));
+      }
+      CHECK(info["convergence"]["plateau"] == Json::array());
+    }
   }
 
-  // A physics without scales has no floor; one with the wrong count fails.
-  const Outcome plain = run(input());
-  CHECK(Json::parse(read(plain.run / "run.json"))["convergence"].is_null());
-  autan_test::RelaxationOptions short_scales;
-  short_scales.scales = {1.0};
-  const Outcome bad = run(input(), short_scales);
-  CHECK(bad.status == ExitStatus::failed);
-  const Json failed = Json::parse(read(bad.run / "run.json"));
-  CHECK(failed["status"] == "failed");
-  CHECK(failed["diagnostics"][0]["code"] == "E0704");
+  SECTION("a plateau above the floor and within the band converges, every equation on it") {
+    // p = 1.5 f_0 (the NS manufactured solution's plateau of #467): 0.5^10 = 9.8e-4 > p >
+    // 0.5^11, so the values fall to k = 11 and are p from k = 12, which is not below 0.9 x 9.8e-4:
+    // the last new least value is at k = 11, the plateau holds at k = 111.
+    autan_test::RelaxationOptions flat = scaled;
+    flat.plateau = 1.5 * floor;
+    const Json info = run_json(flat, "fp32+acc64");
+    CHECK(info["status"] == "converged");
+    CHECK(info["iterations"] == 111);
+    CHECK(info["convergence"]["plateau"] == Json(equations));
+
+    // Provisional steps (a first-order start) do not count: from k = 50 the plateau needs 100
+    // counted steps, k = 50 to 149, and holds at k = 150.
+    flat.provisional_until = 50;
+    CHECK(run_json(flat, "fp32+acc64")["iterations"] == 150);
+
+    // A run that converges on its plateau and then fails to write its solution lists none.
+    flat.provisional_until = 0;
+    flat.throw_in_fields = true;
+    const Outcome failing = run(input(), flat);
+    CHECK(failing.status == ExitStatus::failed);
+    const Json failed = Json::parse(read(failing.run / "run.json"));
+    CHECK(failed["status"] == "failed");
+    CHECK(failed["convergence"]["plateau"] == Json::array());
+  }
+
+  SECTION("a plateau above the band is not convergence") {
+    autan_test::RelaxationOptions high = scaled;
+    high.plateau = 20.0 * floor;
+    const Json info = run_json(high, "fp32+acc64", 300);
+    CHECK(info["status"] == "completed");
+    CHECK(info["iterations"] == 300);
+    CHECK(info["convergence"]["plateau"] == Json::array());
+  }
+
+  SECTION("a physics without scales has no floor; one with the wrong count fails") {
+    const Outcome plain = run(input());
+    CHECK(Json::parse(read(plain.run / "run.json"))["convergence"].is_null());
+    autan_test::RelaxationOptions short_scales;
+    short_scales.scales = {1.0};
+    const Outcome bad = run(input(), short_scales);
+    CHECK(bad.status == ExitStatus::failed);
+    const Json failed = Json::parse(read(bad.run / "run.json"));
+    CHECK(failed["status"] == "failed");
+    CHECK(failed["diagnostics"][0]["code"] == "E0704");
+  }
+}
+
+TEST_CASE("A run that needs more memory than its host can give is refused before the mesh",
+          "[runtime]") {
+  // solver-input.md, `memory`: on the CPU, the host and device shares of a rank together against
+  // the memory its host can still give less the margin (E0711). The mesh path does not exist: the
+  // refusal comes before the mesh is read.
+  constexpr std::int64_t huge = std::int64_t{1} << 60;
+  constexpr std::int64_t margin = std::int64_t{2} << 30;
+  const auto registry = autan_test::relaxation_registry({});
+  const auto refusal = [](const Outcome& o) {
+    CHECK(o.status == ExitStatus::invalid_input);
+    CHECK_FALSE(fs::exists(o.runs));
+    return Json::parse(o.err.substr(0, o.err.find('\n')));
+  };
+  const Json heavy = refusal(run(input([](Json& d) {
+                                   d["memory"]["bytes_host"] = huge / 2;
+                                   d["memory"]["bytes_device"] = huge / 2;
+                                   d["mesh"]["path"] = "/nonexistent/polyMesh";
+                                 }),
+                                 registry));
+  CHECK(heavy["code"] == "E0711");
+  CHECK(heavy["location"]["path"] == "memory");
+  CHECK(heavy["data"]["required_bytes"] == huge);
+  CHECK(heavy["data"]["margin_bytes"] == margin);
+  CHECK(heavy["data"]["device_kind"] == "cpu");
+  const auto available = heavy["data"]["available_bytes"].get<std::int64_t>();
+  CHECK(available >= 0);
+  CHECK(available < huge);
+  // The margin is kept free: nothing more than it fits.
+  const Json kept = refusal(run(input(), registry, {}, {.margin_bytes = huge}));
+  CHECK(kept["code"] == "E0711");
+  CHECK(kept["data"]["margin_bytes"] == huge);
+  // Started anyway on request, with W0712 and the same data in run.json and the log, which is
+  // published with it: its second line, after the start (results.md).
+  const Outcome over = run(input([&](Json& d) { d["memory"]["bytes_host"] = huge; }), registry, {},
+                           {.allow_oversubscription = true});
+  REQUIRE(over.status == ExitStatus::finished);
+  const Json info = Json::parse(read(over.run / "run.json"));
+  REQUIRE(info["diagnostics"].size() == 1);
+  CHECK(info["diagnostics"][0]["code"] == "W0712");
+  CHECK(info["diagnostics"][0]["data"]["required_bytes"] == huge);
+  const auto logged = lines_of(over.run / "log.jsonl");
+  REQUIRE(logged.size() >= 2);
+  const Json second = Json::parse(logged[1]);
+  CHECK(second["code"] == "W0712");
+  CHECK(second["level"] == "warning");
+  CHECK(second["data"] == info["diagnostics"][0]["data"]);
+  std::size_t w0712 = 0;
+  for (const auto& line : logged) w0712 += Json::parse(line)["code"] == "W0712" ? 1 : 0;
+  CHECK(w0712 == 1);
+  // W0712 reaches stderr before the mesh is read, so before what may exhaust the host: here the
+  // mesh does not exist, and its refusal follows the warning.
+  const Outcome early = run(input([&](Json& d) {
+                              d["memory"]["bytes_host"] = huge;
+                              d["mesh"]["path"] = "/nonexistent/polyMesh";
+                            }),
+                            registry, {}, {.allow_oversubscription = true});
+  CHECK(early.status == ExitStatus::invalid_input);
+  std::vector<std::string> codes;
+  std::istringstream err_lines(early.err);
+  for (std::string line; std::getline(err_lines, line);)
+    if (line.starts_with("{")) codes.push_back(Json::parse(line)["code"]);
+  REQUIRE(codes.size() == 2);
+  CHECK(codes[0] == "W0712");
+  CHECK(codes[1] != "W0712");
+  // The estimate is required.
+  const Json missing = refusal(run(input([](Json& d) { d.erase("memory"); }), registry));
+  CHECK(missing["code"] == "E0705");
+  CHECK(missing["data"]["path"] == "memory");
+}
+
+TEST_CASE("A physics' groups reach it whole on one rank", "[runtime][groups]") {
+  // runtime.md#registration: the groups a physics registers are formed and given to it on any
+  // number of ranks. The relaxation physics checks that it was asked for them once and was given
+  // each group whole, in its order (check_groups). In the mesh's own order, cell 0, the least of
+  // group 0, is the physics' cell 0.
+  struct InputOrder {
+    InputOrder() {
+      if (const char* given = std::getenv("AUTAN_CELL_ORDER")) saved = given;
+      REQUIRE(setenv("AUTAN_CELL_ORDER", "input", 1) == 0);
+    }
+    ~InputOrder() {
+      if (saved) {
+        setenv("AUTAN_CELL_ORDER", saved->c_str(), 1);
+      } else {
+        unsetenv("AUTAN_CELL_ORDER");
+      }
+    }
+    InputOrder(const InputOrder&) = delete;
+    InputOrder& operator=(const InputOrder&) = delete;
+    std::optional<std::string> saved;
+  };
+  autan_test::RelaxationOptions lining;
+  lining.groups = 2;
+  Outcome o;
+  {
+    const InputOrder input_order;
+    o = run(input(), lining);
+  }
+  INFO(o.err);
+  CHECK(o.status == ExitStatus::finished);
 }
 
 #ifdef AUTAN_MPIEXEC
@@ -2197,6 +3173,29 @@ TEST_CASE("A launcher killed after its ranks is judged by their markers", "[runt
   REQUIRE(waitpid(zombie, &waited, 0) == zombie);
 }
 
+TEST_CASE("The ranks of a host share its memory", "[runtime][mpi]") {
+  // solver-input.md, `memory` is one rank's: two ranks on one host need twice it.
+  constexpr std::int64_t huge = std::int64_t{1} << 60;
+  constexpr int ranks = 2;
+  const Json heavy = input([&](Json& d) { d["memory"]["bytes_host"] = huge; });
+  Json refusal;
+  CHECK(run_on_ranks(heavy, ranks, {}, 2, &refusal, {}, false).empty());
+  CHECK(refusal["code"] == "E0711");
+  CHECK(refusal["data"]["required_bytes"] == ranks * huge);
+  // The command line sets the margin, and starts a run beyond its memory with W0712.
+  Json margined;
+  CHECK(run_on_ranks(input(), ranks, {}, 2, &margined, {"--memory-margin", std::to_string(huge)},
+                     false)
+            .empty());
+  CHECK(margined["code"] == "E0711");
+  CHECK(margined["data"]["margin_bytes"] == huge);
+  const fs::path over = run_on_ranks(heavy, ranks, {}, 0, nullptr, {"--allow-oversubscription"});
+  const Json info = Json::parse(read(over / "run.json"));
+  REQUIRE(info["diagnostics"].size() == 1);
+  CHECK(info["diagnostics"][0]["code"] == "W0712");
+  CHECK(info["diagnostics"][0]["data"]["required_bytes"] == ranks * huge);
+}
+
 TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   // Fields and residuals vary from cell to cell, so that a cell gathered to
   // the wrong place or a norm summed in another order would change bits;
@@ -2222,7 +3221,7 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   // In the mesh's own order too (AUTAN_CELL_ORDER=input; RCM is the
   // default): partitioned on other cells, the same outputs.
   const fs::path rcm = run_on_ranks(
-      doc, ranks,
+      autan_test::planned(doc, mesh_path, "input"), ranks,
       {"AUTAN_CELL_ORDER=input", "AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
        "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"});
   CHECK(lines_of(rcm / "history.jsonl") == lines_of(one.run / "history.jsonl"));
@@ -2270,7 +3269,7 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   // default) and its flipped faces: in the mesh's own order the physics
   // finds the same keys, so "ranks" gives the same bits in either order.
   const fs::path input_keyed = run_on_ranks(
-      keyed, ranks,
+      autan_test::planned(keyed, mesh_path, "input"), ranks,
       {"AUTAN_CELL_ORDER=input", "AUTAN_TEST_FACTOR=0.9", "AUTAN_TEST_PRESSURE_OFFSET=1000",
        "AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1", "AUTAN_TEST_CHECK_KEYS=1"});
   CHECK(lines_of(input_keyed / "history.jsonl") == lines_of(one_keyed.run / "history.jsonl"));
@@ -2389,16 +3388,23 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
     CHECK(memory["host_peak_bytes"] == by_rank.back());
     CHECK(memory["device_peak_bytes_by_rank"].size() == static_cast<std::size_t>(ranks));
   }
-  // Rank 0 logged the partition: every cell owned once.
-  std::int64_t owned = 0;
+  // Rank 0 logged the partition: every cell owned once, and each rank's owned and ghost cells
+  // those autan-mesh-info --ranks gives for the mesh (mesh-info.md, partition).
+  Json partitioned;
   std::ifstream log_in(many / "log.jsonl");
   for (std::string line; std::getline(log_in, line);) {
     const Json event = Json::parse(line);
-    if (event["source"] == "mpi") {
-      for (const auto& n : event["data"]["owned_cells"]) owned += n.get<std::int64_t>();
-    }
+    if (event["source"] == "mpi") partitioned = event["data"];
   }
-  CHECK(owned == autan::io::read_mesh(doc["mesh"]["path"].get<std::string>()).n_cells());
+  const autan::Mesh mesh = autan::io::read_mesh(doc["mesh"]["path"].get<std::string>());
+  std::int64_t owned = 0;
+  for (const auto& n : partitioned["owned_cells"]) owned += n.get<std::int64_t>();
+  CHECK(owned == mesh.n_cells());
+  const auto counts = autan::io::run_counts(mesh, 1.0, autan::io::CellOrder::rcm,
+                                            autan::io::RanksRequest{.ranks = ranks, .groups = {}});
+  REQUIRE(counts.partition);
+  CHECK(partitioned["owned_cells"] == Json(counts.partition->cells));
+  CHECK(partitioned["ghost_cells"] == Json(counts.partition->ghosts));
 
   // Every cell from 7 on diverges, on several ranks: the least is reported,
   // as a single rank names it.
@@ -2566,6 +3572,8 @@ TEST_CASE("Cells renumbered in RCM order give the run of the mesh's order", "[ru
     InputOrder(const InputOrder&) = delete;
     InputOrder& operator=(const InputOrder&) = delete;
   };
+  // The input planned in the mesh's order: mesh_info's lines are those of the run's order.
+  const auto in_input_order = [](const Json& d) { return autan_test::planned(d, mesh_path); };
   SECTION("bit for bit when nothing sums over faces: the relaxation physics") {
     // Fields that vary per cell, forces at every iteration, a cell that
     // diverges, an initial state and the periodic box: each output mapped back.
@@ -2581,7 +3589,7 @@ TEST_CASE("Cells renumbered in RCM order give the run of the mesh's order", "[ru
     Outcome a;
     {
       const InputOrder input_order;
-      a = run(doc, options);
+      a = run(in_input_order(doc), options);
     }
     REQUIRE(a.status == ExitStatus::finished);
     const Outcome b = run(doc, options);
@@ -2610,7 +3618,7 @@ TEST_CASE("Cells renumbered in RCM order give the run of the mesh's order", "[ru
     const Json in_rcm = diverged(doc);
     {
       const InputOrder input_order;
-      CHECK(diverged(doc) == in_rcm);
+      CHECK(diverged(in_input_order(doc)) == in_rcm);
     }
     if (!periodic) {
       Json plain = doc;
@@ -2618,7 +3626,7 @@ TEST_CASE("Cells renumbered in RCM order give the run of the mesh's order", "[ru
       const Json from_file = with_initial_state(plain, initial_state_document(mesh_path));
       const Outcome c = run(from_file, options);
       const InputOrder input_order;
-      const Outcome d = run(from_file, options);
+      const Outcome d = run(in_input_order(from_file), options);
       CHECK(solution_field(c.run / "solution.cgns", "FlowSolution", "Pressure") ==
             solution_field(d.run / "solution.cgns", "FlowSolution", "Pressure"));
     }
@@ -2648,18 +3656,16 @@ TEST_CASE("Cells renumbered in RCM order give the run of the mesh's order", "[ru
         zones.push_back(zone);
       }
       d["cell_zones"] = zones;
-      d["time"] = {{"kind", "unsteady"},
-                   {"steps", 5},
-                   {"dt", nullptr},
-                   {"cfl", 0.8},
-                   {"average_from", nullptr}};
+      d["time"] = {{"kind", "unsteady"},      {"steps", 5},
+                   {"dt", nullptr},           {"cfl", 0.8},
+                   {"average_from", nullptr}, {"checkpoint", {{"seconds", 1800.0}}}};
     });
     autan::runtime::PhysicsRegistry euler;
     autan::physics::register_euler(euler);
     Outcome a;
     {
       const InputOrder input_order;
-      a = run(doc, euler);
+      a = run(in_input_order(doc), euler);
     }
     REQUIRE(a.status == ExitStatus::finished);
     const Outcome b = run(doc, euler);
@@ -2745,17 +3751,18 @@ TEST_CASE("A mesh in inches gives the run of the same mesh in metres", "[runtime
     REQUIRE(toml.find(unit) != std::string::npos);
     in_inches["case"]["toml"] = toml.replace(toml.find(unit), unit.size(), "mesh_unit = \"in\"");
   }
-  in_inches["mesh"] = {
-      {"path", inches.string()}, {"sha256", autan::io::mesh_hash(inches)}, {"scale", 0.0254}};
+  in_inches["mesh"]["path"] = inches.string();
+  in_inches["mesh"]["sha256"] = autan::io::mesh_hash(inches);
+  in_inches["mesh"]["scale"] = 0.0254;
+  in_inches = autan_test::planned(in_inches, mesh_path);
   autan::runtime::PhysicsRegistry registry;
   autan::physics::register_euler(registry);
   const Outcome a = run(metres, registry);
   const Outcome b = run(in_inches, registry);
   REQUIRE(a.status == ExitStatus::finished);
   REQUIRE(b.status == ExitStatus::finished);
-  // The archived MeshInfo describes the file, in its units.
-  CHECK(read(b.run / "mesh-info.json") ==
-        autan::io::mesh_info_json(autan::io::read_mesh(inches), autan::io::mesh_hash(inches)));
+  // The archived MeshInfo is the planned one, of the file in its units.
+  CHECK(read(b.run / "mesh-info.json") == in_inches["mesh_info"].dump(2));
 
   // The fields' precision; the coordinates are FP64 in either.
   double eps = std::string(precision) == "fp64" ? 0x1p-52 : 0x1p-23;
@@ -2789,4 +3796,76 @@ TEST_CASE("A mesh in inches gives the run of the same mesh in metres", "[runtime
     CAPTURE(axis);
     close(coordinates(a.run / "solution.cgns", axis), coordinates(b.run / "solution.cgns", axis));
   }
+}
+
+TEST_CASE("A run archives the zone groups its case was resolved with", "[runtime][groups]") {
+  // The hybrid mesh copied with a zone-groups sidecar: the input names the
+  // sidecar's hash (mesh.groups_sha256); run.json records it, the identity
+  // covers it, the archived MeshInfo carries the groups. A sidecar that is not
+  // the one named, present or absent, is refused before any directory.
+  const fs::path mesh = fresh_dir() / "polyMesh";
+  fs::copy(mesh_path, mesh, fs::copy_options::recursive);
+  const std::string hash = autan::io::mesh_hash(mesh);
+  const fs::path sidecar = mesh.string() + ".zones.json";
+  std::ofstream(sidecar) << Json{{"schema", "autan.zone-groups/1"},
+                                 {"mesh_sha256", hash},
+                                 {"provenance", Json::object()},
+                                 {"groups", {{"walls", {"ymin", "zmax"}}}}}
+                                .dump();
+  const std::string groups_hash = autan::io::mesh_hash(sidecar);
+  // An input as the SDK writes it for a case planned with the sidecar `groups_sha256` names, or
+  // with none: its MeshInfo's groups agree with it.
+  const auto on = [&](const Json& groups_sha256) {
+    Json d = input([&](Json& e) {
+      e["mesh"]["path"] = mesh.string();
+      e["mesh"]["sha256"] = hash;
+    });
+    d["mesh"]["groups_sha256"] = groups_sha256;
+    if (groups_sha256.is_null()) {
+      d["mesh_info"]["groups"] = Json::array();
+      d["mesh_info"]["groups_source"] = nullptr;
+    } else {
+      d["mesh_info"]["groups"] = Json::parse(R"([{"name": "walls", "zones": ["ymin", "zmax"]}])");
+      d["mesh_info"]["groups_source"] = {
+          {"path", sidecar.string()}, {"sha256", groups_sha256}, {"provenance", Json::object()}};
+    }
+    return d;
+  };
+  const Outcome o = run(on(groups_hash), {.factor = 0.5});
+  REQUIRE(o.status == ExitStatus::finished);
+  const Json info = Json::parse(read(o.run / "run.json"));
+  CHECK(info["mesh"]["groups_sha256"] == groups_hash);
+  const Json archived = Json::parse(read(o.run / "mesh-info.json"));
+  CHECK(archived["groups"] == Json::parse(R"([{"name": "walls", "zones": ["ymin", "zmax"]}])"));
+  CHECK(archived["groups_source"]["sha256"] == groups_hash);
+  // The identity covers the groups' hash (results.md), the cell order RCM by default.
+  std::string expected;
+  picosha2::hash256_hex_string(info["case"]["sha256"].get<std::string>() + "\n" + hash + "\n" +
+                                   groups_hash + "\n" + build.commit +
+                                   "\nfp32+acc64\ncpu\ncpu\n1\nrcm",
+                               expected);
+  CHECK(info["identity"] == expected);
+
+  require_error(run(on(nullptr)), "E0137");               // a sidecar the input does not name
+  require_error(run(on(std::string(64, 'a'))), "E0137");  // another sidecar
+  // One the input does not name is refused unread, whatever it holds: its plan counted no
+  // memory for reading it (plan.md, zone groups), and reading this one would be E0136.
+  std::ofstream(sidecar) << "{not json";
+  require_error(run(on(nullptr)), "E0137");
+  // A MeshInfo whose groups the runtime cannot take, or from another sidecar than the input
+  // names, is refused as the input's (solver-input.md, mesh_info).
+  Json bad = on(groups_hash);
+  bad["mesh_info"]["groups"] = 42;
+  require_error(run(bad), "E0705");
+  bad = on(groups_hash);
+  bad["mesh_info"]["groups_source"]["sha256"] = std::string(64, 'b');
+  require_error(run(bad), "E0705");
+  bad = on(groups_hash);
+  bad["mesh_info"]["groups_source"]["provenance"] = {{"url", Json::array()}};
+  require_error(run(bad), "E0705");
+  bad = on(groups_hash);
+  bad["mesh_info"]["groups"][0]["zones"] = {"ymin", "nowhere"};
+  require_error(run(bad), "E0705");
+  fs::remove(sidecar);
+  require_error(run(on(groups_hash)), "E0137");  // the named sidecar is gone
 }

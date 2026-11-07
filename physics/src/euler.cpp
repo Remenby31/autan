@@ -4,9 +4,13 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
+#include <span>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
+#include <vector>
 
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
@@ -36,10 +40,20 @@ struct Euler<P>::Impl {
   stored<decltype(D::stencil_lsq_weight)> stencil_lsq_weight;
   kernels::CellStencil stencil;
   std::vector<kernels::offset_t> twin;  // stencil_twin(), on demand
+  // Quadratic gradient: its fit's stencil (two vertex rings) and weights, as a topology of its own
+  // for band_gradients (empty under GradientFit::linear).
+  kernels::CellStencil vertex;
+  stored<decltype(D::band)> band;
+  stored<decltype(D::band_weight)> band_weight;
+  std::vector<kernels::offset_t> band_offsets;
+  std::vector<index_t> band_entries;
+  kernels::Topology band_topo{};
+  std::size_t linear_cells = 0;  // band cells that keep the linear fit
+  index_t first_linear = -1;
   std::vector<double> bc_kind;
   std::vector<State> bc, prim_b, prim, wmin, wmax, phi, source, prim_tan, zero_state;
   std::vector<typename P::jac> face_jac, bnd_jac, dwdu;
-  std::vector<Gr> grad, zero_grad;
+  std::vector<Gr> grad, grad_band, zero_grad;
   ek::Data<P> d{};
   GhostFill* ghosts = nullptr;
   // Under global keys: each cell's faces in global order, their twins and the faces that run
@@ -75,7 +89,12 @@ struct Euler<P>::Impl {
     fill_ghosts(prim, 5);
     ek::cpu::boundary_states(d);
     if (scheme.second_order) {
-      ek::cpu::gradients(d);
+      if (scheme.gradient_fit == GradientFit::quadratic) {
+        band_gradients();
+        ek::cpu::quadratic_gradients(d);
+      } else {
+        ek::cpu::gradients(d);
+      }
       fill_ghosts(grad, 15);
       if (scheme.limiter) {
         ek::cpu::limiter(d);
@@ -119,6 +138,12 @@ struct Euler<P>::Impl {
     decltype(stencil.twin)().swap(stencil.twin);
     decltype(stencil.lsq_weight)().swap(stencil.lsq_weight);
     topo.stencil_twin = nullptr;
+    if (s.gradient_fit == GradientFit::quadratic) {
+      // The quadratic fit's two rings: only the vertex neighbours' entries are kept.
+      vertex = kernels::cell_stencil(mesh, packed, kernels::StencilKind::vertex);
+      decltype(vertex.twin)().swap(vertex.twin);
+      decltype(vertex.lsq_weight)().swap(vertex.lsq_weight);
+    }
     fill(face_normal, packed.face_normal);
     fill(face_area_magnitude, packed.face_area_magnitude);
     fill(face_centroid, packed.face_centroid);
@@ -136,6 +161,16 @@ struct Euler<P>::Impl {
     phi.assign(5 * nc, State(scheme.second_order && !scheme.limiter ? 1 : 0));
     source.assign(5 * nc, State(0));
     grad.assign(15 * nc, Gr(0));
+    if (s.gradient_fit == GradientFit::quadratic) {
+      grad_band.assign(15 * nc, Gr(0));
+      band.assign(nc, typename decltype(band)::value_type(0));
+      band_offsets.assign(nc + 1, 0);
+    }
+    band_topo = topo;
+    band_topo.n_stencil = 0;
+    band_topo.stencil_offsets = band_offsets.data();
+    band_topo.stencil = band_entries.data();
+    band_topo.stencil_twin = nullptr;
 
     d.topo = topo;
     d.prim = prim.data();
@@ -154,6 +189,9 @@ struct Euler<P>::Impl {
     d.cell_centroid = cell_centroid.data();
     d.cell_volume = cell_volume.data();
     d.stencil_lsq_weight = stencil_lsq_weight.data();
+    d.band = band.data();
+    d.grad_band = grad_band.data();
+    d.band_weight = band_weight.data();
     d.gamma[0] = typename P::param(gas.gamma);
     d.gas_constant[0] = typename P::param(gas.gas_constant);
     if (!(scheme.mach_ref > 0.0)) {
@@ -248,6 +286,216 @@ struct Euler<P>::Impl {
       if (!weights(false)) weights(true);
     }
     d.stencil_lsq_weight = stencil_lsq_weight.data();
+    if (scheme.gradient_fit == GradientFit::quadratic) band_weights(kind);
+  }
+
+  // The quadratic gradient's weights (kernels/euler.py, band_gradients): for every cell, the
+  // gradient at its centroid of the quadratic phi_c + g . d + d^T H d / 2 fitted, with weights
+  // 1/|d|^2 (Mavriplis 2003), to the values at the centroids of the cells within two vertex rings
+  // and at their boundary faces that give the state, all as point values. Each unknown is scaled by
+  // the stencil's extent along its directions and the weights taken in those scaled coordinates;
+  // directions where no entry extends (the span of a one-cell-thick slab) are left out. Solved by
+  // Householder QR. A cell with fewer than 1.5 entries per unknown, or whose entries leave the fit
+  // undetermined, keeps the linear gradient: linear_cells() reports how many
+  // (docs/design/euler.md, Quadratic gradient).
+  void band_weights(std::span<const BoundaryKind> kind) {
+    const auto nc = static_cast<std::size_t>(topo.n_cells);
+    const auto ni = static_cast<std::size_t>(topo.n_interior_faces);
+    const auto nf = static_cast<std::size_t>(topo.n_faces);
+    auto gives = [&](index_t e) {
+      return kind[static_cast<std::size_t>(-e - 1) - ni] == BoundaryKind::state;
+    };
+    auto around = [&](index_t c) {
+      const auto i = static_cast<std::size_t>(c);
+      return std::span<const index_t>(
+          vertex.entries.data() + vertex.offsets[i],
+          static_cast<std::size_t>(vertex.offsets[i + 1] - vertex.offsets[i]));
+    };
+    auto centre = [&](index_t e) {
+      std::array<double, 3> x{};
+      for (std::size_t j = 0; j < 3; ++j) {
+        x[j] = e >= 0
+                   ? static_cast<double>(cell_centroid[j * nc + static_cast<std::size_t>(e)])
+                   : static_cast<double>(face_centroid[j * nf + static_cast<std::size_t>(-e - 1)]);
+      }
+      return x;
+    };
+    // Quadratic monomials as (i, j) pairs of directions after the three linear ones.
+    constexpr std::size_t nt = 9;
+    constexpr std::array<std::array<int, 2>, nt> pair{
+        {{0, -1}, {1, -1}, {2, -1}, {0, 0}, {1, 1}, {2, 2}, {0, 1}, {0, 2}, {1, 2}}};
+    std::fill(band.begin(), band.end(), typename decltype(band)::value_type(0));
+    band_offsets.assign(nc + 1, 0);
+    band_entries.clear();
+    linear_cells = 0;
+    first_linear = -1;
+    std::vector<std::array<double, 3>> weights;
+    std::vector<index_t> cells, points;
+    for (std::size_t c = 0; c < nc; ++c) {
+      band_offsets[c + 1] = static_cast<kernels::offset_t>(band_entries.size());
+      cells.assign(1, static_cast<index_t>(c));
+      points.clear();
+      for (int r = 0; r < 2; ++r) {
+        const auto reached = cells.size();
+        for (std::size_t k = 0; k < reached; ++k) {
+          for (const auto e : around(cells[k])) {
+            if (e >= 0)
+              cells.push_back(e);
+            else if (gives(e))
+              points.push_back(e);
+          }
+        }
+        std::sort(cells.begin(), cells.end());
+        cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
+      }
+      std::sort(points.begin(), points.end());
+      points.erase(std::unique(points.begin(), points.end()), points.end());
+      for (const auto e : cells) {
+        if (e != static_cast<index_t>(c)) points.push_back(e);
+      }
+      const auto xc = centre(static_cast<index_t>(c));
+      auto offset = [&](index_t e) {
+        const auto x = centre(e);
+        return std::array<double, 3>{x[0] - xc[0], x[1] - xc[1], x[2] - xc[2]};
+      };
+      std::array<double, 3> extent{};
+      for (const auto e : points) {
+        const auto dk = offset(e);
+        for (std::size_t j = 0; j < 3; ++j) extent[j] = std::max(extent[j], std::abs(dk[j]));
+      }
+      const double widest = std::max({extent[0], extent[1], extent[2]});
+      auto spans = [&](int j) {
+        return j < 0 || extent[static_cast<std::size_t>(j)] > 1e-12 * widest;
+      };
+      std::vector<std::size_t> used;
+      for (std::size_t i = 0; i < nt; ++i) {
+        if (spans(i < 3 ? static_cast<int>(i) : pair[i][0]) && spans(pair[i][1])) used.push_back(i);
+      }
+      const auto m = used.size();
+      // Scaled row of entry e: d / extent, and d_i d_j / (extent_i extent_j): every value a point
+      // value at its centroid (docs/design/euler.md, Quadratic gradient).
+      auto row = [&](index_t e) {
+        const auto dk = offset(e);
+        std::vector<double> r(m);
+        for (std::size_t u = 0; u < m; ++u) {
+          const auto i = used[u];
+          if (i < 3) {
+            r[u] = dk[i] / extent[i];
+          } else {
+            const auto a = static_cast<std::size_t>(pair[i][0]);
+            const auto b = static_cast<std::size_t>(pair[i][1]);
+            const double v = dk[a] * dk[b];
+            r[u] = v / (extent[a] * extent[b]);
+          }
+        }
+        return r;
+      };
+      auto sqrt_weight = [&](index_t e) {
+        const auto dk = offset(e);
+        double s2 = 0.0;
+        for (std::size_t j = 0; j < 3; ++j) {
+          if (spans(static_cast<int>(j))) s2 += std::pow(dk[j] / extent[j], 2);
+        }
+        return 1.0 / std::sqrt(s2);
+      };
+      const auto n = points.size();
+      auto keep_linear = [&] {
+        ++linear_cells;
+        if (first_linear < 0) first_linear = static_cast<index_t>(c);
+      };
+      if (2 * n < 3 * m) {
+        keep_linear();
+        continue;
+      }
+      // theta = R^-1 Q^T W^1/2 y from W^1/2 A = Q R: the weights G = R^-1 Q^T W^1/2 (m x n).
+      std::vector<double> b(n * m), sw(n);
+      for (std::size_t k = 0; k < n; ++k) {
+        const auto r = row(points[k]);
+        sw[k] = sqrt_weight(points[k]);
+        for (std::size_t i = 0; i < m; ++i) b[i * n + k] = sw[k] * r[i];
+      }
+      std::vector<double> qb;
+      if (!householder(n, m, b, m, qb)) {
+        keep_linear();
+        continue;
+      }
+      std::vector<double> ga(m * n);  // column-major m x n
+      for (std::size_t k = 0; k < n; ++k) {
+        for (std::size_t ii = m; ii-- > 0;) {
+          double v = qb[ii * n + k];
+          for (std::size_t jj = ii + 1; jj < m; ++jj) v -= b[jj * n + ii] * ga[k * m + jj];
+          ga[k * m + ii] = v / b[ii * n + ii];
+        }
+        for (std::size_t i = 0; i < m; ++i) ga[k * m + i] *= sw[k];
+      }
+      auto gradient = [&](const double* col) {
+        std::array<double, 3> g{};
+        for (std::size_t u = 0; u < m; ++u) {
+          if (used[u] < 3) g[used[u]] = col[u] / extent[used[u]];
+        }
+        return g;
+      };
+      for (std::size_t k = 0; k < n; ++k) {
+        band_entries.push_back(points[k]);
+        weights.push_back(gradient(&ga[k * m]));
+      }
+      band[c] = typename decltype(band)::value_type(1);
+      band_offsets[c + 1] = static_cast<kernels::offset_t>(band_entries.size());
+    }
+    const auto nst = band_entries.size();
+    std::vector<double> w(3 * nst);
+    for (std::size_t k = 0; k < nst; ++k) {
+      for (std::size_t j = 0; j < 3; ++j) w[j * nst + k] = weights[k][j];
+    }
+    fill(band_weight, w);
+    d.band_weight = band_weight.data();
+    band_topo.n_stencil = static_cast<kernels::offset_t>(nst);
+    band_topo.stencil_offsets = band_offsets.data();
+    band_topo.stencil = band_entries.data();
+  }
+
+  // Householder QR of the column-major rows x cols matrix a: on return its upper triangle is R,
+  // and q the first qcols columns of Q (rows x qcols, column-major). False if a diagonal entry of
+  // R is below 1e-10 of the largest column norm (rank deficient).
+  static bool householder(std::size_t rows, std::size_t cols, std::vector<double>& a,
+                          std::size_t qcols, std::vector<double>& q) {
+    double largest = 0.0;
+    for (std::size_t j = 0; j < cols; ++j) {
+      double s = 0.0;
+      for (std::size_t i = 0; i < rows; ++i) s += a[j * rows + i] * a[j * rows + i];
+      largest = std::max(largest, std::sqrt(s));
+    }
+    std::vector<double> v(rows * cols, 0.0), vv(cols, 0.0);
+    auto reflect = [&](std::size_t j, double* col) {
+      double s = 0.0;
+      for (std::size_t i = j; i < rows; ++i) s += v[j * rows + i] * col[i];
+      s *= 2.0 / vv[j];
+      for (std::size_t i = j; i < rows; ++i) col[i] -= s * v[j * rows + i];
+    };
+    for (std::size_t j = 0; j < cols; ++j) {
+      double norm = 0.0;
+      for (std::size_t i = j; i < rows; ++i) norm += a[j * rows + i] * a[j * rows + i];
+      norm = std::sqrt(norm);
+      if (!(norm > 1e-10 * largest)) return false;
+      const double alpha = a[j * rows + j] > 0.0 ? -norm : norm;
+      for (std::size_t i = j; i < rows; ++i) v[j * rows + i] = a[j * rows + i];
+      v[j * rows + j] -= alpha;
+      for (std::size_t i = j; i < rows; ++i) vv[j] += v[j * rows + i] * v[j * rows + i];
+      for (std::size_t k = j; k < cols; ++k) reflect(j, &a[k * rows]);
+    }
+    // Q E = H_0 ... H_{cols-1} E, E the first qcols columns of the identity.
+    q.assign(rows * qcols, 0.0);
+    for (std::size_t k = 0; k < qcols; ++k) {
+      q[k * rows + k] = 1.0;
+      for (std::size_t j = cols; j-- > 0;) reflect(j, &q[k * rows]);
+    }
+    return true;
+  }
+
+  void band_gradients() {
+    auto b = d;
+    b.topo = band_topo;
+    ek::cpu::band_gradients(b);
   }
 
   // A face or boundary loop: its gather under global keys, else its scatter.
@@ -366,6 +614,38 @@ template <class P>
 std::vector<double> Euler<P>::gradient_weights() const {
   const auto& w = impl_->stencil_lsq_weight;
   return {w.begin(), w.end()};
+}
+
+template <class P>
+void Euler<P>::linear_gradient(std::span<typename P::grad> out) {
+  auto& m = *impl_;
+  if (out.size() != m.grad.size()) throw std::invalid_argument("gradient array size");
+  if (m.scheme.gradient_fit == GradientFit::linear) {
+    std::copy(m.grad.begin(), m.grad.end(), out.begin());
+    return;
+  }
+  // The linear gradients loop, its limiter bounds into scratch.
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  std::vector<State> lo(5 * nc), hi(5 * nc);
+  auto d = m.d;
+  d.grad = out.data();
+  d.wmin = lo.data();
+  d.wmax = hi.data();
+  ek::cpu::gradients(d);
+}
+
+template <class P>
+typename Euler<P>::QuadraticGradient Euler<P>::quadratic_gradient() const {
+  const auto& m = *impl_;
+  return {{m.band.begin(), m.band.end()},
+          {m.band_offsets.begin(), m.band_offsets.end()},
+          m.band_entries,
+          {m.band_weight.begin(), m.band_weight.end()}};
+}
+
+template <class P>
+typename Euler<P>::LinearCells Euler<P>::linear_cells() const noexcept {
+  return {impl_->linear_cells, impl_->first_linear};
 }
 
 template <class P>

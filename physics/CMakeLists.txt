@@ -53,8 +53,8 @@ add_custom_command(
   OUTPUT ${AUTAN_PHYSICS_KERNELS}
   COMMAND
     ${CMAKE_COMMAND} -E env PYTHONPATH=${PROJECT_SOURCE_DIR}/codegen/src ${Python3_EXECUTABLE} -m
-    autan_codegen ${PROJECT_SOURCE_DIR}/kernels/euler.py --out ${AUTAN_PHYSICS_GENERATED} --backends
-    ${backends}
+    autan_codegen ${PROJECT_SOURCE_DIR}/kernels/euler.py --out ${AUTAN_PHYSICS_GENERATED}
+    --source-root ${PROJECT_SOURCE_DIR} --backends ${backends}
   DEPENDS
     ${PROJECT_SOURCE_DIR}/kernels/euler.py
     ${AUTAN_CODEGEN_SOURCES}

@@ -49,6 +49,8 @@ boundaries() {
   esac
 }
 mkdir -p "$out"
+# The case files resolve paths from their own directory.
+meshes=$(cd "$meshes" && pwd) out=$(cd "$out" && pwd)
 for msh in "$meshes"/*.msh; do
   name=$(basename "$msh" .msh)
   dir="$out/$name"

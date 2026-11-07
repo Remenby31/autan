@@ -21,6 +21,7 @@
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/euler_device.hpp"
+#include "autan/physics/first_order_start.hpp"
 #include "autan/physics/manufactured.hpp"
 #include "autan/physics/navier_stokes.hpp"
 #include "autan/physics/point_vortex.hpp"
@@ -52,8 +53,6 @@ constexpr std::array<const char*, 5> conserved_names = {"Density", "MomentumX", 
 // scales with the viscous time step h^2 (docs/design/multigrid.md, measurements).
 constexpr double cfl_start = 1000.0;
 constexpr double cfl_min = 1.0;
-constexpr double first_order_drop = 1e-3;
-constexpr int first_order_max_steps = 200;
 constexpr double cfl_max = 1e6;
 // Each step's linear system is solved to this relative residual (inexact Newton), with at most
 // this many multigrid-preconditioned iterations.
@@ -172,10 +171,14 @@ class EulerPhysics final : public runtime::Physics {
       if (keys_) matrix_->order_rows(*keys_);
       if (in.time.linear_solver == "multigrid") {
         multigrid_.emplace(mesh, ctx.geometry);
-        nlohmann::json nodes = nlohmann::json::array();
-        for (const auto& l : multigrid_->levels()) nodes.push_back(l.n_nodes);
+        nlohmann::json nodes = nlohmann::json::array(), edges = nlohmann::json::array();
+        for (const auto& l : multigrid_->levels()) {
+          nodes.push_back(l.n_nodes);
+          edges.push_back(l.owner.size());
+        }
         ctx.log.write("info", "linear", "agglomeration multigrid", {},
                       nlohmann::json{{"nodes", nodes},
+                                     {"edges", edges},
                                      {"coarsest", multigrid_->direct_coarsest() ? "lu" : "sweeps"}}
                           .dump());
       } else if (in.time.linear_solver == "lines") {
@@ -266,7 +269,14 @@ class EulerPhysics final : public runtime::Physics {
 
   StepReport step(std::int64_t /*iteration*/) override {
     pressure_valid_ = false;
-    if (device_) return device_step();
+    // A steady step that solves the first-order start is provisional (case-schema.md#time).
+    const bool provisional = ctx_.input.time.kind == "steady" && !second_order_;
+    StepReport report = device_ ? device_step() : host_step();
+    report.provisional = provisional;
+    return report;
+  }
+
+  StepReport host_step() {
     StepReport report;
     // A state the kernels cannot evaluate (as stored, see first_invalid_cell) diverges here,
     // before a solve turns it into an exception; on every rank, also those that own no such cell.
@@ -457,7 +467,12 @@ class EulerPhysics final : public runtime::Physics {
   static Flow make_flow(const PhysicsContext& ctx, const Gas& gas,
                         const kernels::GlobalKeys* keys) {
     if constexpr (is_viscous) {
-      return Flow(ctx.mesh, ctx.geometry, gas, scheme(ctx.input), transport_of(ctx.input));
+      // The quadratic gradient in every cell: with the linear one near the boundary only, or with
+      // the fit to cell averages, ns-mms-order loses its order on tetrahedra or hexahedra
+      // (docs/design/euler.md, Quadratic gradient).
+      Scheme s = scheme(ctx.input);
+      s.gradient_fit = GradientFit::quadratic;
+      return Flow(ctx.mesh, ctx.geometry, gas, s, transport_of(ctx.input));
     } else {
       return Flow(ctx.mesh, ctx.geometry, gas, scheme(ctx.input), keys);
     }
@@ -546,12 +561,18 @@ class EulerPhysics final : public runtime::Physics {
         {"SolverPenalty", penalty_},
         {"SolverShortened", shortened_ ? 1.0 : 0.0},
         {"SolverSecondOrder", second_order_ ? 1.0 : 0.0},
-        {"SolverFirstOrderSteps", static_cast<double>(first_order_steps_)}};
+        {"SolverFirstOrderSteps", static_cast<double>(first_order_.state().steps)}};
     for (std::size_t k = 0; k < 5; ++k) {
       v.emplace_back("SolverReferenceResidual" + std::to_string(k),
                      first_norms_.empty() ? -1.0 : first_norms_[k]);
     }
     v.emplace_back("SolverCflCap", cfl_cap_);
+    // The first-order start's plateau (-1: no reference yet), which decides when it ends.
+    const auto plateau = first_order_.state().plateau;
+    v.emplace_back("SolverFirstOrderPlateauReference",
+                   std::isinf(plateau.reference) ? -1.0 : plateau.reference);
+    v.emplace_back("SolverFirstOrderPlateauCount", static_cast<double>(plateau.count));
+    v.emplace_back("SolverFirstOrderPlateauSince", static_cast<double>(plateau.since));
     return v;
   }
 
@@ -560,16 +581,23 @@ class EulerPhysics final : public runtime::Physics {
     shortened_ = v[1].second != 0.0;
     second_order_ = v[2].second != 0.0;
     euler_.set_second_order(second_order_);
-    first_order_steps_ = static_cast<int>(v[3].second);
+
     first_norms_.clear();
     if (v[4].second >= 0.0) {
       for (std::size_t k = 0; k < 5; ++k) first_norms_.push_back(v[4 + k].second);
     }
     cfl_cap_ = v[9].second;
+    first_order_.restore(
+        {.steps = static_cast<int>(v[3].second),
+         .plateau = {.reference = v[10].second < 0.0 ? std::numeric_limits<double>::infinity()
+                                                     : v[10].second,
+                     .count = static_cast<std::size_t>(v[11].second),
+                     .since = static_cast<std::size_t>(v[12].second)}});
   }
 
-  // SA-neg: rho nt from the zones' initial nt, nt at the boundary faces that give it, the wall
-  // distance; a manufactured solution gives its own nt, wall distance and source.
+  // SA-neg: rho nt from the zones' initial nt, the freestream nt at farfield faces and the ratio
+  // nt / nu at inlets, the wall distance; a manufactured solution gives its own nt, wall distance
+  // and source.
   void init_sa(const Manufactured* mms) {
     const auto& mesh = ctx_.mesh;
     const auto& g = ctx_.geometry;
@@ -609,6 +637,12 @@ class EulerPhysics final : public runtime::Physics {
       }
       if (walls.empty()) throw std::invalid_argument("the SA physics needs a wall");
       d = wall_distance(mesh, g, walls);
+      for (std::size_t b = 0; b < nb; ++b) {
+        const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[ni + b])];
+        const auto it = kinds.find(zone.name);
+        if (it != kinds.end() && it->second == "inlet")
+          nt_b[b] = in.turbulence.nu_tilde_ratio.value();
+      }
     }
     t.model.set_boundary(nt_b);
     t.model.set_wall_distance(d);
@@ -720,6 +754,12 @@ class EulerPhysics final : public runtime::Physics {
       }
     }
     euler_.set_boundary(kind, data);
+    const auto linear = euler_.linear_cells();
+    if (linear.count > 0) {
+      ctx_.log.write("warning", "solver",
+                     "cells keep the linear gradient: too few neighbours for the quadratic fit", {},
+                     nlohmann::json{{"cells", linear.count}, {"first", linear.first}}.dump());
+    }
     boundary_data_ = std::move(data);
   }
 
@@ -779,22 +819,27 @@ class EulerPhysics final : public runtime::Physics {
     return force;
   }
 
-  // Each vortex's circulation from the lift of the residual just evaluated, Kutta-Joukowski
-  // L' = rho V Gamma; it takes effect at the end of the step.
+  // Each vortex's circulation from the lift of the residual just evaluated, pressure and viscous
+  // traction as in the force monitors, Kutta-Joukowski L' = rho V Gamma; it takes effect at the
+  // end of the step.
   void measure_circulation() {
     if (vortices_.empty()) return;
     const auto& mesh = ctx_.mesh;
     const auto& fs = ctx_.input.freestream;
     const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
-    std::vector<double> p(nb), face_force(3 * nb);
+    std::vector<double> p(nb), face_force(3 * nb), traction;
     euler_.boundary_pressure(p, face_force);
+    if constexpr (is_viscous) {
+      traction.assign(3 * nb, 0.0);
+      euler_.viscous_traction(traction);
+    }
     const auto off = mesh.boundary_zone_offsets();
     for (auto& v : vortices_) {
       std::array<runtime::ExactSum, 2> force;
       for (const auto z : v.zones) {
         for (auto f = off[static_cast<std::size_t>(z)]; f < off[static_cast<std::size_t>(z) + 1];
              ++f) {
-          const auto load = wall_force(face_force, {}, static_cast<std::size_t>(f));
+          const auto load = wall_force(face_force, traction, static_cast<std::size_t>(f));
           force[0].add(load[0]);
           force[1].add(load[2]);
         }
@@ -1237,9 +1282,10 @@ class EulerPhysics final : public runtime::Physics {
     double drop = 0.0;
     if (first_norms_.empty()) first_norms_ = current;
     for (std::size_t k = 0; k < 5; ++k) {
-      if (first_norms_[k] > 0.0 && !exempt_.exempt(k)) {
-        drop = std::max(drop, current[k] / first_norms_[k]);
-      }
+      // A woken equation drops from the reference of its kind, as in the convergence rule.
+      if (exempt_.exempt(k)) continue;
+      const double from = exempt_.woken(k) ? exempt_.woken_reference(k) : first_norms_[k];
+      if (from > 0.0) drop = std::max(drop, current[k] / from);
     }
     return drop;
   }
@@ -1248,8 +1294,9 @@ class EulerPhysics final : public runtime::Physics {
   // solution; second order from the step after the first-order residual has dropped. The device
   // starts the same way, so that both solve the same sequence of problems.
   void switch_order(double drop) {
-    if (!second_order_ &&
-        (drop < first_order_drop || ++first_order_steps_ > first_order_max_steps)) {
+    if (second_order_) return;
+    // Also once the drop is on a round-off plateau: in fp32+acc64 three orders can lie below it.
+    if (first_order_.ends_after(drop)) {
       second_order_ = true;
       euler_.set_second_order(true);
       if (device_) device_->set_second_order(true);
@@ -1281,7 +1328,10 @@ class EulerPhysics final : public runtime::Physics {
     const auto r = steady ? device_->step(device_steady_cfl, std::nullopt, true)
                           : device_->step(t.cfl.value_or(0.0), t.cfl ? std::nullopt : t.dt, false);
     host_stale_ = true;
-    if (steady) switch_order(relative_drop(r.residuals, r.residuals));
+    // The exemption is decided on the residuals the runtime receives, as on the host.
+    if (steady)
+      switch_order(
+          relative_drop(r.residuals, report.residuals.empty() ? r.residuals : report.residuals));
     if (report.residuals.empty()) report.residuals = r.residuals;
     if (!steady) report.time_step = r.time_step;
     report.diverged_cell = r.invalid;
@@ -1366,6 +1416,7 @@ class EulerPhysics final : public runtime::Physics {
   std::unique_ptr<SaState<P>> sa_;   // SA-neg runs only
   std::array<double, 5> reference_;  // the state the cells store differences from
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
+  FirstOrderStart first_order_;
   std::optional<BlockMatrix> matrix_;            // steady runs only
   std::optional<solvers::Multigrid> multigrid_;  // linear_solver = "multigrid"
   std::optional<solvers::LineSmoother> lines_;   // linear_solver = "lines"
@@ -1376,7 +1427,6 @@ class EulerPhysics final : public runtime::Physics {
   double cfl_ = cfl_start;
   double penalty_ = 1.0;
   bool second_order_ = false;
-  int first_order_steps_ = 0;
   bool shortened_ = false;
   double mean_weight_ = 0.0;
   std::vector<State> state_, lambda_;
@@ -1526,6 +1576,21 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
 // distances from, unless a manufactured solution gives them.
 std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::SolverInput& in,
                                                            int ranks) {
+  // case-schema.md#time's opt-in steady steps: neither is written for this physics yet.
+  if (in.time.kind == "steady" && in.time.coupled_turbulence) {
+    return runtime::PhysicsRefusal{
+        .message = "the Navier-Stokes physics has no coupled turbulence step yet",
+        .path = "time.coupled_turbulence",
+        .data_json = "{}",
+        .code = "E0426"};
+  }
+  if (in.time.kind == "steady" && in.time.matrix_free) {
+    return runtime::PhysicsRefusal{
+        .message = "the Navier-Stokes physics has no matrix-free step yet",
+        .path = "time.matrix_free",
+        .data_json = "{}",
+        .code = "E0429"};
+  }
   // NavierStokes<P> and SpalartAllmaras<P> fill no ghost cells of their own (their fields, fits
   // and Jacobian blocks would be wrong across a periodic pair): one rank, no periodic pairs.
   if (!in.periodic.empty()) {
@@ -1541,12 +1606,15 @@ std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::Solver
       wall = true;
       continue;
     }
-    if (b.kind != "slip" && b.kind != "symmetry" && b.kind != "farfield" && b.kind != "inlet" &&
-        b.kind != "outlet" && b.kind != "manufactured") {
+    // case-schema.md: oracle-state faces for laminar flow only.
+    const bool oracle = b.kind == "oracle-state" && in.turbulence.model == "laminar";
+    if (!oracle && b.kind != "slip" && b.kind != "symmetry" && b.kind != "farfield" &&
+        b.kind != "inlet" && b.kind != "outlet" && b.kind != "manufactured") {
       return runtime::PhysicsRefusal{
           .message = "the Navier-Stokes physics has no '" + b.kind +
-                     "' condition; boundary zone '" + b.zone +
-                     "' needs wall, slip, symmetry, farfield, inlet or outlet",
+                     "' condition here; boundary zone '" + b.zone +
+                     "' needs wall, slip, symmetry, farfield, inlet, outlet, or oracle-state for "
+                     "laminar flow",
           .path = "boundaries[" + std::to_string(i) + "].kind",
           .data_json = nlohmann::json{{"zone", b.zone}, {"condition", b.kind}}.dump()};
     }
@@ -1564,10 +1632,13 @@ std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::Solver
           .data_json = "{}"};
     }
   }
-  // The gas checks are the Euler physics' own; its condition check is replaced above.
-  runtime::SolverInput gas_only = in;
-  gas_only.boundaries.clear();
-  return euler_scope(gas_only, ranks);
+  // The Euler physics' checks, the gas's and the point vortex's among them, a wall standing for
+  // the slip wall it is to the inviscid flux.
+  runtime::SolverInput as_euler = in;
+  for (auto& b : as_euler.boundaries) {
+    if (b.kind == "wall") b.kind = "slip";
+  }
+  return euler_scope(as_euler, ranks);
 }
 
 #ifdef AUTAN_PHYSICS_CUDA
@@ -1613,6 +1684,32 @@ std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverI
 }
 #endif
 
+// EulerPhysics::restart_fields' names: the conserved variables, the averaging sums and weight,
+// SA's transported variable, the steady solver's state, one circulation per point vortex.
+std::vector<std::string> euler_restart_names(const runtime::SolverInput& in, bool averaging) {
+  std::vector<std::string> out(conserved_names.begin(), conserved_names.end());
+  if (averaging) {
+    for (const char* name : field_names) out.push_back(std::string("AverageSum") + name);
+    out.emplace_back("AverageWeight");
+  }
+  if (in.turbulence.model == "sa") out.emplace_back("DensityNuTilde");
+  if (in.time.kind == "steady") {
+    out.insert(out.end(),
+               {"SolverPenalty", "SolverShortened", "SolverSecondOrder", "SolverFirstOrderSteps"});
+    for (std::size_t k = 0; k < 5; ++k) {
+      out.push_back("SolverReferenceResidual" + std::to_string(k));
+    }
+    out.emplace_back("SolverCflCap");
+    out.insert(out.end(), {"SolverFirstOrderPlateauReference", "SolverFirstOrderPlateauCount",
+                           "SolverFirstOrderPlateauSince"});
+  }
+  std::size_t vortices = 0;
+  for (const auto& bc : in.boundaries) {
+    if (bc.point_vortex) out.push_back("VortexCirculation" + std::to_string(vortices++));
+  }
+  return out;
+}
+
 }  // namespace
 
 // linear_solver = "lines": the multigrid's fine lines, computed on the global mesh, which the
@@ -1628,15 +1725,17 @@ runtime::CellGroups euler_groups(const runtime::SolverInput& in, const Mesh& mes
 void register_euler(runtime::PhysicsRegistry& registry) {
   registry.add({"compressible", "inviscid", "fp64", "cpu"},
                factory<kernels::fp64, Euler<kernels::fp64>>(), euler_scope,
-               /*several_ranks=*/true, euler_groups);
+               /*several_ranks=*/true, euler_groups, euler_restart_names);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"},
                factory<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>(), euler_scope,
-               /*several_ranks=*/true, euler_groups);
+               /*several_ranks=*/true, euler_groups, euler_restart_names);
 #ifdef AUTAN_PHYSICS_CUDA
   registry.add({"compressible", "inviscid", "fp64", "cuda"},
-               factory<kernels::fp64, Euler<kernels::fp64>>(), euler_device_scope);
+               factory<kernels::fp64, Euler<kernels::fp64>>(), euler_device_scope,
+               /*several_ranks=*/false, {}, euler_restart_names);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cuda"},
-               factory<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>(), euler_device_scope);
+               factory<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>(), euler_device_scope,
+               /*several_ranks=*/false, {}, euler_restart_names);
 #endif
 }
 
@@ -1644,10 +1743,11 @@ void register_navier_stokes(runtime::PhysicsRegistry& registry) {
   // One rank only: NavierStokes<P> and SpalartAllmaras<P> fill no ghost cells of their own.
   for (const char* model : {"laminar", "sa"}) {
     registry.add({"compressible", model, "fp64", "cpu"},
-                 factory<kernels::fp64, NavierStokes<kernels::fp64>>(), navier_stokes_scope);
+                 factory<kernels::fp64, NavierStokes<kernels::fp64>>(), navier_stokes_scope,
+                 /*several_ranks=*/false, euler_groups, euler_restart_names);
     registry.add({"compressible", model, "fp32+acc64", "cpu"},
                  factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>(),
-                 navier_stokes_scope);
+                 navier_stokes_scope, /*several_ranks=*/false, euler_groups, euler_restart_names);
   }
 }
 

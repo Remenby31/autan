@@ -186,6 +186,16 @@ _CODES = [
         "Repair the cell in the meshing tool; it is inverted or flat.",
     ),
     Code(
+        "E0122",
+        "Mesh text too long",
+        "A name or text the reader keeps is longer than its cap: 4096 bytes for a zone, family, "
+        "BC or patch name, a dictionary entry, a Gmsh section name or `PeriodicTranslation`; (families + 1) x 25 600 "
+        "bytes for `ZoneNames` (a CGNS name of at most 32 bytes and a zone name of at most 4096, "
+        "each escaped up to 6 bytes per byte, and their framing, per family). It is refused "
+        "before the text is allocated; `data` gives what, its bytes and the limit.",
+        "Shorten the name in the meshing tool: names identify zones, they carry no data.",
+    ),
+    Code(
         "E0130",
         "Mesh file cannot be opened",
         "The file or directory cannot be opened or read.",
@@ -221,6 +231,34 @@ _CODES = [
         "Entity in several zones",
         "An entity belongs to several zones in the source (Gmsh entity in two physical groups, face in two OpenFOAM face zones).",
         "Assign each entity to one zone in the meshing tool.",
+    ),
+    Code(
+        "E0136",
+        "Zone groups file unreadable",
+        "The mesh's `<mesh>.zones.json` is not JSON, or not an `autan.zone-groups/1` document "
+        "(missing or unknown key, wrong type).",
+        "Fix the file against docs/contracts/mesh-info.md, or remove it.",
+    ),
+    Code(
+        "E0137",
+        "Zone groups file describes another mesh",
+        "The `mesh_sha256` of the mesh's `<mesh>.zones.json` differs from the mesh hash, or the "
+        "file the runtime reads differs from the solver input's `mesh.groups_sha256`.",
+        "Regenerate the groups for this mesh, then the MeshInfo and the solver input.",
+    ),
+    Code(
+        "E0138",
+        "Bad zone group",
+        "A group of the mesh's `<mesh>.zones.json` names a boundary zone the mesh does not "
+        "have (names are exact, spaces included), lists a zone twice, is empty, or has a name "
+        "outside `[A-Za-z0-9_.-]` or starting with `-`.",
+        "Correct the group against the zone names of the mesh's MeshInfo.",
+    ),
+    Code(
+        "E0139",
+        "Zone group defined twice",
+        "Two groups of the mesh's `<mesh>.zones.json` have the same name.",
+        "Give each group one entry.",
     ),
     Code(
         "E0140",
@@ -303,6 +341,21 @@ _CODES = [
         "Put the mesh at the path the case gives, relative to the case file.",
     ),
     Code(
+        "E0210",
+        "The MeshInfo's zone groups describe another groups file",
+        "The SHA-256 of the mesh's `<mesh>.zones.json` differs from the MeshInfo "
+        "`groups_source.sha256`, or the file exists and the MeshInfo has no groups: the groups "
+        "the case selects would not be the ones the MeshInfo lists.",
+        "Regenerate the MeshInfo with `autan-mesh-info` after changing the groups file.",
+    ),
+    Code(
+        "W0211",
+        "Zone groups file not found",
+        "The MeshInfo has zone groups but the `<mesh>.zones.json` next to the case's mesh does "
+        "not exist, so `plan` cannot check that they still describe it.",
+        "Put the groups file next to the mesh.",
+    ),
+    Code(
         "E0206",
         "Manufactured solution differs from its hash",
         "The SHA-256 of the manufactured-solution file named by `verification.manufactured` "
@@ -321,7 +374,9 @@ _CODES = [
         "E0208",
         "Not a manufactured solution",
         "The file named by `verification.manufactured.path` is not JSON with "
-        '`"schema": "autan.mms/1"` (docs/validation/mms.md).',
+        '`"schema": "autan.mms/1"` (docs/validation/mms.md), is larger than 1 MiB, or has an '
+        "expression that is not one or is deeper than 1 024 levels "
+        "(docs/contracts/case-schema.md#verification).",
         "Point the case at a manufactured solution exported by autan-vv.",
     ),
     Code(
@@ -332,6 +387,18 @@ _CODES = [
         "flow with the case's turbulence model, or the case has cell zone rules a "
         "single-medium solution cannot cover. The message names the difference.",
         "Build the case gas from the solution's parameters, or export the solution the case needs.",
+    ),
+    Code(
+        "E0212",
+        "MeshInfo prepared for another run",
+        "The MeshInfo's derived counts are not for this run: its lines were computed at another "
+        "scale than the case's `mesh_unit`, or a run on several ranks has no partition for that "
+        "rank count and the groups its linear solver keeps whole, or a run on one rank with "
+        'periodic pairs or reproducibility `"ranks"` has no one-part partition. The message '
+        "names the difference.",
+        "Run `autan-mesh-info --json --scale <metres per mesh unit>` again, with "
+        "`--ranks N` (and `--groups lines` for a steady CPU run with the lines solver) for a run "
+        "on N ranks.",
     ),
     Code(
         "W0204",
@@ -444,8 +511,9 @@ _CODES = [
         "Face-state file missing or invalid",
         "The file of an `oracle_state` condition cannot be read, its SHA-256 differs from the "
         "case's, or it is not a valid `autan.face-states/1` document: its variables, a row of "
-        "3 finite coordinates and 5 finite values per face, density and pressure > 0 "
-        "(docs/contracts/face-states.md).",
+        "3 finite coordinates and 5 finite values per face, density and pressure > 0, strings "
+        "and member names of at most 4 096 bytes, numbers of at most 64 characters, nested no deeper "
+        "than its structure, at most 16 384 zones (docs/contracts/face-states.md).",
         "Export the face states with autan-vv for this mesh and give their path and sha256.",
     ),
     Code(
@@ -498,6 +566,13 @@ _CODES = [
         "host multigrid on one rank: `linear_solver` must be `multigrid`, on the CPU, on one "
         "rank. `autan plan` and the physics both refuse other runs; the message names the key.",
         "Use `linear_solver='multigrid'` and run on one CPU rank, or drop the option.",
+    ),
+    Code(
+        "E0428",
+        "Zone group pattern matches no group",
+        "A selection's `group` (a glob over the zone group names of the mesh's MeshInfo) "
+        "matches no group. Groups come from the mesh's `<mesh>.zones.json`.",
+        "Use one of the group names the message lists, or select zones by name.",
     ),
     Code(
         "W0426",
@@ -575,7 +650,8 @@ _CODES = [
         "The file of `initial_state` cannot be read, is not a regular file, its SHA-256 differs "
         "from the case's, or it is not a valid `autan.initial-state/1` document: its "
         "variables, a row of 3 finite coordinates and 5 finite values per cell, density and "
-        "pressure > 0 (docs/contracts/initial-state.md).",
+        "pressure > 0, strings and member names of at most 4 096 bytes, numbers of at most 64 "
+        "characters, nested no deeper than its structure (docs/contracts/initial-state.md).",
         "Write the initial state with `autan.initial_state.write` for this mesh, and give "
         "its path and the SHA-256 it returns.",
     ),
@@ -679,7 +755,8 @@ _CODES = [
         "Previous run cannot be resumed",
         "A start needs a previous run that ended converged, completed or stopped after at least one "
         "iteration and holds a solution that conforms to its run.json; diverged and failed runs, "
-        "and runs without a sound solution, cannot be resumed.",
+        "and runs without a sound solution, cannot be resumed. A solution whose RunMetadata "
+        "exceeds 64 KiB is not sound: it is refused before it is read (results.md).",
         "Start from another run, or run the case from the freestream.",
     ),
     Code(
@@ -708,12 +785,52 @@ _CODES = [
         "breaks during the run usually means a boundary condition breaks it.",
     ),
     Code(
+        "E0711",
+        "Not enough memory for the run",
+        "The solver input's memory estimate (`memory`, from `autan plan`) exceeds the memory "
+        "available to the run minus the margin: on a unified-memory device or the CPU, host and "
+        "device together against the lower of `MemAvailable` and the container's limit; on a "
+        "discrete device, each against its own pool. `data` gives `required_bytes`, "
+        "`available_bytes`, `margin_bytes`, `device_kind`, `cgroup_limit` (`known`, or `unknown` "
+        "when a memory cgroup above the process could not be read, `W0713`), `cgroup_scope` "
+        "(`host`, or `namespace_root` in a private cgroup namespace) and `unseen_cgroups`. "
+        "The run starts nothing.",
+        "Run on more devices or a machine with more free memory; `--allow-oversubscription` "
+        "starts it anyway, at the risk of exhausting the machine.",
+    ),
+    Code(
+        "W0712",
+        "Run started beyond its memory",
+        "The run was started with `--allow-oversubscription` although its memory estimate "
+        "exceeds the available memory minus the margin (as `E0711`, same `data`).",
+        "Watch the machine's memory; a unified-memory device shares it with every process.",
+    ),
+    Code(
+        "W0713",
+        "Memory limit unverifiable",
+        "A memory cgroup above the process (its own excepted when mounted) is shown by no mount "
+        "of /proc/self/mountinfo, so its limit, if any, could not be read: the memory check rests "
+        "on `MemAvailable` and the limits it could read. `data` gives `cgroup_limit` "
+        "(`unknown`), `cgroup_scope` and `unseen_cgroups`, the cgroups rank 0 could not read.",
+        "Mount the cgroup hierarchy from its root in the container (cgroup namespace), or check "
+        "the job's memory limit by other means.",
+    ),
+    Code(
         "W0714",
         "Checkpoint not written",
         "Writing the restart checkpoint failed (results.md#checkpointcgns), or removing it once "
         "the final solution was written: the run goes on, and the previous checkpoint, if any, "
-        "stays whole. `data` gives the iteration when a write failed.",
+        "stays whole. For failed writes, `data` counts them and gives the first and the last "
+        "(`failures`, `first_iteration`, `first_time`, `last_iteration`, `last_time`).",
         "Check the space and permissions of the run directory's file system.",
+    ),
+    Code(
+        "W0715",
+        "Different solver binary",
+        "This `continue` run's `autan-run` executable is not the one that wrote the state it "
+        "starts from (run.json `solver.binary_sha256`, results.md#runjson): the chain may not be "
+        "bit for bit the uninterrupted run. `data` gives the `expected` and `found` SHA-256.",
+        "Continue with the binary of the original run, or start the chain again with this one.",
     ),
     Code(
         "D0107",

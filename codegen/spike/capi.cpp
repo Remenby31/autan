@@ -20,6 +20,7 @@
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
 #include "autan/io/read_mesh.hpp"
+#include "autan/kernels/colouring.hpp"
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/partition/partition.hpp"
@@ -716,7 +717,26 @@ void autan_spike_stencil_arrays(const void* mesh, std::int64_t* offsets, std::in
   std::copy(st.entries.begin(), st.entries.end(), entries);
 }
 
+/// The colour of each owned interior face (interior != 0) or owned boundary face, in face order,
+/// as kernels::colour_faces gives it to the coloured strategy.
+void autan_spike_face_colours(const void* mesh, int interior, std::int32_t* colours) {
+  const auto& t = static_cast<const SpikeMesh*>(mesh)->topo;
+  const index_t first = interior != 0 ? 0 : t.n_interior_faces;
+  const index_t last = interior != 0 ? t.n_owned_interior_faces : t.n_owned_faces;
+  const auto c = autan::kernels::colour_faces(t, first, last);
+  for (std::size_t k = 0; k + 1 < c.offsets.size(); ++k) {
+    for (auto i = c.offsets[k]; i < c.offsets[k + 1]; ++i) {
+      colours[c.faces[static_cast<std::size_t>(i)] - first] = static_cast<std::int32_t>(k);
+    }
+  }
+}
+
 void autan_spike_mesh_free(void* mesh) { delete static_cast<SpikeMesh*>(mesh); }
+
+/// PackedGeometry::all_planar of the mesh as it is packed now.
+int autan_spike_all_planar(const void* mesh) {
+  return static_cast<const SpikeMesh*>(mesh)->packed.all_planar ? 1 : 0;
+}
 
 /// counts = {n_cells, n_owned_cells, n_faces, n_interior_faces, n_incidences}
 void autan_spike_mesh_counts(const void* mesh, std::int64_t* counts) {

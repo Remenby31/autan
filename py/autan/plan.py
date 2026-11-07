@@ -17,8 +17,10 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 from autan import face_states, initial_state
-from autan.errors import Diagnostic, diagnostic
-from autan.meshinfo import mesh_sha256
+from autan.errors import Diagnostic, Location, diagnostic
+from autan.manufactured import MMS_BYTES, too_deep
+from autan.memory import DeviceKind, Memory, StartMode, StateFileLoad, estimate, extracts
+from autan.meshinfo import mesh_location, mesh_sha256
 from autan.schema import (
     DDES,
     SA,
@@ -35,6 +37,7 @@ from autan.schema import (
     Inviscid,
     Laminar,
     OracleState,
+    PointVortex,
     Slip,
     SolidZone,
     StateFile,
@@ -44,6 +47,7 @@ from autan.schema import (
     Wall,
 )
 from autan.solver_input import gas_constant
+from autan.texts import load_json
 from autan.units import format_unit, metres_per, parse, si
 
 if TYPE_CHECKING:
@@ -103,14 +107,6 @@ class CellZoneResolution(_Report):
     rule: int | None
 
 
-class Memory(_Report):
-    model: Literal["autan.memory/1"] = "autan.memory/1"
-    bytes_total: int
-    bytes_per_gpu: int
-    gpus: int
-    equations: int
-
-
 class Plan(_Report):
     """Resolution of a case against its mesh: zones with provenance, memory, diagnostics."""
 
@@ -137,30 +133,17 @@ def equations(spec: CaseSpec) -> int:
     return flow + {SA: 1, SST: 2}.get(type(model), 0)
 
 
-def memory(spec: CaseSpec, mesh: MeshInfo, gpus: int) -> Memory:
-    """Device memory of the arrays listed in docs/sdk/plan.md (model ``autan.memory/1``)."""
-    n = equations(spec)
-    fp64 = spec.physics.precision == "fp64"
-    compute, accumulate, jacobian = (8, 8, 8) if fp64 else (4, 8, 2)
-    viscous = not isinstance(spec.physics.turbulence, Inviscid)
-    cells, faces = mesh.counts.cells, mesh.counts.faces
-    interior = faces - sum(zone.faces for zone in mesh.boundary_zones)
-    per_cell = (
-        2 * n * accumulate
-        + 5 * n * compute
-        + 4 * 8
-        + (compute if viscous else 0)
-        + n * n * jacobian
-    )
-    per_face = 6 * 8 + 2 * 4
-    per_interior_face = 2 * (n * n * jacobian + 4)
-    total = cells * per_cell + faces * per_face + interior * per_interior_face
-    return Memory(bytes_total=total, bytes_per_gpu=-(-total // gpus), gpus=gpus, equations=n)
-
-
-def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
+def plan(
+    case: Case,
+    mesh: MeshInfo,
+    *,
+    gpus: int = 1,
+    device_kind: DeviceKind = "cuda",
+    start: StartMode | None = None,
+) -> Plan:
     spec = case.spec
     found: list[Diagnostic] = []
+    files: list[StateFileLoad] = []
 
     mesh_file = case.mesh_path
     if not mesh_file.exists():
@@ -181,6 +164,7 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
                 mesh=str(mesh_file),
             )
         )
+    _check_groups_file(case, mesh, found)
     worst = mesh.quality.max_non_orthogonality_deg
     if worst > NON_ORTHOGONALITY_WARNING_DEG:
         found.append(
@@ -193,10 +177,10 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
         )
 
     if spec.verification is not None:
-        _check_manufactured(case, spec, found)
+        _check_manufactured(case, spec, found, files)
         boundaries = _manufactured_boundaries(mesh)
     else:
-        boundaries = _resolve_boundaries(case, spec, mesh, found)
+        boundaries = _resolve_boundaries(case, spec, mesh, found, files)
         _check_point_vortices(case, spec, mesh, boundaries, found)
     cell_zones = _resolve_cell_zones(case, spec, mesh, found)
     if spec.initial_state is not None:
@@ -204,9 +188,10 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
         fluid = sum(z.cells for z, k in zip(cell_zones, kinds, strict=True) if k != "solid")
         # A zone left without a medium (E0503) leaves the fluid cells unknown.
         count = fluid if None not in kinds else None
-        _check_initial_state(case, spec.initial_state, mesh, count, found)
+        _check_initial_state(case, spec.initial_state, mesh, count, found, files)
     _check_interfaces(case, mesh, cell_zones, found)
     _check_monitors(case, spec, mesh, found)
+    _check_prepared(case, spec, mesh, gpus, device_kind, found)
     _check_opt_in(case, spec, gpus, found)
 
     scale = metres_per(spec.mesh_unit)
@@ -226,9 +211,177 @@ def plan(case: Case, mesh: MeshInfo, *, gpus: int = 1) -> Plan:
         },
         boundaries=tuple(boundaries),
         cell_zones=tuple(cell_zones),
-        memory=memory(spec, mesh, gpus),
+        memory=estimate(
+            spec,
+            mesh,
+            equations=equations(spec),
+            ranks=gpus,
+            device_kind=device_kind,
+            vortices=_vortex_conditions(spec, boundaries),
+            start=start,
+            files=tuple(files),
+            input_bytes=_input_bytes(case, mesh, boundaries, cell_zones),
+        ),
         diagnostics=tuple(found),
     )
+
+
+_PATH_MAX = 4096
+
+
+def _names(data: bytes) -> int:
+    """The bytes of every member name of a valid JSON document, in UTF-8."""
+    total = 0
+
+    def note(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        nonlocal total
+        total += sum(len(name.encode()) for name, _ in pairs)
+        return dict(pairs)
+
+    load_json(data, object_pairs_hook=note)
+    return total
+
+
+# A zone's or a monitor's entry in the solver input besides its texts: keys, a kind, at most
+# 20 numbers of at most 24 characters each (Python's repr of a double) and a SHA-256.
+_ENTRY = 1024
+# A zone name's list formatting around its text as `autan prepare` indents the input: at most 10
+# spaces (a point vortex's zones), a comma and a newline.
+_ITEM = 16
+
+
+def _input_bytes(
+    case: Case,
+    mesh: MeshInfo,
+    boundaries: list[BoundaryResolution],
+    cell_zones: list[CellZoneResolution],
+) -> int:
+    """A bound on the solver input's size as ``autan prepare`` writes it (solver-input.md),
+    each text escaped as the producers escape it: the case's TOML (at most 6 bytes a byte)
+    with its mesh path counted at PATH_MAX (however the case names it), the MeshInfo, each
+    zone's entry with its name and its resolved condition or medium (a state file's path at
+    PATH_MAX), each monitor with the zones it matches, a point vortex with its walls, the
+    files the input names at PATH_MAX, and 64 KiB for the rest of the document."""
+    spec = case.spec
+
+    def text(value: object) -> int:
+        return len(json.dumps(value))  # as the producers escape it
+
+    toml = len(case.to_toml().encode()) - len(str(spec.mesh).encode()) + _PATH_MAX
+    zones = sum(text(z.zone) + text(z.medium) + _ENTRY for z in cell_zones)
+    for b in boundaries:
+        zones += text(b.zone) + text(b.condition) + _ENTRY
+        if (b.condition or {}).get("kind") == "oracle-state":
+            zones += 6 * _PATH_MAX
+        rule = spec.boundaries[b.rule] if b.rule is not None else None
+        if (
+            rule is not None
+            and isinstance(rule.condition, Farfield)
+            and rule.condition.point_vortex
+        ):
+            walls, _ = vortex_zones(rule.condition.point_vortex, mesh, boundaries)
+            zones += sum(text(n) + _ITEM for n in walls)
+    monitors = sum(
+        text(m.name) + sum(text(n) + _ITEM for n in selected(m.surfaces, m.group, mesh)) + _ENTRY
+        for m in spec.monitors
+    )
+    files = 6 * _PATH_MAX * 3  # the mesh, a start's run and a verification solution
+    # The MeshInfo as the producers indent it, nested one level deeper (2 B a line, 4 counted).
+    mesh_text = json.dumps(mesh.document(), indent=2)
+    mesh_bytes = len(mesh_text) + 4 * (mesh_text.count("\n") + 1)
+    return 6 * toml + mesh_bytes + zones + monitors + files + 64 * 2**10
+
+
+def _vortex_conditions(spec: CaseSpec, boundaries: list[BoundaryResolution]) -> int:
+    """The zones whose farfield condition carries a point vortex: one restart field each."""
+    rules = [spec.boundaries[b.rule] if b.rule is not None else None for b in boundaries]
+    return sum(
+        1
+        for rule in rules
+        if rule is not None
+        and isinstance(rule.condition, Farfield)
+        and rule.condition.point_vortex is not None
+    )
+
+
+def partition_groups(spec: CaseSpec, device_kind: DeviceKind) -> str:
+    """The groups a run's partition keeps whole: the line smoother's lines of a steady CPU run
+    with ``linear_solver = "lines"``, none otherwise (docs/contracts/mesh-info.md)."""
+    lines = isinstance(spec.time, Steady) and spec.time.linear_solver == "lines"
+    return "lines" if lines and device_kind == "cpu" else "none"
+
+
+def _check_prepared(
+    case: Case,
+    spec: CaseSpec,
+    mesh: MeshInfo,
+    gpus: int,
+    device_kind: DeviceKind,
+    found: list[Diagnostic],
+) -> None:
+    """The MeshInfo's derived counts are for the run planned: its scale, and on several ranks
+    the same partition (mesh-info.md)."""
+    problems = []
+    scale = metres_per(spec.mesh_unit)
+    if mesh.quality.lines.scale != scale:
+        problems.append(
+            f"quality.lines was computed at scale {mesh.quality.lines.scale:g}, "
+            f"the case's mesh_unit is {scale:g} m"
+        )
+    partition = mesh.partition
+    if gpus == 1 and extracts(spec, mesh, 1) and (partition is None or partition.ranks != 1):
+        problems.append(
+            'a run on one rank with periodic pairs or reproducibility "ranks" needs the '
+            "MeshInfo's one-part partition"
+        )
+    if gpus > 1:
+        groups = partition_groups(spec, device_kind)
+        if partition is None:
+            problems.append(f"a run on {gpus} ranks needs the MeshInfo's partition for {gpus}")
+        elif (partition.ranks, partition.groups) != (gpus, groups):
+            problems.append(
+                f"the partition is for {partition.ranks} ranks with groups {partition.groups!r}, "
+                f"the run is on {gpus} with groups {groups!r}"
+            )
+    found.extend(diagnostic("E0212", problem, location=case.locate("mesh")) for problem in problems)
+
+
+def groups_file(mesh_file: Path) -> Path:
+    """The zone groups file of a mesh: ``<mesh file or polyMesh directory>.zones.json`` next
+    to it, symlinks followed, as the runtime finds it from the solver input's path."""
+    mesh = mesh_location(mesh_file).resolve()
+    return mesh.parent / f"{mesh.name}.zones.json"
+
+
+def _check_groups_file(case: Case, mesh: MeshInfo, found: list[Diagnostic]) -> None:
+    path = groups_file(case.mesh_path)
+    source = mesh.groups_source
+    if os.path.lexists(path):  # a dangling link is there but unreadable, not absent
+        try:
+            with path.open("rb") as f:  # hashed in chunks: the file is not held
+                digest: str | None = hashlib.file_digest(f, "sha256").hexdigest()
+        except OSError:
+            digest = None
+        if source is None or digest != source.sha256:
+            found.append(
+                diagnostic(
+                    "E0210",
+                    f"the MeshInfo's zone groups differ from {str(path)!r}"
+                    + ("" if digest else ", which cannot be read"),
+                    location=case.locate("mesh"),
+                    groups=str(path),
+                )
+            )
+    elif source is not None:
+        found.append(
+            diagnostic(
+                "W0211",
+                f"zone groups file {str(path)!r} not found; the MeshInfo's groups are taken "
+                "as given",
+                location=case.locate("mesh"),
+                groups=str(path),
+            )
+        )
 
 
 def _check_opt_in(case: Case, spec: CaseSpec, gpus: int, found: list[Diagnostic]) -> None:
@@ -255,7 +408,44 @@ def _matches(pattern: str, names: list[str]) -> list[str]:
     return [name for name in names if fnmatchcase(name, pattern)]
 
 
-def _check_manufactured(case: Case, spec: CaseSpec, found: list[Diagnostic]) -> None:
+def selected(zones: str | None, group: str | None, mesh: MeshInfo) -> list[str]:
+    """The non-periodic boundary zones a selection takes, in MeshInfo order: those matching
+    the glob ``zones``, or every zone of the groups whose name matches the glob ``group``."""
+    partners = _partners(mesh)
+    names = [zone.name for zone in mesh.boundary_zones if zone.name not in partners]
+    if zones is not None:
+        return _matches(zones, names)
+    assert group is not None
+    chosen = {z for g in mesh.groups if fnmatchcase(g.name, group) for z in g.zones}
+    return [name for name in names if name in chosen]
+
+
+def _unknown_group(
+    group: str | None, mesh: MeshInfo, location: Location, found: list[Diagnostic]
+) -> bool:
+    """Report E0428 when ``group`` matches no group of the mesh."""
+    if group is None or any(fnmatchcase(g.name, group) for g in mesh.groups):
+        return False
+    known = ", ".join(g.name for g in mesh.groups) or "none: the mesh has no zones.json"
+    found.append(
+        diagnostic(
+            "E0428",
+            f"group {group!r} matches no zone group of the mesh",
+            location=location,
+            fix=f"Use one of the mesh's groups: {known}.",
+            group=group,
+        )
+    )
+    return True
+
+
+def _label(zones: str | None, group: str | None) -> str:
+    return repr(zones) if zones is not None else f"group {group!r}"
+
+
+def _check_manufactured(
+    case: Case, spec: CaseSpec, found: list[Diagnostic], files: list[StateFileLoad]
+) -> None:
     assert spec.verification is not None
     expected = spec.verification.manufactured.sha256
     source = case.resolve(spec.verification.manufactured.path)
@@ -269,6 +459,15 @@ def _check_manufactured(case: Case, spec: CaseSpec, found: list[Diagnostic]) -> 
                 path=str(source),
             )
         )
+    elif (size := source.stat().st_size) > MMS_BYTES:
+        found.append(
+            diagnostic(
+                "E0208",
+                f"{str(source)!r} is {size} bytes, above the {MMS_BYTES} of {MMS_SCHEMA}",
+                location=where,
+                path=str(source),
+            )
+        )
     elif mesh_sha256(source) != expected:
         found.append(
             diagnostic(
@@ -278,26 +477,30 @@ def _check_manufactured(case: Case, spec: CaseSpec, found: list[Diagnostic]) -> 
                 path=str(source),
             )
         )
-    elif (document := _document(source)) is None or document.get("schema") != MMS_SCHEMA:
-        found.append(
-            diagnostic(
-                "E0208",
-                f"{str(source)!r} is not an {MMS_SCHEMA} document",
-                location=where,
-                path=str(source),
-            )
-        )
-
     else:
-        found.extend(
-            diagnostic("E0209", message, location=where, path=str(source))
-            for message in _mismatches(document, spec)
-        )
+        files.append(StateFileLoad(size, 0, 0, 0, "manufactured"))
+        document = _document(source)
+        if document is None or document.get("schema") != MMS_SCHEMA:
+            found.append(
+                diagnostic(
+                    "E0208",
+                    f"{str(source)!r} is not an {MMS_SCHEMA} document",
+                    location=where,
+                    path=str(source),
+                )
+            )
+        elif (reason := too_deep(document)) is not None:
+            found.append(diagnostic("E0208", f"{str(source)!r}: {reason}", location=where))
+        else:
+            found.extend(
+                diagnostic("E0209", message, location=where, path=str(source))
+                for message in _mismatches(document, spec)
+            )
 
 
 def _document(path: Path) -> dict[str, Any] | None:
     try:
-        document = json.loads(path.read_text())
+        document = load_json(path.read_text())
     except (OSError, ValueError):
         return None
     return document if isinstance(document, dict) else None
@@ -374,14 +577,25 @@ def _manufactured_boundaries(mesh: MeshInfo) -> list[BoundaryResolution]:
 
 
 def _resolve_boundaries(
-    case: Case, spec: CaseSpec, mesh: MeshInfo, found: list[Diagnostic]
+    case: Case,
+    spec: CaseSpec,
+    mesh: MeshInfo,
+    found: list[Diagnostic],
+    files: list[StateFileLoad],
 ) -> list[BoundaryResolution]:
     partners = _partners(mesh)
     names = [zone.name for zone in mesh.boundary_zones if zone.name not in partners]
     owner: dict[str, int] = {}
     for index, rule in enumerate(spec.boundaries):
         where = case.locate(f"boundaries[{index}]")
-        if rule.zones in partners and not any(c in rule.zones for c in "*?["):
+        if _unknown_group(rule.group, mesh, where, found):
+            _check_condition(case, spec, index, found)
+            continue
+        if (
+            rule.zones is not None
+            and rule.zones in partners
+            and not any(c in rule.zones for c in "*?[")
+        ):
             found.append(
                 diagnostic(
                     "E0424",
@@ -392,14 +606,15 @@ def _resolve_boundaries(
                 )
             )
             continue
-        matched = _matches(rule.zones, names)
+        matched = selected(rule.zones, rule.group, mesh)
         if not matched:
             found.append(
                 diagnostic(
                     "E0410",
-                    f"boundary pattern {rule.zones!r} matches no zone (zones: {', '.join(names)})",
+                    f"boundary selection {_label(rule.zones, rule.group)} matches no zone "
+                    f"(zones: {', '.join(names)})",
                     location=where,
-                    pattern=rule.zones,
+                    pattern=rule.zones if rule.zones is not None else rule.group,
                 )
             )
         for name in matched:
@@ -408,7 +623,8 @@ def _resolve_boundaries(
                     diagnostic(
                         "E0411",
                         f"boundary zone {name!r} is matched by rules "
-                        f"{spec.boundaries[owner[name]].zones!r} and {rule.zones!r}",
+                        f"{_label(spec.boundaries[owner[name]].zones, spec.boundaries[owner[name]].group)}"
+                        f" and {_label(rule.zones, rule.group)}",
                         location=where,
                         zone=name,
                     )
@@ -418,7 +634,7 @@ def _resolve_boundaries(
         _check_condition(case, spec, index, found)
         if isinstance(rule.condition, OracleState):
             zones = {z.name: z.faces for z in mesh.boundary_zones if z.name in matched}
-            _check_oracle(case, rule.condition, mesh, zones, index, found)
+            _check_oracle(case, rule.condition, mesh, zones, index, found, files)
 
     inviscid = isinstance(spec.physics.turbulence, Inviscid)
     resolved = []
@@ -502,6 +718,7 @@ def _check_initial_state(
     mesh: MeshInfo,
     fluid_cells: int | None,
     found: list[Diagnostic],
+    files: list[StateFileLoad],
 ) -> None:
     """The initial-state file of the case (docs/contracts/initial-state.md), hashed and parsed
     from the same bytes."""
@@ -525,6 +742,7 @@ def _check_initial_state(
             "E0508", f"{str(source)!r} is not a valid {initial_state.SCHEMA} document: {document}"
         )
         return
+    files.append(StateFileLoad(len(data), document.cells, 0, 0, "initial", _names(data)))
     if document.mesh_sha256 != mesh.source.sha256:
         problem("E0509", "the initial state was written for another mesh")
     if fluid_cells is not None and document.cells != fluid_cells:
@@ -541,6 +759,7 @@ def _check_oracle(
     zones: dict[str, int],
     index: int,
     found: list[Diagnostic],
+    files: list[StateFileLoad],
 ) -> None:
     """The face-state file of an oracle_state rule (docs/contracts/face-states.md), hashed
     and parsed from the same bytes."""
@@ -564,6 +783,9 @@ def _check_oracle(
             "E0420", f"{str(source)!r} is not a valid {face_states.SCHEMA} document: {document}"
         )
         return
+    rows = sum(z.faces for z in document.zones.values())
+    faces = sum(zones.values())
+    files.append(StateFileLoad(len(data), rows, faces, len(document.zones), "faces", _names(data)))
     if document.mesh_sha256 != mesh.source.sha256:
         problem("E0422", "the face states were exported for another mesh")
     for zone, faces in zones.items():
@@ -727,14 +949,12 @@ def _properties(material: dict[str, Any]) -> dict[str, Any]:
 
 
 def vortex_zones(
-    pattern: str, mesh: MeshInfo, boundaries: tuple[BoundaryResolution, ...] | list[Any]
+    vortex: PointVortex, mesh: MeshInfo, boundaries: tuple[BoundaryResolution, ...] | list[Any]
 ) -> tuple[list[str], list[str]]:
-    """The zones a point vortex's ``surfaces`` matches (periodic zones skipped), and those of
-    them that are not wall or slip zones."""
-    partners = _partners(mesh)
-    names = [zone.name for zone in mesh.boundary_zones if zone.name not in partners]
+    """The zones a point vortex selects (periodic zones skipped), and those of them that are
+    not wall or slip zones."""
     kinds = {b.zone: (b.condition or {}).get("kind") for b in boundaries}
-    matched = _matches(pattern, names)
+    matched = selected(vortex.surfaces, vortex.group, mesh)
     return matched, [z for z in matched if kinds.get(z) not in ("wall", "slip")]
 
 
@@ -750,12 +970,15 @@ def _check_point_vortices(
         vortex = rule.condition.point_vortex if isinstance(rule.condition, Farfield) else None
         if vortex is None:
             continue
-        matched, others = vortex_zones(vortex.surfaces, mesh, boundaries)
-        literal = not any(c in vortex.surfaces for c in "*?[")
-        if literal and vortex.surfaces in partners:
-            problem = f"zone {vortex.surfaces!r} is periodic"
+        where = case.locate(f"boundaries[{index}].condition.point_vortex")
+        if _unknown_group(vortex.group, mesh, where, found):
+            continue
+        matched, others = vortex_zones(vortex, mesh, boundaries)
+        surfaces = vortex.surfaces
+        if surfaces is not None and surfaces in partners and not any(c in surfaces for c in "*?["):
+            problem = f"zone {surfaces!r} is periodic"
         elif not matched:
-            problem = f"{vortex.surfaces!r} matches no boundary zone"
+            problem = f"{_label(surfaces, vortex.group)} matches no boundary zone"
         elif others:
             problem = f"it matches zones that are not wall or slip: {', '.join(others)}"
         else:
@@ -764,19 +987,23 @@ def _check_point_vortices(
             diagnostic(
                 "E0425",
                 f"point vortex of boundaries[{index}]: {problem}",
-                location=case.locate(f"boundaries[{index}].condition.point_vortex"),
-                surfaces=vortex.surfaces,
+                location=where,
+                surfaces=surfaces if surfaces is not None else vortex.group,
             )
         )
 
 
 def _check_monitors(case: Case, spec: CaseSpec, mesh: MeshInfo, found: list[Diagnostic]) -> None:
     partners = _partners(mesh)
-    names = [zone.name for zone in mesh.boundary_zones if zone.name not in partners]
     seen: set[str] = set()
     for index, monitor in enumerate(spec.monitors):
         where = case.locate(f"monitors[{index}]")
-        if monitor.surfaces in partners and not any(c in monitor.surfaces for c in "*?["):
+        surfaces = monitor.surfaces
+        if _unknown_group(monitor.group, mesh, where, found):
+            pass
+        elif (
+            surfaces is not None and surfaces in partners and not any(c in surfaces for c in "*?[")
+        ):
             found.append(
                 diagnostic(
                     "E0603",
@@ -787,11 +1014,11 @@ def _check_monitors(case: Case, spec: CaseSpec, mesh: MeshInfo, found: list[Diag
                     zone=monitor.surfaces,
                 )
             )
-        elif not _matches(monitor.surfaces, names):
+        elif not selected(surfaces, monitor.group, mesh):
             found.append(
                 diagnostic(
                     "E0601",
-                    f"monitor {monitor.name!r}: surfaces {monitor.surfaces!r} match no "
+                    f"monitor {monitor.name!r}: {_label(surfaces, monitor.group)} matches no "
                     "boundary zone",
                     location=where,
                     monitor=monitor.name,

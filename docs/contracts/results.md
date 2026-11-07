@@ -8,7 +8,7 @@ A run writes one directory. Its layout, the run metadata and the CGNS solution l
 <run_id>/
   run.json         run metadata, written at start and rewritten at every status change
   case.toml        the case document as run (case-schema.md), every default filled in
-  mesh-info.json   the MeshInfo of the mesh read (mesh-info.md)
+  mesh-info.json   the MeshInfo the run was planned with (mesh-info.md)
   history.jsonl    one line per recorded iteration, appended during the run
   log.jsonl        one line per event, appended during the run (see Log)
   manufactured.json  verification runs only: the manufactured solution, byte for byte
@@ -17,7 +17,7 @@ A run writes one directory. Its layout, the run metadata and the CGNS solution l
   checkpoint.cgns  the state to continue from, rewritten while the run runs (see checkpoint.cgns)
 ```
 
-The writer prepares the directory under a name starting with `.`, writes `run.json`, `case.toml`, `mesh-info.json`, the first line of `log.jsonl` and, for a verification case, `manufactured.json` (whose SHA-256 is the case's `verification.manufactured.sha256`), and the files of `states/` into it, then renames it to `<run_id>/`, failing if that exists; readers ignore names starting with `.`. `history.jsonl` exists from the first recorded iteration; each line is written in one piece, but while `status` is `running` the last line may still be incomplete and readers skip it. `solution.cgns` is written under a temporary name and renamed at the end of the run; readers do not use it while the run is `running`. While it runs, the writer keeps [`checkpoint.cgns`](#checkpointcgns) instead. It is required when `status` is `converged`, `completed` or `stopped`, written if possible when `diverged` (the last state, for diagnosis), and optional when `failed`. Readers reject a directory whose `run.json` has another `schema` value, and open a run without a solution for its metadata and history.
+The writer prepares the directory under a name starting with `.`, writes `run.json`, `case.toml`, `mesh-info.json`, the first lines of `log.jsonl` and, for a verification case, `manufactured.json` (whose SHA-256 is the case's `verification.manufactured.sha256`), and the files of `states/` into it, then renames it to `<run_id>/`, failing if that exists; readers ignore names starting with `.`. `history.jsonl` exists from the first recorded iteration; each line is written in one piece, but while `status` is `running` the last line may still be incomplete and readers skip it. `solution.cgns` is written under a temporary name and renamed at the end of the run; readers do not use it while the run is `running`. While it runs, the writer keeps [`checkpoint.cgns`](#checkpointcgns) instead. It is required when `status` is `converged`, `completed` or `stopped`, written if possible when `diverged` (the last state, for diagnosis), and optional when `failed`. Readers reject a directory whose `run.json` has another `schema` value, and open a run without a solution for its metadata and history.
 
 `case.toml` keeps `mesh` as the case wrote it, since it is part of the case hash. The mesh actually read is `run.json` `mesh.path`, an absolute path, identified by `mesh.sha256`.
 
@@ -30,8 +30,8 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
   "identity": "4be1…",
   "status": "converged",
   "case": {"name": "crm-hl", "sha256": "…"},
-  "mesh": {"path": "/data/crm-hl.cgns", "sha256": "…"},
-  "solver": {"version": "0.1.0", "commit": "d769576…", "backend": "fake"},
+  "mesh": {"path": "/data/crm-hl.cgns", "sha256": "…", "groups_sha256": null},
+  "solver": {"version": "0.1.0", "commit": "d769576…", "backend": "fake", "binary_sha256": null},
   "precision": "fp32+acc64",
   "devices": {"kind": "cpu", "count": 1},
   "cell_order": "rcm",
@@ -55,9 +55,10 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
 | `identity` | What the run computes: the SHA-256 of the fields of [Identity](#identity). |
 | `status` | `running` · `converged` (convergence criterion of [case-schema.md](case-schema.md#time) met) · `completed` (iteration or step budget reached without convergence, or every unsteady step done) · `stopped` (stopped by user code, signal or an execution cap) · `diverged` (carries a `D` diagnostic) · `failed` (carries `E0704`). |
 | `case.sha256` | Case hash as defined in [case-schema.md](case-schema.md#case-hash). |
-| `mesh.path`, `mesh.sha256` | Absolute path of the mesh read, and `source.sha256` of its MeshInfo. |
+| `mesh.path`, `mesh.sha256`, `mesh.groups_sha256` | Absolute path of the mesh read, `source.sha256` of its MeshInfo, and `groups_source.sha256` of its MeshInfo, null without zone groups: the zones a case's `group` selected. |
 | `solver.version`, `solver.commit` | Version and full 40-character git commit of the solver build. |
 | `solver.backend` | `cuda` · `hip` · `cpu` · `fake`. Results of the `fake` backend are synthetic and must never be used as reference data. |
+| `solver.binary_sha256` | SHA-256 of the `autan-run` executable that ran, into which the build links every library of the solver statically (it refuses `BUILD_SHARED_LIBS`), hashed at its start; `null` exactly for the `fake` backend. Outside the [identity](#identity). A `continue` whose executable is not the one of the state it starts from warns `W0715`. |
 | `precision` | Precision as run, from the case. |
 | `devices` | `kind` (`cuda` · `hip` · `cpu`) and `count`, the number of ranks ([solver-input.md](solver-input.md)). |
 | `cell_order` | The order the solver numbered the cells in: `rcm` (reverse Cuthill-McKee, the default) or `input` (the mesh's, on request; the runtime logs a warning). The order changes the bits of a run. The `fake` backend writes `input`. |
@@ -66,31 +67,32 @@ The writer prepares the directory under a name starting with `.`, writes `run.js
 | `time` | Physical time reached in seconds (unsteady), `null` (steady). |
 | `averaging` | `null`, or `{"from_step", "to_step", "from_time", "to_time"}`: the interval actually averaged by an unsteady run with `average_from`, once at least one step past `average_from` is done; a continued run averages from the original `average_from`. |
 | `start` | `null`, or where the run started from: `{run_id, identity, mode, iterations, time, solution_sha256, file, residual_reference, woken}` of the previous run, `file` naming the file of that run it read, `"solution"` or `"checkpoint"` ([solver-input.md](solver-input.md)); `residual_reference` is the residuals at iteration 1 of the original run of a steady `continue` chain, keyed by the equation names of [History](#history) with the values of that history line, `null` otherwise; `woken`, given exactly with `residual_reference`, lists in sorted order the identically zero equations of that reference that rose above their floor anywhere in the chain ([case-schema.md](case-schema.md#time)), so that a continuation judges convergence as the uninterrupted run would. The key is always present. A `continue` run carries on the previous count: its first history line is `start.iterations + 1` and `iterations` is the total; a `warm` run counts from 1. |
-| `convergence` | `{"floor": {<equation>: value}}`, the round-off floor of every equation of [History](#history) (≥ 0, in its units; 0 when the physics gives that equation no scale) of a steady `fp32+acc64` run whose physics gives flux scales ([case-schema.md](case-schema.md#time)); `null` otherwise, and while a `running` run has not yet built its physics. The key is always present. |
+| `convergence` | `{"floor": {<equation>: value}, "plateau": [<equation>, …]}` for a steady `fp32+acc64` run whose physics gives flux scales ([case-schema.md](case-schema.md#time)): `floor` is the round-off floor of every equation of [History](#history) (≥ 0, in its units; 0 when the physics gives that equation no scale); `plateau` lists, in the order of History, the equations a `converged` run counted converged on a round-off plateau rather than by their drop, and is empty otherwise. `null` otherwise, and while a `running` run has not yet built its physics. The key is always present. |
 | `checkpoint` | `{iteration, time, write_seconds}` of the last [checkpoint](#checkpointcgns) written: the iteration it holds, its physical time (`null` when steady) and how long its write took in seconds; `null` before the first one. It is rewritten after each checkpoint, so after a kill it may lag the file by one checkpoint: the file is authoritative. Outside `identity` and the bitwise guarantee. The key is always present. |
 | `monitors` | The record of every monitor of the case on the run's final state, `{<name>: {iteration, <the quantities of [History](#history)>}}`, `iteration` being `iterations`, whether or not the last iteration was a multiple of the monitor's `every`; equal to the last history line when that line carries the monitor. Given for `converged`, `completed` and `stopped` runs (a run stopped before its first iteration: the initial state, iteration 0); `null` while `running` and for `diverged` and `failed` runs. The key is always present. |
-| `timing` | `{wall_seconds, solve_seconds, iterations, ns_per_cell_iteration}`: the time from the start of the runtime to the end of the run, the time of the physics' steps and averaging alone (no reading or partitioning, no history, log or solution writes; the slowest rank's), the iterations of this run (for a `continue`, those after `start.iterations`) and `solve_seconds` × 10⁹ / (cells of the mesh × `iterations`). `null` while `running`, for a run with no iteration, for a run that failed on several ranks, and for the `fake` backend. Information about one run, outside `identity` and the bitwise guarantee; performance is measured with `bench/` ([infra/bench.md](../infra/bench.md)). The key is always present. |
+| `timing` | `{wall_seconds, solve_seconds, iterations, ns_per_cell_iteration}`: the time from the start of the runtime to the end of the run, the time of the physics' steps and averaging alone (no reading or partitioning, no history, log or solution writes; the slowest rank's), the iterations of this run (for a `continue`, those after `start.iterations`) and `solve_seconds` × 10⁹ / (cells of the mesh × `iterations`). `null` while `running`, for a run with no iteration, for a `failed` run, and for the `fake` backend. Information about one run, outside `identity` and the bitwise guarantee; performance is measured with `bench/` ([infra/bench.md](../infra/bench.md)). The key is always present. |
 | `diagnostics` | Diagnostics raised during the run, in the shape defined in [case-schema.md](case-schema.md#diagnostics); a `diverged` run carries its `D` code here. |
 
-Two runs of the solver (not the `fake` backend) with the same `identity` whose case has `physics.reproducibility` `"run"` or `"ranks"`, and that stop at the same iteration, produce bitwise-identical `history.jsonl` lines and `solution.cgns` data arrays (`log.jsonl` excepted: it carries wall-clock times). The identity covers the case, mesh, solver build, precision, backend, devices, cell order and, for a restarted run, the state it starts from. With `"ranks"`, two such runs whose identities differ only by `devices.count` or `cell_order` also produce the same lines and arrays. With `"none"`, nothing is guaranteed ([case-schema.md](case-schema.md#physics)).
+Two runs of the solver (not the `fake` backend) with the same `identity` and the same `solver.binary_sha256` whose case has `physics.reproducibility` `"run"` or `"ranks"`, and that stop at the same iteration, produce bitwise-identical `history.jsonl` lines and `solution.cgns` data arrays (`log.jsonl` excepted: it carries wall-clock times). The identity covers the case, mesh, solver commit, precision, backend, devices, cell order and, for a restarted run, the state it starts from. With `"ranks"`, two such runs whose identities differ only by `devices.count` or `cell_order` also produce the same lines and arrays. With `"none"`, nothing is guaranteed ([case-schema.md](case-schema.md#physics)).
 
 
 ### Identity
 
-`identity` is the SHA-256 of these `run.json` fields, in this order, each as text (an integer in decimal), joined by `\n`, UTF-8. The `start.` fields are present exactly for a run with a `start`. A field enters the identity only by a line of this list, which `py/tests` reads as the definition and `autan.results.IDENTITY` follows. `autan.results.run_identity(run)` computes it from a `RunInfo` or a `run.json` document: a writer records it, a reader compares it.
+`identity` is the SHA-256 of these `run.json` fields, in this order, each as text (an integer in decimal, null as the empty string), joined by `\n`, UTF-8. The `start.` fields are present exactly for a run with a `start`. A field enters the identity only by a line of this list, which `py/tests` reads as the definition and `autan.results.IDENTITY` follows. `autan.results.run_identity(run)` computes it from a `RunInfo` or a `run.json` document: a writer records it, a reader compares it.
 
 1. `case.sha256`
 2. `mesh.sha256`
-3. `solver.commit`
-4. `precision`
-5. `solver.backend`
-6. `devices.kind`
-7. `devices.count`
-8. `cell_order`
-9. `start.identity`
-10. `start.mode`
-11. `start.iterations`
-12. `start.solution_sha256`
+3. `mesh.groups_sha256`
+4. `solver.commit`
+5. `precision`
+6. `solver.backend`
+7. `devices.kind`
+8. `devices.count`
+9. `cell_order`
+10. `start.identity`
+11. `start.mode`
+12. `start.iterations`
+13. `start.solution_sha256`
 
 ### Studies
 
@@ -133,7 +135,7 @@ reported as `fx` `fy` `fz` (N) and `mx` `my` `mz` (N·m) in mesh axes. With `ref
 | `code` | A registered diagnostic code, as in [case-schema.md](case-schema.md#diagnostics), or `null`. |
 | `data` | Machine-readable details, `{}` when there are none: the diagnostic's data when `code` is set. |
 
-The first line logs the start of the run (`iteration` null), and the writer logs the end with the final status. A line with a `code` has the level of its letter (`E` and `D`: `error`, `W`: `warning`) and, when its `data` has an `iteration`, the same `iteration`. Every diagnostic of `run.json` also has a line with the same `code` and `data`, written before `run.json` refers to it. Times are wall-clock and need not increase: the order of the lines is the order of the events. The log is outside the bitwise guarantee of [run.json](#runjson).
+The first line logs the start of the run (`iteration` null), and the writer logs the end with the final status, at level `error` for a `failed` run and `info` otherwise. A line with a `code` has the level of its letter (`E` and `D`: `error`, `W`: `warning`) and, when its `data` has an `iteration`, the same `iteration`. Every diagnostic of `run.json` also has a line with the same `code` and `data`, written before `run.json` refers to it. Times are wall-clock and need not increase: the order of the lines is the order of the events. The log is outside the bitwise guarantee of [run.json](#runjson).
 
 ## solution.cgns
 
@@ -166,6 +168,8 @@ CGNS/HDF5, written against the CGNS SIDS 4.x and readable by the CGNS library (`
 
 There is one `Zone_t` holding the whole mesh, every cell as a polyhedron (`NFACE_n`), every face as a polygon (`NGON_n`). Cell i (0-based, the index used by diagnostics) is element F + 1 + i; face j is element 1 + j. In `NFaceElements`, a positive face id means the face normal points out of the cell. Cell zones are `ZoneSubRegion_t`; boundary zones are `BC_t`, except the zones of a periodic pair (below). Interfaces between cell zones are interior faces and need no node. `FlowSolution` holds each cell's discrete unknown, located at the cell centroid: compare it with point values of a reference solution there.
 
+Sizes a reader accepts. `RunMetadata` is at most 64 KiB: its free texts are the case name (at most 4096 bytes, case-schema.md) and `mesh.path` (at most PATH_MAX, 4096 bytes), each written with `ensure_ascii`, which can take 6 bytes per byte (`\u00XX`), so 48 KiB, plus at most 16 KiB of fixed structure. A start solution holds nothing else the CGNS library would load: in its base `RunMetadata` (at most 64 KiB) and `ZoneNames` (at most (Z + 1) × 25 600 bytes, Z the boundary and cell zones of the run's mesh), at most 2P `PeriodicTranslation` of at most 4096 bytes (P its periodic pairs), no other descriptor, at most Z `Family_t`, no filtered (compressed) dataset, which the writer never writes, and at most 16 384 nodes in at most 16 levels, with at most 1 MiB of other data read at open, the limits of a mesh file; its `FlowSolution` and `FlowSolutionMean` hold exactly the run's fields and its `RestartState` exactly the arrays the physics writes for the run's input ([runtime.md](runtime.md#registration)), checked by name before any is read (E0708 for other fields, E0707 otherwise) ([mesh.md](mesh.md#memory-of-a-cgns-read)). The runtime checks this through cgio before the library opens the file, and refuses the start otherwise (`E0707`). A start reads, among the descriptors, `RunMetadata` alone.
+
 Node names. A zone keeps its name as node name when it has 1 to 32 printable ASCII characters, contains no `/`, is not `.` or `..`, is unique among all boundary and cell zone names, is not itself of the form `boundary-NNNN` or `cell-zone-NNNN`, differs from the other children of `Base` listed above and, for cell zones, from the other children of `Zone`. Otherwise its node name is `boundary-NNNN` or `cell-zone-NNNN`, NNNN being its 0-based index in the MeshInfo list, zero-padded to 4 digits. `ZoneNames` maps every node name to the zone name.
 
 BCType of each resolved condition: adiabatic `wall` → `BCWallViscousHeatFlux` (zero heat flux), isothermal `wall` → `BCWallViscousIsothermal`; `slip` → `BCWallInviscid`; `symmetry` → `BCSymmetryPlane`; `farfield` → `BCFarfield`; `inlet` and `velocity-inlet` → `BCInflowSubsonic`; `outlet` → `BCOutflowSubsonic`; `manufactured` (verification cases) → `UserDefined`; `oracle-state` → `BCDirichlet`. The node values are the SIDS strings (`BCTypeName` in the CGNS library), not the C enumerator names.
@@ -195,7 +199,7 @@ While a run runs, the writer saves the state it can be continued from in `checkp
 
 The writer writes it under the temporary name `.checkpoint.cgns.tmp`, then renames it over the previous one. A run killed at any moment therefore leaves a whole checkpoint or none; readers ignore the temporary name. Writing a checkpoint only reads the state, so a run's `history.jsonl` and `solution.cgns` are the same whatever its checkpoints.
 
-After each checkpoint, the writer rewrites `run.json` `checkpoint` and logs it (`info`, source `writer`, `data` `{iteration, seconds, bytes}`). A write that fails, or its records, leaves the previous checkpoint, and the run goes on with `W0714`.
+After each checkpoint, the writer rewrites `run.json` `checkpoint` and logs it (`info`, source `writer`, `data` `{iteration, write_seconds, bytes}`). A write that fails, or its records, leaves the previous checkpoint, and the run goes on with `W0714`. The log has a `W0714` line for each failed write it can take; `run.json` keeps one, the last such line's, whose `data` `{failures, first_iteration, first_time, last_iteration, last_time}` counts them and gives the first and last (times `null` when steady), so that it does not grow with the run's length. A failure to remove the checkpoint at the end adds one more `W0714`, its `data` `{}`.
 
 Once a run's final `run.json` says it is `converged`, `completed` or `stopped`, the writer removes `checkpoint.cgns`: until then it stays the run's resumable state. A `diverged` or `failed` run keeps it, so that it can be continued from its last checkpoint ([solver-input.md](solver-input.md), `start`).
 ## Results API

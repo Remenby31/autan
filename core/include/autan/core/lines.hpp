@@ -8,9 +8,8 @@
 
 namespace autan {
 
-/// Lines of strong coupling of a mesh, CSR over its cells: each line holds at least two cells,
-/// consecutive cells share a face, and a line touching the boundary at one end starts there.
-/// Cells in no line are left out.
+/// Lines of strong coupling of a mesh, CSR over its cells: each line holds at least two cells and
+/// consecutive cells share a face. Cells in no line are left out.
 struct Lines {
   std::vector<offset_t> offsets{0};
   std::vector<index_t> cells;
@@ -19,8 +18,14 @@ struct Lines {
 /// The lines a line-implicit smoother solves along (Mavriplis 1998, J. Comput. Phys.
 /// 145:141-165, sec. 4). A face's coupling is A_f / |x_N - x_O|, summed over the faces two cells
 /// share; a line grows through the strongest coupling that is at least `ratio` times the weakest
-/// coupling of both cells, in the same cell zone. Depends on the mesh, its geometry and its cell
-/// order (ties go to the smaller index). Throws std::invalid_argument on a mesh with ghost cells.
+/// coupling of both cells, in the same cell zone. Seeds are the cells whose strongest coupling is
+/// at least `ratio` times their weakest, those with a boundary face first, then by decreasing
+/// strongest / weakest. Each seed not yet in a line grows from itself one way, then the other, and
+/// keeps the line if it holds two cells or more; a cell belongs to the first line that reaches it,
+/// and lines come in the order of their seeds. A line runs from the end of its second growth to
+/// the end of its first, reversed when only its last cell has a boundary face, so a line touching
+/// the boundary at one end starts there. Depends on the mesh, its geometry and its cell order (ties
+/// go to the smaller index). Throws std::invalid_argument on a mesh with ghost cells.
 Lines smoother_lines(const Mesh& mesh, const Geometry& geometry, double ratio = 4.0);
 
 /// Lines of at least this many cells are coarsened along themselves by the agglomeration

@@ -404,9 +404,8 @@ def cubic_face_gradient(
     e: Geom.Vec3,
     inv_d: Geom,
 ) -> Grad.Vec3:
-    # The fitted cubic's gradient at the face, its component along e replaced by the secant slope
-    # of the values, which the cubic gives as (phi(r) - phi(0)) / |r|: the correction vanishes on
-    # cubic fields.
+    # The fitted cubic's gradient at the face, corrected along e by the values' rise over r less
+    # the cubic's, (dphi - (phi(r) - phi(0))) / |r|: the correction vanishes on cubic fields.
     gf, rise = cubic_parts(g, hd, ho, c0, c1, c2, c3, r)
     return gf + (dphi - rise) * inv_d * e
 
@@ -636,7 +635,9 @@ def viscous_boundary(
     mu = viscosity(tb, mref, tref, s, law)
     k = 0.0 if adiabatic else g * rgas / (g - 1.0) * (mu / prl + mb / prt)
     fv = area * viscous_flux(velocity(wb), gu, gv, gwz, gt, mu + mb, k, n)
-    f = -(fv + Vec5(0.0, 0.0, 0.0, 0.0, warp_work(gu, gv, gwz, m, mu + mb)))
+    # A wall at rest does no work: its velocity is zero over the whole face, not only at x_f.
+    work = 0.0 * mu if kind > BC_WALL - 0.5 else warp_work(gu, gv, gwz, m, mu + mb)
+    f = -(fv + Vec5(0.0, 0.0, 0.0, 0.0, work))
     slip = kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5
     return 0.0 * f if slip else f
 
@@ -773,10 +774,12 @@ def viscous_wave(
     prl: Param,
     prt: Param,
 ) -> State:
-    # Viscous spectral radius of a face, Blazek (2015), eq. 6.22:
-    # max(4 / (3 rho), gamma / rho) (mu / Pr + mu_t / Pr_t) A^2 / V.
+    # Viscous spectral radius of a face, Blazek (2015), eq. 6.22, with the momentum and the heat
+    # diffusivities apart: max(4/3 (mu + mu_t), gamma (mu / Pr + mu_t / Pr_t)) A^2 / (rho V).
+    # Blazek's max(4/3, gamma) (mu / Pr + mu_t / Pr_t) vanishes with 1 / Pr where momentum
+    # diffusion does not.
     mu = viscosity(temperature(w, rgas, pref), mref, tref, s, law)
-    return max(4.0 / 3.0, g) / w[0] * (mu / prl + mt / prt) * area * area / vol
+    return max(4.0 / 3.0 * (mu + mt), g * (mu / prl + mt / prt)) / w[0] * area * area / vol
 
 
 viscous_spectral_radius = cell_reduce(

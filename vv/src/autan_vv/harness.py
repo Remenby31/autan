@@ -33,6 +33,7 @@ from autan_vv.meshes.facemesh import FaceMesh, FloatArray, Zone
 from autan_vv.oracles import Oracle, conserved
 from autan_vv.oracles.registry import get_oracle
 from autan_vv.order import fit_order
+from autan_vv.stop import check_stop
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -431,6 +432,8 @@ def _family_problem(opened: list[autan.Results]) -> list[str]:
             if condition.get("kind") == "oracle-state":
                 condition.pop("path", None)
                 condition.pop("sha256", None)
+        if doc.get("verification") is not None:
+            doc["verification"]["manufactured"].pop("path", None)
         return doc
 
     first = opened[0]
@@ -624,6 +627,8 @@ def verify(run_dirs: list[Path], against: str, gate_id: str | None = None) -> di
             msg = f"gate {gate_id} is checked against {', '.join(gate.oracles)}, not {against}"
             raise VVError(msg, code="V0728")
     opened = [autan.Results.open(p) for p in run_dirs]
+    for results in opened:
+        check_stop(results)
     precisions = {r.run.precision for r in opened}
     if len(precisions) > 1:
         msg = f"runs of one family must share a precision, got {sorted(precisions)}"

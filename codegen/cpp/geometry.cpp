@@ -228,6 +228,7 @@ PackedGeometry pack_geometry(const Mesh& mesh, const Geometry& g, const GlobalKe
       }
       continue;
     }
+    p.all_planar = false;
     std::size_t start = 0;
     for (std::size_t i = 1; i < nn; ++i) {
       if (point(i) < point(start)) {
@@ -446,20 +447,30 @@ CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& g, StencilKind 
     return static_cast<std::size_t>(static_cast<std::size_t>(own[f]) == c ? nei[f] : own[f]);
   };
 
-  // Cells and boundary faces touching each node (vertex stencil).
-  std::vector<std::vector<index_t>> node_cells, node_bfaces;
+  // Vertex stencil: the cells and boundary faces each node touches, a cell once per face it
+  // gives the node (CSR by node: one entry per face node and side).
+  std::vector<offset_t> node_off;
+  std::vector<index_t> node_entries;
   if (kind == StencilKind::vertex) {
-    node_cells.resize(static_cast<std::size_t>(mesh.n_points()));
-    node_bfaces.resize(node_cells.size());
+    const auto nn = static_cast<std::size_t>(mesh.n_points());
+    node_off.assign(nn + 1, 0);
     for (std::size_t f = 0; f < nf; ++f) {
       for (const index_t n : mesh.face_nodes(static_cast<index_t>(f))) {
-        auto& cells = node_cells[static_cast<std::size_t>(n)];
-        cells.push_back(own[f]);
-        if (f < nint) {
-          cells.push_back(nei[f]);
-        } else {
-          node_bfaces[static_cast<std::size_t>(n)].push_back(static_cast<index_t>(f));
-        }
+        node_off[static_cast<std::size_t>(n) + 1] += 2;
+      }
+    }
+    for (std::size_t n = 0; n < nn; ++n) {
+      node_off[n + 1] += node_off[n];
+    }
+    node_entries.resize(static_cast<std::size_t>(node_off[nn]));
+    std::vector<offset_t> next(node_off.begin(), node_off.end() - 1);
+    for (std::size_t f = 0; f < nf; ++f) {
+      for (const index_t n : mesh.face_nodes(static_cast<index_t>(f))) {
+        auto& k = next[static_cast<std::size_t>(n)];
+        node_entries[static_cast<std::size_t>(k++)] = own[f];
+        // A boundary face stands as -1 - f on the side it has no cell.
+        node_entries[static_cast<std::size_t>(k++)] =
+            f < nint ? nei[f] : -1 - static_cast<index_t>(f);
       }
     }
   }
@@ -467,33 +478,55 @@ CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& g, StencilKind 
   CellStencil st;
   st.offsets.assign(nc + 1, 0);
   std::vector<index_t> cells, bfaces;
+  // Marks of the cell being built, c: a cell or boundary face enters `cells` or `bfaces` once,
+  // so neither holds more than the final stencil however many faces or nodes two cells share.
+  std::vector<index_t> listed(nc, -1), bound_listed(nf - nint, -1);
+  auto add_cell = [&](std::size_t c, index_t n) {
+    if (listed[static_cast<std::size_t>(n)] != static_cast<index_t>(c)) {
+      listed[static_cast<std::size_t>(n)] = static_cast<index_t>(c);
+      cells.push_back(n);
+    }
+  };
+  auto add_bface = [&](std::size_t c, index_t f) {
+    auto& mark = bound_listed[static_cast<std::size_t>(f) - nint];
+    if (mark != static_cast<index_t>(c)) {
+      mark = static_cast<index_t>(c);
+      bfaces.push_back(f);
+    }
+  };
   for (std::size_t c = 0; c < nc; ++c) {
     cells.clear();
     bfaces.clear();
+    listed[c] = static_cast<index_t>(c);
     if (kind == StencilKind::vertex) {
       for (const index_t f : faces_of(c)) {
         for (const index_t n : mesh.face_nodes(f)) {
-          const auto& around = node_cells[static_cast<std::size_t>(n)];
-          cells.insert(cells.end(), around.begin(), around.end());
-          const auto& bound = node_bfaces[static_cast<std::size_t>(n)];
-          bfaces.insert(bfaces.end(), bound.begin(), bound.end());
+          const auto ni = static_cast<std::size_t>(n);
+          for (auto k = node_off[ni]; k < node_off[ni + 1]; ++k) {
+            const index_t e = node_entries[static_cast<std::size_t>(k)];
+            if (e >= 0) {
+              add_cell(c, e);
+            } else {
+              add_bface(c, -1 - e);
+            }
+          }
         }
       }
     } else {
       for (const index_t f : faces_of(c)) {
         const auto fi = static_cast<std::size_t>(f);
         if (fi >= nint) {
-          bfaces.push_back(f);
+          add_bface(c, f);
           continue;
         }
         const std::size_t n = across(c, fi);
-        cells.push_back(static_cast<index_t>(n));
+        add_cell(c, static_cast<index_t>(n));
         for (const index_t f2 : faces_of(n)) {
           const auto f2i = static_cast<std::size_t>(f2);
           if (f2i >= nint) {
-            bfaces.push_back(f2);
+            add_bface(c, f2);
           } else {
-            cells.push_back(static_cast<index_t>(across(n, f2i)));
+            add_cell(c, static_cast<index_t>(across(n, f2i)));
           }
         }
       }
@@ -527,11 +560,8 @@ CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& g, StencilKind 
       };
     };
     std::sort(cells.begin(), cells.end(), by_cell);
-    cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
-    cells.erase(std::remove(cells.begin(), cells.end(), static_cast<index_t>(c)), cells.end());
     std::sort(bfaces.begin(), bfaces.end(),
               by(keys != nullptr ? keys->face : std::span<const std::int64_t>{}));
-    bfaces.erase(std::unique(bfaces.begin(), bfaces.end()), bfaces.end());
     st.entries.insert(st.entries.end(), cells.begin(), cells.end());
     for (const index_t f : bfaces) {
       st.entries.push_back(-f - 1);

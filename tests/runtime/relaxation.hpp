@@ -6,6 +6,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -67,6 +68,11 @@ struct RelaxationOptions {
   std::int64_t touch_at = 0;  ///< iteration after which `touch_rank` creates `touch_file`; 0: never
   int touch_rank = 0;
   std::string touch_file{};
+  /// At iteration 1, a non-empty directory at the checkpoint's staging path of every run in this
+  /// runs directory: every checkpoint write then fails (W0714). Empty: none.
+  std::string block_checkpoints_in{};
+  /// At iteration 1, likewise at the final solution's staging path: its write fails. Empty: none.
+  std::string block_solution_in{};
   std::int64_t log_bytes = 0;  ///< a log event of this many bytes at every step; 0: none
   int pause_ms = 0;
   double pressure_offset = 0.0;  ///< added to every fluid cell's pressure, Pa
@@ -94,13 +100,19 @@ struct RelaxationOptions {
   int hold_rank = -1;  ///< the rank that holds them; -1: every rank
   /// Bytes of device memory the physics holds from its construction on, on a CUDA run.
   std::int64_t hold_device_bytes = 0;
-  /// An equation the flow does not excite: its residual stays at round-off
-  /// (1e-15), except from iteration `wake_at` (0: never) to `sleep_at`
-  /// (excluded; 0: never), where it is 1e-3.
+  /// An equation the flow does not excite: its residual stays at `silent_residual`, round-off
+  /// or exactly 0, except from iteration `wake_at` (0: never) to `sleep_at` (excluded; 0:
+  /// never), where it is `awake_value`.
   std::int64_t silent_equation = -1;
+  double silent_residual = 1e-15;
   std::int64_t wake_at = 0;
-  std::int64_t sleep_at = 0;     ///< 0: never; from then on, back at 1e-15
+  std::int64_t sleep_at = 0;  ///< 0: never; from then on, back at silent_residual
+  double awake_value = 1e-3;
   std::vector<double> scales{};  ///< residual_scales(); empty: none
+  /// Equation e's residual stops decreasing at (e + 1) times this value; 0: never.
+  double plateau = 0.0;
+  /// Steps before this iteration report a provisional discretisation; 0: none.
+  std::int64_t provisional_until = 0;
   /// Groups of cells the partition keeps whole: cell c in group c mod (2 groups) when below
   /// `groups`, so each group spans the mesh, its cells in decreasing order. The physics throws
   /// unless the runtime asked for them, every group it holds a cell of is wholly owned, and
@@ -142,6 +154,15 @@ struct RelaxationOptions {
     return o;
   }
 };
+
+// Relaxation::restart_fields' names: the averaging sums, then the weight.
+inline std::vector<std::string> relaxation_restart_names(const autan::runtime::SolverInput& input,
+                                                         bool /*averaging*/) {
+  std::vector<std::string> out;
+  for (const auto& name : autan::runtime::field_names(input)) out.push_back("Sum" + name);
+  out.emplace_back("AverageWeight");
+  return out;
+}
 
 // An implementation of the runtime's Physics interface that solves nothing:
 // the state starts at each zone's `initial` (or the start's fields), grows by
@@ -237,6 +258,14 @@ class Relaxation final : public autan::runtime::Physics {
       std::raise(SIGTERM);
     if (iteration == options_.touch_at && options_.touch_rank == context_.ranks.rank())
       std::ofstream(options_.touch_file).put('\n');
+    if (iteration == 1 && !options_.block_checkpoints_in.empty()) {
+      for (const auto& run : std::filesystem::directory_iterator(options_.block_checkpoints_in))
+        std::filesystem::create_directories(run.path() / ".checkpoint.cgns.tmp" / "blocked");
+    }
+    if (iteration == 1 && !options_.block_solution_in.empty()) {
+      for (const auto& run : std::filesystem::directory_iterator(options_.block_solution_in))
+        std::filesystem::create_directories(run.path() / ".solution.cgns.tmp" / "blocked");
+    }
     if (options_.log_bytes > 0) {
       context_.log.write(
           "info", "solver", "bulk", "",
@@ -247,12 +276,16 @@ class Relaxation final : public autan::runtime::Physics {
     const double r = std::pow(options_.factor, static_cast<double>(iteration - 1));
     const auto equations = autan::runtime::residual_names(context_.input).size();
     const double smoothed = options_.colour_sweeps > 0 ? 1.0 + 1e-3 * sweep() : 1.0;
-    for (std::size_t e = 0; e < equations; ++e)
-      report.residuals.push_back(static_cast<double>(e + 1) * r * rms_ * smoothed);
+    for (std::size_t e = 0; e < equations; ++e) {
+      report.residuals.push_back(static_cast<double>(e + 1) *
+                                 std::max(r * rms_ * smoothed, options_.plateau));
+    }
+    report.provisional = iteration < options_.provisional_until;
     if (options_.silent_equation >= 0) {
       const bool awake = options_.wake_at > 0 && iteration >= options_.wake_at &&
                          (options_.sleep_at == 0 || iteration < options_.sleep_at);
-      report.residuals[static_cast<std::size_t>(options_.silent_equation)] = awake ? 1e-3 : 1e-15;
+      report.residuals[static_cast<std::size_t>(options_.silent_equation)] =
+          awake ? options_.awake_value : options_.silent_residual;
     }
     for (auto& f : state_) {
       for (auto& v : f.values) v *= 1.0 + options_.growth;
@@ -685,7 +718,7 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
             .path = "physics",
             .data_json = "{\"ranks\": " + std::to_string(ranks) + "}"};
       },
-      !options.one_rank, groups);
+      !options.one_rank, groups, relaxation_restart_names);
   return registry;
 }
 

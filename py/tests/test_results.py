@@ -62,6 +62,7 @@ def test_run_directory_and_metadata_follow_the_contract(crm_run: autan.Results) 
     assert path.name == run["run_id"]
     assert run["status"] == "converged"
     assert run["solver"]["backend"] == "fake"
+    assert run["solver"]["binary_sha256"] is None
     assert re.fullmatch(r"[0-9a-f]{40}", run["solver"]["commit"])
     assert run["case"]["sha256"] == autan.load(path / "case.toml").spec.hash()
     assert run["mesh"]["path"] == str((EXAMPLES / "crm-hl.cgns").resolve())
@@ -804,14 +805,35 @@ def test_convergence_floors_belong_to_a_steady_fp32_run(
     crm_run: autan.Results, write_case: Callable[..., Path], crm_mesh: autan.MeshInfo
 ) -> None:
     names = autan.results.residual_names(crm_run.case)
-    floors = {"floor": dict.fromkeys(names, 1e-6) | {names[0]: 0.0}}  # a zero scale: no floor
+    floor = dict.fromkeys(names, 1e-6) | {names[0]: 0.0}  # a zero scale: no floor
+    floors = {"floor": floor, "plateau": []}
     _set_convergence(crm_run.path, floors)
     assert autan.Results.open(crm_run.path).run.convergence is not None
+    # A converged run lists the equations it counted converged on a plateau, in history order.
+    assert crm_run.run.status == "converged"
+    _set_convergence(crm_run.path, {"floor": floor, "plateau": [names[1], names[3]]})
+    convergence = autan.Results.open(crm_run.path).run.convergence
+    assert convergence is not None
+    assert convergence.plateau == [names[1], names[3]]
+    for plateau in ([names[3], names[1]], ["bogus"], [names[1], names[1]]):
+        _set_convergence(crm_run.path, {"floor": floor, "plateau": plateau})
+        with pytest.raises(autan.CaseError) as error:
+            autan.Results.open(crm_run.path)
+        assert error.value.codes == ["E0701"]
+    short = autan.load(EXAMPLES / "crm_hl.py").run(
+        crm_mesh, backend=autan.FakeBackend(iterations=2), runs=crm_run.path.parent
+    )
+    assert short.run.status != "converged"
+    _set_convergence(short.path, {"floor": floor, "plateau": [names[1]]})
+    with pytest.raises(autan.CaseError) as error:
+        autan.Results.open(short.path)
+    assert error.value.codes == ["E0701"]
+    _set_convergence(crm_run.path, floors)
     run_json = json.loads((crm_run.path / "run.json").read_text())
     del run_json["convergence"]
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.Draft202012Validator(json_schema("results")).validate(run_json)
-    for value in ("absent", {"floor": dict.fromkeys(names[:-1], 1e-6)}):
+    for value in ("absent", {"floor": dict.fromkeys(names[:-1], 1e-6), "plateau": []}):
         _set_convergence(crm_run.path, value)
         with pytest.raises(autan.CaseError) as error:
             autan.Results.open(crm_run.path)
@@ -856,8 +878,8 @@ def test_a_fake_run_measures_no_timing(crm_run: autan.Results) -> None:
 @pytest.mark.parametrize(
     "damage",
     [
-        lambda d: d.update(convergence={"floor": {}}),
-        lambda d: d.update(convergence={"floor": {"bogus": 1e-6}}),
+        lambda d: d.update(convergence={"floor": {}, "plateau": []}),
+        lambda d: d.update(convergence={"floor": {"bogus": 1e-6}, "plateau": []}),
         lambda d: d.update(monitors=None),
         lambda d: d["monitors"]["forces"].update(iteration=d["iterations"] - 1),
         lambda d: d.update(

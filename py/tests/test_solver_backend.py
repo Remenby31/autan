@@ -8,6 +8,7 @@ same runtime with the core's test relaxation physics, which runs every case to t
 import hashlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -25,6 +26,8 @@ import numpy as np
 import pytest
 from autan import cgns
 from autan.cli import main
+from autan.meshinfo import mesh_sha256
+from autan.units import metres_per, ureg
 
 from tests.conftest import ROOT, identity_of
 
@@ -96,6 +99,8 @@ def test_a_real_run_reads_back_through_the_results_contract(
     run = result.run
     assert run.status in ("converged", "completed")
     assert run.solver.backend == "cpu"
+    assert RELAXATION is not None
+    assert run.solver.binary_sha256 == hashlib.sha256(RELAXATION.read_bytes()).hexdigest()
     assert run.case.sha256 == case.spec.hash()
     assert run.mesh.sha256 == mesh.source.sha256
     assert run.identity == identity_of(run.document())
@@ -302,6 +307,20 @@ def test_continue_through_the_runtime_matches_the_uninterrupted_run(
     assert lines(first) + lines(rest) == lines(whole)
     assert (rest.run.status, rest.run.iterations) == (whole.run.status, whole.run.iterations)
     assert rest.field("Density").tobytes() == whole.field("Density").tobytes()
+    assert "W0715" not in [d.code for d in rest.run.diagnostics]
+    # results.md, solver.binary_sha256: a continuation by another binary warns.
+    assert RELAXATION is not None
+    other = tmp_path / "autan-run-other"
+    other.write_bytes(RELAXATION.read_bytes() + b"\0")
+    other.chmod(0o755)
+    elsewhere = case(10000).run(
+        mesh, backend=autan.SolverBackend(executable=other), runs=tmp_path / "other", start=first
+    )
+    [warning] = [d for d in elsewhere.run.diagnostics if d.code == "W0715"]
+    assert warning.data == {
+        "expected": first.run.solver.binary_sha256,
+        "found": hashlib.sha256(other.read_bytes()).hexdigest(),
+    }
 
 
 def _killed(
@@ -482,7 +501,13 @@ def _box(
     info = tmp_path / "box.meshinfo.json"
     info.write_text(
         subprocess.run(
-            [str(MESH_INFO), "--json", str(PERIODIC_BOX)],
+            [
+                str(MESH_INFO),
+                "--json",
+                "--scale",
+                str(metres_per(ureg.Unit(mesh_unit))),
+                str(PERIODIC_BOX),
+            ],
             capture_output=True,
             text=True,
             check=True,
@@ -592,7 +617,19 @@ needs_mpi = pytest.mark.skipif(
 def test_two_ranks_run_and_stop_through_the_launcher(
     hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
 ) -> None:
-    case, mesh = hybrid
+    case, _ = hybrid
+    # mesh-info.md: a run on two ranks is planned with the partition of that run.
+    assert MESH_INFO is not None
+    meshinfo = tmp_path / "hybrid.meshinfo.json"
+    meshinfo.write_text(
+        subprocess.run(
+            [str(MESH_INFO), "--json", "--ranks", "2", str(MESH)],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    )
+    mesh = autan.MeshInfo.load(meshinfo)
     devices = autan.Devices(kind="cpu", count=2)
     result = case.run(
         mesh,
@@ -709,3 +746,53 @@ def test_a_file_written_by_the_sdk_starts_the_real_runtime(tmp_path: Path) -> No
         expected = state(*centre)
         assert density[cell] == pytest.approx(expected[0], rel=1e-12)
         assert pressure[cell] == pytest.approx(expected[4], rel=1e-12)
+
+
+@pytest.mark.usefixtures("hybrid")
+def test_a_grouped_case_runs_from_its_zones_file(tmp_path: Path) -> None:
+    # The real producer and consumers of zone groups, on an OpenFOAM case directory: the
+    # zones.json next to constant/polyMesh, read by autan-mesh-info, selected by the SDK,
+    # recorded by autan-run.
+    assert MESH_INFO is not None
+    directory = tmp_path / "case"
+    shutil.copytree(MESH, directory / "constant" / "polyMesh")
+
+    def mesh_info() -> autan.MeshInfo:
+        out = subprocess.run(
+            [str(MESH_INFO), "--json", str(directory)], capture_output=True, text=True, check=True
+        ).stdout
+        (tmp_path / "case.meshinfo.json").write_text(out)
+        return autan.MeshInfo.load(tmp_path / "case.meshinfo.json")
+
+    bare = mesh_info()
+    assert mesh_sha256(directory) == bare.source.sha256
+    far = [z.name for z in bare.boundary_zones if z.name in ("xmin", "xmax", "ymax", "zmin")]
+    sidecar = directory / "constant" / "polyMesh.zones.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "schema": "autan.zone-groups/1",
+                "mesh_sha256": bare.source.sha256,
+                "provenance": {"note": "test"},
+                "groups": {"far": far},
+            }
+        )
+    )
+    digest = hashlib.sha256(sidecar.read_bytes()).hexdigest()
+    mesh = mesh_info()
+    assert [(g.name, list(g.zones)) for g in mesh.groups] == [("far", far)]
+    assert mesh.groups_source is not None
+    assert mesh.groups_source.sha256 == digest
+    body = CASE.replace(repr(str(MESH)), repr(str(directory))).replace(
+        "for zone in ('xmin', 'xmax', 'ymax', 'zmin'):\n    case.boundary(zone).farfield()\n",
+        "case.boundary(group='far').farfield()\n",
+    )
+    (tmp_path / "grouped.py").write_text(body)
+    case = autan.load(tmp_path / "grouped.py")
+    assert case.plan(mesh).ok
+    result = case.run(
+        mesh, backend=autan.SolverBackend(executable=RELAXATION), runs=tmp_path / "runs"
+    )
+    assert result.run.mesh.groups_sha256 == digest
+    # Reading the run checks its identity and groups against its archived mesh-info.json.
+    assert autan.Results.open(result.path).run.mesh.groups_sha256 == digest

@@ -119,6 +119,11 @@ def set_global_order(m: Mesh, stencil: str | None) -> None:
     )
 
 
+def all_planar(m: Mesh) -> bool:
+    """PackedGeometry::all_planar: every face moment of `m` is an exact zero."""
+    return bool(lib().autan_spike_all_planar(m.handle))
+
+
 def global_ids(m: Mesh) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
     """Global cell of each local cell and global face of each local face."""
     cells, faces = np.zeros(m.n_cells, np.int64), np.zeros(m.n_faces, np.int64)
@@ -586,6 +591,15 @@ def fill_ghost_geometry(m: Mesh, centroid: F64, volume: F64) -> None:
         ),
         err,
     )
+
+
+def face_colours(m: Mesh, interior: bool = True) -> npt.NDArray[np.int32]:
+    """Colour of each owned interior (or boundary) face, in face order (kernels::colour_faces)."""
+    first = 0 if interior else m.n_interior
+    last = m.n_interior if interior else m.n_faces
+    out = np.zeros(last - first, np.int32)
+    lib().autan_spike_face_colours(m.handle, ctypes.c_int(1 if interior else 0), _p(out))
+    return out
 
 
 def stencil_arrays(m: Mesh, size: int) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int32]]:

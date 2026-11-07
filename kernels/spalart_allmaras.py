@@ -53,6 +53,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from euler import (
     BC_FARFIELD,
     BC_INLET,
+    BC_OUTLET,
+    BC_SLIP,
     BC_STATE,
     BC_WALL,
     bc_kind,
@@ -194,23 +196,46 @@ eddy_viscosities = cell_loop(eddy_viscosity, rn=rnu, w=prim, **VISCOSITY, out=Wr
 
 
 @pointwise
-def boundary_nt(rn: State, w: State.Vec5, kind: Geom, data: State) -> State:
-    # Zero at walls; the given value at manufactured, farfield and inlet faces; the interior value
+def boundary_nt(
+    rn: State,
+    w: State.Vec5,
+    wb: State.Vec5,
+    kind: Geom,
+    data: State,
+    rgas: Param,
+    pref: Param,
+    mref: Param,
+    tref: Param,
+    s: Param,
+    law: Param,
+) -> State:
+    # Zero at walls; the given value at manufactured and farfield faces; at inlets the given ratio
+    # times the laminar nu of the inlet's state (case-schema.md#turbulence); the interior value
     # elsewhere (outlets, slip walls, symmetry planes).
     nt = rn / w[0]
     given = kind < BC_STATE + 0.5 or (kind > BC_FARFIELD - 0.5 and kind < BC_FARFIELD + 0.5)
     inflow = kind > BC_INLET - 0.5 and kind < BC_INLET + 0.5
     if kind > BC_WALL - 0.5:
         v = 0.0 * nt
-    elif given or inflow:
+    elif given:
         v = data
+    elif inflow:
+        v = data * lam_nu(wb, rgas, pref, mref, tref, s, law)
     else:
         v = nt
     return v
 
 
 boundary_values = boundary_loop(
-    boundary_nt, rn=rnu.left, w=prim.left, kind=bc_kind, data=nt_bc, out=Write(nt_b), frozen=True
+    boundary_nt,
+    rn=rnu.left,
+    w=prim.left,
+    wb=prim_b,
+    kind=bc_kind,
+    data=nt_bc,
+    **VISCOSITY,
+    out=Write(nt_b),
+    frozen=True,
 )
 
 
@@ -328,8 +353,19 @@ def nt_boundary(
     nu = lam_nu(wb, rgas, pref, mref, tref, s, law)
     gn = corrected_boundary(tl, ntb - ntl, e, inv_d)
     diff = wb[0] * (nu + ntb * fn(ntb / nu)) / SIGMA * dot(gn, n) * area
-    wall = kind > BC_WALL - 0.5
-    return 0.0 * conv - diff if wall else conv - diff
+    # Slip faces and outlets take nt from the interior: zero normal derivative, no diffusion; the
+    # flow crosses neither a wall nor a slip face.
+    slip = kind > BC_SLIP - 0.5 and kind < BC_SLIP + 0.5
+    outlet = kind > BC_OUTLET - 0.5 and kind < BC_OUTLET + 0.5
+    if kind > BC_WALL - 0.5:
+        f = 0.0 * conv - diff
+    elif slip:
+        f = 0.0 * conv
+    elif outlet:
+        f = conv
+    else:
+        f = conv - diff
+    return f
 
 
 @pointwise

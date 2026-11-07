@@ -85,8 +85,18 @@ target_link_libraries(
   PRIVATE autan_compile_options nlohmann_json::nlohmann_json
 )
 
+# What a mesh costs the solver (MeshInfo's run counts): io stays free of the kernels and the
+# partitioner, which only this library and its users link.
+add_library(autan_mesh_counts src/mesh_counts.cpp)
+add_library(autan::mesh_counts ALIAS autan_mesh_counts)
+target_link_libraries(
+  autan_mesh_counts
+  PUBLIC autan::io autan::core
+  PRIVATE autan::kernels autan::partition autan::solvers autan_compile_options
+)
+
 add_executable(autan-mesh-info tools/autan_mesh_info.cpp)
-target_link_libraries(autan-mesh-info PRIVATE autan::io autan_compile_options)
+target_link_libraries(autan-mesh-info PRIVATE autan::io autan::mesh_counts autan_compile_options)
 
 add_executable(autan-mesh-prisms tools/autan_mesh_prisms.cpp)
 target_link_libraries(
