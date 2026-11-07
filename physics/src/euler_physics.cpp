@@ -957,6 +957,7 @@ class EulerPhysics final : public runtime::Physics {
       euler_.set_second_order(false);
     }
     euler_.residual_and_jacobian(state_, res_);
+    jacobian_second_order_ = second_order_;
     measure_circulation();
     std::vector<double> norms = report.residuals;
     record_norms(report);
@@ -994,7 +995,20 @@ class EulerPhysics final : public runtime::Physics {
     try {
       if (multigrid_) {
         multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
-        linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
+        if constexpr (is_viscous) {
+          linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
+        } else {
+          // As Multigrid::solve, GCR preconditioned by one cycle, on the operator with the
+          // boundary faces' gradient term.
+          krylov_residual_ = rhs_;
+          linear = gcr_.solve(
+              [&](std::span<const double> v, std::span<double> y) {
+                matrix_->multiply(v, y);
+                add_boundary_gradient_term(v, y);
+              },
+              [&](std::span<const double> r, std::span<double> z) { multigrid_->cycle(r, z); },
+              krylov_residual_, du_, linear_max_cycles, linear_tolerance);
+        }
       } else if (lines_) {
         // GCR preconditioned by the line sweeps, as the multigrid's outer iteration; its inner
         // products are exact sums over the owned cells of every rank.
@@ -1010,7 +1024,10 @@ class EulerPhysics final : public runtime::Physics {
         auto exchange = [this](std::span<double> x) { fill_ghosts(x); };
         krylov_residual_ = rhs_;
         linear = gcr_.solve(
-            [&](std::span<const double> v, std::span<double> y) { lines_->multiply(v, y); },
+            [&](std::span<const double> v, std::span<double> y) {
+              lines_->multiply(v, y);
+              add_boundary_gradient_term(v, y);
+            },
             [&](std::span<const double> r, std::span<double> z) {
               lines_->sweep(r, z, gauss_seidel_sweeps, exchange);
             },
@@ -1132,6 +1149,24 @@ class EulerPhysics final : public runtime::Physics {
 
   // Ghost cells take their owners' du (5 components).
   // Sum of u v over the owned cells of every rank, exact: the same bits on any partition.
+  // y += the boundary faces' derivative through the reconstruction's gradients, which the
+  // assembled blocks drop: in large far-field cells the step without it is unstable at the CFL
+  // numbers the SER reaches (ONERA M6, #244). The inviscid flow only.
+  void add_boundary_gradient_term(std::span<const double> v, std::span<double> y) {
+    if constexpr (!is_viscous) {
+      // The step that switches to second order solves the first-order system it assembled.
+      if (!jacobian_second_order_) return;
+      if (dv_.size() != 5 * n_) {
+        dv_.assign(5 * n_, State(0));
+        dres_.assign(5 * n_, Res(0));
+      }
+      for (std::size_t i = 0; i < 5 * n_; ++i) dv_[i] = State(v[i]);
+      std::fill(dres_.begin(), dres_.end(), Res(0));
+      euler_.gradient_tangent(state_, dv_, dres_, Flow::Faces::boundary);
+      for (std::size_t i = 0; i < 5 * n_; ++i) y[i] += static_cast<double>(dres_[i]);
+    }
+  }
+
   double owned_dot(std::span<const double> u, std::span<const double> v) {
     std::array<runtime::ExactSum, 1> sum;
     for (std::size_t k = 0; k < 5; ++k) {
@@ -1453,8 +1488,9 @@ class EulerPhysics final : public runtime::Physics {
   bool second_order_ = false;
   bool shortened_ = false;
   double mean_weight_ = 0.0;
-  std::vector<State> state_, lambda_;
-  std::vector<Res> res_;
+  std::vector<State> state_, lambda_, dv_;
+  bool jacobian_second_order_ = false;  // the order of the last assembled Jacobian
+  std::vector<Res> res_, dres_;
   std::vector<double> boundary_data_;  // set_boundary's data, before any vortex
   std::vector<Vortex> vortices_;
 };
