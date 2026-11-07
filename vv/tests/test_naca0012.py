@@ -293,13 +293,22 @@ def test_lifting_cases_carry_the_point_vortex_of_the_flo82_references() -> None:
             assert [float(v.to("m").magnitude) for v in vortex.center] == [0.25, 0.0, 0.0]
 
 
+def test_a_returned_map_is_the_callers_own() -> None:
+    # The construction common to every level is computed once (#536); a caller changing the map it
+    # gets back must not change the next grid.
+    z, kt = naca0012.plane_grid(8)
+    kt.power = 3.0
+    again, _ = naca0012.plane_grid(8)
+    np.testing.assert_array_equal(again, z)
+
+
 def test_level_32_has_the_same_bytes_on_every_cpu(tmp_path: Path) -> None:
     # #536: the generator's bytes depend on its inputs only, not on the CPU or its C library. These
     # sha256 were measured identical on x86-64 and aarch64 Linux and on macOS arm64.
     points, _, _ = naca0012.grid(32)
     path = tmp_path / "naca0012-n0032.msh"
     naca0012.generate_level(32, path)
-    sha_points = hashlib.sha256(np.ascontiguousarray(points).tobytes()).hexdigest()
+    sha_points = hashlib.sha256(points.astype("<f8").tobytes()).hexdigest()
     assert sha_points == "4e28523064d606127db1d4aaeab13114c40ce60cc46adb5a57baf38c2da30520"
     sha_file = hashlib.sha256(path.read_bytes()).hexdigest()
     assert sha_file == "3b7ab3cd0e7226becb202b2f324c5adc30d75f15a2ed4cfc5e0350fa13f3fee3"
