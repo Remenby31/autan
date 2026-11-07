@@ -259,6 +259,7 @@ def write_run(
     start: StartInfo | None = None,
     convergence: Convergence | None = None,
     diagnostics: tuple[Diagnostic, ...] = (),
+    provisional: int = 0,
 ) -> autan.Results:
     """Write one finished run of `case` on `mesh` with the given cell fields; return it opened.
 
@@ -266,7 +267,8 @@ def write_run(
     cell in mesh order. `residuals` gives the history, one line per iteration (after
     `start.iterations` for a continuation); without it a steady `converged` run holds unit
     residuals then the same dropped `residual_orders`, any other run one line of unit residuals.
-    `start`, `convergence` and `diagnostics` go to run.json as given. Cases with monitors or time
+    The first `provisional` lines of a steady history are marked provisional. `start`,
+    `convergence` and `diagnostics` go to run.json as given. Cases with monitors or time
     averaging are refused (V0731).
     """
     spec = case.spec
@@ -334,8 +336,17 @@ def write_run(
         if isinstance(spec.time, Steady) and status == "converged":
             residuals.append(dict.fromkeys(ones, 10.0**-spec.time.residual_orders))
     first = start.iterations if start is not None and start.mode == "continue" else 0
+    steady = isinstance(spec.time, Steady)
     for k, line in enumerate(residuals):
-        writer.append({"iteration": first + k + 1, "time": time, "residuals": line, "monitors": {}})
+        record: dict[str, Any] = {
+            "iteration": first + k + 1,
+            "time": time,
+            "residuals": line,
+            "monitors": {},
+        }
+        if steady:
+            record["provisional"] = k < provisional
+        writer.append(record)
     changes = {
         "status": status,
         "iterations": first + len(residuals),
