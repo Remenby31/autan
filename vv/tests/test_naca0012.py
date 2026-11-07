@@ -371,6 +371,16 @@ def test_a_different_file_is_reported_in_seconds(tmp_path: Path) -> None:
     assert f"line {first + 1}:" in message
 
 
+def test_a_difference_in_line_endings_only_is_shown(tmp_path: Path) -> None:
+    ours, theirs = tmp_path / "ours.msh", tmp_path / "theirs.msh"
+    ours.write_bytes(b"$MeshFormat\n4.1 0 8\n")
+    theirs.write_bytes(b"$MeshFormat\r\n4.1 0 8\n")
+    with pytest.raises(AssertionError) as err:
+        assert_same_file(ours, theirs)
+    assert "differ on 1 lines" in str(err.value)
+    assert "line 1:" in str(err.value)
+
+
 def test_python_writer_refuses_what_it_does_not_reproduce(tmp_path: Path) -> None:
     points, cells, boundary = naca0012.grid(8)
     for zones in (
