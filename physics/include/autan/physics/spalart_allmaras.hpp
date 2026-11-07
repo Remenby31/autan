@@ -7,6 +7,11 @@
 #include "autan/core/mesh.hpp"
 #include "autan/physics/navier_stokes.hpp"
 
+namespace autan::kernels::spalart_allmaras {
+template <class P>
+struct Data;
+}  // namespace autan::kernels::spalart_allmaras
+
 namespace autan::physics {
 
 /// Spalart-Allmaras, negative variant (SA-neg), loosely coupled to a NavierStokes<P> residual
@@ -53,6 +58,9 @@ class SpalartAllmaras {
              int sweeps) const;
   /// Writes the eddy viscosity of s to the flow, per cell and per boundary face.
   void eddy_viscosity(std::span<const State> s);
+  /// For a device copy: the generated loops' data in host memory (geometry, wall distance,
+  /// boundary values, source, parameters). Under the flow's global keys the face loops gather.
+  [[nodiscard]] const kernels::spalart_allmaras::Data<P>& data() const;
 
  private:
   struct Impl;

@@ -2,17 +2,21 @@
 #include <cstddef>
 #include <memory>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 #include "autan/physics/navier_stokes_device.hpp"
+#include "autan/physics/spalart_allmaras_device.hpp"
 #include "device_stepper.cuh"
 #include "navier_stokes_gpu.cuh"
+#include "spalart_allmaras_gpu.cuh"
 
 namespace autan::physics {
 
 namespace {
 
 namespace nk = autan::kernels::navier_stokes;
+namespace sk = autan::kernels::spalart_allmaras;
 namespace gpu = autan::kernels::gpu;
 using device::blocks;
 using device::check;
@@ -112,6 +116,15 @@ class NavierStokesStepper final : public device::CudaStepper<P> {
     v_.prandtl_t[0] = h.prandtl_t[0];
   }
 
+  // For the turbulence model on the same device: the flow's arrays of its last evaluation and
+  // the eddy viscosity it reads, as NavierStokes<P>::arrays() gives them on the host.
+  [[nodiscard]] const typename Base::D& flow() const noexcept { return this->d_; }
+  [[nodiscard]] const N& viscous() const noexcept { return v_; }
+  [[nodiscard]] gpu::DeviceMesh& mesh() noexcept { return this->mesh_; }
+  [[nodiscard]] cudaStream_t stream() const noexcept { return this->stream_; }
+  [[nodiscard]] std::size_t n_cells() const noexcept { return this->n_; }
+  [[nodiscard]] std::size_t n_faces() const noexcept { return this->nf_; }
+
  private:
   // NavierStokes<P>::residual after the Euler residual: under the quadratic fit the linear
   // gradient (Euler<P>::linear_gradient, its limiter bounds into scratch), then the boundary fit
@@ -153,6 +166,109 @@ class NavierStokesStepper final : public device::CudaStepper<P> {
   N v_{};
 };
 
+// rho nt stored in the state's type, as the host's callers store it: State(v).
+template <class S>
+__global__ void store_scalar(kernels::index_t n, const double* v, S* s) {
+  const auto c = static_cast<kernels::index_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (c >= n) return;
+  s[c] = static_cast<S>(v[c]);
+}
+
+// SpalartAllmaras<P> on the device of a NavierStokesStepper<P>: the loops of
+// kernels/spalart_allmaras.py on the flow's arrays, in the host's order.
+template <class P>
+class SpalartAllmarasDevice final : public DeviceSpalartAllmaras<P> {
+  using A = sk::Data<P>;
+
+ public:
+  SpalartAllmarasDevice(const SpalartAllmaras<P>& host, NavierStokesStepper<P>& flow)
+      : flow_(flow), n_(flow.n_cells()), nf_(flow.n_faces()) {
+    const A& h = host.data();
+    const auto s = flow.stream();
+    input_ = gpu::DeviceArray<double>(n_, s);
+    rnu_ = gpu::DeviceArray<element<decltype(A::rnu)>>(n_, s);
+    nt_ = gpu::DeviceArray<element<decltype(A::nt)>>(n_, s);
+    nt_b_ = gpu::DeviceArray<element<decltype(A::nt_b)>>(nf_, s);
+    nt_bc_ = copy_of(h.nt_bc, nf_, s);
+    source_ = copy_of(h.nt_source, n_, s);
+    wall_ = copy_of(h.wall_distance, n_, s);
+    nt_grad_ = gpu::DeviceArray<element<decltype(A::nt_grad)>>(3 * n_, s);
+    res_ = gpu::DeviceArray<element<decltype(A::nt_res)>>(n_, s);
+    flow.mesh().bind(a_);
+    // SpalartAllmaras<P>::Impl::share: the flow's arrays, gradient stencil and weights.
+    const auto& d = flow.flow();
+    const auto& v = flow.viscous();
+    a_.topo = d.topo;
+    a_.stencil_lsq_weight = d.stencil_lsq_weight;
+    a_.prim = d.prim;
+    a_.grad = v.grad;
+    a_.prim_b = d.prim_b;
+    a_.bc_kind = d.bc_kind;
+    a_.mu_t = v.mu_t;
+    a_.mu_t_b = v.mu_t_b;
+    a_.rnu = rnu_.get();
+    a_.nt = nt_.get();
+    a_.nt_b = nt_b_.get();
+    a_.nt_bc = nt_bc_.get();
+    a_.nt_source = source_.get();
+    a_.wall_distance = wall_.get();
+    a_.nt_grad = nt_grad_.get();
+    a_.nt_res = res_.get();
+    a_.gas_constant[0] = h.gas_constant[0];
+    a_.p_ref[0] = h.p_ref[0];
+    a_.mu_ref[0] = h.mu_ref[0];
+    a_.t_ref[0] = h.t_ref[0];
+    a_.sutherland_s[0] = h.sutherland_s[0];
+    a_.sutherland[0] = h.sutherland[0];
+    a_.ft2_on[0] = h.ft2_on[0];
+  }
+
+  void residual(std::span<const double> rnu, std::span<double> res) override {
+    const auto& sched = flow_.mesh().schedule();
+    store(rnu);
+    sk::gpu_loops::nt_values(a_, sched);
+    sk::gpu_loops::boundary_values(a_, sched);
+    sk::gpu_loops::nt_gradients(a_, sched);
+    sk::gpu_loops::nt_sources(a_, sched);
+    constexpr auto deterministic = gpu::Strategy::store_gather;
+    sk::gpu_loops::nt_faces(a_, deterministic, sched);
+    sk::gpu_loops::nt_boundaries(a_, deterministic, sched);
+    const auto r = res_.download(flow_.stream());
+    for (std::size_t i = 0; i < r.size(); ++i) res[i] = static_cast<double>(r[i]);
+  }
+
+  void eddy_viscosity(std::span<const double> rnu) override {
+    const auto& sched = flow_.mesh().schedule();
+    store(rnu);
+    sk::gpu_loops::nt_values(a_, sched);
+    sk::gpu_loops::boundary_values(a_, sched);
+    sk::gpu_loops::eddy_viscosities(a_, sched);
+    sk::gpu_loops::boundary_eddy_viscosities(a_, sched);
+  }
+
+ private:
+  void store(std::span<const double> rnu) {
+    if (rnu.size() != n_) throw std::invalid_argument("rho nt does not match the cells");
+    input_.upload(rnu, flow_.stream());
+    store_scalar<<<blocks(n_), device::block, 0, flow_.stream()>>>(
+        static_cast<kernels::index_t>(n_), input_.get(), rnu_.get());
+    check(cudaGetLastError(), "store_scalar");
+  }
+
+  NavierStokesStepper<P>& flow_;
+  std::size_t n_, nf_;
+  gpu::DeviceArray<double> input_;
+  gpu::DeviceArray<element<decltype(A::rnu)>> rnu_;
+  gpu::DeviceArray<element<decltype(A::nt)>> nt_;
+  gpu::DeviceArray<element<decltype(A::nt_b)>> nt_b_;
+  gpu::DeviceArray<element<decltype(A::nt_bc)>> nt_bc_;
+  gpu::DeviceArray<element<decltype(A::nt_source)>> source_;
+  gpu::DeviceArray<element<decltype(A::wall_distance)>> wall_;
+  gpu::DeviceArray<element<decltype(A::nt_grad)>> nt_grad_;
+  gpu::DeviceArray<element<decltype(A::nt_res)>> res_;
+  A a_{};
+};
+
 }  // namespace
 
 template <class P>
@@ -164,6 +280,21 @@ std::unique_ptr<DeviceStepper<P>> make_device_stepper(const Mesh& mesh, const Ge
   return std::make_unique<NavierStokesStepper<P>>(mesh, geometry, host, gamma, second_order, ranks,
                                                   ghosts, stream, keys);
 }
+
+template <class P>
+std::unique_ptr<DeviceSpalartAllmaras<P>> make_device_spalart_allmaras(
+    const SpalartAllmaras<P>& host, DeviceStepper<P>& flow) {
+  auto* ns = dynamic_cast<NavierStokesStepper<P>*>(&flow);
+  if (ns == nullptr) {
+    throw std::invalid_argument("Spalart-Allmaras on a device needs a Navier-Stokes stepper");
+  }
+  return std::make_unique<SpalartAllmarasDevice<P>>(host, *ns);
+}
+
+template std::unique_ptr<DeviceSpalartAllmaras<kernels::fp64>> make_device_spalart_allmaras(
+    const SpalartAllmaras<kernels::fp64>&, DeviceStepper<kernels::fp64>&);
+template std::unique_ptr<DeviceSpalartAllmaras<kernels::fp32_acc64>> make_device_spalart_allmaras(
+    const SpalartAllmaras<kernels::fp32_acc64>&, DeviceStepper<kernels::fp32_acc64>&);
 
 template std::unique_ptr<DeviceStepper<kernels::fp64>> make_device_stepper(
     const Mesh&, const Geometry&, const NavierStokes<kernels::fp64>&, double, bool, runtime::Ranks&,

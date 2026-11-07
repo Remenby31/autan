@@ -117,6 +117,17 @@ struct SpalartAllmaras<P>::Impl {
     d.gas_constant[0] = typename P::param(a.gas_constant);
   }
 
+  // A face or boundary loop: its gather on the flow's rank-independent topology (global keys),
+  // else its scatter.
+  template <class Loop>
+  void run(Loop loop) const {
+    if (d.topo.rank_independent) {
+      loop(kernels::Strategy::store_gather);
+    } else {
+      loop();
+    }
+  }
+
   void prepare(std::span<const State> s, std::span<Res> res) {
     share();
     d.rnu = const_cast<State*>(s.data());
@@ -164,8 +175,8 @@ void SpalartAllmaras<P>::residual(std::span<const State> s, std::span<Res> res) 
   auto& m = *impl_;
   m.prepare(s, res);
   sk::cpu::nt_sources(m.d);
-  sk::cpu::nt_faces(m.d);
-  sk::cpu::nt_boundaries(m.d);
+  m.run([&](auto... strategy) { sk::cpu::nt_faces(m.d, strategy...); });
+  m.run([&](auto... strategy) { sk::cpu::nt_boundaries(m.d, strategy...); });
 }
 
 template <class P>
@@ -173,8 +184,8 @@ void SpalartAllmaras<P>::residual_and_jacobian(std::span<const State> s, std::sp
   auto& m = *impl_;
   m.prepare(s, res);
   sk::cpu::nt_sources_jacobian(m.d);
-  sk::cpu::nt_faces_jacobian(m.d);
-  sk::cpu::nt_boundaries_jacobian(m.d);
+  m.run([&](auto... strategy) { sk::cpu::nt_faces_jacobian(m.d, strategy...); });
+  m.run([&](auto... strategy) { sk::cpu::nt_boundaries_jacobian(m.d, strategy...); });
 }
 
 template <class P>
@@ -230,6 +241,11 @@ void SpalartAllmaras<P>::eddy_viscosity(std::span<const State> s) {
   sk::cpu::boundary_values(m.d);
   sk::cpu::eddy_viscosities(m.d);
   sk::cpu::boundary_eddy_viscosities(m.d);
+}
+
+template <class P>
+const kernels::spalart_allmaras::Data<P>& SpalartAllmaras<P>::data() const {
+  return impl_->d;
 }
 
 template class SpalartAllmaras<kernels::fp64>;
