@@ -154,7 +154,7 @@ The flow direction in mesh axes is (cos α cos β, −sin β, sin α cos β) wit
 
 | `kind` | Keys |
 |---|---|
-| `"steady"` | `max_iterations` integer ≥ 1, default 10000; `residual_orders` number > 0, default 8.0; `linear_solver` `"multigrid"` · `"gauss-seidel"` · `"lines"`, default `"multigrid"`; `coupled_turbulence` boolean, default `false`: solves the flow and the SA variable together in each step, for compressible SA physics only (`E0426`), with `linear_solver = "multigrid"` on one CPU rank (`E0427`, from `autan plan` and the runtime); validated on the TMR flat plate only, which `W0426` reports whenever it is on; `matrix_free` boolean, default `false`: applies the laminar step's Jacobian without assembling it, for compressible laminar physics only (`E0429`), with `linear_solver = "multigrid"` on one CPU rank (`E0427`); validated on the TMR laminar flat plate only, which `W0429` reports whenever it is on |
+| `"steady"` | `max_iterations` integer ≥ 1, default 10000; `residual_orders` number > 0, default 8.0; `linear_solver` `"multigrid"` · `"gauss-seidel"` · `"lines"`, default `"multigrid"`; `coupled_turbulence` boolean, default `false`, and `matrix_free` boolean, default `false`: steps no physics has yet (one solving the flow and the turbulence model together, one applying the Jacobian without assembling it), so `true` is refused for every physics, by `autan plan` and the runtime alike (`E0426`, `E0429`) |
 | `"unsteady"` | `steps` integer ≥ 1; exactly one of `dt` (time > 0) or `cfl` (number > 0); `average_from` integer in [0, `steps`), optional |
 
 Both kinds take `checkpoint`: how often a running run saves the state it can be continued from ([results.md](results.md#checkpointcgns)). It is a table with exactly one of:

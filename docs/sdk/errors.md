@@ -616,25 +616,9 @@ Fix: Give a pattern that matches the walls of the lifting body, e.g. `surfaces="
 
 **Coupled turbulence not applicable** (error)
 
-`time.coupled_turbulence` is set on a case whose physics has no coupled turbulence step: only compressible physics with the SA model has one.
+`time.coupled_turbulence` is set: no physics has a step that solves the flow and the turbulence model together yet, so `autan plan` and the runtime refuse it.
 
-Fix: Remove `coupled_turbulence=True`, or use compressible SA physics.
-
-## W0426
-
-**Coupled turbulence outside its validated domain** (warning)
-
-`time.coupled_turbulence` is on: the coupled step is validated on the TMR flat plate only (#429). `autan plan` reports it, and the run logs it at its first coupled step.
-
-Fix: Compare with a run without the option before relying on the result.
-
-## E0427
-
-**Opt-in step needs the host multigrid** (error)
-
-The opt-in steady steps (`time.coupled_turbulence`, `time.matrix_free`) run in the host multigrid on one rank: `linear_solver` must be `multigrid`, on the CPU, on one rank. `autan plan` and the physics both refuse other runs; the message names the key.
-
-Fix: Use `linear_solver='multigrid'` and run on one CPU rank, or drop the option.
+Fix: Remove `coupled_turbulence=True`.
 
 ## E0428
 
@@ -648,17 +632,9 @@ Fix: Use one of the group names the message lists, or select zones by name.
 
 **Matrix-free step not applicable** (error)
 
-`time.matrix_free` is set on a case whose physics has no matrix-free step: only compressible laminar physics has one.
+`time.matrix_free` is set: no physics has a matrix-free step yet, so `autan plan` and the runtime refuse it.
 
-Fix: Remove `matrix_free=True`, or use compressible laminar physics.
-
-## W0429
-
-**Matrix-free step outside its validated domain** (warning)
-
-`time.matrix_free` is on: the matrix-free laminar step is validated on the TMR laminar flat plate only (#429). `autan plan` reports it, and the run logs it at its first matrix-free step.
-
-Fix: Compare with a run without the option before relying on the result.
+Fix: Remove `matrix_free=True`.
 
 ## E0501
 

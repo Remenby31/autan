@@ -556,17 +556,9 @@ _CODES = [
     Code(
         "E0426",
         "Coupled turbulence not applicable",
-        "`time.coupled_turbulence` is set on a case whose physics has no coupled turbulence "
-        "step: only compressible physics with the SA model has one.",
-        "Remove `coupled_turbulence=True`, or use compressible SA physics.",
-    ),
-    Code(
-        "E0427",
-        "Opt-in step needs the host multigrid",
-        "The opt-in steady steps (`time.coupled_turbulence`, `time.matrix_free`) run in the "
-        "host multigrid on one rank: `linear_solver` must be `multigrid`, on the CPU, on one "
-        "rank. `autan plan` and the physics both refuse other runs; the message names the key.",
-        "Use `linear_solver='multigrid'` and run on one CPU rank, or drop the option.",
+        "`time.coupled_turbulence` is set: no physics has a step that solves the flow and the "
+        "turbulence model together yet, so `autan plan` and the runtime refuse it.",
+        "Remove `coupled_turbulence=True`.",
     ),
     Code(
         "E0428",
@@ -576,26 +568,11 @@ _CODES = [
         "Use one of the group names the message lists, or select zones by name.",
     ),
     Code(
-        "W0426",
-        "Coupled turbulence outside its validated domain",
-        "`time.coupled_turbulence` is on: the coupled step is validated on the TMR flat plate "
-        "only (#429). `autan plan` reports it, and the run logs it at its first coupled step.",
-        "Compare with a run without the option before relying on the result.",
-    ),
-    Code(
         "E0429",
         "Matrix-free step not applicable",
-        "`time.matrix_free` is set on a case whose physics has no matrix-free step: only "
-        "compressible laminar physics has one.",
-        "Remove `matrix_free=True`, or use compressible laminar physics.",
-    ),
-    Code(
-        "W0429",
-        "Matrix-free step outside its validated domain",
-        "`time.matrix_free` is on: the matrix-free laminar step is validated on the TMR laminar "
-        "flat plate only (#429). `autan plan` reports it, and the run logs it at its first "
-        "matrix-free step.",
-        "Compare with a run without the option before relying on the result.",
+        "`time.matrix_free` is set: no physics has a matrix-free step yet, so `autan plan` "
+        "and the runtime refuse it.",
+        "Remove `matrix_free=True`.",
     ),
     Code(
         "E0501",
