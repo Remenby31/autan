@@ -1,7 +1,9 @@
 """NACA 0012 of Vassberg and Jameson (2010): geometry and O-meshes against the paper, force gates
 against the paper's own grid sequences (J. Aircraft 47(4):1152-1166, doi:10.2514/1.46737)."""
 
+import hashlib
 import math
+import time
 from pathlib import Path
 
 import autan
@@ -310,7 +312,40 @@ def test_python_writer_writes_the_file_gmsh_writes(nc: int, tmp_path: Path) -> N
         families._write_msh(gmsh, points, cells, boundary, theirs)
     finally:
         gmsh.finalize()
+    assert_same_file(ours, theirs)
+
+
+def assert_same_file(ours: Path, theirs: Path) -> None:
+    """Fail unless the two files hold the same bytes."""
     assert ours.read_bytes() == theirs.read_bytes()
+
+
+def test_a_different_file_is_reported_in_seconds(tmp_path: Path) -> None:
+    # Level 32 against a copy whose coordinates differ in their last digit, as another platform's
+    # would (#532): the failure names both sha256 and the first differing lines, in seconds. A
+    # plain == of the bytes would have pytest diff 183 KB with difflib, past the job's timeout,
+    # whenever CI=true turns its truncation off.
+    ours = tmp_path / "ours.msh"
+    naca0012.generate_level(32, ours)
+    lines = ours.read_text().splitlines(keepends=True)
+    start = lines.index("$Nodes\n")
+    for k in range(start + 1, lines.index("$EndNodes\n")):
+        if lines[k].count(" ") == 2:  # a node's coordinates
+            last = lines[k].rstrip("\n")[-1]
+            lines[k] = lines[k].rstrip("\n")[:-1] + ("1" if last != "1" else "2") + "\n"
+    theirs = tmp_path / "theirs.msh"
+    theirs.write_text("".join(lines))
+    original = ours.read_text().splitlines(keepends=True)
+    first = next(k for k, (a, b) in enumerate(zip(original, lines, strict=True)) if a != b)
+    begin = time.perf_counter()
+    with pytest.raises(AssertionError) as err:
+        assert_same_file(ours, theirs)
+    seconds = time.perf_counter() - begin
+    message = str(err.value)
+    assert seconds < 5.0, seconds
+    assert hashlib.sha256(ours.read_bytes()).hexdigest() in message
+    assert hashlib.sha256(theirs.read_bytes()).hexdigest() in message
+    assert f"line {first + 1}:" in message
 
 
 def test_python_writer_refuses_what_it_does_not_reproduce(tmp_path: Path) -> None:
