@@ -6,8 +6,8 @@ namespace autan::physics {
 
 /// euler.md#time-stepping: a steady Euler run starts at first order and solves second order from
 /// the step after the one whose first-order residual has dropped `drop_to` below its start, whose
-/// drop is on a plateau (runtime::Plateau), or that is the 201st: at most 201 steps are
-/// provisional (case-schema.md#time).
+/// drop has stalled (runtime::Plateau), or that is the 201st: at most 201 steps are provisional
+/// (case-schema.md#time).
 class FirstOrderStart {
  public:
   static constexpr double drop_to = 1e-3;
