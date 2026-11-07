@@ -63,3 +63,29 @@ def test_a_zero_face_is_an_exact_zero_or_invalid() -> None:
     assert cert.radius == 0
     with pytest.raises(c.Invalid):
         q.hypot3_cert(tuple(c.Cert(Fr(0), Fr(1, 2**60)) for _ in zero), zero, 0.0)
+
+
+@pytest.mark.parametrize(("kind", "perturbation"), CASES)
+def test_the_stored_geometry_is_the_declared_construction_bit_for_bit(
+    kind: str, perturbation: float
+) -> None:
+    # The construction of core/src/geometry.cpp and codegen/cpp/geometry.cpp, replayed by exact
+    # binary64 emulation from the nodes and the assembled topology, gives every array the gradient
+    # kernels read bit for bit: else the build does not run the declared sequence.
+    from oracle import topology as t  # noqa: PLC0415
+
+    m = s.mesh(meshes.build(kind, 4, perturbation, seed=3))
+    replay = q.geometry_replay(t.read_mesh(m))
+    stored = {
+        "face_area": m.face_area,
+        "face_centroid": m.face_centroid,
+        "face_moment": m.face_moment.reshape(m.n_faces, 9),
+        "cell_centroid": m.cell_centroid,
+        "cell_volume": m.cell_volume.reshape(-1, 1),
+        "lsq_weight": m.lsq_weight,
+    }
+    for name, values in stored.items():
+        got = replay[name]
+        assert len(got) == len(values), name
+        for i, (row, want) in enumerate(zip(got, values, strict=True)):
+            assert [float(v) for v in row] == [float(v) for v in np.atleast_1d(want)], (name, i)
