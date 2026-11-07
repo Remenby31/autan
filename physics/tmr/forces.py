@@ -4,7 +4,7 @@ Usage: python physics/tmr/forces.py CASE RUN...   (in the uv environment of vv/;
 
 cf = tau_w,x / q_inf from the wall shear stress of solution.cgns (results.md, WallSolution), linearly
 interpolated in x along the wall at the case's station (flatplate 0.970084071, bump 0.75; the
-upper surface at x = 0.5 for naca0012); CL and CD are the last values of the `wall` forces monitor.
+upper surface at x = 0.5 for naca0012 and rae2822); CL and CD are the last values of the `wall` forces monitor.
 q_inf follows the case's freestream closure (case-schema.md), T 300 K, Sutherland's air.
 """
 
@@ -21,6 +21,7 @@ CASES = {  # Mach, Reynolds number per metre, cf station, wall x range, normal a
     "flatplate": (0.2, 5.0e6, 0.970084071, (0.0, 2.0), 1),
     "bump": (0.2, 3.0e6, 0.75, (0.0, 1.5), 1),
     "naca0012": (0.15, 6.0e6, 0.5, (0.0, 1.0), 2),
+    "rae2822": (0.730, 6.5e6, 0.5, (0.0, 1.0), 2),
 }
 
 

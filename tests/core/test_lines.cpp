@@ -1,8 +1,10 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <random>
 #include <set>
@@ -28,6 +30,30 @@ autan::Mesh stretched_box(int n, double stretch) {
   for (auto& v : cw.x) v *= stretch;
   for (auto& v : cw.y) v *= stretch;
   return autan::assemble(autan::to_face_based(cw));
+}
+
+// Hexahedra given as axis-aligned boxes {lo, hi}, sharing nodes where they touch; cell i is box i.
+autan::Mesh boxes(const std::vector<std::array<std::array<double, 3>, 2>>& cells) {
+  autan::CellwiseMesh m;
+  std::map<std::array<double, 3>, index_t> node;
+  for (const auto& [lo, hi] : cells) {
+    std::array<index_t, 8> hex{};
+    for (std::size_t k = 0; k < 8; ++k) {
+      const bool i = k % 4 == 1 || k % 4 == 2, j = k % 4 >= 2;
+      const std::array<double, 3> p{i ? hi[0] : lo[0], j ? hi[1] : lo[1], k >= 4 ? hi[2] : lo[2]};
+      const auto [it, added] = node.try_emplace(p, static_cast<index_t>(m.x.size()));
+      if (added) {
+        m.x.push_back(p[0]);
+        m.y.push_back(p[1]);
+        m.z.push_back(p[2]);
+      }
+      hex[k] = it->second;
+    }
+    m.add_cell(autan::CellShape::hexa, hex, 0);
+  }
+  m.cell_zones.push_back(
+      {.name = "fluid", .type = "", .kind = autan::CellKind::fluid, .provenance = {}});
+  return autan::assemble(autan::to_face_based(std::move(m)));
 }
 
 // Each line as the sorted global ids of its cells.
@@ -96,4 +122,34 @@ TEST_CASE("lines follow the strong coupling of stretched cells", "[lines]") {
     const auto again = autan::smoother_lines(renumbered, autan::compute_geometry(renumbered));
     CHECK(line_sets(renumbered, again) == line_sets(mesh, lines));
   }
+}
+
+TEST_CASE("lines are seeded at the boundary first and start there", "[lines]") {
+  using Box = std::array<std::array<double, 3>, 2>;
+  const auto lines_of = [](const autan::Mesh& mesh) {
+    return autan::smoother_lines(mesh, autan::compute_geometry(mesh));
+  };
+  // Cell 0, 1 x 1 x 1/32, has cells of its shape on its x and y faces (1-4), a cell 1/8 tall above
+  // (5) and one 1/2 tall below (6); it alone has no boundary face. Couplings: 0 to 1-4 1/32, to 5
+  // 1 / (5/64) = 12.8, to 6 1 / (17/64) = 3.76. Strongest / weakest: 1-4 32 / (1/32) = 1024
+  // (growing nothing: 1/32 < 4 / 32), 0 12.8 * 32 = 410, 5 12.8 / (1/8) = 102, 6 3.76 / (1/2) =
+  // 7.5. Seed 5 comes before the more anisotropic 0 and grows through 0 to 6.
+  const double h = 1.0 / 32.0;
+  const auto cross = lines_of(
+      boxes({Box{{{0, 0, 0}, {1, 1, h}}}, Box{{{-1, 0, 0}, {0, 1, h}}}, Box{{{1, 0, 0}, {2, 1, h}}},
+             Box{{{0, -1, 0}, {1, 0, h}}}, Box{{{0, 1, 0}, {1, 2, h}}},
+             Box{{{0, 0, h}, {1, 1, h + 0.125}}}, Box{{{0, 0, -0.5}, {1, 1, 0}}}}));
+  CHECK(cross.offsets == std::vector<autan::offset_t>{0, 3});
+  CHECK(cross.cells == std::vector<index_t>{5, 0, 6});
+  // Cell 0, the unit cube, has cubes 7 long on five faces (1-5, coupling 1/4) and below it cell 6,
+  // 1/4 tall, then cell 7, 1/2 tall. Cell 6 couples 1.6 to 0 and 8/3 to 7, its sides 1/4: the
+  // strongest / weakest 10.7 of 6 is above 7's 8/3 / (1/2) = 5.3 and 0's 1.6 / (1/4) = 6.4 (1-5:
+  // 7 / (1/7) = 49, growing nothing as 1/4 < 4 / 7). Seed 6 grows to 7, then to 0, which stops
+  // there (1/4 < 4 / 4): 0, 6, 7 has a boundary face at its last cell only.
+  const auto column = lines_of(
+      boxes({Box{{{0, 0, 0}, {1, 1, 1}}}, Box{{{-7, 0, 0}, {0, 1, 1}}}, Box{{{1, 0, 0}, {8, 1, 1}}},
+             Box{{{0, -7, 0}, {1, 0, 1}}}, Box{{{0, 1, 0}, {1, 8, 1}}}, Box{{{0, 0, 1}, {1, 1, 8}}},
+             Box{{{0, 0, -0.25}, {1, 1, 0}}}, Box{{{0, 0, -0.75}, {1, 1, -0.25}}}}));
+  CHECK(column.offsets == std::vector<autan::offset_t>{0, 3});
+  CHECK(column.cells == std::vector<index_t>{7, 6, 0});
 }
