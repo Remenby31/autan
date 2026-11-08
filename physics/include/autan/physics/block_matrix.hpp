@@ -36,7 +36,7 @@ class BlockMatrix {
   /// of the global mesh, the sweeps give the same bits on any number of ranks (runtime.md, Ranks).
   void order_rows(const kernels::GlobalKeys& keys);
 
-  /// y = A x.
+  /// y = A x, each row summed in the order relax() takes its blocks (see order_rows()).
   void multiply(std::span<const double> x, std::span<double> y) const;
   /// Inverts every diagonal block (Gaussian elimination with partial pivoting); throws
   /// std::domain_error on a singular block.

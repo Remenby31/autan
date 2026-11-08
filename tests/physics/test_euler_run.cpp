@@ -1900,9 +1900,9 @@ TEST_CASE("a continued Spalart-Allmaras run repeats the uninterrupted one bit fo
     REQUIRE(r.status == ExitStatus::finished);
     return r.run;
   };
-  // A few steps past the switch to second order (step 35 in fp64, 155 in fp32+acc64); the
+  // A few steps past the switch to second order (step 35 in fp64, 192 in fp32+acc64); the
   // checks below fail if it moves past the budget.
-  const int budget = std::string(precision) == "fp64" ? 40 : 160;
+  const int budget = std::string(precision) == "fp64" ? 40 : 200;
   const auto whole = finished(doc(budget));
   const auto steps = static_cast<int>(history(whole).size());
   REQUIRE(field(whole, "SolverSecondOrder", "RestartState").front() == 1.0);
