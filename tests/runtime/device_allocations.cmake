@@ -5,6 +5,7 @@
 set(
   allocators
   codegen/include/autan/kernels/device.cuh
+  core/src/wall_distance_device.cu
   partition/src/device_self.cu
   partition/src/halo_exchange.cpp
 )
