@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -14,6 +15,9 @@
 #include "autan/kernels/device.cuh"
 #include "autan/physics/euler_device.hpp"
 #include "autan/runtime/exact_sum.cuh"
+#include "autan/solvers/gcr_gpu.hpp"
+#include "autan/solvers/line_smoother.hpp"
+#include "autan/solvers/line_sweep_gpu.hpp"
 #include "euler_gpu.cuh"
 #include "euler_jacobian_device.cuh"
 
@@ -86,6 +90,80 @@ __global__ void to_state(std::int64_t n, const double* v, S* s) {
   const std::int64_t i = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (i < n) s[i] = static_cast<S>(v[i]);
 }
+
+// EulerPhysics::steady_step: shift_c = lambda_c / CFL.
+template <class S>
+__global__ void shift_kernel(index_t n, const S* lambda, double cfl, double* shift) {
+  const index_t c = static_cast<index_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (c < n) shift[c] = div(static_cast<double>(lambda[c]), cfl);
+}
+
+// rhs = -R.
+template <class R>
+__global__ void negate_kernel(std::int64_t m, const R* res, double* rhs) {
+  const std::int64_t i = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i < m) rhs[i] = -static_cast<double>(res[i]);
+}
+
+// y += dres, as add_boundary_gradient_term; nothing while *active is 0.
+template <class R>
+__global__ void add_kernel(std::int64_t m, const R* dres, double* y, const int* active) {
+  const std::int64_t i = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= m || *active == 0) return;
+  y[i] = add(y[i], static_cast<double>(dres[i]));
+}
+
+// EulerPhysics::pressure: (gamma - 1) (v_4 - 0.5 (v_1^2 + v_2^2 + v_3^2) / v_0), v = u + a du.
+__device__ inline double pressure_at(const double* u, const double* du, std::size_t n,
+                                     std::size_t c, double a, double gamma_minus_one) {
+  double v[5];
+  for (std::size_t k = 0; k < 5; ++k) v[k] = add(u[k * n + c], mul(a, du[k * n + c]));
+  const double q = add(add(mul(v[1], v[1]), mul(v[2], v[2])), mul(v[3], v[3]));
+  return mul(gamma_minus_one, sub(v[4], div(mul(0.5, q), v[0])));
+}
+
+namespace {  // non-template kernels: one copy per translation unit including this header
+
+// EulerPhysics::admissible_step, per owned cell: the step halved from 1 until rho and p keep
+// at least (1 - max_decrease) of their values.
+__global__ void admissible_kernel(index_t owned, index_t n, const double* u, const double* du,
+                                  double gamma_minus_one, double max_decrease, double min_step,
+                                  double* alpha) {
+  const index_t c = static_cast<index_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (c >= owned) return;
+  const auto cs = static_cast<std::size_t>(c), ns = static_cast<std::size_t>(n);
+  double a = 1.0;
+  const double rho = u[cs], drho = du[cs];
+  if (drho < 0.0) a = fmin(a, div(mul(max_decrease, rho), -drho));
+  const double p = pressure_at(u, du, ns, cs, 0.0, gamma_minus_one);
+  const double floor = mul(sub(1.0, max_decrease), p);
+  while (a >= min_step && !(pressure_at(u, du, ns, cs, a, gamma_minus_one) >= floor)) {
+    a = mul(a, 0.5);
+  }
+  alpha[cs] = a;
+}
+
+// The least of v over n entries, from 1: one block, a fixed tree (a minimum is exact).
+__global__ void __launch_bounds__(1024) min_kernel(std::int64_t m, const double* v, double* out) {
+  __shared__ double least[1024];
+  double l = 1.0;
+  for (std::int64_t i = threadIdx.x; i < m; i += blockDim.x) l = fmin(l, v[i]);
+  least[threadIdx.x] = l;
+  __syncthreads();
+  for (unsigned int h = blockDim.x / 2; h > 0; h /= 2) {
+    if (threadIdx.x < h) least[threadIdx.x] = fmin(least[threadIdx.x], least[threadIdx.x + h]);
+    __syncthreads();
+  }
+  if (threadIdx.x == 0) *out = least[0];
+}
+
+// u += alpha du.
+__global__ void apply_kernel(std::int64_t m, double alpha, const double* du, double* u) {
+  const std::int64_t i = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i < m) u[i] = add(u[i], mul(alpha, du[i]));
+}
+
+}  // namespace
 
 // EulerPhysics::unsteady_step: dt_c = CFL V / lambda.
 template <class S>
@@ -382,6 +460,14 @@ class CudaStepper : public DeviceStepper<P> {
 
   void assemble(std::span<const double> shift) override {
     if (shift.size() != n_) throw std::invalid_argument("assemble: a shift per cell");
+    ensure_jacobian();
+    shift_.upload(shift, stream_);
+    residual(u_.get(), true);
+    assemble_kernel();
+  }
+
+  // The Jacobian's arrays, allocated on first use, as on the host: explicit steps carry none.
+  void ensure_jacobian() {
     if (!moments_) {
       throw std::logic_error(
           "the device Jacobian reads face moments, which a planar stepper omits");
@@ -390,7 +476,6 @@ class CudaStepper : public DeviceStepper<P> {
       throw std::logic_error("the device Jacobian assembles the CSR incidence layout only");
     }
     if (dwdu_.size() == 0) {
-      // Allocated on first use, as on the host: explicit steps carry no Jacobian.
       face_jac_ = gpu::DeviceArray<J>(50 * nf_, stream_);
       bnd_jac_ = gpu::DeviceArray<J>(25 * nf_, stream_);
       dwdu_ = gpu::DeviceArray<J>(25 * n_, stream_);
@@ -402,11 +487,13 @@ class CudaStepper : public DeviceStepper<P> {
       d_.bnd_jac = bnd_jac_.get();
       d_.dwdu = dwdu_.get();
     }
-    shift_.upload(shift, stream_);
-    residual(u_.get(), true);
-    assemble_blocks<J><<<blocks(n_), block, 0, stream_>>>(mesh_.topology(), face_jac_.get(),
-                                                          bnd_jac_.get(), dwdu_.get(), shift_.get(),
-                                                          jac_.diag.get(), jac_.off.get());
+  }
+
+  // The blocks from the face blocks and dW/dU of the last evaluation and the shift.
+  void assemble_kernel() {
+    device::assemble_blocks<J><<<blocks(n_), block, 0, stream_>>>(
+        mesh_.topology(), face_jac_.get(), bnd_jac_.get(), dwdu_.get(), shift_.get(),
+        jac_.diag.get(), jac_.off.get());
     check(cudaGetLastError(), "assemble_blocks");
   }
 
@@ -426,6 +513,98 @@ class CudaStepper : public DeviceStepper<P> {
     const auto r = tangent_dres_.download(stream_);
     for (std::size_t i = 0; i < r.size(); ++i) dres[i] = static_cast<double>(r[i]);
   }
+
+  std::vector<double> evaluate_jacobian() override {
+    ensure_jacobian();
+    residual(u_.get(), true);
+    auto out = norms();
+    ek::gpu_loops::spectral_radius(d_, mesh_.schedule());
+    add_spectral_radius();
+    return out;
+  }
+
+  void assemble_blocks(double cfl) override {
+    if (!jacobian_current_) throw std::logic_error("assemble_blocks follows evaluate_jacobian");
+    shift_kernel<<<blocks(n_), block, 0, stream_>>>(index(n_), lam_.get(), cfl, shift_.get());
+    check(cudaGetLastError(), "shift");
+    assemble_kernel();
+  }
+
+  void set_lines(const solvers::LineSmoother& lines) override {
+    if (owned_ != n_) throw std::invalid_argument("the device line smoother runs on one rank");
+    // The stepper's incidence layout, read once: the slots of the off-diagonal blocks.
+    const auto& t = mesh_.topology();
+    std::vector<kernels::offset_t> offsets(n_ + 1);
+    std::vector<index_t> faces(static_cast<std::size_t>(t.n_incidences));
+    check(cudaMemcpyAsync(offsets.data(), t.cell_face_offsets, offsets.size() * sizeof(offsets[0]),
+                          cudaMemcpyDeviceToHost, stream_),
+          "incidences");
+    check(cudaMemcpyAsync(faces.data(), t.cell_faces, faces.size() * sizeof(faces[0]),
+                          cudaMemcpyDeviceToHost, stream_),
+          "incidences");
+    check(cudaStreamSynchronize(stream_), "incidences");
+    lines_ = std::make_unique<solvers::gpu::LineSweep>(lines, offsets, faces);
+    gcr_ = std::make_unique<solvers::gpu::Gcr>(static_cast<std::int64_t>(5 * n_), 10, stream_);
+    du_ = gpu::DeviceArray<double>(5 * n_, stream_);
+    krylov_ = gpu::DeviceArray<double>(5 * n_, stream_);
+    tangent_dres_ = gpu::DeviceArray<R>(5 * n_, stream_);
+    alpha_ = gpu::DeviceArray<double>(n_, stream_);
+    least_ = gpu::DeviceArray<double>(1, stream_);
+  }
+
+  typename DeviceStepper<P>::LinearSolve solve(int sweeps, int max_cycles, double tolerance,
+                                               bool gradient_term) override {
+    if (!lines_) throw std::logic_error("solve needs set_lines");
+    if (!jacobian_current_) throw std::logic_error("solve follows evaluate_jacobian");
+    typename DeviceStepper<P>::LinearSolve out;
+    const auto m = static_cast<std::int64_t>(5 * n_);
+    negate_kernel<<<blocks(5 * n_), block, 0, stream_>>>(m, res_.get(), krylov_.get());
+    check(cudaMemsetAsync(du_.get(), 0, 5 * n_ * sizeof(double), stream_), "du");
+    try {
+      lines_->set_operator(jac_.diag.get(), jac_.off.get(), stream_);
+    } catch (const std::domain_error&) {
+      out.singular = true;
+      out.residual_drop = std::numeric_limits<double>::quiet_NaN();
+      return out;
+    }
+    const auto report = gcr_->solve(
+        [&](const double* x, double* y, const int* active, void* stream) {
+          lines_->multiply(x, y, stream, active);
+          if (gradient_term) {
+            boundary_gradient_tangent(x, tangent_dres_.get());
+            add_kernel<<<blocks(5 * n_), block, 0, static_cast<cudaStream_t>(stream)>>>(
+                m, tangent_dres_.get(), y, active);
+            check(cudaGetLastError(), "add_kernel");
+          }
+        },
+        [&](const double* r, double* z, const int* active, void* stream) {
+          lines_->sweep(r, z, sweeps, stream, active);
+        },
+        krylov_.get(), du_.get(), max_cycles, tolerance);
+    out.cycles = report.cycles;
+    out.residual_drop = report.residual_drop;
+    return out;
+  }
+
+  double admissible_step(double gamma_minus_one, double max_decrease, double min_step) override {
+    admissible_kernel<<<blocks(owned_), block, 0, stream_>>>(index(owned_), index(n_), u_.get(),
+                                                             du_.get(), gamma_minus_one,
+                                                             max_decrease, min_step, alpha_.get());
+    min_kernel<<<1, 1024, 0, stream_>>>(static_cast<std::int64_t>(owned_), alpha_.get(),
+                                        least_.get());
+    check(cudaGetLastError(), "admissible_step");
+    return least_.download(stream_)[0];
+  }
+
+  void apply_step(double alpha) override {
+    apply_kernel<<<blocks(5 * n_), block, 0, stream_>>>(static_cast<std::int64_t>(5 * n_), alpha,
+                                                        du_.get(), u_.get());
+    check(cudaGetLastError(), "apply_step");
+  }
+
+  void download_step(std::span<double> du) override { du_.download(du, stream_); }
+
+  std::optional<index_t> first_invalid() override { return invalid(); }
 
   DeviceStepperBlocks jacobian_blocks() override {
     return download_blocks(mesh_.topology(), jac_, stream_);
@@ -732,6 +911,10 @@ class CudaStepper : public DeviceStepper<P> {
   using W = element<decltype(D::stencil_lsq_weight)>;
   std::size_t ni_ = 0, n_kept_ = 0;
   bool jacobian_current_ = false;  // the evaluated arrays are those of the last assemble
+  // The implicit steady step's (set_lines).
+  std::unique_ptr<solvers::gpu::LineSweep> lines_;
+  std::unique_ptr<solvers::gpu::Gcr> gcr_;
+  gpu::DeviceArray<double> du_, krylov_, alpha_, least_;
   gpu::DeviceArray<double> tangent_du_, prim_b_tan_;
   gpu::DeviceArray<R> tangent_dres_, discarded_;
   gpu::DeviceArray<S> dv_, prim_tan_, zero_state_, wmin_tan_, wmax_tan_;

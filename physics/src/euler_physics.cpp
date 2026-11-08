@@ -67,6 +67,9 @@ constexpr int linear_max_cycles = 10;
 // linear_solver = "gauss-seidel": symmetric sweeps over the global colours per implicit step;
 // "lines": as many line sweeps per iteration of the GCR outer iteration.
 constexpr int gauss_seidel_sweeps = 4;
+// The viscous physics' steady case on a device (ADR 0005): SSP-RK3 in pseudo-time with local
+// time steps CFL V / lambda, until its device Jacobian lands (#163 PRs 6 and 7).
+constexpr double device_steady_cfl = 0.8;
 // A solve that leaves more than this fraction of the residual has failed (the multigrid cycle can
 // diverge on a system the CFL number made too weakly diagonal): the step is rejected.
 constexpr double linear_failure = 0.9;
@@ -80,8 +83,6 @@ constexpr double nt_max_decrease = 0.5;
 constexpr double nt_max_increase = 2.0;
 constexpr int nt_sweeps = 4;
 constexpr double venkatakrishnan_k = 10.0;
-// Steady cases on a device: SSP-RK3 in pseudo-time with local time steps CFL V / lambda.
-constexpr double device_steady_cfl = 0.8;
 
 Gas gas_of(const runtime::SolverInput& in) {
   std::optional<Gas> gas;
@@ -179,9 +180,27 @@ class EulerPhysics final : public runtime::Physics {
     std::optional<Manufactured> mms;
     if (in.verification) mms.emplace(in.verification->text);
     set_boundaries(mms ? &*mms : nullptr);
-    // A steady case on a device steps explicitly there (device_step): no host Jacobian, no linear
-    // solver.
+    // The multigrid's fine lines, kept whole by the partition, swept over the runtime's colouring
+    // of the lines by global id: the same sweeps on any number of ranks. A mesh without lines
+    // has no groups: every cell is its own, coloured as cell_colours. Each cell sums its
+    // couplings by global face id: the same sums on any partition.
+    auto make_lines = [&] {
+      const bool grouped = !ctx.cell_group_colours.empty();
+      lines_.emplace(mesh, ctx.group_offsets, ctx.group_cells,
+                     grouped ? ctx.cell_group_colours : ctx.cell_colours,
+                     grouped ? ctx.n_group_colours : ctx.n_colours, ctx.face_global_id);
+      ctx.log.write("info", "linear", "line-implicit block Gauss-Seidel", {},
+                    nlohmann::json{{"colours", lines_->n_colours()},
+                                   {"sweeps", gauss_seidel_sweeps},
+                                   {"iterations", linear_max_cycles},
+                                   {"device", ctx.device >= 0}}
+                        .dump());
+    };
+    // A steady inviscid case on a device takes the implicit step there (device_steady_step), its
+    // linear solve the host's `lines` copied to the device: euler_device_scope refuses the others.
+    // A viscous one steps explicitly there (device_step, ADR 0005).
     if (in.time.kind == "steady" && ctx.device >= 0) {
+      if constexpr (!is_viscous) make_lines();
       euler_.set_second_order(false);
     } else if (in.time.kind == "steady") {
       matrix_.emplace(mesh);
@@ -200,19 +219,7 @@ class EulerPhysics final : public runtime::Physics {
                                      {"coarsest", multigrid_->direct_coarsest() ? "lu" : "sweeps"}}
                           .dump());
       } else if (in.time.linear_solver == "lines") {
-        // The multigrid's fine lines, kept whole by the partition, swept over the runtime's
-        // colouring of the lines by global id: the same sweeps on any number of ranks.
-        // A mesh without lines has no groups: every cell is its own, coloured as cell_colours.
-        const bool grouped = !ctx.cell_group_colours.empty();
-        // Each cell sums its couplings by global face id: the same sums on any partition.
-        lines_.emplace(mesh, ctx.group_offsets, ctx.group_cells,
-                       grouped ? ctx.cell_group_colours : ctx.cell_colours,
-                       grouped ? ctx.n_group_colours : ctx.n_colours, ctx.face_global_id);
-        ctx.log.write("info", "linear", "line-implicit block Gauss-Seidel", {},
-                      nlohmann::json{{"colours", lines_->n_colours()},
-                                     {"sweeps", gauss_seidel_sweeps},
-                                     {"iterations", linear_max_cycles}}
-                          .dump());
+        make_lines();
       } else {
         // The runtime's colouring by global id: the same sweeps on any number of ranks.
         colours_.assign(static_cast<std::size_t>(ctx.n_colours), {});
@@ -257,18 +264,12 @@ class EulerPhysics final : public runtime::Physics {
       if constexpr (is_viscous) {
         throw std::logic_error("the Navier-Stokes physics has no device stepper");
       } else {
+        // The steady step's Jacobian loops read the face moments, which planar loops omit.
+        const bool steady = in.time.kind == "steady" && !is_viscous;
         device_ = make_device_stepper<P>(mesh, ctx.geometry, euler_, gas_.gamma, second_order_,
-                                         ctx.ranks, ctx.ghosts, ctx.stream);
+                                         ctx.ranks, ctx.ghosts, ctx.stream, nullptr, steady);
         device_->upload(u_);
-        if (in.time.kind == "steady") {
-          ctx.log.write("warning", "solver",
-                        "steady case on the device: explicit SSP-RK3 with local time steps, not "
-                        "the implicit solver",
-                        {}, nlohmann::json{{
-                              "cfl",
-                              device_steady_cfl
-                            }}.dump());
-        }
+        if (steady) device_->set_lines(*lines_);
         if (!in.monitors.empty()) {
           ctx.log.write("warning", "solver",
                         "force monitors on the device: each recorded iteration downloads the state "
@@ -974,21 +975,7 @@ class EulerPhysics final : public runtime::Physics {
       report.residuals.push_back(std::sqrt(sum / static_cast<double>(n_)));
     }
     euler_.spectral_radius(lambda_);
-    // Largest relative residual over the equations, of the order being solved, leaving out the
-    // equations at the round-off floor (the runtime's rule, decided on the reported residuals):
-    // their ratio is round-off and would set the CFL number.
-    const double drop = relative_drop(norms.empty() ? report.residuals : norms, report.residuals);
-    switch_order(drop);
-    // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
-    // after each step the admissibility check shortened or whose relative residual rose, and
-    // recovering by half otherwise.
-    const bool rose = previous_drop_ > 0.0 && drop > cfl_rise * previous_drop_;
-    penalty_ = (shortened_ || rose) ? 0.5 * penalty_ : std::min(1.0, 1.5 * penalty_);
-    previous_drop_ = drop;
-    if (drop > 0.0) {
-      cfl_ = std::clamp(std::min(penalty_ * cfl_start / drop, cfl_cap_), cfl_min, cfl_max);
-    }
-    cfl_cap_ = cfl_max;
+    const double drop = steady_cfl(norms, report);
     std::vector<double> shift(n_);
     for (std::size_t c = 0; c < n_; ++c) shift[c] = static_cast<double>(lambda_[c]) / cfl_;
     euler_.assemble(shift, *matrix_);
@@ -1057,41 +1044,9 @@ class EulerPhysics final : public runtime::Physics {
     } catch (const std::domain_error&) {
       linear = {};  // a singular block: the solve failed
     }
-    const bool failed = !(linear.residual_drop <= linear_failure);
-    if (!(linear.residual_drop <= linear_tolerance)) {
-      nlohmann::json data = {{"cycles", linear.cycles}, {"residual_drop", nullptr}};
-      if (std::isfinite(linear.residual_drop)) data["residual_drop"] = linear.residual_drop;
-      ctx_.log.write("warning", "linear",
-                     failed ? "the implicit step's linear solve failed: step rejected"
-                            : "the implicit step's linear solve stopped above its tolerance",
-                     {}, data.dump());
-    }
-    if (failed) {
-      // As a step with no admissible length: the state is kept and the next CFL number is half
-      // this one, also when this one was clamped; at the smallest CFL number the run diverged.
-      if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
-      cfl_cap_ = 0.5 * cfl_;
-      shortened_ = true;
-      if (cfl_ <= cfl_min) report.diverged_cell = worst_cell();
-      return;
-    }
+    if (linear_failed(linear.cycles, linear.residual_drop, drop, report)) return;
     const double alpha = admissible_step();
-    shortened_ = alpha < 1.0;
-    // The next step halves the penalty; starting from the CFL number actually used, so that the
-    // CFL number halves also when it was clamped.
-    if (shortened_) {
-      if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
-      cfl_cap_ = 0.5 * cfl_;
-      ctx_.log.write("warning", "solver",
-                     alpha < min_step ? "no admissible step: step rejected" : "step shortened", {},
-                     nlohmann::json{{"alpha", alpha}, {"cfl", cfl_}}.dump());
-    }
-    if (alpha < min_step) {
-      // No admissible step: the state is kept and the CFL number halves; at the smallest CFL
-      // number the run has diverged.
-      if (cfl_ <= cfl_min) report.diverged_cell = worst_cell();
-      return;
-    }
+    if (step_refused(alpha, drop, report)) return;
     for (std::size_t i = 0; i < 5 * n_; ++i) u_[i] += alpha * du_[i];
     if (sa_) {
       // The first-order start has no velocity gradients, hence no production: SA waits for the
@@ -1113,10 +1068,77 @@ class EulerPhysics final : public runtime::Physics {
     }
   }
 
+  // The step's CFL number from its residuals (steady_step and device_steady_step): the largest
+  // relative residual over the equations, of the order being solved, leaving out the equations
+  // at the round-off floor (the runtime's rule, decided on the reported residuals: their ratio
+  // is round-off and would set the CFL number); then switched evolution relaxation, CFL = CFL_0
+  // / (relative residual), times a penalty halved after each step the admissibility check
+  // shortened or whose relative residual rose, and recovering by half otherwise. Returns the
+  // relative residual.
+  double steady_cfl(const std::vector<double>& norms, const StepReport& report) {
+    const double drop = relative_drop(norms.empty() ? report.residuals : norms, report.residuals);
+    switch_order(drop);
+    const bool rose = previous_drop_ > 0.0 && drop > cfl_rise * previous_drop_;
+    penalty_ = (shortened_ || rose) ? 0.5 * penalty_ : std::min(1.0, 1.5 * penalty_);
+    previous_drop_ = drop;
+    if (drop > 0.0) {
+      cfl_ = std::clamp(std::min(penalty_ * cfl_start / drop, cfl_cap_), cfl_min, cfl_max);
+    }
+    cfl_cap_ = cfl_max;
+    return drop;
+  }
+
+  // After the step's linear solve: a warning above its tolerance; a failed solve rejects the
+  // step as one with no admissible length: the state is kept and the next CFL number is half
+  // this one, also when this one was clamped; at the smallest CFL number the run diverged.
+  // Returns whether the step ends here.
+  bool linear_failed(int cycles, double residual_drop, double drop, StepReport& report) {
+    const bool failed = !(residual_drop <= linear_failure);
+    if (!(residual_drop <= linear_tolerance)) {
+      nlohmann::json data = {{"cycles", cycles}, {"residual_drop", nullptr}};
+      if (std::isfinite(residual_drop)) data["residual_drop"] = residual_drop;
+      ctx_.log.write("warning", "linear",
+                     failed ? "the implicit step's linear solve failed: step rejected"
+                            : "the implicit step's linear solve stopped above its tolerance",
+                     {}, data.dump());
+    }
+    if (!failed) return false;
+    if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
+    cfl_cap_ = 0.5 * cfl_;
+    shortened_ = true;
+    if (cfl_ <= cfl_min) report.diverged_cell = worst_cell();
+    return true;
+  }
+
+  // After the admissible step alpha: a shortened step halves the next penalty, starting from
+  // the CFL number actually used, so that the CFL number halves also when it was clamped; with
+  // no admissible step the state is kept, and at the smallest CFL number the run has diverged.
+  // Returns whether the step ends here.
+  bool step_refused(double alpha, double drop, StepReport& report) {
+    shortened_ = alpha < 1.0;
+    if (shortened_) {
+      if (drop > 0.0) penalty_ = std::min(penalty_, cfl_ * drop / cfl_start);
+      cfl_cap_ = 0.5 * cfl_;
+      ctx_.log.write("warning", "solver",
+                     alpha < min_step ? "no admissible step: step rejected" : "step shortened", {},
+                     nlohmann::json{{"alpha", alpha}, {"cfl", cfl_}}.dump());
+    }
+    if (alpha >= min_step) return false;
+    if (cfl_ <= cfl_min) report.diverged_cell = worst_cell();
+    return true;
+  }
+
   // The cell whose density or pressure the full step lowers the most, relatively.
   // Over every rank, the cell whose density or pressure the full step lowers the most, relatively
   // (ties: the least global id); reported by the rank that owns it.
   [[nodiscard]] std::optional<index_t> worst_cell() const {
+    if (device_) {
+      // The device's state and step, on this rare path only.
+      sync();
+      auto& self = const_cast<EulerPhysics&>(*this);
+      self.du_.resize(5 * n_);
+      device_->download_step(self.du_);
+    }
     const auto ids = ctx_.mesh.cell_global_id();
     auto id = [&](std::size_t c) { return ids.empty() ? static_cast<std::int64_t>(c) : ids[c]; };
     std::size_t worst = 0;
@@ -1380,6 +1402,14 @@ class EulerPhysics final : public runtime::Physics {
     }
     const auto& t = ctx_.input.time;
     const bool steady = t.kind == "steady";
+    if constexpr (!is_viscous) {
+      if (steady) {
+        device_steady_step(report);
+        // As host_step: a state the kernels cannot evaluate diverges here.
+        if (!report.diverged_cell) report.diverged_cell = device_->first_invalid();
+        return report;
+      }
+    }
     if (steady && !second_order_) {
       // As the host's steady step: the history reports the second-order residual.
       device_->set_second_order(true);
@@ -1397,6 +1427,31 @@ class EulerPhysics final : public runtime::Physics {
     if (!steady) report.time_step = r.time_step;
     report.diverged_cell = r.invalid;
     return report;
+  }
+
+  // steady_step on the device, `lines` solver: the same control here, the vectors there.
+  void device_steady_step(StepReport& report) {
+    if (!second_order_) {
+      // The history reports the second-order residual from the first step on.
+      device_->set_second_order(true);
+      report.residuals = device_->evaluate().residuals;
+      device_->set_second_order(false);
+    }
+    std::vector<double> norms = report.residuals;
+    report.residuals = device_->evaluate_jacobian();
+    jacobian_second_order_ = second_order_;
+    if (!norms.empty()) std::swap(norms, report.residuals);
+    const double drop = steady_cfl(norms, report);
+    device_->assemble_blocks(cfl_);
+    const auto linear = device_->solve(gauss_seidel_sweeps, linear_max_cycles, linear_tolerance,
+                                       jacobian_second_order_);
+    // A singular block fails the solve, as solvers::KrylovReport{} on the host.
+    const double linear_drop = linear.singular ? 1.0 : linear.residual_drop;
+    host_stale_ = true;
+    if (linear_failed(linear.cycles, linear_drop, drop, report)) return;
+    const double alpha = device_->admissible_step(gas_.gamma - 1.0, max_decrease, min_step);
+    if (step_refused(alpha, drop, report)) return;
+    device_->apply_step(alpha);
   }
 
   // The device state into the host's, before anything reads it.
@@ -1718,8 +1773,8 @@ std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::Solver
 }
 
 #ifdef AUTAN_PHYSICS_CUDA
-// On a device, besides euler_scope: one rank, and no point vortex (the device steps do not
-// measure the circulation; the host's steady step does).
+// On a device, besides euler_scope: one rank, the steady step with `lines` only, and no point
+// vortex (the device steps do not measure the circulation; the host's steady step does).
 std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverInput& in,
                                                           int ranks) {
   if (in.time.kind == "steady" && (in.time.coupled_turbulence || in.time.matrix_free)) {
@@ -1746,6 +1801,23 @@ std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverI
         .message = "the Euler physics runs on one device only, not " + std::to_string(ranks),
         .path = "devices.kind",
         .data_json = nlohmann::json{{"ranks", ranks}}.dump()};
+  }
+  // A steady case takes the implicit step with the host's `lines` copied to the device, one rank
+  // and no periodic pairs (solvers::gpu::LineSweep): no other solver has a device version yet.
+  if (in.time.kind == "steady" && in.time.linear_solver != "lines") {
+    return runtime::PhysicsRefusal{
+        .message = "a steady case on a device needs time.linear_solver = \"lines\", not '" +
+                   in.time.linear_solver + "'",
+        .path = "time.linear_solver",
+        .data_json = nlohmann::json{{"linear_solver", in.time.linear_solver}}.dump(),
+        .code = "E0716"};
+  }
+  if (in.time.kind == "steady" && !in.periodic.empty()) {
+    return runtime::PhysicsRefusal{
+        .message = "a steady case on a device runs without periodic pairs",
+        .path = "periodic",
+        .data_json = nlohmann::json{{"periodic", in.periodic.size()}}.dump(),
+        .code = "E0716"};
   }
   for (std::size_t i = 0; i < in.boundaries.size(); ++i) {
     if (in.boundaries[i].point_vortex) {
@@ -1808,10 +1880,10 @@ void register_euler(runtime::PhysicsRegistry& registry) {
 #ifdef AUTAN_PHYSICS_CUDA
   registry.add({"compressible", "inviscid", "fp64", "cuda"},
                factory<kernels::fp64, Euler<kernels::fp64>>(), euler_device_scope,
-               /*several_ranks=*/false, {}, euler_restart_names);
+               /*several_ranks=*/false, euler_groups, euler_restart_names);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cuda"},
                factory<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>(), euler_device_scope,
-               /*several_ranks=*/false, {}, euler_restart_names);
+               /*several_ranks=*/false, euler_groups, euler_restart_names);
 #endif
 }
 

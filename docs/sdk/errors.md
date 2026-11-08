@@ -900,6 +900,14 @@ This `continue` run's `autan-run` executable is not the one that wrote the state
 
 Fix: Continue with the binary of the original run, or start the chain again with this one.
 
+## E0716
+
+**Steady case on a device needs the lines solver** (error)
+
+On a device, a steady case takes the implicit step with `time.linear_solver = "lines"` (line-implicit block Gauss-Seidel in GCR), on one rank without periodic pairs. The device has no multigrid and no plain Gauss-Seidel yet (#163), and no explicit steady step: `data` names the solver or the periodic pair that was asked for.
+
+Fix: Set `time.linear_solver = "lines"`, or run the case on the CPU backend.
+
 ## W0801
 
 **No NVIDIA GPU found** (warning)

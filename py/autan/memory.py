@@ -469,6 +469,37 @@ def _rank(
         if not viscous and spec.time.linear_solver in ("multigrid", "lines"):
             add("boundary state tangent", 25 * s * f + 40 * (f - fi) + 48 * c)
 
+    # The implicit steady step on a device (inviscid, `lines`, docs/design/multigrid-gpu.md). On
+    # the device: the face and cell Jacobian blocks (75sF + 25sC), the assembled matrix and its
+    # shift (208C and 25s an incidence), the line sweep's three factors and work (640C) and its
+    # slot lists (24 an incidence), GCR's ten directions and images (800C), its residual, step
+    # and the admissible step's scratch (88C), and the boundary gradient tangent's scratch (as
+    # the boundary state tangent, with 120C + 40sC). On the host: the line smoother's structure
+    # (16F_i + 36C), and the lines built at setup.
+    if (
+        isinstance(spec.time, Steady)
+        and device_kind != "cpu"
+        and not viscous
+        and spec.time.linear_solver == "lines"
+    ):
+        incidences = 2 * fi + (f - fi)
+        on_device = (
+            75 * s * f
+            + 25 * s * c
+            + 208 * c
+            + 25 * s * incidences
+            + 640 * c
+            + 24 * incidences
+            + 800 * c
+            + 88 * c
+            + 25 * s * f
+            + 40 * (f - fi)
+            + 120 * c
+            + 40 * s * c
+        )
+        add("device implicit step", 16 * fi + 36 * c, on_device)
+        add("lines setup", 300 * c + 60 * fi, transient=True)
+
     # The peak holds every persistent component and the largest transient one: transients
     # are freed in turn, and later allocations reuse their memory.
     host = sum(p.bytes_host for p in parts if not p.transient)
