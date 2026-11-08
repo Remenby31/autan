@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -441,10 +442,15 @@ class CudaStepper : public DeviceStepper<P> {
   }
 
   template <class T>
+  // Euler<P>::Impl::fill_ghosts: at most 16 components per exchange call, so any number of
+  // components goes in calls of 16.
   void fill_ghosts(T* v, std::size_t components) {
     std::array<T*, 16> c{};
-    for (std::size_t k = 0; k < components; ++k) c[k] = v + k * n_;
-    ghosts_.forward(std::span<T* const>(c.data(), components), MemorySpace::cuda, stream_);
+    for (std::size_t first = 0; first < components; first += c.size()) {
+      const std::size_t count = std::min(c.size(), components - first);
+      for (std::size_t k = 0; k < count; ++k) c[k] = v + (first + k) * n_;
+      ghosts_.forward(std::span<T* const>(c.data(), count), MemorySpace::cuda, stream_);
+    }
   }
 
   // RMS of each residual over the owned cells of every rank, from exact sums.
