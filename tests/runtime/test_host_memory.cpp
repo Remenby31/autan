@@ -42,7 +42,8 @@ TEST_CASE("The memory a host can still give is the least of MemAvailable and its
   SKIP("macOS has no /proc: its free and inactive pages are read through Mach");
 #else
   // proc(5): /proc/meminfo in kB, /proc/self/cgroup and /proc/self/mountinfo; the limits in
-  // memory.max / memory.current (cgroup v2) or memory.limit_in_bytes / memory.usage_in_bytes (v1).
+  // memory.max / memory.current (cgroup v2) or memory.limit_in_bytes / memory.usage_in_bytes (v1),
+  // less the inactive page cache of memory.stat.
   const fs::path dir = fresh_dir();
   const fs::path proc = dir / "proc";
   write(proc / "meminfo", "MemTotal: 134217728 kB\nMemAvailable: 67108864 kB\n");
@@ -64,6 +65,71 @@ TEST_CASE("The memory a host can still give is the least of MemAvailable and its
     // A limit that cannot be read is not taken for no limit.
     write(cg / "tenant" / "job" / "memory.max", "a lot\n");
     CHECK_THROWS_AS(autan::runtime::host_memory(proc).available, std::runtime_error);
+  }
+  SECTION("cgroup v2: the inactive page cache counts as available") {
+    // A capped container after builds and file I/O: memory.current includes the page cache,
+    // whose inactive part reclaim takes first (memory.stat inactive_file); the active part may
+    // not be reclaimable and does not count (#582).
+    const fs::path cg = dir / "sys" / "cgroup";
+    write(proc / "self" / "cgroup", "0::/job\n");
+    write(proc / "self" / "mountinfo", "24 1 0:22 / " + cg.string() + " rw - cgroup2 cgroup2 rw\n");
+    write(cg / "job" / "memory.max", std::to_string(6 * gib) + "\n");
+    write(cg / "job" / "memory.current", std::to_string(6 * gib - gib / 4) + "\n");
+    const std::int64_t need = 2 * gib, margin = 2 * gib;
+    const auto pools = [&] {
+      return MemoryPools{.host_available = autan::runtime::host_memory(proc).available,
+                         .device_free = {},
+                         .devices = 1,
+                         .unseen_cgroups = {}};
+    };
+    // Mostly cache, 5 GiB of it inactive: 6 - 5.75 + 5 GiB left, and the run fits.
+    write(cg / "job" / "memory.stat", "anon 262144\nfile 6174015488\nactive_file " +
+                                          std::to_string(gib / 2) + "\ninactive_file " +
+                                          std::to_string(5 * gib) + "\n");
+    CHECK(autan::runtime::host_memory(proc).available == 5 * gib + gib / 4);
+    CHECK_FALSE(memory_shortfall(need, 0, 1, pools(), margin));
+    // The same usage held by the processes: no inactive cache, and the run is refused.
+    write(cg / "job" / "memory.stat", "anon 6174015488\nfile 0\ninactive_file 0\n");
+    CHECK(autan::runtime::host_memory(proc).available == gib / 4);
+    CHECK(memory_shortfall(need, 0, 1, pools(), margin));
+    // A memory.stat without inactive_file, or none: the limit less the usage.
+    write(cg / "job" / "memory.stat", "anon 262144\n");
+    CHECK(autan::runtime::host_memory(proc).available == gib / 4);
+    fs::remove(cg / "job" / "memory.stat");
+    CHECK(autan::runtime::host_memory(proc).available == gib / 4);
+    // No limit: the cache does not raise the host's MemAvailable.
+    write(cg / "job" / "memory.stat", "inactive_file " + std::to_string(5 * gib) + "\n");
+    write(cg / "job" / "memory.max", "max\n");
+    CHECK(autan::runtime::host_memory(proc).available == host);
+    // Never more than the limit, whatever memory.stat says.
+    write(cg / "job" / "memory.max", std::to_string(6 * gib) + "\n");
+    write(cg / "job" / "memory.stat", "inactive_file " + std::to_string(8 * gib) + "\n");
+    CHECK(autan::runtime::host_memory(proc).available == 6 * gib);
+    // Above its limit, a group keeps its deficit: 8 GiB used of 6, 3 GiB of it reclaimable.
+    write(cg / "job" / "memory.current", std::to_string(8 * gib) + "\n");
+    write(cg / "job" / "memory.stat", "inactive_file " + std::to_string(3 * gib) + "\n");
+    CHECK(autan::runtime::host_memory(proc).available == gib);
+    // A limit near the largest count: the credit saturates at the limit instead of overflowing.
+    write(cg / "job" / "memory.max",
+          std::to_string(std::numeric_limits<std::int64_t>::max() - 8191) + "\n");
+    write(cg / "job" / "memory.current", "4096\n");
+    write(cg / "job" / "memory.stat", "inactive_file 16384\n");
+    CHECK(autan::runtime::host_memory(proc).available == host);
+  }
+  SECTION("cgroup v2: an ancestor's page cache does not count") {
+    // The parent's 5 GiB of cache may be a sibling's that memory.min protects from reclaim: the
+    // parent's limit less its usage binds the job (Linux mm/vmscan.c, protected cgroups skipped).
+    const fs::path cg = dir / "sys" / "cgroup";
+    write(proc / "self" / "cgroup", "0::/tenant/job\n");
+    write(proc / "self" / "mountinfo", "24 1 0:22 / " + cg.string() + " rw - cgroup2 cgroup2 rw\n");
+    write(cg / "tenant" / "memory.max", std::to_string(8 * gib) + "\n");
+    write(cg / "tenant" / "memory.current", std::to_string(7 * gib) + "\n");
+    write(cg / "tenant" / "memory.stat", "inactive_file " + std::to_string(5 * gib) + "\n");
+    write(cg / "tenant" / "job" / "memory.max", "max\n");
+    write(cg / "tenant" / "job" / "memory.current", std::to_string(2 * gib) + "\n");
+    write(cg / "tenant" / "job" / "memory.stat",
+          "anon " + std::to_string(2 * gib) + "\ninactive_file 0\n");
+    CHECK(autan::runtime::host_memory(proc).available == gib);
   }
   SECTION("cgroup v2 whose parent limits it through another mount") {
     // The root hierarchy at cg and the group /tenant/job also at job: the job has no limit, but
@@ -115,6 +181,10 @@ TEST_CASE("The memory a host can still give is the least of MemAvailable and its
     CHECK(memory.available == 3 * gib);
     CHECK(memory.unseen_cgroups.empty());
     CHECK(memory.cgroup_scope == "namespace_root");
+    // The namespace root is the process's own cgroup, the container's: its cache counts.
+    write(cg / "memory.stat", "inactive_file " + std::to_string(gib / 2) + "\n");
+    CHECK(autan::runtime::host_memory(proc).available == 3 * gib + gib / 2);
+    fs::remove(cg / "memory.stat");
     // No limit in sight: what is above the namespace root is unseen.
     write(cg / "memory.max", "max\n");
     memory = autan::runtime::host_memory(proc);
@@ -159,6 +229,10 @@ TEST_CASE("The memory a host can still give is the least of MemAvailable and its
     write(cg / "memory.limit_in_bytes", std::to_string(4 * gib) + "\n");
     write(cg / "memory.usage_in_bytes", std::to_string(gib) + "\n");
     CHECK(autan::runtime::host_memory(proc).available == 3 * gib);
+    // Its usage is hierarchical, and so is the inactive cache it counts (total_inactive_file).
+    write(cg / "memory.stat", "inactive_file " + std::to_string(gib / 4) +
+                                  "\ntotal_inactive_file " + std::to_string(gib / 2) + "\n");
+    CHECK(autan::runtime::host_memory(proc).available == 3 * gib + gib / 2);
     write(cg / "memory.limit_in_bytes", "9223372036854771712\n");
     CHECK(autan::runtime::host_memory(proc).available == host);
   }

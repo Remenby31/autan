@@ -439,12 +439,15 @@ class _History:
             for monitor in self.spec.monitors
             if iteration % monitor.every == 0
         }
-        return {
+        record: dict[str, Any] = {
             "iteration": iteration,
             "time": self.time(iteration),
             "residuals": residuals,
             "monitors": monitors,
         }
+        if isinstance(self.spec.time, Steady):
+            record["provisional"] = False
+        return record
 
     def forces(self, monitor: Any, iteration: int) -> dict[str, float]:
         fs, state = self.spec.freestream, self.state
