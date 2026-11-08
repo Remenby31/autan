@@ -65,6 +65,7 @@ struct Euler<P>::Impl {
   // against their global orientation; face loops then gather (no scatter order).
   kernels::GlobalOrder order;
   std::vector<std::uint8_t> reversed;
+  std::vector<std::int64_t> cell_key, face_key;  // global ids, under keys only
   bool gather = false;
   bool all_planar = false;
   bool planar = false;
@@ -130,6 +131,8 @@ struct Euler<P>::Impl {
     if (keys != nullptr) {
       order = kernels::global_order(mesh, *keys);
       reversed.assign(keys->reversed.begin(), keys->reversed.end());
+      cell_key.assign(keys->cell.begin(), keys->cell.end());
+      face_key.assign(keys->face.begin(), keys->face.end());
       topo.cell_faces = order.cell_faces.data();
       topo.incidence_twin = order.twin.data();
       topo.face_reversed = reversed.data();
@@ -450,8 +453,20 @@ struct Euler<P>::Impl {
       }
       std::sort(points.begin(), points.end());
       points.erase(std::unique(points.begin(), points.end()), points.end());
+      const auto boundary_points = static_cast<std::ptrdiff_t>(points.size());
       for (const auto e : cells) {
         if (e != static_cast<index_t>(c)) points.push_back(e);
+      }
+      if (!cell_key.empty()) {
+        // Under global keys the boundary faces, then the cells, in ascending global id: the fit
+        // sums its entries in that order, the same in any cell order (runtime.md, Ranks).
+        std::sort(points.begin(), points.begin() + boundary_points, [&](index_t a, index_t b) {
+          return face_key[static_cast<std::size_t>(-a - 1)] <
+                 face_key[static_cast<std::size_t>(-b - 1)];
+        });
+        std::sort(points.begin() + boundary_points, points.end(), [&](index_t a, index_t b) {
+          return cell_key[static_cast<std::size_t>(a)] < cell_key[static_cast<std::size_t>(b)];
+        });
       }
       const auto xc = centre(static_cast<index_t>(c));
       auto offset = [&](index_t e) {

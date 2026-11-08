@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <numeric>
 #include <stdexcept>
 #include <type_traits>
 #include <vector>
@@ -35,14 +36,23 @@ struct SpalartAllmaras<P>::Impl {
   std::vector<index_t> owner, neighbour;
   std::vector<offset_t> cell_offsets;  // cell -> interior faces CSR
   std::vector<index_t> cell_faces;
+  // Under global keys: the cells in ascending global id, the order solve() sweeps them.
+  std::vector<std::size_t> cell_order;
   sk::Data<P> d{};
 
-  Impl(const Mesh& mesh, const Geometry& geometry, NavierStokes<P>& f, const Transport& t, bool ft2)
+  Impl(const Mesh& mesh, const Geometry& geometry, NavierStokes<P>& f, const Transport& t, bool ft2,
+       const kernels::GlobalKeys* keys)
       : flow(f),
         nc(static_cast<std::size_t>(mesh.n_cells())),
         nf(static_cast<std::size_t>(mesh.n_faces())),
         ni(static_cast<std::size_t>(mesh.n_interior_faces())) {
-    const auto packed = kernels::pack_geometry(mesh, geometry);
+    const auto packed = kernels::pack_geometry(mesh, geometry, keys);
+    if (keys != nullptr) {
+      cell_order.resize(nc);
+      std::iota(cell_order.begin(), cell_order.end(), std::size_t{0});
+      std::sort(cell_order.begin(), cell_order.end(),
+                [&](std::size_t a, std::size_t b) { return keys->cell[a] < keys->cell[b]; });
+    }
     face_normal =
         kernels::converted<typename decltype(face_normal)::value_type>(packed.face_normal);
     face_area_magnitude = kernels::converted<typename decltype(face_area_magnitude)::value_type>(
@@ -140,8 +150,9 @@ struct SpalartAllmaras<P>::Impl {
 
 template <class P>
 SpalartAllmaras<P>::SpalartAllmaras(const Mesh& mesh, const Geometry& geometry,
-                                    NavierStokes<P>& flow, const Transport& transport, bool ft2)
-    : impl_(std::make_unique<Impl>(mesh, geometry, flow, transport, ft2)) {}
+                                    NavierStokes<P>& flow, const Transport& transport, bool ft2,
+                                    const kernels::GlobalKeys* keys)
+    : impl_(std::make_unique<Impl>(mesh, geometry, flow, transport, ft2, keys)) {}
 
 template <class P>
 SpalartAllmaras<P>::~SpalartAllmaras() = default;
@@ -192,14 +203,40 @@ template <class P>
 void SpalartAllmaras<P>::assemble(std::span<const double> shift, std::span<double> diag,
                                   std::span<double> upper, std::span<double> lower) const {
   const auto& m = *impl_;
-  // Under keys that reverse a face the face loops' blocks are in its global orientation, which
-  // the placement below does not undo.
-  if (const auto* rev = m.d.topo.face_reversed;
-      rev != nullptr && std::any_of(rev, rev + m.nf, [](auto r) { return r != 0; })) {
-    throw std::logic_error("SpalartAllmaras: assemble under keys that reverse a face");
-  }
   for (std::size_t c = 0; c < m.nc; ++c) {
     diag[c] = shift[c] + std::max(0.0, static_cast<double>(m.cell_jac[c]));
+  }
+  if (m.d.topo.rank_independent) {
+    // Under global keys the face loops evaluate each face in its global orientation (face_jac:
+    // dF/d(rho nt) of the global left, block 0, and right, block 1), each diagonal entry gathers
+    // its cell's faces in Topology::cell_faces order (the global order), and the off-diagonal
+    // entries are placed in the local orientation, as Euler<P>::assemble.
+    const auto& t = m.d.topo;
+    auto left = [&](std::size_t f) {
+      const bool rev = t.face_reversed != nullptr && t.face_reversed[f] != 0;
+      return static_cast<std::size_t>(rev ? t.neighbour[f] : t.owner[f]);
+    };
+    for (std::size_t c = 0; c < m.nc; ++c) {
+      for (auto k = t.cell_face_offsets[c]; k < t.cell_face_offsets[c + 1]; ++k) {
+        const auto f = static_cast<std::size_t>(t.cell_faces[k]);
+        if (f >= m.ni) {
+          diag[c] += static_cast<double>(m.bnd_jac[f]);
+        } else if (left(f) == c) {
+          diag[c] += static_cast<double>(m.face_jac[f]);
+        } else {
+          diag[c] -= static_cast<double>(m.face_jac[m.nf + f]);
+        }
+      }
+    }
+    for (std::size_t f = 0; f < m.ni; ++f) {
+      const bool rev = left(f) != static_cast<std::size_t>(t.owner[f]);
+      const double jl = static_cast<double>(m.face_jac[f]);
+      const double jr = static_cast<double>(m.face_jac[m.nf + f]);
+      // A(left, right) = jr, A(right, left) = -jl.
+      upper[f] = rev ? -jl : jr;
+      lower[f] = rev ? jr : -jl;
+    }
+    return;
   }
   // R_o += F, R_n -= F; F depends on rho nt of the owner (block 0) and the neighbour (block 1).
   for (std::size_t f = 0; f < m.ni; ++f) {
@@ -232,6 +269,27 @@ void SpalartAllmaras<P>::solve(std::span<const double> diag, std::span<const dou
     }
     dx[c] = r / diag[c];
   };
+  if (!m.cell_order.empty()) {
+    // Under global keys: the cells in ascending global id, each row's faces in
+    // Topology::cell_faces order (the global order).
+    const auto& t = m.d.topo;
+    auto relax_keyed = [&](std::size_t c) {
+      double r = b[c];
+      for (auto k = t.cell_face_offsets[c]; k < t.cell_face_offsets[c + 1]; ++k) {
+        const auto f = static_cast<std::size_t>(t.cell_faces[k]);
+        if (f >= m.ni) continue;
+        const auto o = static_cast<std::size_t>(t.owner[f]);
+        const auto n = static_cast<std::size_t>(t.neighbour[f]);
+        r -= o == c ? upper[f] * dx[n] : lower[f] * dx[o];
+      }
+      dx[c] = r / diag[c];
+    };
+    for (int s = 0; s < sweeps; ++s) {
+      for (const auto c : m.cell_order) relax_keyed(c);
+      for (auto it = m.cell_order.rbegin(); it != m.cell_order.rend(); ++it) relax_keyed(*it);
+    }
+    return;
+  }
   for (int s = 0; s < sweeps; ++s) {
     for (std::size_t c = 0; c < m.nc; ++c) relax(c);
     for (std::size_t c = m.nc; c-- > 0;) relax(c);
