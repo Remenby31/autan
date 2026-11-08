@@ -396,6 +396,7 @@ def _rank(
         + (n + 1 + n) * c * 8
         + (n + 3 * n * (device_kind == "cpu")) * c * 8
         + (n + 1) * c * s
+        + c * s  # the limiter's stencil Mach number (mmax)
         + n * fb * 8
     )
     # Under reproducibility "ranks", the global order the physics keeps: 4 B an incidence, 8 its

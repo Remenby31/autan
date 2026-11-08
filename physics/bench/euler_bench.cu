@@ -262,7 +262,7 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   }
   DeviceArray<double> d_kind(bc_kind);
   DeviceArray<S> d_bc(bc), d_u(us), d_prim(5 * nc), d_prim_b(5 * nf), d_wmin(5 * nc),
-      d_wmax(5 * nc), d_phi(5 * nc), d_source(5 * nc);
+      d_wmax(5 * nc), d_mmax(nc), d_phi(5 * nc), d_source(5 * nc);
   DeviceArray<Gr> d_grad(15 * nc);
   DeviceArray<R> d_res(5 * nc);
   using J = typename P::jac;
@@ -288,6 +288,7 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& geomet
   d.grad = d_grad.get();
   d.wmin = d_wmin.get();
   d.wmax = d_wmax.get();
+  d.mmax = d_mmax.get();
   d.phi = d_phi.get();
   d.source = d_source.get();
   d.res = d_res.get();

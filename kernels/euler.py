@@ -72,6 +72,7 @@ grad = cells.field("grad", Grad.Mat53)
 wmin = cells.field("wmin", State.Vec5)
 wmax = cells.field("wmax", State.Vec5)
 phi = cells.field("phi", State.Vec5)
+mmax = cells.field("mmax", State)  # largest Mach number of the cell averages of the stencil
 source = cells.field("source", State.Vec5)
 res = cells.field("res", Residual.Vec5)
 
@@ -493,17 +494,34 @@ band_gradients = cell_reduce(
 
 
 @pointwise
+def cell_mach(w: State.Vec5, g: Param, pref: Param) -> State:
+    # Mach number of a cell average; 0 for the zero state a boundary entry of the stencil carries
+    # (prim.other(boundary=None)), which is not a cell average (Michalak and Ollivier-Gooch 2009,
+    # section 4.4.2). The denominators are guarded: both branches are evaluated.
+    ok = w[0] > 0.0 and w[4] + pref > 0.0
+    c2 = g * (w[4] + pref) / (w[0] if ok else 1.0)
+    q2 = w[1] * w[1] + w[2] * w[2] + w[3] * w[3]
+    return sqrt(q2 / (c2 if ok else 1.0)) if ok else 0.0
+
+
+@pointwise
 def lsq_term(
-    wc: State.Vec5, wn: State.Vec5, w: Geom.Vec3
-) -> tuple[Grad.Mat53, State.Vec5, State.Vec5]:
-    return outer(wn - wc, w), wn, wn
+    wc: State.Vec5, wn: State.Vec5, w: Geom.Vec3, mn: State.Vec5, g: Param, pref: Param
+) -> tuple[Grad.Mat53, State.Vec5, State.Vec5, State]:
+    return outer(wn - wc, w), wn, wn, cell_mach(mn, g, pref)
 
 
 @pointwise
 def include_own_value(
-    gsum: Residual.Mat53, lo: Residual.Vec5, hi: Residual.Vec5, wc: State.Vec5
-) -> tuple[Grad.Mat53, State.Vec5, State.Vec5]:
-    return gsum, min(lo, wc), max(hi, wc)
+    gsum: Residual.Mat53,
+    lo: Residual.Vec5,
+    hi: Residual.Vec5,
+    m: Residual,
+    wc: State.Vec5,
+    g: Param,
+    pref: Param,
+) -> tuple[Grad.Mat53, State.Vec5, State.Vec5, State]:
+    return gsum, min(lo, wc), max(hi, wc), max(m, cell_mach(wc, g, pref))
 
 
 @pointwise
@@ -511,12 +529,15 @@ def include_own_value_quadratic(
     gsum: Residual.Mat53,
     lo: Residual.Vec5,
     hi: Residual.Vec5,
+    m: Residual,
     wc: State.Vec5,
     gb: Grad.Mat53,
     q: Geom,
-) -> tuple[Grad.Mat53, State.Vec5, State.Vec5]:
-    g = gb if q > 0.5 else gsum
-    return g, min(lo, wc), max(hi, wc)
+    g: Param,
+    pref: Param,
+) -> tuple[Grad.Mat53, State.Vec5, State.Vec5, State]:
+    gr = gb if q > 0.5 else gsum
+    return gr, min(lo, wc), max(hi, wc), max(m, cell_mach(wc, g, pref))
 
 
 # Least squares over the cell stencil (vertex or face2 neighbours, Topology::stencil): over face
@@ -528,9 +549,12 @@ gradients = cell_reduce(
     wc=prim.self_,
     wn=prim.other(boundary=prim_b),
     w=geometry.stencil_lsq_weight,
-    acc=[Sum(grad), Min(wmin), Max(wmax)],
+    mn=prim.other(boundary=None),
+    g=gamma,
+    pref=p_ref,
+    acc=[Sum(grad), Min(wmin), Max(wmax), Max(mmax)],
     finalise=include_own_value,
-    finalise_args={"wc": prim},
+    finalise_args={"wc": prim, "g": gamma, "pref": p_ref},
 )
 # The same pass under the quadratic gradient, which replaces the linear one where `band` = 1.
 quadratic_gradients = cell_reduce(
@@ -539,9 +563,12 @@ quadratic_gradients = cell_reduce(
     wc=prim.self_,
     wn=prim.other(boundary=prim_b),
     w=geometry.stencil_lsq_weight,
-    acc=[Sum(grad), Min(wmin), Max(wmax)],
+    mn=prim.other(boundary=None),
+    g=gamma,
+    pref=p_ref,
+    acc=[Sum(grad), Min(wmin), Max(wmax), Max(mmax)],
     finalise=include_own_value_quadratic,
-    finalise_args={"wc": prim, "gb": grad_band, "q": band},
+    finalise_args={"wc": prim, "gb": grad_band, "q": band, "g": gamma, "pref": p_ref},
 )
 
 
@@ -593,15 +620,27 @@ def uniform_blend(p: Residual, lo: State, hi: State, e: State) -> State:
 
 
 @pointwise
+def subsonic_blend(mm: State) -> State:
+    # Michalak and Ollivier-Gooch (2009), section 4.4.2, eqs. 13-14 (pp. 12-13): sigma^ = 1 for
+    # M_max <= M1, s((M_max - M1) / (M2 - M1)) up to M2, 0 above, M_max the largest Mach number of
+    # the stencil's cell averages, with the paper's M1 = 0.8 and M2 = 0.85: no shock can reach a
+    # stencil without supersonic flow.
+    r = (mm - 0.8) / 0.05
+    return 1.0 if mm <= 0.8 else (0.0 if mm >= 0.85 else 2.0 * r * r * r - 3.0 * r * r + 1.0)
+
+
+@pointwise
 def limiter_finalise(
-    p: Residual.Vec5, lo: State.Vec5, hi: State.Vec5, vol: Geom, scale: Param.Vec5
+    p: Residual.Vec5, lo: State.Vec5, hi: State.Vec5, vol: Geom, scale: Param.Vec5, mm: State
 ) -> State.Vec5:
+    # Phi^ = sigma^ + (1 - sigma^) Phi~ (eq. 13) on the uniform-region blend Phi~ (eq. 9).
+    sh = subsonic_blend(mm)
     return Vec5(
-        uniform_blend(p[0], lo[0], hi[0], scale[0] * vol),
-        uniform_blend(p[1], lo[1], hi[1], scale[1] * vol),
-        uniform_blend(p[2], lo[2], hi[2], scale[2] * vol),
-        uniform_blend(p[3], lo[3], hi[3], scale[3] * vol),
-        uniform_blend(p[4], lo[4], hi[4], scale[4] * vol),
+        sh + (1.0 - sh) * uniform_blend(p[0], lo[0], hi[0], scale[0] * vol),
+        sh + (1.0 - sh) * uniform_blend(p[1], lo[1], hi[1], scale[1] * vol),
+        sh + (1.0 - sh) * uniform_blend(p[2], lo[2], hi[2], scale[2] * vol),
+        sh + (1.0 - sh) * uniform_blend(p[3], lo[3], hi[3], scale[3] * vol),
+        sh + (1.0 - sh) * uniform_blend(p[4], lo[4], hi[4], scale[4] * vol),
     )
 
 
@@ -615,7 +654,13 @@ limiter = cell_reduce(
     xc=geometry.cell_centroid.self_,
     acc=Min(phi),
     finalise=limiter_finalise,
-    finalise_args={"lo": wmin, "hi": wmax, "vol": geometry.cell_volume, "scale": limiter_scale},
+    finalise_args={
+        "lo": wmin,
+        "hi": wmax,
+        "vol": geometry.cell_volume,
+        "scale": limiter_scale,
+        "mm": mmax,
+    },
 )
 
 

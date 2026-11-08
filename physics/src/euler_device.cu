@@ -227,6 +227,7 @@ class CudaStepper final : public DeviceStepper<P> {
         wmin_(5 * n_, stream_),
         wmax_(5 * n_, stream_),
         phi_(5 * n_, stream_),
+        mmax_(n_, stream_),
         lam_(n_, stream_),
         res_(5 * n_, stream_),
         source_(5 * n_, stream_),
@@ -252,6 +253,7 @@ class CudaStepper final : public DeviceStepper<P> {
     d_.grad = grad_.get();
     d_.wmin = wmin_.get();
     d_.wmax = wmax_.get();
+    d_.mmax = mmax_.get();
     d_.phi = phi_.get();
     d_.lam = lam_.get();
     d_.res = res_.get();
@@ -450,6 +452,7 @@ class CudaStepper final : public DeviceStepper<P> {
   gpu::DeviceArray<element<decltype(D::prim_b)>> prim_b_;
   gpu::DeviceArray<element<decltype(D::grad)>> grad_;
   gpu::DeviceArray<element<decltype(D::wmin)>> wmin_, wmax_, phi_;
+  gpu::DeviceArray<element<decltype(D::mmax)>> mmax_;
   gpu::DeviceArray<element<decltype(D::lam)>> lam_;
   gpu::DeviceArray<element<decltype(D::res)>> res_;
   gpu::DeviceArray<element<decltype(D::source)>> source_;

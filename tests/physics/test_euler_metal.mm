@@ -229,6 +229,7 @@ std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Schem
   d.grad = buf.zeros<typename M::grad>(15 * nc);
   d.wmin = buf.zeros<S>(5 * nc);
   d.wmax = buf.zeros<S>(5 * nc);
+  d.mmax = buf.zeros<S>(nc);
   d.phi = buf.put<S>(std::vector<double>(5 * nc, s.second_order && !s.limiter ? 1.0 : 0.0));
   d.source = buf.zeros<S>(5 * nc);
   d.res = buf.zeros<R>(5 * nc);

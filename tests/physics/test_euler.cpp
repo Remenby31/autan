@@ -839,6 +839,7 @@ TEMPLATE_TEST_CASE("the limiter is Michalak and Ollivier-Gooch's by hand on a un
   // amp_k. The centre cell's two-ring stencil is symmetric, so its least-squares gradient is
   // f'(0) / h along x and 0 across. y divides differences of values of size |W_k| by increments
   // of size amp_k, so its round-off grows with |base_k| / amp_k, which the tolerance carries.
+  // Every cell is supersonic (M 1.08-1.33), so the subsonic blend of eqs. 13-14 is 0.
   using P = TestType;
   const auto mesh =
       autan::assemble(autan::to_face_based(autan::test::box(5, autan::test::BoxFill::hexa)));
@@ -847,7 +848,7 @@ TEMPLATE_TEST_CASE("the limiter is Michalak and Ollivier-Gooch's by hand on a un
   const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
   const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
   constexpr double h = 0.2;
-  const std::array<double, 5> base{1.2, 100.0, 30.0, 10.0, 1e5};
+  const std::array<double, 5> base{1.2, 400.0, 30.0, 10.0, 1e5};
   const std::array<double, 5> amp{0.1, 10.0, 10.0, 10.0, 1e4};
   const auto cell_at = [&](double x) {
     for (std::size_t i = 0; i < nc; ++i) {
@@ -929,6 +930,69 @@ TEMPLATE_TEST_CASE("the limiter is Michalak and Ollivier-Gooch's by hand on a un
   }
 }
 
+TEMPLATE_TEST_CASE("the limiter is off where no stencil cell is supersonic", "[euler]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // Michalak and Ollivier-Gooch (2009), section 4.4.2, eqs. 13-14 (preprint pp. 12-13): Phi^ =
+  // sigma^ + (1 - sigma^) Phi~, sigma^ = s((M_max - 0.8) / 0.05) between M 0.8 and 0.85, 1 below
+  // and 0 above, M_max the largest Mach number of the stencil's cell averages. On 5^3 unit-cube
+  // hexahedra (h = 0.2), rho = 1.2 and p = 1e5 everywhere, u = U0 along x and v = f(t), t =
+  // (x - 0.5) / h, f = t - t^2 / 2. Over the centre cell's stencil |v| is largest at f(-2) = -4,
+  // so M_max = sqrt(U0^2 + 16) / c; its v component has Phi = P(1) = 23/27 (the hand case of the
+  // test above) and the uniform components Phi~ = 1.
+  using P = TestType;
+  const auto mesh =
+      autan::assemble(autan::to_face_based(autan::test::box(5, autan::test::BoxFill::hexa)));
+  const auto g = autan::compute_geometry(mesh);
+  const auto nc = static_cast<std::size_t>(mesh.n_cells());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+  constexpr double h = 0.2;
+  const double c = std::sqrt(air.gamma * 1e5 / 1.2);
+  std::size_t centre = nc;
+  for (std::size_t i = 0; i < nc; ++i) {
+    if (std::abs(g.cell_centroid_x[i] - 0.5) < 1e-9 &&
+        std::abs(g.cell_centroid_y[i] - 0.5) < 1e-9 &&
+        std::abs(g.cell_centroid_z[i] - 0.5) < 1e-9) {
+      centre = i;
+    }
+  }
+  REQUIRE(centre < nc);
+  // Phi^ of the centre cell's v component when the stencil's largest Mach number is m.
+  const auto phi_v = [&](double m) {
+    const double u0 = std::sqrt(m * c * m * c - 16.0);
+    const auto prim = [&](double x) {
+      const double t = (x - 0.5) / h;
+      return Prim{1.2, {u0, t - 0.5 * t * t, 0.0}, 1e5};
+    };
+    std::vector<BoundaryKind> kind(nb, BoundaryKind::state);
+    std::vector<double> data(5 * nb);
+    for (std::size_t b = 0; b < nb; ++b) {
+      const auto w = prim(g.face_centroid_x[ni + b]);
+      const std::array<double, 5> v{w.rho, w.v[0], w.v[1], w.v[2], w.p};
+      for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = v[j];
+    }
+    std::vector<double> u(5 * nc);
+    for (std::size_t i = 0; i < nc; ++i) {
+      const auto q = conserved(prim(g.cell_centroid_x[i]));
+      for (std::size_t j = 0; j < 5; ++j) u[j * nc + i] = q[j];
+    }
+    Scheme s = second_order(Flux::roe, 0.3);
+    s.limiter_k = 1.0;
+    s.scale = {1.0, 1.0, 1.0, 1.0, 1.0};
+    Euler<P> e(mesh, g, air, s);
+    e.set_boundary(kind, data);
+    const auto state = stored(e, u);
+    std::vector<typename P::residual> r(5 * nc);
+    e.residual(state, r);
+    return static_cast<double>(e.data().phi[2 * nc + centre]);
+  };
+  // dsigma^/dM = -1.5 / 0.05 = -30 at M 0.825: the Mach number's round-off is amplified 30 times.
+  const double tol = 64 * eps<P>() * 30;
+  CHECK(std::abs(phi_v(0.9) - 23.0 / 27.0) <= tol);    // sigma^ = 0
+  CHECK(std::abs(phi_v(0.825) - 25.0 / 27.0) <= tol);  // sigma^ = s(0.5) = 0.5
+  CHECK(std::abs(phi_v(0.7) - 1.0) <= tol);            // sigma^ = 1: the limiter is off
+}
+
 TEMPLATE_TEST_CASE("the limiter does not act at the manufactured state of any cell family",
                    "[euler]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
   // #244, gate 2: verification runs leave the limiter off, so its effect on the smooth
@@ -990,14 +1054,15 @@ TEMPLATE_TEST_CASE("the limited residual is that of the generated loops run one 
   const Case c(file);
   const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
   const auto nc = static_cast<std::size_t>(c.mesh.n_cells());
-  const Prim w{1.2, {100.0, 30.0, 10.0}, 1e5};
+  const Prim w{1.2, {500.0, 30.0, 10.0}, 1e5};
   std::vector<BoundaryKind> kind(nb, BoundaryKind::farfield);
   std::vector<double> data(5 * nb);
   for (std::size_t b = 0; b < nb; ++b) {
     const std::array<double, 5> v = {w.rho, w.v[0], w.v[1], w.v[2], w.p};
     for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = v[j];
   }
-  // Jumps across x = 0.5 in every primitive, which the limiter must clip there, and a source.
+  // Jumps across x = 0.5 in every primitive, which the limiter must clip there, and a source. The
+  // right state is supersonic (M 1.46), so the stencils at the jump are limited (eq. 14).
   std::vector<double> u(5 * nc), source(5 * nc);
   for (std::size_t i = 0; i < nc; ++i) {
     const bool left = c.geometry.cell_centroid_x[i] < 0.5;

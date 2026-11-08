@@ -51,8 +51,8 @@ struct Euler<P>::Impl {
   std::size_t linear_cells = 0;  // band cells that keep the linear fit
   index_t first_linear = -1;
   std::vector<double> bc_kind;
-  std::vector<State> bc, prim_b, prim, wmin, wmax, phi, source, prim_tan, zero_state;
-  std::vector<State> wmin_tan, wmax_tan;  // gradient_tangent's
+  std::vector<State> bc, prim_b, prim, wmin, wmax, mmax, phi, source, prim_tan, zero_state;
+  std::vector<State> wmin_tan, wmax_tan, mmax_tan;  // gradient_tangent's
   std::vector<typename P::jac> face_jac, bnd_jac, dwdu;
   std::vector<Gr> grad, grad_band, zero_grad, grad_tan, grad_band_tan;
   ek::Data<P> d{};
@@ -162,6 +162,7 @@ struct Euler<P>::Impl {
     prim.assign(5 * nc, State(0));
     wmin.assign(5 * nc, State(0));
     wmax.assign(5 * nc, State(0));
+    mmax.assign(nc, State(0));
     phi.assign(5 * nc, State(scheme.second_order && !scheme.limiter ? 1 : 0));
     source.assign(5 * nc, State(0));
     grad.assign(15 * nc, Gr(0));
@@ -181,6 +182,7 @@ struct Euler<P>::Impl {
     d.grad = grad.data();
     d.wmin = wmin.data();
     d.wmax = wmax.data();
+    d.mmax = mmax.data();
     d.phi = phi.data();
     d.source = source.data();
     d.prim_b = prim_b.data();
@@ -657,11 +659,12 @@ void Euler<P>::linear_gradient(std::span<typename P::grad> out) {
   }
   // The linear gradients loop, its limiter bounds into scratch.
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
-  std::vector<State> lo(5 * nc), hi(5 * nc);
+  std::vector<State> lo(5 * nc), hi(5 * nc), mach(nc);
   auto d = m.d;
   d.grad = out.data();
   d.wmin = lo.data();
   d.wmax = hi.data();
+  d.mmax = mach.data();
   ek::cpu::gradients(d);
 }
 
@@ -865,6 +868,7 @@ void Euler<P>::gradient_tangent(std::span<const State> s, std::span<const State>
     m.grad_band_tan.assign(15 * nc, typename P::grad(0));
     m.wmin_tan.assign(5 * nc, State(0));
     m.wmax_tan.assign(5 * nc, State(0));
+    m.mmax_tan.assign(nc, State(0));
     m.band_tan.assign(nc, typename decltype(m.band_tan)::value_type(0));
   }
   // dW = dW/dU du, then the gradients' tangent: a weighted sum of dW over each stencil, whose
@@ -879,6 +883,7 @@ void Euler<P>::gradient_tangent(std::span<const State> s, std::span<const State>
   d.grad_tan = m.grad_tan.data();
   d.wmin_tan = m.wmin_tan.data();
   d.wmax_tan = m.wmax_tan.data();
+  d.mmax_tan = m.mmax_tan.data();
   if (m.scheme.gradient_fit == GradientFit::quadratic) {
     d.grad_band_tan = m.grad_band_tan.data();
     d.band_tan = m.band_tan.data();
