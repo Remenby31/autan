@@ -97,6 +97,8 @@ export interface HistoryRecord {
   time: number | null;
   residuals: Record<string, number>;
   monitors?: Record<string, Forces>;
+  /** Steady runs: the iteration was provisional (results.md#history). */
+  provisional?: boolean;
 }
 
 export interface RunRegistry {
