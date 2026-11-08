@@ -125,3 +125,55 @@ DeviceStepperBlocks download_blocks(const kernels::Topology& t, const JacobianBl
 }
 
 }  // namespace autan::physics::device
+
+namespace autan::physics::device {
+
+// Euler<P>::Impl::kept_boundaries_tangent, its first part: the tangent of each boundary face's
+// state from its owner's primitives, sum_j J(i, j) dW_j from +0.0 in increasing j.
+template <class J, class S>
+__global__ void boundary_state_tangent(kernels::index_t ni, kernels::index_t nf,
+                                       kernels::index_t nc, const kernels::index_t* owner,
+                                       const J* bnd_state_jac, const S* prim_tan, double* out) {
+  const auto b = static_cast<kernels::index_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (b >= nf - ni) return;
+  const auto f = static_cast<std::size_t>(ni + b);
+  const auto o = static_cast<std::size_t>(owner[f]);
+  const auto nfs = static_cast<std::size_t>(nf), ncs = static_cast<std::size_t>(nc);
+  const auto nb = static_cast<std::size_t>(nf - ni);
+  for (std::size_t i = 0; i < 5; ++i) {
+    double t = 0.0;
+    for (std::size_t j = 0; j < 5; ++j) {
+      t = __dadd_rn(t, __dmul_rn(static_cast<double>(bnd_state_jac[(5 * i + j) * nfs + f]),
+                                 static_cast<double>(prim_tan[j * ncs + o])));
+    }
+    out[i * nb + static_cast<std::size_t>(b)] = t;
+  }
+}
+
+// Its second part: each kept cell adds w_u times its boundary values' tangent to its gradients'
+// tangent, entry by entry in its stencil's order. One thread per kept cell.
+template <class Gr, class W>
+__global__ void kept_gradient_tangent(std::int64_t n_kept, const kernels::index_t* cells,
+                                      const kernels::offset_t* offsets,
+                                      const kernels::index_t* boundary, const W* weight,
+                                      kernels::index_t nc, kernels::index_t nb,
+                                      const double* prim_b_tan, Gr* grad_tan) {
+  const std::int64_t t = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (t >= n_kept) return;
+  const auto c = static_cast<std::size_t>(cells[t]);
+  const auto ncs = static_cast<std::size_t>(nc), nbs = static_cast<std::size_t>(nb);
+  for (auto k = offsets[t]; k < offsets[t + 1]; ++k) {
+    const auto ks = static_cast<std::size_t>(k);
+    const auto b = static_cast<std::size_t>(boundary[ks]);
+    for (std::size_t i = 0; i < 5; ++i) {
+      for (std::size_t u = 0; u < 3; ++u) {
+        Gr& g = grad_tan[(3 * i + u) * ncs + c];
+        g = static_cast<Gr>(
+            __dadd_rn(static_cast<double>(g),
+                      __dmul_rn(static_cast<double>(weight[3 * ks + u]), prim_b_tan[i * nbs + b])));
+      }
+    }
+  }
+}
+
+}  // namespace autan::physics::device

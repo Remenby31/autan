@@ -56,6 +56,10 @@ class DeviceStepper {
   virtual void assemble(std::span<const double> shift) = 0;
   // The blocks of the last assemble.
   virtual DeviceStepperBlocks jacobian_blocks() = 0;
+  // At the state of the last assemble: dres = Euler<P>::gradient_tangent(s, State(du), ., Faces::
+  // boundary) from zero, the term EulerPhysics::add_boundary_gradient_term adds to the operator.
+  // Throws std::logic_error before assemble, or for a physics without it.
+  virtual void boundary_gradient_tangent(std::span<const double> du, std::span<double> dres) = 0;
 };
 
 // The stepper of `host`'s residual (its boundary conditions, source, gradient weights and
