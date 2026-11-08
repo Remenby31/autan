@@ -19,7 +19,7 @@ from tests.conftest import CRM_HL, mesh_document, prepared
 
 def crm_on(ranks: int) -> autan.MeshInfo:
     return autan.MeshInfo.from_document(
-        prepared(mesh_document("crm-hl"), ranks=ranks, ghost_stencil="vertex4"), autan.Location()
+        prepared(mesh_document("crm-hl"), ranks=ranks), autan.Location()
     )
 
 
@@ -108,9 +108,7 @@ def test_a_stuck_launcher_cannot_keep_the_sdk_waiting(
     runtime.write_text("#!/bin/sh\nexit 0\n")
     runtime.chmod(0o755)
     meshinfo = tmp_path / "crm.meshinfo.json"
-    meshinfo.write_text(
-        json.dumps(prepared(mesh_document("crm-hl"), ranks=2, ghost_stencil="vertex4"))
-    )
+    meshinfo.write_text(json.dumps(prepared(mesh_document("crm-hl"), ranks=2)))
     env = {**os.environ, "AUTAN_MPIEXEC": str(launcher)}
     process = subprocess.Popen(
         [

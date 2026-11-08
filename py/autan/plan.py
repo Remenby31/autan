@@ -315,7 +315,10 @@ def partition_ghost_stencil(spec: CaseSpec) -> str:
     # The ghost stencil a run's partition holds: the one its physics declares (mesh-info.md),
     # vertex4 for the Navier-Stokes physics, whose boundary fits reach three vertex rings of an
     # owned cell's face neighbours, face2 for every Euler scheme a case selects.
-    return "face2" if isinstance(spec.physics.turbulence, Inviscid) else "vertex4"
+    viscous = isinstance(spec.physics, Compressible) and not isinstance(
+        spec.physics.turbulence, Inviscid
+    )
+    return "vertex4" if viscous else "face2"
 
 
 def _check_prepared(

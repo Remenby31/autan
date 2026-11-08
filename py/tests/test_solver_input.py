@@ -33,9 +33,7 @@ def test_crm_hl_input_is_resolved_and_closed_in_si(
     capsys: pytest.CaptureFixture[str], example: Callable[[str], Path], tmp_path: Path
 ) -> None:
     mesh_info = tmp_path / "crm-hl.meshinfo.json"
-    mesh_info.write_text(
-        json.dumps(prepared(mesh_document("crm-hl"), ranks=8, ghost_stencil="vertex4"))
-    )
+    mesh_info.write_text(json.dumps(prepared(mesh_document("crm-hl"), ranks=8)))
     status, document = prepare(
         capsys,
         example("crm_hl.py"),

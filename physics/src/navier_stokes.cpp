@@ -784,7 +784,7 @@ struct NavierStokes<P>::Impl {
         geo(geometry) {
     // The boundary fits of the owned cells and of their face neighbours reach three vertex rings
     // of them: on a partition, its ghosts must hold four.
-    if (mesh.n_cells() != mesh.n_owned_cells() &&
+    if ((ghosts || mesh.n_cells() != mesh.n_owned_cells()) &&
         ghosts.value_or(GhostStencil::face2) < navier_stokes_ghost_stencil()) {
       throw Error(ErrorCode::partition_stencil_not_local,
                   "the viscous boundary fits' vertex rings reach beyond the partition's ghosts");

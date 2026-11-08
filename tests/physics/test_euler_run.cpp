@@ -1392,8 +1392,8 @@ TEST_CASE("Navier-Stokes on several ranks gives the one-rank solution bit for bi
                            [](double x) { return std::bit_cast<std::uint64_t>(x); });
     return out;
   };
-  const auto same_arrays = [&](const fs::path& other) {
-    const auto a = data_arrays(one.run), b = data_arrays(other);
+  const auto same_arrays = [&](const fs::path& reference, const fs::path& other) {
+    const auto a = data_arrays(reference), b = data_arrays(other);
     REQUIRE(a.contains("WallSolution/WallShearStressX"));
     CHECK(a.size() == b.size());
     for (const auto& [name, values] : a) {
@@ -1402,25 +1402,115 @@ TEST_CASE("Navier-Stokes on several ranks gives the one-rank solution bit for bi
       CHECK(bits(values) == bits(b.at(name)));
     }
   };
-  same_arrays(many);
+  same_arrays(one.run, many);
   if (steady && ranks == 4 && std::string(model) == "sa" && std::string(linear) == "gauss-seidel") {
     // Written on 2 ranks after the switch to second order, continued on 4: the restart state
-    // carries SA's variable and the switch, so the two runs are the uninterrupted one.
-    const auto steps = history(one.run).size();
-    REQUIRE(steps > 300);
-    Json first_doc = doc;
+    // carries SA's variable and the switch, so the two runs are the uninterrupted one. No
+    // convergence stop: 400 steps either way.
+    Json whole_doc = doc;
+    whole_doc["time"]["residual_orders"] = 30.0;
+    const auto whole = run(whole_doc);
+    INFO(whole.err);
+    REQUIRE(whole.status == ExitStatus::finished);
+    REQUIRE(history(whole.run).size() == 400);
+    Json first_doc = whole_doc;
     first_doc["time"]["max_iterations"] = 300;
     const fs::path first = run_on_ranks(first_doc, 2);
     REQUIRE(!first.empty());
     REQUIRE(field(first, "SolverSecondOrder", "RestartState").front() == 1.0);
-    Json next = doc;
+    Json next = whole_doc;
     next["start"] = continue_from(first);
     const fs::path rest = run_on_ranks(next, 4, 0, &err);
     INFO(err);
     REQUIRE(!rest.empty());
     CHECK(read(first / "history.jsonl") + read(rest / "history.jsonl") ==
-          read(one.run / "history.jsonl"));
-    same_arrays(rest);
+          read(whole.run / "history.jsonl"));
+    same_arrays(whole.run, rest);
+  }
+}
+
+TEST_CASE("Spalart-Allmaras on ranks of which one holds no ghost runs as on one rank",
+          "[navier-stokes][mpi]") {
+  // Two boxes of hexahedra apart, 64 and 125 cells, on 3 ranks: the partition gives the small one
+  // a rank of its own, without ghosts, and splits the other. Every ghost exchange is collective,
+  // the SA variable's after each colour of its sweeps included: the rank without ghosts must take
+  // part in each, or the ranks wait on each other. Under "ranks" the run is one rank's, bit for
+  // bit; under "run" it ends.
+  const char* reproducibility = GENERATE("ranks", "run");
+  CAPTURE(reproducibility);
+  autan::CellwiseMesh cells = autan::test::box(4, autan::test::BoxFill::hexa);
+  {
+    const autan::CellwiseMesh b = autan::test::box(5, autan::test::BoxFill::hexa);
+    const auto nodes = static_cast<autan::index_t>(cells.x.size());
+    const auto faces = static_cast<autan::offset_t>(cells.face_node_offsets.size() - 1);
+    const auto face_nodes = static_cast<autan::offset_t>(cells.face_nodes.size());
+    const auto labelled = static_cast<autan::offset_t>(cells.labelled_face_nodes.size());
+    for (std::size_t i = 0; i < b.x.size(); ++i) {
+      cells.x.push_back(b.x[i] + 2.0);
+      cells.y.push_back(b.y[i]);
+      cells.z.push_back(b.z[i]);
+    }
+    for (std::size_t c = 1; c < b.cell_face_offsets.size(); ++c) {
+      cells.cell_face_offsets.push_back(b.cell_face_offsets[c] + faces);
+    }
+    for (std::size_t f = 1; f < b.face_node_offsets.size(); ++f) {
+      cells.face_node_offsets.push_back(b.face_node_offsets[f] + face_nodes);
+    }
+    for (const auto v : b.face_nodes) cells.face_nodes.push_back(v + nodes);
+    cells.cell_zone.insert(cells.cell_zone.end(), b.cell_zone.begin(), b.cell_zone.end());
+    for (std::size_t f = 1; f < b.labelled_face_node_offsets.size(); ++f) {
+      cells.labelled_face_node_offsets.push_back(b.labelled_face_node_offsets[f] + labelled);
+    }
+    for (const auto v : b.labelled_face_nodes) cells.labelled_face_nodes.push_back(v + nodes);
+    cells.labelled_face_zone.insert(cells.labelled_face_zone.end(), b.labelled_face_zone.begin(),
+                                    b.labelled_face_zone.end());
+  }
+  const auto mesh = autan::assemble(autan::to_face_based(std::move(cells)));
+  REQUIRE(mesh.n_cells() == 64 + 125);
+  std::random_device random;
+  const fs::path dir =
+      fs::temp_directory_path() / ("autan_sa_ghostless-" + std::to_string(random()));
+  autan::io::write_polymesh(dir / "polyMesh", mesh);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    d["reproducibility"] = reproducibility;
+    d["mesh"]["path"] = (dir / "polyMesh").string();
+    d["mesh"]["sha256"] = autan::io::mesh_hash(dir / "polyMesh");
+    Json zone = d["cell_zones"][0];
+    zone["zone"] = "fluid";
+    d["cell_zones"] = Json::array({zone});
+    d["time"]["linear_solver"] = "gauss-seidel";
+    d["time"]["max_iterations"] = 200;
+  });
+  const auto one = run(doc);
+  INFO(one.err);
+  REQUIRE(one.status == ExitStatus::finished);
+  REQUIRE(field(one.run, "SolverSecondOrder", "RestartState").front() == 1.0);
+  std::string err;
+  const fs::path many = run_on_ranks(doc, 3, 0, &err);
+  INFO(err);
+  REQUIRE(!many.empty());
+  // The partition this test needs: a rank without ghosts beside ranks with some.
+  std::vector<std::int64_t> ghosts;
+  std::istringstream log(read(many / "log.jsonl"));
+  for (std::string l; std::getline(log, l);) {
+    const auto e = Json::parse(l);
+    if (e["source"] == "mpi") ghosts = e["data"]["ghost_cells"].get<std::vector<std::int64_t>>();
+  }
+  REQUIRE(ghosts.size() == 3);
+  CHECK(std::ranges::count(ghosts, 0) == 1);
+  if (std::string(reproducibility) == "ranks") {
+    CHECK(read(many / "history.jsonl") == read(one.run / "history.jsonl"));
+    const auto a = data_arrays(one.run), b = data_arrays(many);
+    REQUIRE(a.size() == b.size());
+    for (const auto& [name, values] : a) {
+      INFO(name);
+      REQUIRE(b.contains(name));
+      REQUIRE(values.size() == b.at(name).size());
+      CHECK(std::memcmp(values.data(), b.at(name).data(), values.size() * sizeof(double)) == 0);
+    }
+  } else {
+    CHECK(Json::parse(read(many / "run.json"))["status"] ==
+          Json::parse(read(one.run / "run.json"))["status"]);
   }
 }
 

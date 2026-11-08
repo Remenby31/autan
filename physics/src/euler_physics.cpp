@@ -698,7 +698,9 @@ class EulerPhysics final : public runtime::Physics {
     }
     // The ghosts' density may not be filled yet: their owners' rho nt.
     fill_ghost_values(t.rnu);
-    if (keys_ || owned_ < n_) {
+    // On several ranks every rank sweeps the colours, a part without ghosts too: each colour
+    // ends in a collective exchange.
+    if (keys_ || ctx_.ranks.size() > 1) {
       t.colours.assign(static_cast<std::size_t>(ctx_.n_colours), {});
       for (std::size_t c = 0; c < owned_; ++c) {
         t.colours[static_cast<std::size_t>(ctx_.cell_colours[c])].push_back(c);
@@ -1242,9 +1244,9 @@ class EulerPhysics final : public runtime::Physics {
     return ctx_.ranks.max(m);
   }
 
-  // Fills the ghost values of one cell array (n_ values) from their owners.
+  // Fills the ghost values of one cell array (n_ values) from their owners. On every rank: the
+  // exchange is collective, even for a part without ghosts.
   void fill_ghost_values(std::span<double> x) {
-    if (owned_ == n_) return;
     std::array<double*, 1> c{x.data()};
     ctx_.ghosts.forward(std::span<double* const>(c), MemorySpace::host, nullptr);
   }
