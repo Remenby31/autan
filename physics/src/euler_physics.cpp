@@ -127,8 +127,8 @@ Transport transport_of(const runtime::SolverInput& in) {
 template <class P>
 struct SaState {
   SaState(const Mesh& mesh, const Geometry& geometry, NavierStokes<P>& flow, const Transport& t,
-          bool ft2)
-      : model(mesh, geometry, flow, t, ft2) {}
+          bool ft2, const kernels::GlobalKeys* keys)
+      : model(mesh, geometry, flow, t, ft2, keys) {}
   SpalartAllmaras<P> model;
   std::vector<double> rnu, rhs, dx, diag, upper, lower;
   double nt_inf = 0.0;  ///< m^2/s, the freestream's
@@ -490,7 +490,8 @@ class EulerPhysics final : public runtime::Physics {
   static Flow make_flow(const PhysicsContext& ctx, const Gas& gas,
                         const kernels::GlobalKeys* keys) {
     if constexpr (is_viscous) {
-      return Flow(ctx.mesh, ctx.geometry, gas, flow_scheme(ctx.input), transport_of(ctx.input));
+      return Flow(ctx.mesh, ctx.geometry, gas, flow_scheme(ctx.input), transport_of(ctx.input),
+                  keys);
     } else {
       return Flow(ctx.mesh, ctx.geometry, gas, flow_scheme(ctx.input), keys, ctx.ghost_stencil);
     }
@@ -638,7 +639,8 @@ class EulerPhysics final : public runtime::Physics {
       throw std::invalid_argument("the SA physics runs steady cases only");
     }
     sa_ = std::make_unique<SaState<P>>(mesh, g, euler_, transport_of(in),
-                                       mms == nullptr || mms->turbulence() != "sa-noft2");
+                                       mms == nullptr || mms->turbulence() != "sa-noft2",
+                                       keys_ ? &*keys_ : nullptr);
     auto& t = *sa_;
     const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
     const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
@@ -978,9 +980,15 @@ class EulerPhysics final : public runtime::Physics {
       // Loosely coupled: the SA residual at the same state, after the flow's evaluation.
       auto& t = *sa_;
       t.model.residual_and_jacobian(t.stored(t.rnu), t.res);
-      double sum = 0.0;
-      for (const auto r : t.res) sum += static_cast<double>(r) * static_cast<double>(r);
-      report.residuals.push_back(std::sqrt(sum / static_cast<double>(n_)));
+      // As record_norms: an exact sum over the owned cells, the same bits in any order.
+      std::array<runtime::ExactSum, 2> sum;
+      for (std::size_t c = 0; c < owned_; ++c) {
+        const double r = static_cast<double>(t.res[c]);
+        sum[0].add(r * r);
+      }
+      sum[1].add(static_cast<double>(owned_));
+      ctx_.ranks.sum(sum);
+      report.residuals.push_back(std::sqrt(sum[0].value() / sum[1].value()));
     }
     euler_.spectral_radius(lambda_);
     // Largest relative residual over the equations, of the order being solved, leaving out the
@@ -1674,15 +1682,14 @@ std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::Solver
         .data_json = "{}",
         .code = "E0429"};
   }
-  // The viscous and turbulence face loops scatter in local face order, and the boundary fit's and
-  // the viscous gradient's stencils follow the local numbering: the results depend on the cell
-  // order (#587).
-  if (in.reproducibility == "ranks") {
+  // Under reproducibility "ranks" the viscous and turbulence loops, the boundary fit and SA's own
+  // sweeps follow the global order; the steady multigrid still sums in local cell order.
+  if (in.reproducibility == "ranks" && in.time.kind == "steady" &&
+      in.time.linear_solver == "multigrid") {
     return runtime::PhysicsRefusal{
         .message =
-            "the Navier-Stokes physics does not give the same bits in every cell order yet: "
-            "its viscous and turbulence face loops and its boundary fit do not follow the "
-            "global order",
+            "the steady multigrid does not give the same bits in every cell order yet; "
+            "linear_solver = \"gauss-seidel\" or \"lines\" does",
         .path = "reproducibility",
         .data_json = "{}",
         .code = "E1109"};
