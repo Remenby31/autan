@@ -6,10 +6,12 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, ConfigDict
 
 from autan.manufactured import MMS_BYTES
-from autan.schema import Steady
+from autan.schema import SA, Compressible, Laminar, Steady
 from autan.texts import TEXT_BYTES
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from autan.meshinfo import MeshInfo
     from autan.schema import CaseSpec
 
@@ -135,17 +137,33 @@ def estimate(
     )
 
 
-def _shares(mesh: MeshInfo, ranks: int) -> list[tuple[int, int, int, int, int | None]]:
-    """Per rank: its cells with ghosts, faces, interior faces and stencil entries, and its index
-    in the MeshInfo's partition (``None`` without one)."""
+# A rank's local mesh: cells with ghosts, faces, interior faces, the face2 and vertex stencils'
+# entries, the vertex-ring bounds of the band and the boundary fit (mesh-info.md), and its index
+# in the MeshInfo's partition (None without one).
+@dataclass(frozen=True)
+class _Share:
+    cells: int
+    faces: int
+    interior: int
+    stencil: int
+    vertex: int
+    band: int
+    fit: int
+    rank: int | None
+
+
+def _shares(mesh: MeshInfo, ranks: int) -> list[_Share]:
     counts, partition = mesh.counts, mesh.partition
     if partition is not None and partition.ranks == ranks:
         return [
-            (
+            _Share(
                 partition.cells_by_rank[r] + partition.ghosts_by_rank[r],
                 partition.faces_by_rank[r],
                 partition.interior_faces_by_rank[r],
                 partition.stencil_entries_by_rank[r],
+                partition.vertex_stencil_entries_by_rank[r],
+                partition.band_entries_by_rank[r],
+                partition.boundary_fit_entries_by_rank[r],
                 r,
             )
             for r in range(ranks)
@@ -157,14 +175,28 @@ def _shares(mesh: MeshInfo, ranks: int) -> list[tuple[int, int, int, int, int | 
         extra = counts.periodic_ghosts * mesh.quality.max_faces_per_cell
         cells = counts.cells + counts.periodic_ghosts
         one = 0 if partition is not None and partition.ranks == 1 else None
-        return [(cells, counts.faces + extra, interior + extra, counts.stencil_entries, one)]
+        return [
+            _Share(
+                cells,
+                counts.faces + extra,
+                interior + extra,
+                counts.stencil_entries,
+                counts.vertex_stencil_entries,
+                counts.band_entries,
+                counts.boundary_fit_entries,
+                one,
+            )
+        ]
     # No partition for these ranks: the plan refuses the run (E0212), the estimate omits halos.
     return [
-        (
+        _Share(
             -(-counts.cells // ranks),
             -(-counts.faces // ranks),
             -(-interior // ranks),
             -(-counts.stencil_entries // ranks),
+            -(-counts.vertex_stencil_entries // ranks),
+            -(-counts.band_entries // ranks),
+            -(-counts.boundary_fit_entries // ranks),
             None,
         )
     ]
@@ -229,7 +261,7 @@ def _partition(mesh: MeshInfo, r: int) -> tuple[int, int, int]:
 def _rank(
     spec: CaseSpec,
     mesh: MeshInfo,
-    share: tuple[int, int, int, int, int | None],
+    share: _Share,
     *,
     equations: int,
     ranks: int,
@@ -240,12 +272,18 @@ def _rank(
     input_bytes: int,
 ) -> Memory:
     counts = mesh.counts
-    n = equations
+    # Spalart-Allmaras solves nu~ as a scalar system of its own beside the flow's block system
+    # (physics/src/euler_physics.cpp): the flow's arrays, Jacobian and linear solver take its
+    # equations only, the model its own arrays (below).
+    turbulence = spec.physics.turbulence
+    viscous = isinstance(spec.physics, Compressible) and isinstance(turbulence, Laminar | SA)
+    sa = viscous and isinstance(turbulence, SA)
+    n = equations - 1 if sa else equations
     s = 8 if spec.physics.precision == "fp64" else 4
     cells, faces, nodes = counts.cells, counts.faces, counts.nodes
     interior = faces - sum(zone.faces for zone in mesh.boundary_zones)
     boundary = faces - interior
-    c, f, fi, stencil, rank = share
+    c, f, fi, stencil, rank = share.cells, share.faces, share.interior, share.stencil, share.rank
     fb = f - fi
     k = 2 * fi + fb
 
@@ -292,7 +330,7 @@ def _rank(
     # The solution gathered on rank 0 at the end and the writer's copy: the n + 1 primitive
     # fields and their means; the restart's n conserved, n + 1 average sums and their weight, the
     # steady solver's n + 5 values, one circulation per point-vortex condition.
-    fields = 2 * (n + 1) + n + (n + 2) + (n + 5) + vortices
+    fields = 2 * (equations + 1) + equations + (equations + 2) + (equations + 5) + vortices
     # The writer also copies the coordinates and writes 64-bit face and cell connectivity.
     k_global = 2 * interior + boundary
     writer = 24 * nodes + 8 * (max(faces, cells) + 1) + 8 * max(counts.face_nodes, k_global)
@@ -304,7 +342,7 @@ def _rank(
     # copied and parsed; zone names of at most 25 600 B a zone and one more; a translation of
     # at most 4 096 B per periodic zone; and HDF5's caches.
     if start is not None:
-        read = fields if start == "continue" else n + 1
+        read = fields if start == "continue" else equations + 1
         zones = len(mesh.boundary_zones) + len(mesh.cell_zones)
         metadata = (1 + 1 + _JSON_DOCUMENT) * 64 * 2**10
         descriptors = 25_600 * (zones + 1) + 4096 * 2 * len(mesh.periodic) + _HDF5_CACHE
@@ -371,7 +409,12 @@ def _rank(
     packed = 8 * (25 * f + 4 * c + 4 * k)
     marks = 4 * c + 4 * fb + 16 * nodes + 8 * counts.face_nodes
     first_order = 12 * k if spec.physics.reproducibility == "ranks" else 0
-    add("physics setup", packed + 32 * stencil + marks + first_order, transient=True)
+    # A viscous run's convective gradient is the quadratic fit in every cell, over the vertex
+    # stencil, whose twins and FP64 weights the constructor also builds and frees.
+    vertex = 32 * share.vertex if viscous else 0
+    add("physics setup", packed + 32 * stencil + vertex + marks + first_order, transient=True)
+    if viscous:
+        _viscous(add, mesh, share, s, sa=sa)
     if device_kind != "cpu":
         # DeviceMesh keeps the face colourings on the host; it holds the packed geometry moved
         # into it until release_host after bind. Its setup passes through three phases in
@@ -418,6 +461,13 @@ def _rank(
         )
         add(name, persistent)
         add(f"{name} setup", solver_setup, transient=True)
+        # The inviscid Krylov operator's derivative of the boundary values a cell's fit keeps
+        # (Euler::gradient_tangent, multigrid and lines): d(prim_b)/d(prim) of every face, the
+        # boundary values' tangents, a discarded increment and the list of those cells. Allocated
+        # only where some cell keeps its boundary faces (a one-cell-thick slab: every cell),
+        # counted on every mesh.
+        if not viscous and spec.time.linear_solver in ("multigrid", "lines"):
+            add("boundary state tangent", 25 * s * f + 40 * (f - fi) + 48 * c)
 
     # The peak holds every persistent component and the largest transient one: transients
     # are freed in turn, and later allocations reuse their memory.
@@ -428,12 +478,58 @@ def _rank(
     return Memory(
         device_kind=device_kind,
         gpus=ranks,
-        equations=n,
+        equations=equations,
         bytes_host=host,
         bytes_device=device,
         bytes_per_gpu=per_rank,
         bytes_total=per_rank * ranks,
         components=tuple(parts),
+    )
+
+
+# The host arrays of the Navier-Stokes physics and of Spalart-Allmaras beyond Euler's
+# (docs/sdk/plan.md): s bytes a state value and a geometry weight, the vertex stencil V, the
+# band B and the boundary fit Q at their MeshInfo bounds. A vector grown by doubling holds at
+# most twice its size, and three times while it moves to a larger buffer.
+def _viscous(add: Callable[..., None], mesh: MeshInfo, share: _Share, s: int, *, sa: bool) -> None:
+    c, f, fi = share.cells, share.faces, share.interior
+    fb, v, b, q = f - fi, share.vertex, share.band, share.fit
+    k = 2 * fi + fb
+    counts = mesh.counts
+    # Euler's quadratic gradient (euler.cpp): its gradient and flag, the vertex stencil's
+    # offsets and entries, and the band's offsets, entries (a vector grown to at most twice
+    # its size) and weights. Setting the boundary builds the weights in FP64 first, in a vector
+    # grown to at most twice, then their columns, beside the weights it converts them to.
+    add("quadratic gradient", c * (15 * s + 24) + 8 + 8 * v + b * (8 + 3 * s))
+    add("quadratic gradient setup", 72 * b, transient=True)
+    # NavierStokes (navier_stokes.cpp): the viscous gradient, geometry, viscosities, boundary
+    # states and tractions, the fit's seven gradients and its weights, the viscous Jacobian
+    # blocks, the vertex stencil kept whole, the face adjacency (allocator slack included), the
+    # fit's offsets and entries (grown to at most twice), and the limiter's bounds the residual
+    # takes on every call.
+    add(
+        "viscous",
+        c * (128 * s + 88) + f * (99 * s + 24) + 64 * fi + 40 * v + q * (8 + 21 * s) + 10 * c * s,
+    )
+    # Its own packed geometry with a vertex stencil's node lists, or the fit's coefficients
+    # (152 B an entry) and entries (4 B) while they grow, whichever is larger.
+    packed = 8 * (25 * f + 4 * c + 4 * k) + 16 * counts.nodes + 8 * counts.face_nodes
+    add("viscous setup", max(packed + 6 * c + 5 * fb, 3 * 156 * q + c), transient=True)
+    if not sa:
+        return
+    # SpalartAllmaras (spalart_allmaras.cpp) and the steady step's scalar system
+    # (euler_physics.cpp, SaState): geometry, wall distance, nu~ and its boundary values,
+    # gradient and source, its Jacobian, face lists and the system's diagonal and couplings.
+    add("spalart-allmaras", c * (8 * s + 104) + f * (9 * s + 28) + 28 * fi)
+    # Setup: its packed geometry, or the wall distance's surface over the wall faces' nodes,
+    # at most the face nodes no interior face takes (3 a face at least): triangles of 72 B and
+    # their copies, order and tree nodes, 352 B a node.
+    interior = counts.faces - sum(zone.faces for zone in mesh.boundary_zones)
+    surface = counts.face_nodes - 3 * interior
+    add(
+        "spalart-allmaras setup",
+        max(8 * (25 * f + 4 * c + 4 * k) + 8 * (c + 1), 32 * c + 32 * fb + 352 * surface),
+        transient=True,
     )
 
 

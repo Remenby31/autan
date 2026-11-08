@@ -26,6 +26,9 @@
       "polyhedron": 34222000
     },
     "stencil_entries": 3856000000,
+    "vertex_stencil_entries": 10411200000,
+    "band_entries": 37788800000,
+    "boundary_fit_entries": 2282752000,
     "periodic_ghosts": 0
   },
   "bounds": {
@@ -143,6 +146,15 @@
     ],
     "stencil_entries_by_rank": [
       3856000000
+    ],
+    "vertex_stencil_entries_by_rank": [
+      10411200000
+    ],
+    "band_entries_by_rank": [
+      37788800000
+    ],
+    "boundary_fit_entries_by_rank": [
+      2282752000
     ],
     "nodes_by_rank": [
       52000000

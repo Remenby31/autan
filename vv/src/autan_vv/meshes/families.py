@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from autan_vv.errors import VVError
-from autan_vv.meshes import ringleb, vortex
+from autan_vv.meshes import ringleb, tube, vortex
 from autan_vv.meshes.dual import median_dual
 from autan_vv.meshes.facemesh import FaceMesh, FloatArray, IntArray, from_faces, merge_cells
 from autan_vv.meshes.fluent import write_fluent
@@ -549,13 +549,27 @@ def generate_level(
 ) -> tuple[FaceMesh, str]:
     """Generate one level with about n cells per edge; optionally write it to `path`.
 
-    Returns the mesh and the Gmsh version. `poly` is written as Fluent ASCII, the others as MSH 4.1
-    ASCII. The file holds exactly the in-memory mesh: coordinates are rounded to the 16 significant
-    digits Gmsh writes.
+    Returns the mesh and the Gmsh version (empty for `sod-tube`, written without Gmsh). `poly` and
+    `sod-tube` are written as Fluent ASCII, the others as MSH 4.1 ASCII. The file holds exactly the
+    in-memory mesh: coordinates are rounded to the 16 significant digits Gmsh writes.
     """
-    if kind not in (*KINDS, "ringleb", *vortex.KINDS):
-        msg = f"unknown mesh kind {kind!r}; expected one of {KINDS}, 'ringleb' or {vortex.KINDS}"
+    if kind not in (*KINDS, "ringleb", *vortex.KINDS, tube.KIND):
+        msg = (
+            f"unknown mesh kind {kind!r}; expected one of {KINDS}, 'ringleb', {vortex.KINDS}"
+            f" or {tube.KIND!r}"
+        )
         raise VVError(msg, code="V0304")
+    if kind == tube.KIND:
+        if perturbation > 0.0:
+            msg = f"{kind} is a 1D family: its levels refine along x only, without perturbation"
+            raise VVError(msg, code="V0309")
+        points, cells = tube.grid(n)
+        points = np.array([float(f"{v:.16g}") for v in points.ravel()]).reshape(-1, 3)
+        mesh = _to_facemesh(points, cells, _box_boundary(points, cells))
+        if path is not None:
+            write_fluent(mesh, path, CELL_ZONE)
+        mesh.check()
+        return mesh, ""
     if kind == "ringleb" and perturbation > 0.0:
         msg = "the Ringleb mesh follows the flow's streamlines and is not perturbed"
         raise VVError(msg, code="V0309")

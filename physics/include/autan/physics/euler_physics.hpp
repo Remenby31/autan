@@ -10,4 +10,9 @@ namespace autan::physics {
 /// to inviscid flow is supported, `manufactured` included.
 void register_euler(runtime::PhysicsRegistry& registry);
 
+/// Adds the compressible laminar physics (Navier-Stokes equations, ideal gas, Sutherland or
+/// constant viscosity, docs/design/ns-sa.md) to `registry`, with the same precisions, devices and
+/// time stepping as register_euler; `wall` boundaries are no-slip, adiabatic or isothermal.
+void register_navier_stokes(runtime::PhysicsRegistry& registry);
+
 }  // namespace autan::physics
