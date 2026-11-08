@@ -4,9 +4,13 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
+#include <span>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
+#include <vector>
 
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
@@ -36,10 +40,25 @@ struct Euler<P>::Impl {
   stored<decltype(D::stencil_lsq_weight)> stencil_lsq_weight;
   kernels::CellStencil stencil;
   std::vector<kernels::offset_t> twin;  // stencil_twin(), on demand
+  // Quadratic gradient: its fit's stencil (two vertex rings) and weights, as a topology of its own
+  // for band_gradients (empty under GradientFit::linear).
+  kernels::CellStencil vertex;
+  stored<decltype(D::band)> band, band_tan;  // band_tan: gradient_tangent's, zero
+  stored<decltype(D::band_weight)> band_weight;
+  std::vector<kernels::offset_t> band_offsets;
+  std::vector<index_t> band_entries;
+  kernels::Topology band_topo{};
+  std::size_t linear_cells = 0;         // band cells that keep the linear fit
+  std::size_t kept_boundaries = 0;      // cells whose linear fit keeps every boundary face
+  std::vector<std::size_t> kept_cells;  // gradient_tangent's: those cells, listed on first use
+  index_t first_linear = -1;
   std::vector<double> bc_kind;
   std::vector<State> bc, prim_b, prim, wmin, wmax, phi, source, prim_tan, zero_state;
-  std::vector<typename P::jac> face_jac, bnd_jac, dwdu;
-  std::vector<Gr> grad, zero_grad;
+  std::vector<State> wmin_tan, wmax_tan;  // gradient_tangent's
+  std::vector<typename P::jac> face_jac, bnd_jac, dwdu, bnd_state_jac;
+  std::vector<double> prim_b_tan;  // gradient_tangent's, boundary faces only
+  std::vector<Res> discarded;      // boundary_states_jacobian's increment
+  std::vector<Gr> grad, grad_band, zero_grad, grad_tan, grad_band_tan;
   ek::Data<P> d{};
   GhostFill* ghosts = nullptr;
   // Under global keys: each cell's faces in global order, their twins and the faces that run
@@ -47,6 +66,8 @@ struct Euler<P>::Impl {
   kernels::GlobalOrder order;
   std::vector<std::uint8_t> reversed;
   bool gather = false;
+  bool all_planar = false;
+  bool planar = false;
 
   // Fills the ghost values of `n` components of an array laid out c * n_cells + i.
   // The exchange takes at most 16 components a call.
@@ -75,7 +96,12 @@ struct Euler<P>::Impl {
     fill_ghosts(prim, 5);
     ek::cpu::boundary_states(d);
     if (scheme.second_order) {
-      ek::cpu::gradients(d);
+      if (scheme.gradient_fit == GradientFit::quadratic) {
+        band_gradients();
+        ek::cpu::quadratic_gradients(d);
+      } else {
+        ek::cpu::gradients(d);
+      }
       fill_ghosts(grad, 15);
       if (scheme.limiter) {
         ek::cpu::limiter(d);
@@ -94,6 +120,7 @@ struct Euler<P>::Impl {
        const kernels::GlobalKeys* keys)
       : scheme(s) {
     const auto packed = kernels::pack_geometry(mesh, geometry, keys);
+    all_planar = packed.all_planar;
     topo = kernels::topology(mesh.view());
     stencil =
         kernels::cell_stencil(mesh, packed,
@@ -119,6 +146,12 @@ struct Euler<P>::Impl {
     decltype(stencil.twin)().swap(stencil.twin);
     decltype(stencil.lsq_weight)().swap(stencil.lsq_weight);
     topo.stencil_twin = nullptr;
+    if (s.gradient_fit == GradientFit::quadratic) {
+      // The quadratic fit's two rings: only the vertex neighbours' entries are kept.
+      vertex = kernels::cell_stencil(mesh, packed, kernels::StencilKind::vertex);
+      decltype(vertex.twin)().swap(vertex.twin);
+      decltype(vertex.lsq_weight)().swap(vertex.lsq_weight);
+    }
     fill(face_normal, packed.face_normal);
     fill(face_area_magnitude, packed.face_area_magnitude);
     fill(face_centroid, packed.face_centroid);
@@ -136,6 +169,16 @@ struct Euler<P>::Impl {
     phi.assign(5 * nc, State(scheme.second_order && !scheme.limiter ? 1 : 0));
     source.assign(5 * nc, State(0));
     grad.assign(15 * nc, Gr(0));
+    if (s.gradient_fit == GradientFit::quadratic) {
+      grad_band.assign(15 * nc, Gr(0));
+      band.assign(nc, typename decltype(band)::value_type(0));
+      band_offsets.assign(nc + 1, 0);
+    }
+    band_topo = topo;
+    band_topo.n_stencil = 0;
+    band_topo.stencil_offsets = band_offsets.data();
+    band_topo.stencil = band_entries.data();
+    band_topo.stencil_twin = nullptr;
 
     d.topo = topo;
     d.prim = prim.data();
@@ -154,6 +197,9 @@ struct Euler<P>::Impl {
     d.cell_centroid = cell_centroid.data();
     d.cell_volume = cell_volume.data();
     d.stencil_lsq_weight = stencil_lsq_weight.data();
+    d.band = band.data();
+    d.grad_band = grad_band.data();
+    d.band_weight = band_weight.data();
     d.gamma[0] = typename P::param(gas.gamma);
     d.gas_constant[0] = typename P::param(gas.gas_constant);
     if (!(scheme.mach_ref > 0.0)) {
@@ -173,6 +219,77 @@ struct Euler<P>::Impl {
     }
   }
 
+  // The linear gradients' tangent through the boundary values of the cells whose fit keeps every
+  // boundary face: sum over those entries of dprim_b (x) w, dprim_b = d(prim_b)/d(prim) dW of the
+  // face's owner. A quadratic band cell (band = 1) reads no such value.
+  void kept_boundaries_tangent(ek::Data<P> data) {
+    const auto nc = static_cast<std::size_t>(topo.n_cells);
+    const auto nf = static_cast<std::size_t>(topo.n_faces);
+    const auto ni = static_cast<std::size_t>(topo.n_interior_faces);
+    const auto nst = stencil.entries.size();
+    if (bnd_state_jac.empty()) {
+      bnd_state_jac.assign(25 * nf, typename P::jac(0));
+      prim_b_tan.assign(5 * (nf - ni), 0.0);
+      discarded.assign(5 * nc, Res(0));
+    }
+    // The kept cells are those with a weight on a face that is not a `state` face: the fit
+    // weighs those faces only when it keeps every boundary face.
+    if (kept_cells.empty()) {
+      for (std::size_t c = 0; c + 1 < stencil.offsets.size(); ++c) {
+        for (auto k = static_cast<std::size_t>(stencil.offsets[c]);
+             k < static_cast<std::size_t>(stencil.offsets[c + 1]); ++k) {
+          const index_t e = stencil.entries[k];
+          if (e >= 0 || bc_kind[static_cast<std::size_t>(-e - 1)] ==
+                            static_cast<double>(BoundaryKind::state)) {
+            continue;
+          }
+          if (stencil_lsq_weight[k] != 0 || stencil_lsq_weight[nst + k] != 0 ||
+              stencil_lsq_weight[2 * nst + k] != 0) {
+            kept_cells.push_back(c);
+            break;
+          }
+        }
+      }
+    }
+    data.bnd_state_jac = bnd_state_jac.data();
+    std::fill(discarded.begin(), discarded.end(), Res(0));
+    data.res = discarded.data();
+    // Every boundary face, a ghost's included (the fits of the owned cells next to it keep its
+    // face too): the increment's order does not matter, it is discarded.
+    data.topo.n_owned_faces = data.topo.n_faces;
+    data.topo.rank_independent = false;
+    ek::cpu::boundary_states_jacobian(data);
+    for (std::size_t f = ni; f < nf; ++f) {
+      const auto o = static_cast<std::size_t>(topo.owner[f]);
+      for (std::size_t i = 0; i < 5; ++i) {
+        double t = 0.0;
+        for (std::size_t j = 0; j < 5; ++j) {
+          t += static_cast<double>(bnd_state_jac[(5 * i + j) * nf + f]) *
+               static_cast<double>(prim_tan[j * nc + o]);
+        }
+        prim_b_tan[i * (nf - ni) + f - ni] = t;
+      }
+    }
+    const bool quadratic = scheme.gradient_fit == GradientFit::quadratic;
+    for (const std::size_t c : kept_cells) {
+      if (quadratic && band[c] > 0.5) continue;
+      for (auto k = static_cast<std::size_t>(stencil.offsets[c]);
+           k < static_cast<std::size_t>(stencil.offsets[c + 1]); ++k) {
+        const index_t e = stencil.entries[k];
+        if (e >= 0) continue;
+        const auto b = static_cast<std::size_t>(-e - 1) - ni;
+        for (std::size_t i = 0; i < 5; ++i) {
+          for (std::size_t u = 0; u < 3; ++u) {
+            auto& g = grad_tan[(3 * i + u) * nc + c];
+            g = static_cast<Gr>(static_cast<double>(g) +
+                                static_cast<double>(stencil_lsq_weight[u * nst + k]) *
+                                    prim_b_tan[i * (nf - ni) + b]);
+          }
+        }
+      }
+    }
+  }
+
   // Least-squares weights over the stencil, 1/|d|^2 weighting as kernels::cell_stencil, but
   // with only the boundary faces whose condition gives the state there: elsewhere the boundary
   // value is the adjacent cell's, which sits at the cell centroid and not at the face, and would
@@ -185,6 +302,8 @@ struct Euler<P>::Impl {
     const auto nst = stencil.entries.size();
     // Written into the stored weights entry by entry: no FP64 copy of the whole stencil.
     stencil_lsq_weight.assign(3 * nst, typename decltype(stencil_lsq_weight)::value_type(0));
+    kept_boundaries = 0;
+    kept_cells.clear();
     auto& w = stencil_lsq_weight;
     constexpr double coordinate_eps =
         std::numeric_limits<typename decltype(cell_centroid)::value_type>::epsilon();
@@ -245,9 +364,222 @@ struct Euler<P>::Impl {
         }
         return true;
       };
-      if (!weights(false)) weights(true);
+      if (!weights(false)) {
+        weights(true);
+        ++kept_boundaries;
+      }
     }
     d.stencil_lsq_weight = stencil_lsq_weight.data();
+    if (scheme.gradient_fit == GradientFit::quadratic) band_weights(kind);
+  }
+
+  // The quadratic gradient's weights (kernels/euler.py, band_gradients): for every cell, the
+  // gradient at its centroid of the quadratic phi_c + g . d + d^T H d / 2 fitted, with weights
+  // 1/|d|^2 (Mavriplis 2003), to the values at the centroids of the cells within two vertex rings
+  // and at their boundary faces that give the state, all as point values. Each unknown is scaled by
+  // the stencil's extent along its directions and the weights taken in those scaled coordinates;
+  // directions where no entry extends (the span of a one-cell-thick slab) are left out. Solved by
+  // Householder QR. A cell with fewer than 1.5 entries per unknown, or whose entries leave the fit
+  // undetermined, keeps the linear gradient: linear_cells() reports how many
+  // (docs/design/euler.md, Quadratic gradient).
+  void band_weights(std::span<const BoundaryKind> kind) {
+    const auto nc = static_cast<std::size_t>(topo.n_cells);
+    const auto ni = static_cast<std::size_t>(topo.n_interior_faces);
+    const auto nf = static_cast<std::size_t>(topo.n_faces);
+    auto gives = [&](index_t e) {
+      return kind[static_cast<std::size_t>(-e - 1) - ni] == BoundaryKind::state;
+    };
+    auto around = [&](index_t c) {
+      const auto i = static_cast<std::size_t>(c);
+      return std::span<const index_t>(
+          vertex.entries.data() + vertex.offsets[i],
+          static_cast<std::size_t>(vertex.offsets[i + 1] - vertex.offsets[i]));
+    };
+    auto centre = [&](index_t e) {
+      std::array<double, 3> x{};
+      for (std::size_t j = 0; j < 3; ++j) {
+        x[j] = e >= 0
+                   ? static_cast<double>(cell_centroid[j * nc + static_cast<std::size_t>(e)])
+                   : static_cast<double>(face_centroid[j * nf + static_cast<std::size_t>(-e - 1)]);
+      }
+      return x;
+    };
+    // Quadratic monomials as (i, j) pairs of directions after the three linear ones.
+    constexpr std::size_t nt = 9;
+    constexpr std::array<std::array<int, 2>, nt> pair{
+        {{0, -1}, {1, -1}, {2, -1}, {0, 0}, {1, 1}, {2, 2}, {0, 1}, {0, 2}, {1, 2}}};
+    std::fill(band.begin(), band.end(), typename decltype(band)::value_type(0));
+    band_offsets.assign(nc + 1, 0);
+    band_entries.clear();
+    linear_cells = 0;
+    first_linear = -1;
+    std::vector<std::array<double, 3>> weights;
+    std::vector<index_t> cells, points;
+    for (std::size_t c = 0; c < nc; ++c) {
+      band_offsets[c + 1] = static_cast<kernels::offset_t>(band_entries.size());
+      cells.assign(1, static_cast<index_t>(c));
+      points.clear();
+      for (int r = 0; r < 2; ++r) {
+        const auto reached = cells.size();
+        for (std::size_t k = 0; k < reached; ++k) {
+          for (const auto e : around(cells[k])) {
+            if (e >= 0)
+              cells.push_back(e);
+            else if (gives(e))
+              points.push_back(e);
+          }
+        }
+        std::sort(cells.begin(), cells.end());
+        cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
+      }
+      std::sort(points.begin(), points.end());
+      points.erase(std::unique(points.begin(), points.end()), points.end());
+      for (const auto e : cells) {
+        if (e != static_cast<index_t>(c)) points.push_back(e);
+      }
+      const auto xc = centre(static_cast<index_t>(c));
+      auto offset = [&](index_t e) {
+        const auto x = centre(e);
+        return std::array<double, 3>{x[0] - xc[0], x[1] - xc[1], x[2] - xc[2]};
+      };
+      std::array<double, 3> extent{};
+      for (const auto e : points) {
+        const auto dk = offset(e);
+        for (std::size_t j = 0; j < 3; ++j) extent[j] = std::max(extent[j], std::abs(dk[j]));
+      }
+      const double widest = std::max({extent[0], extent[1], extent[2]});
+      auto spans = [&](int j) {
+        return j < 0 || extent[static_cast<std::size_t>(j)] > 1e-12 * widest;
+      };
+      std::vector<std::size_t> used;
+      for (std::size_t i = 0; i < nt; ++i) {
+        if (spans(i < 3 ? static_cast<int>(i) : pair[i][0]) && spans(pair[i][1])) used.push_back(i);
+      }
+      const auto m = used.size();
+      // Scaled row of entry e: d / extent, and d_i d_j / (extent_i extent_j): every value a point
+      // value at its centroid (docs/design/euler.md, Quadratic gradient).
+      auto row = [&](index_t e) {
+        const auto dk = offset(e);
+        std::vector<double> r(m);
+        for (std::size_t u = 0; u < m; ++u) {
+          const auto i = used[u];
+          if (i < 3) {
+            r[u] = dk[i] / extent[i];
+          } else {
+            const auto a = static_cast<std::size_t>(pair[i][0]);
+            const auto b = static_cast<std::size_t>(pair[i][1]);
+            const double v = dk[a] * dk[b];
+            r[u] = v / (extent[a] * extent[b]);
+          }
+        }
+        return r;
+      };
+      auto sqrt_weight = [&](index_t e) {
+        const auto dk = offset(e);
+        double s2 = 0.0;
+        for (std::size_t j = 0; j < 3; ++j) {
+          if (spans(static_cast<int>(j))) s2 += std::pow(dk[j] / extent[j], 2);
+        }
+        return 1.0 / std::sqrt(s2);
+      };
+      const auto n = points.size();
+      auto keep_linear = [&] {
+        ++linear_cells;
+        if (first_linear < 0) first_linear = static_cast<index_t>(c);
+      };
+      if (2 * n < 3 * m) {
+        keep_linear();
+        continue;
+      }
+      // theta = R^-1 Q^T W^1/2 y from W^1/2 A = Q R: the weights G = R^-1 Q^T W^1/2 (m x n).
+      std::vector<double> b(n * m), sw(n);
+      for (std::size_t k = 0; k < n; ++k) {
+        const auto r = row(points[k]);
+        sw[k] = sqrt_weight(points[k]);
+        for (std::size_t i = 0; i < m; ++i) b[i * n + k] = sw[k] * r[i];
+      }
+      std::vector<double> qb;
+      if (!householder(n, m, b, m, qb)) {
+        keep_linear();
+        continue;
+      }
+      std::vector<double> ga(m * n);  // column-major m x n
+      for (std::size_t k = 0; k < n; ++k) {
+        for (std::size_t ii = m; ii-- > 0;) {
+          double v = qb[ii * n + k];
+          for (std::size_t jj = ii + 1; jj < m; ++jj) v -= b[jj * n + ii] * ga[k * m + jj];
+          ga[k * m + ii] = v / b[ii * n + ii];
+        }
+        for (std::size_t i = 0; i < m; ++i) ga[k * m + i] *= sw[k];
+      }
+      auto gradient = [&](const double* col) {
+        std::array<double, 3> g{};
+        for (std::size_t u = 0; u < m; ++u) {
+          if (used[u] < 3) g[used[u]] = col[u] / extent[used[u]];
+        }
+        return g;
+      };
+      for (std::size_t k = 0; k < n; ++k) {
+        band_entries.push_back(points[k]);
+        weights.push_back(gradient(&ga[k * m]));
+      }
+      band[c] = typename decltype(band)::value_type(1);
+      band_offsets[c + 1] = static_cast<kernels::offset_t>(band_entries.size());
+    }
+    const auto nst = band_entries.size();
+    std::vector<double> w(3 * nst);
+    for (std::size_t k = 0; k < nst; ++k) {
+      for (std::size_t j = 0; j < 3; ++j) w[j * nst + k] = weights[k][j];
+    }
+    fill(band_weight, w);
+    d.band_weight = band_weight.data();
+    band_topo.n_stencil = static_cast<kernels::offset_t>(nst);
+    band_topo.stencil_offsets = band_offsets.data();
+    band_topo.stencil = band_entries.data();
+  }
+
+  // Householder QR of the column-major rows x cols matrix a: on return its upper triangle is R,
+  // and q the first qcols columns of Q (rows x qcols, column-major). False if a diagonal entry of
+  // R is below 1e-10 of the largest column norm (rank deficient).
+  static bool householder(std::size_t rows, std::size_t cols, std::vector<double>& a,
+                          std::size_t qcols, std::vector<double>& q) {
+    double largest = 0.0;
+    for (std::size_t j = 0; j < cols; ++j) {
+      double s = 0.0;
+      for (std::size_t i = 0; i < rows; ++i) s += a[j * rows + i] * a[j * rows + i];
+      largest = std::max(largest, std::sqrt(s));
+    }
+    std::vector<double> v(rows * cols, 0.0), vv(cols, 0.0);
+    auto reflect = [&](std::size_t j, double* col) {
+      double s = 0.0;
+      for (std::size_t i = j; i < rows; ++i) s += v[j * rows + i] * col[i];
+      s *= 2.0 / vv[j];
+      for (std::size_t i = j; i < rows; ++i) col[i] -= s * v[j * rows + i];
+    };
+    for (std::size_t j = 0; j < cols; ++j) {
+      double norm = 0.0;
+      for (std::size_t i = j; i < rows; ++i) norm += a[j * rows + i] * a[j * rows + i];
+      norm = std::sqrt(norm);
+      if (!(norm > 1e-10 * largest)) return false;
+      const double alpha = a[j * rows + j] > 0.0 ? -norm : norm;
+      for (std::size_t i = j; i < rows; ++i) v[j * rows + i] = a[j * rows + i];
+      v[j * rows + j] -= alpha;
+      for (std::size_t i = j; i < rows; ++i) vv[j] += v[j * rows + i] * v[j * rows + i];
+      for (std::size_t k = j; k < cols; ++k) reflect(j, &a[k * rows]);
+    }
+    // Q E = H_0 ... H_{cols-1} E, E the first qcols columns of the identity.
+    q.assign(rows * qcols, 0.0);
+    for (std::size_t k = 0; k < qcols; ++k) {
+      q[k * rows + k] = 1.0;
+      for (std::size_t j = cols; j-- > 0;) reflect(j, &q[k * rows]);
+    }
+    return true;
+  }
+
+  void band_gradients() {
+    auto b = d;
+    b.topo = band_topo;
+    ek::cpu::band_gradients(b);
   }
 
   // A face or boundary loop: its gather under global keys, else its scatter.
@@ -261,6 +593,10 @@ struct Euler<P>::Impl {
   }
 
   void faces() {
+    if (planar) {
+      faces_planar();
+      return;
+    }
     switch (scheme.flux) {
       case Flux::roe:
         run([&](auto... strategy) { ek::cpu::roe_faces(d, strategy...); });
@@ -273,6 +609,23 @@ struct Euler<P>::Impl {
       case Flux::ausm_up:
         run([&](auto... strategy) { ek::cpu::ausm_faces(d, strategy...); });
         run([&](auto... strategy) { ek::cpu::ausm_boundaries(d, strategy...); });
+        break;
+    }
+  }
+
+  void faces_planar() {
+    switch (scheme.flux) {
+      case Flux::roe:
+        run([&](auto... strategy) { ek::cpu::roe_faces_planar(d, strategy...); });
+        run([&](auto... strategy) { ek::cpu::roe_boundaries_planar(d, strategy...); });
+        break;
+      case Flux::hllc:
+        run([&](auto... strategy) { ek::cpu::hllc_faces_planar(d, strategy...); });
+        run([&](auto... strategy) { ek::cpu::hllc_boundaries_planar(d, strategy...); });
+        break;
+      case Flux::ausm_up:
+        run([&](auto... strategy) { ek::cpu::ausm_faces_planar(d, strategy...); });
+        run([&](auto... strategy) { ek::cpu::ausm_boundaries_planar(d, strategy...); });
         break;
     }
   }
@@ -294,19 +647,25 @@ struct Euler<P>::Impl {
     }
   }
 
-  void faces_tangent() {
+  void faces_tangent(bool interior = true, bool boundary = true) {
     switch (scheme.flux) {
       case Flux::roe:
-        run([&](auto... strategy) { ek::cpu::roe_faces_tangent(d, strategy...); });
-        run([&](auto... strategy) { ek::cpu::roe_boundaries_tangent(d, strategy...); });
+        if (interior) run([&](auto... strategy) { ek::cpu::roe_faces_tangent(d, strategy...); });
+        if (boundary) {
+          run([&](auto... strategy) { ek::cpu::roe_boundaries_tangent(d, strategy...); });
+        }
         break;
       case Flux::hllc:
-        run([&](auto... strategy) { ek::cpu::hllc_faces_tangent(d, strategy...); });
-        run([&](auto... strategy) { ek::cpu::hllc_boundaries_tangent(d, strategy...); });
+        if (interior) run([&](auto... strategy) { ek::cpu::hllc_faces_tangent(d, strategy...); });
+        if (boundary) {
+          run([&](auto... strategy) { ek::cpu::hllc_boundaries_tangent(d, strategy...); });
+        }
         break;
       case Flux::ausm_up:
-        run([&](auto... strategy) { ek::cpu::ausm_faces_tangent(d, strategy...); });
-        run([&](auto... strategy) { ek::cpu::ausm_boundaries_tangent(d, strategy...); });
+        if (interior) run([&](auto... strategy) { ek::cpu::ausm_faces_tangent(d, strategy...); });
+        if (boundary) {
+          run([&](auto... strategy) { ek::cpu::ausm_boundaries_tangent(d, strategy...); });
+        }
         break;
     }
   }
@@ -366,6 +725,56 @@ template <class P>
 std::vector<double> Euler<P>::gradient_weights() const {
   const auto& w = impl_->stencil_lsq_weight;
   return {w.begin(), w.end()};
+}
+
+template <class P>
+void Euler<P>::linear_gradient(std::span<typename P::grad> out) {
+  auto& m = *impl_;
+  if (out.size() != m.grad.size()) throw std::invalid_argument("gradient array size");
+  if (m.scheme.gradient_fit == GradientFit::linear) {
+    std::copy(m.grad.begin(), m.grad.end(), out.begin());
+    return;
+  }
+  // The linear gradients loop, its limiter bounds into scratch.
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  std::vector<State> lo(5 * nc), hi(5 * nc);
+  auto d = m.d;
+  d.grad = out.data();
+  d.wmin = lo.data();
+  d.wmax = hi.data();
+  ek::cpu::gradients(d);
+}
+
+template <class P>
+typename Euler<P>::QuadraticGradient Euler<P>::quadratic_gradient() const {
+  const auto& m = *impl_;
+  return {{m.band.begin(), m.band.end()},
+          {m.band_offsets.begin(), m.band_offsets.end()},
+          m.band_entries,
+          {m.band_weight.begin(), m.band_weight.end()}};
+}
+
+template <class P>
+typename Euler<P>::LinearCells Euler<P>::linear_cells() const noexcept {
+  return {impl_->linear_cells, impl_->first_linear};
+}
+
+template <class P>
+bool Euler<P>::all_planar() const noexcept {
+  return impl_->all_planar;
+}
+
+template <class P>
+void Euler<P>::set_planar(bool on) {
+  if (on && !impl_->all_planar) {
+    throw std::invalid_argument("planar loops on a mesh with a face not proven planar");
+  }
+  impl_->planar = on;
+}
+
+template <class P>
+bool Euler<P>::planar() const noexcept {
+  return impl_->planar;
 }
 
 template <class P>
@@ -523,6 +932,57 @@ void Euler<P>::first_order_tangent(std::span<const State> u, std::span<const Sta
 }
 
 template <class P>
+void Euler<P>::gradient_tangent(std::span<const State> s, std::span<const State> du,
+                                std::span<Res> dres, Faces faces) {
+  auto& m = *impl_;
+  if (!m.scheme.second_order) return;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  if (m.grad_tan.empty()) {
+    m.prim_tan.assign(5 * nc, State(0));
+    m.zero_state.assign(5 * nc, State(0));
+    m.zero_grad.assign(15 * nc, typename P::grad(0));
+    m.grad_tan.assign(15 * nc, typename P::grad(0));
+    m.grad_band_tan.assign(15 * nc, typename P::grad(0));
+    m.wmin_tan.assign(5 * nc, State(0));
+    m.wmax_tan.assign(5 * nc, State(0));
+    m.band_tan.assign(nc, typename decltype(m.band_tan)::value_type(0));
+  }
+  // dW = dW/dU du, then the gradients' tangent: a weighted sum of dW over each stencil, whose
+  // boundary values the generated loops hold (boundary_states is frozen); the cells whose linear
+  // fit keeps every boundary face add those values' tangent.
+  auto d = m.d;
+  d.u = const_cast<State*>(s.data());
+  d.u_tan = const_cast<State*>(du.data());
+  d.prim_tan = m.prim_tan.data();
+  d.source_tan = m.zero_state.data();
+  ek::cpu::primitives_tangent(d);
+  m.fill_ghosts(m.prim_tan, 5);
+  d.grad_tan = m.grad_tan.data();
+  d.wmin_tan = m.wmin_tan.data();
+  d.wmax_tan = m.wmax_tan.data();
+  if (m.scheme.gradient_fit == GradientFit::quadratic) {
+    d.grad_band_tan = m.grad_band_tan.data();
+    d.band_tan = m.band_tan.data();
+    auto b = d;
+    b.topo = m.band_topo;
+    ek::cpu::band_gradients_tangent(b);
+    ek::cpu::quadratic_gradients_tangent(d);
+  } else {
+    ek::cpu::gradients_tangent(d);
+  }
+  if (m.kept_boundaries > 0) m.kept_boundaries_tangent(d);
+  m.fill_ghosts(m.grad_tan, 15);
+  // The fluxes with only the gradients moving: dW and the limiter held.
+  d.prim_tan = m.zero_state.data();
+  d.phi_tan = m.zero_state.data();
+  d.res_tan = dres.data();
+  auto saved = m.d;
+  m.d = d;
+  m.faces_tangent(faces == Faces::interior, faces == Faces::boundary);
+  m.d = saved;
+}
+
+template <class P>
 const kernels::euler::Data<P>& Euler<P>::data() const {
   return impl_->d;
 }
@@ -573,6 +1033,13 @@ void Euler<P>::spectral_radius(std::span<State> lambda) {
   auto& m = *impl_;
   m.d.lam = lambda.data();
   ek::cpu::spectral_radius(m.d);
+}
+
+template <class P>
+typename Euler<P>::Arrays Euler<P>::arrays() noexcept {
+  auto& m = *impl_;
+  return {m.prim.data(), m.grad.data(), m.prim_b.data(), m.bc_kind.data(),
+          m.bc.data(),   m.dwdu.data(), m.topo,          m.stencil_lsq_weight.data()};
 }
 
 template <class P>

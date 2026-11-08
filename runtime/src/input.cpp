@@ -197,13 +197,17 @@ void read_mesh_info(const Json& info, SolverInput& in) {
                    .data_json = Json{{"expected", in.mesh_sha256}, {"found", sha}}.dump()});
   }
 
-  const Object counts(root.get("counts"), root.at("counts"),
-                      {"cells", "faces", "nodes", "source_nodes", "face_nodes", "cells_by_type",
-                       "stencil_entries", "periodic_ghosts"});
+  const Object counts(
+      root.get("counts"), root.at("counts"),
+      {"cells", "faces", "nodes", "source_nodes", "face_nodes", "cells_by_type", "stencil_entries",
+       "vertex_stencil_entries", "band_entries", "boundary_fit_entries", "periodic_ghosts"});
   const std::int64_t cells = counts.integer("cells", 1), faces = counts.integer("faces", 1);
   (void)counts.integer("source_nodes", counts.integer("nodes", 1));
   (void)counts.integer("face_nodes", 3 * faces);
   (void)count(counts, "stencil_entries");
+  (void)count(counts, "vertex_stencil_entries");
+  (void)count(counts, "band_entries");
+  (void)count(counts, "boundary_fit_entries");
   (void)count(counts, "periodic_ghosts");
   const Object by_type(counts.get("cells_by_type"), counts.at("cells_by_type"),
                        {"tetra", "pyramid", "prism", "hexa", "polyhedron"});
@@ -370,15 +374,19 @@ void read_mesh_info(const Json& info, SolverInput& in) {
     invalid(multigrid.at("edges_by_level"), "must start with the interior faces");
 
   if (info.contains("partition")) {
-    const Object part(root.get("partition"), root.at("partition"),
-                      {"ranks", "groups", "cells_by_rank", "ghosts_by_rank", "faces_by_rank",
-                       "interior_faces_by_rank", "stencil_entries_by_rank", "nodes_by_rank",
-                       "face_nodes_by_rank", "sent_cells_by_rank"});
+    const Object part(
+        root.get("partition"), root.at("partition"),
+        {"ranks", "groups", "cells_by_rank", "ghosts_by_rank", "faces_by_rank",
+         "interior_faces_by_rank", "stencil_entries_by_rank", "vertex_stencil_entries_by_rank",
+         "band_entries_by_rank", "boundary_fit_entries_by_rank", "nodes_by_rank",
+         "face_nodes_by_rank", "sent_cells_by_rank"});
     const std::int64_t ranks = part.integer("ranks", 1);
     (void)part.tag("groups", {"none", "lines"});
     for (const char* key :
          {"cells_by_rank", "ghosts_by_rank", "faces_by_rank", "interior_faces_by_rank",
-          "stencil_entries_by_rank", "nodes_by_rank", "face_nodes_by_rank", "sent_cells_by_rank"}) {
+          "stencil_entries_by_rank", "vertex_stencil_entries_by_rank", "band_entries_by_rank",
+          "boundary_fit_entries_by_rank", "nodes_by_rank", "face_nodes_by_rank",
+          "sent_cells_by_rank"}) {
       const Json& v = list(part, key);
       if (static_cast<std::int64_t>(v.size()) != ranks)
         invalid(part.at(key), "expected one value per rank");
@@ -715,9 +723,15 @@ SolverInput parse_solver_input(const std::string& text) {
     in.memory_bytes_device = m.integer("bytes_device", 0);
   }
   {
-    const Object p(root.get("physics"), "physics", {"kind", "turbulence"});
+    const Object p(root.get("physics"), "physics", {"kind", "turbulence", "flux"});
     in.physics_kind = p.tag("kind", {"compressible", "incompressible"});
     in.turbulence = parse_turbulence(p, in.physics_kind);
+    // case-schema.md#physics: the convective flux of compressible flow, null otherwise.
+    if (in.physics_kind == "compressible") {
+      in.flux = p.tag("flux", {"roe", "hllc", "ausm+up"});
+    } else if (!p.is_null("flux")) {
+      invalid(p.at("flux"), "expected null: only compressible physics names a flux");
+    }
   }
   const bool compressible = in.physics_kind == "compressible";
   const bool sa = in.turbulence.nu_tilde_ratio.has_value();

@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -85,6 +86,33 @@ TEST_CASE("The faces of a periodic pair match one to one", "[periodic]") {
   check_partners(mesh);
   // Partners survive renumbering, which re-sorts every face.
   check_partners(autan::renumber_cells(mesh, autan::rcm_order(mesh)));
+  // n = 2, x-periodic, node 0 swapped with node 14, the centre (1, 1/2, 1/2) of xmax (zone b),
+  // the image of the centre of xmin that several faces of xmin share: each of the 9 nodes of xmin
+  // is listed once, with its translate.
+  const autan::Mesh swapped =
+      autan::assemble(periodic_box(2, fill, {0}, [](autan::CellwiseMesh& m) {
+        constexpr index_t centre = 14;
+        std::swap(m.x[0], m.x[centre]);
+        std::swap(m.y[0], m.y[centre]);
+        std::swap(m.z[0], m.z[centre]);
+        for (auto* list : {&m.face_nodes, &m.labelled_face_nodes}) {
+          for (index_t& p : *list) p = p == 0 ? centre : (p == centre ? 0 : p);
+        }
+      }));
+  REQUIRE((swapped.x()[0] == 1.0 && swapped.y()[0] == 0.5 && swapped.z()[0] == 0.5));
+  const auto match = autan::match_periodic_faces(swapped, swapped.periodic_pairs());
+  REQUIRE(match.nodes.size() == 1);
+  std::vector<index_t> listed;
+  for (const auto& [a, b] : match.nodes[0]) {
+    listed.push_back(a);
+    CHECK(swapped.x()[at(a)] == 0.0);
+    CHECK(swapped.x()[at(b)] == 1.0);
+    CHECK(swapped.y()[at(b)] == swapped.y()[at(a)]);
+    CHECK(swapped.z()[at(b)] == swapped.z()[at(a)]);
+  }
+  std::ranges::sort(listed);
+  CHECK(listed.size() == 9);
+  CHECK(std::ranges::adjacent_find(listed) == listed.end());
 }
 
 TEST_CASE("Periodic nodes match within 1e-4 of the local shortest edge", "[periodic]") {
@@ -122,6 +150,27 @@ TEST_CASE("Periodic nodes match within 1e-4 of the local shortest edge", "[perio
     }
   });
   CHECK(autan::assemble(both).periodic_partners(0).size() == 9);
+  // The xmax nodes at z = 1/3 raised by 2e-5, within the tolerance: their bins (5e-5 wide, from
+  // z = 0) are the next ones up from the queries'.
+  CHECK(autan::assemble(periodic_box(3, BoxFill::hexa, {0},
+                                     [](autan::CellwiseMesh& m) {
+                                       for (std::size_t i = 0; i < m.x.size(); ++i) {
+                                         if (m.x[i] == 1.0 && m.z[i] == 1.0 / 3.0) m.z[i] += 2e-5;
+                                       }
+                                     }))
+            .periodic_pairs()
+            .size() == 1);
+  // n = 4: one xmin node moved by 1e-6 along y has a shortest edge of 0.25 - 1e-6, an octave
+  // below its partner's 0.25.
+  CHECK(autan::assemble(periodic_box(4, BoxFill::hexa, {0},
+                                     [](autan::CellwiseMesh& m) {
+                                       for (std::size_t i = 0; i < m.x.size(); ++i) {
+                                         if (m.x[i] == 0.0 && m.y[i] == 0.5 && m.z[i] == 0.5)
+                                           m.y[i] += 1e-6;
+                                       }
+                                     }))
+            .periodic_pairs()
+            .size() == 1);
 }
 
 TEST_CASE("Periodic nodes matched within the tolerance become exact translates", "[periodic]") {
@@ -134,6 +183,15 @@ TEST_CASE("Periodic nodes matched within the tolerance become exact translates",
   const double delta = 0.5 * tolerance;
   const autan::Mesh exact = autan::assemble(periodic_box(3, BoxFill::hexa, {0, 1}));
   CHECK(exact.periodic_snap().nodes == 0);
+  // xmax at 1 + 2^-50 is placed at 0 + 1: a move of 2^-50, exactly 4 ulps of 1 + 2^-50, is
+  // round-off.
+  const autan::Mesh ulps =
+      autan::assemble(periodic_box(3, BoxFill::hexa, {0}, [](autan::CellwiseMesh& m) {
+        for (double& x : m.x) {
+          if (x == 1.0) x = 1.0 + std::ldexp(1.0, -50);
+        }
+      }));
+  CHECK(ulps.periodic_snap().nodes == 0);
   const auto outward = [&](autan::CellwiseMesh& m) {
     for (double& x : m.x) {
       if (x == 1.0) x += delta;
@@ -173,6 +231,23 @@ TEST_CASE("Periodic nodes matched within the tolerance become exact translates",
   check_partners(moved);
   CHECK_THAT(snap.max_volume_change, Catch::Matchers::WithinRel(change, 1e-12));
   CHECK(exact.periodic_snap().max_volume_change == 0.0);
+
+  // The x pair declared the other way round, xmin moved outward: zone b is xmin, zone 0, whose
+  // faces come first among the boundary faces, so the first boundary face holds moved nodes.
+  const auto xmin_outward = [&](autan::CellwiseMesh& m) {
+    m.face_zones[0].kind = autan::BcKind::periodic;
+    m.face_zones[1].kind = autan::BcKind::periodic;
+    m.periodic.push_back({.zone_a = 1, .zone_b = 0, .translation = {-1.0, 0.0, 0.0}});
+    for (double& coordinate : m.x) {
+      if (coordinate == 0.0) coordinate -= delta;
+    }
+  };
+  const autan::Mesh first = autan::assemble(periodic_box(3, BoxFill::hexa, {}, xmin_outward));
+  CHECK(first.periodic_snap().nodes == 16);
+  CHECK_THAT(first.periodic_snap().max_distance, WithinAbs(delta, 1e-15));
+  REQUIRE(first.face_zone()[at(first.n_interior_faces())] == 0);
+  for (const index_t p : first.face_nodes(first.n_interior_faces())) CHECK(first.x()[at(p)] == 0.0);
+  check_partners(first);
 }
 
 TEST_CASE("Moving periodic nodes that would make a valid cell degenerate is a coded error",
@@ -216,6 +291,43 @@ TEST_CASE("A cell already degenerate keeps its own error whatever the periodic m
   };
   require_code(autan::ErrorCode::geometry_non_positive_volume,
                periodic_box(2, BoxFill::hexa, {0}, inside_out));
+
+  // A unit cube, x-periodic, xmax at x = 1 + 1e-5, with a zero-area face (0, 3, 8) on the edge
+  // x = z = 0, its midpoint 8 a hanging node of the bottom face: the move checks the cube, not
+  // that face, which compute_geometry rejects.
+  autan::CellwiseMesh m;
+  for (int k = 0; k < 2; ++k) {
+    for (const auto& [x, y] :
+         {std::pair{0, 0}, std::pair{1, 0}, std::pair{1, 1}, std::pair{0, 1}}) {
+      m.x.push_back(x == 1 ? 1.0 + 1e-5 : 0.0);
+      m.y.push_back(y);
+      m.z.push_back(k);
+    }
+  }
+  m.x.push_back(0.0);
+  m.y.push_back(0.5);
+  m.z.push_back(0.0);
+  const std::vector<autan::offset_t> offsets{0, 5, 9, 13, 17, 21, 25, 28};
+  const std::vector<index_t> nodes{0, 8, 3, 2, 1, 4, 5, 6, 7, 0, 1, 5, 4, 1,
+                                   2, 6, 5, 2, 3, 7, 6, 3, 0, 4, 7, 0, 3, 8};
+  m.add_polyhedron(offsets, nodes, 0);
+  m.cell_zones.push_back(
+      {.name = "fluid", .type = "", .kind = autan::CellKind::fluid, .provenance = {}});
+  for (const char* name : {"xmin", "xmax"}) {
+    m.face_zones.push_back(
+        {.name = name, .bc_type = "", .kind = autan::BcKind::periodic, .provenance = {}});
+  }
+  m.add_labelled_face(std::array<index_t, 4>{3, 0, 4, 7}, 0);
+  m.add_labelled_face(std::array<index_t, 4>{1, 2, 6, 5}, 1);
+  m.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
+  const autan::Mesh snapped = autan::assemble(autan::to_face_based(std::move(m)));
+  CHECK(snapped.periodic_snap().nodes == 4);
+  try {
+    (void)autan::compute_geometry(snapped);
+    FAIL("expected E0120");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == autan::ErrorCode::geometry_degenerate_face);
+  }
 }
 
 TEST_CASE("A class with several roots is placed when its pairs agree", "[periodic]") {

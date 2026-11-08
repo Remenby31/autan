@@ -70,6 +70,33 @@ TEST_CASE("RCM orders a chain of cells with bandwidth 1", "[renumber]") {
   CHECK(bandwidth(ordered) == 1);
 }
 
+TEST_CASE("RCM starts from a pseudo-peripheral cell", "[renumber]") {
+  // Prisms on seven triangles: triangle 0 between two wings, each a triangle cut into three
+  // around its centroid, cells {1, 3, 5} and {2, 4, 6}, where 1 and 2 touch cell 0. Cell 0 has
+  // the lowest degree and index but eccentricity 2; cells 3, 5, 4 and 6 are 4 apart across it.
+  autan::CellwiseMesh cw;
+  const std::array<std::array<double, 2>, 7> xy{
+      {{0, 0}, {2, 0}, {1, 2}, {1, -2}, {1, -2.0 / 3}, {3, 2}, {2, 4.0 / 3}}};
+  for (int k = 0; k < 2; ++k)
+    for (const auto& [x, y] : xy) {
+      cw.x.push_back(x);
+      cw.y.push_back(y);
+      cw.z.push_back(k);
+    }
+  const std::array<std::array<index_t, 3>, 7> triangles{
+      {{0, 1, 2}, {1, 0, 4}, {2, 1, 6}, {0, 3, 4}, {1, 5, 6}, {3, 1, 4}, {5, 2, 6}}};
+  for (const auto& [a, b, c] : triangles) {
+    cw.add_cell(autan::CellShape::prism, std::array<index_t, 6>{a, b, c, a + 7, b + 7, c + 7}, 0);
+  }
+  cw.cell_zones.push_back(autan::CellZone{
+      .name = "fluid", .type = "", .kind = autan::CellKind::unspecified, .provenance = {}});
+  const autan::Mesh mesh = autan::assemble(autan::to_face_based(cw));
+  REQUIRE(mesh.n_interior_faces() == 8);
+  // Reversal puts the start cell last.
+  const index_t start = autan::rcm_order(mesh).back();
+  CHECK((start == 3 || start == 4 || start == 5 || start == 6));
+}
+
 TEST_CASE("Renumbering permutes cells and keeps the mesh", "[renumber]") {
   const autan::Mesh mesh =
       autan::assemble(autan::to_face_based(autan::test::box(4, autan::test::BoxFill::hybrid, 0.3)));
