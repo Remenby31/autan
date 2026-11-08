@@ -706,6 +706,12 @@ TEST_CASE(
   const auto fit =
       GENERATE(autan::physics::GradientFit::linear, autan::physics::GradientFit::quadratic);
   const bool second_order = GENERATE(true, false);
+  // The other fit and order pairs once per mesh, with the kinked flux and the eddy viscosity: the
+  // full grid of fluxes and walls under the linear fit at second order only, for the test's cost.
+  if ((fit != autan::physics::GradientFit::linear || !second_order) &&
+      (flux != Flux::ausm_up || !eddy || adiabatic)) {
+    return;
+  }
   const bool gradients = second_order || fit == autan::physics::GradientFit::quadratic;
   const char* file = which < meshes.size() ? meshes[which] : "one-cell-thick slab";
   INFO(file << " flux " << static_cast<int>(flux) << (eddy ? " eddy viscosity" : "")
