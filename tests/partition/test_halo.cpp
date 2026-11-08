@@ -459,6 +459,41 @@ TEST_CASE("Graph levels exchange their nodes and edges through HaloExchange", "[
   exchange(g.edge_halo, g.n_owned_edges, g.edge_global_id);
 }
 
+TEST_CASE("Parent imports bring each coarse node's owner value through HaloExchange",
+          "[halo][graph]") {
+  // #259 D2. The dual graph of a box, METIS parts, coarse nodes pairing cells from both ends of
+  // the cell order (so that parents lie on other ranks), owned as level_parts gives them (no
+  // lines): after a forward exchange of the owners' coarse ids, every imported parent holds its
+  // own id. A rank whose owned coarse nodes another rank imports, and which imports none, only
+  // sends.
+  const autan::Mesh mesh =
+      autan::assemble(autan::to_face_based(autan::test::box(6, autan::test::BoxFill::tetra, 0.2)));
+  const auto n = world_size(), r = world_rank();
+  const auto parts = autan::partition_cells(mesh, n);
+  std::vector<std::int64_t> ids(mesh.cell_global_id().begin(), mesh.cell_global_id().end());
+  std::vector<index_t> coarse(at(mesh.n_cells()));
+  const std::size_t n_coarse = coarse.size() / 2;
+  for (std::size_t c = 0; c < coarse.size(); ++c)
+    coarse[c] = static_cast<index_t>(std::min(c, coarse.size() - 1 - c));
+  std::vector<std::int64_t> coarse_ids(n_coarse);
+  for (std::size_t c = 0; c < n_coarse; ++c) coarse_ids[c] = static_cast<std::int64_t>(3 * c + 1);
+  const std::vector<autan::offset_t> no_lines{0};
+  const auto cp = autan::level_parts(parts, coarse, ids, n_coarse, no_lines, {});
+  const autan::ParentImport im = autan::parent_import(parts, coarse, cp, coarse_ids, n, r);
+  std::vector<double> value(im.owned.size() + im.parents.size(), -1.0);
+  for (std::size_t i = 0; i < im.owned.size(); ++i)
+    value[i] = static_cast<double>(coarse_ids[at(im.owned[i])]);
+  autan::HaloExchange x(im.halo, static_cast<index_t>(im.owned.size()), MPI_COMM_WORLD,
+                        autan::MemorySpace::host);
+  double* const component = value.data();
+  x.forward(std::span<double* const>(&component, 1));
+  for (std::size_t k = 0; k < im.parents.size(); ++k)
+    CHECK(value[im.owned.size() + k] == static_cast<double>(coarse_ids[at(im.parents[k])]));
+  long imported = static_cast<long>(im.parents.size()), total = 0;
+  MPI_Allreduce(&imported, &total, 1, MPI_LONG, MPI_SUM, MPI_COMM_WORLD);
+  if (n > 1) CHECK(total > 0);
+}
+
 int main(int argc, char** argv) {
   MPI_Init(&argc, &argv);
   Catch::Session session;

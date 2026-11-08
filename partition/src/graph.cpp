@@ -226,19 +226,19 @@ ParentImport parent_import(std::span<const std::int32_t> parts,
   for (const index_t c : coarse_node) {
     if (c < 0 || at(c) >= coarse_parts.size()) invalid("a coarse node is out of range");
   }
-  const auto imports = [&](std::int32_t q) {
-    std::set<std::size_t> held;
-    for (std::size_t v = 0; v < parts.size(); ++v) {
-      const auto c = at(coarse_node[v]);
-      if (parts[v] == q && coarse_parts[c] != q) held.insert(c);
-    }
-    std::vector<std::size_t> out(held.begin(), held.end());
-    std::ranges::sort(out, [&](std::size_t a, std::size_t b) {
-      return std::tuple(coarse_parts[a], coarse_global_id[a]) <
-             std::tuple(coarse_parts[b], coarse_global_id[b]);
-    });
-    return out;
-  };
+  // One pass over the fine nodes: the parents this rank imports, and those each other part
+  // imports from it, deduplicated and ordered as the importer orders them.
+  std::vector<std::pair<std::int32_t, std::size_t>> wanted;  // (importing part, coarse node)
+  for (std::size_t v = 0; v < parts.size(); ++v) {
+    const auto c = at(coarse_node[v]);
+    const std::int32_t q = parts[v];
+    if (coarse_parts[c] != q && (q == rank || coarse_parts[c] == rank)) wanted.emplace_back(q, c);
+  }
+  std::ranges::sort(wanted, [&](const auto& a, const auto& b) {
+    return std::tuple(a.first, coarse_parts[a.second], coarse_global_id[a.second], a.second) <
+           std::tuple(b.first, coarse_parts[b.second], coarse_global_id[b.second], b.second);
+  });
+  wanted.erase(std::unique(wanted.begin(), wanted.end()), wanted.end());
   ParentImport out;
   std::vector<std::size_t> owned;
   for (std::size_t c = 0; c < coarse_parts.size(); ++c) {
@@ -253,15 +253,13 @@ ParentImport parent_import(std::span<const std::int32_t> parts,
     out.owned.push_back(static_cast<index_t>(owned[k]));
   }
   std::vector<std::int32_t> ghost_parts;
-  for (const std::size_t c : imports(rank)) {
-    out.parents.push_back(static_cast<index_t>(c));
-    ghost_parts.push_back(coarse_parts[c]);
-  }
   std::vector<std::vector<index_t>> sends(at(n_parts));
-  for (std::int32_t q = 0; q < n_parts; ++q) {
-    if (q == rank) continue;
-    for (const std::size_t c : imports(q)) {
-      if (coarse_parts[c] == rank) sends[at(q)].push_back(local[c]);
+  for (const auto& [q, c] : wanted) {
+    if (q == rank) {
+      out.parents.push_back(static_cast<index_t>(c));
+      ghost_parts.push_back(coarse_parts[c]);
+    } else {
+      sends[at(q)].push_back(local[c]);
     }
   }
   out.halo = pattern(rank, n_parts, ghost_parts, sends);

@@ -168,11 +168,12 @@ std::vector<index_t> remote_children(std::int32_t rank, std::span<const std::int
 
 /// The part of each node of a coarse level of a multigrid on N ranks (#259 D2): a node of a
 /// line of at least two nodes takes the part of the line's least child, the child with the least
-/// global id over all the line's nodes, so that each line is solved on one rank; any other node
-/// takes the part of its own least child, as coarse_parts. `parts` are the finer level's final
-/// parts; `line_offsets` and `line_nodes` the coarse level's lines (CSR over its nodes, as the
-/// multigrid's Level). Every rank, holding the same hierarchy, agrees. Throws E0140 for sizes
-/// that do not match, a node out of range, a coarse node without child, or a node in two lines.
+/// global id over all the line's nodes, so that each line is solved on one rank; a node in no
+/// line of at least two takes the part of its own least child, as coarse_parts. `parts` are the
+/// finer level's final parts; `line_offsets` and `line_nodes` the coarse level's lines (CSR over
+/// its nodes, as the multigrid's Level). Every rank, holding the same hierarchy, agrees. Throws
+/// E0140 for sizes that do not match, a node out of range, a coarse node without child, or a node
+/// in two lines.
 std::vector<std::int32_t> level_parts(std::span<const std::int32_t> parts,
                                       std::span<const index_t> coarse_node,
                                       std::span<const std::int64_t> global_id, std::size_t n_coarse,
