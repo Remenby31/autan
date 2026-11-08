@@ -15,7 +15,7 @@ if [ "$(id -u)" -eq 0 ]; then
     command -v curl >/dev/null 2>&1 || dnf install -y -q curl >/dev/null
   fi
   useradd -m autan
-  exec su -w AUTAN_GITHUB_TOKEN autan -c "REQUIRE_GPU=${REQUIRE_GPU:-0} sh '$repo/packaging/test-install.sh' '$repo'"
+  exec su autan -c "REQUIRE_GPU=${REQUIRE_GPU:-0} sh '$repo/packaging/test-install.sh' '$repo'"
 fi
 
 cd "$HOME"

@@ -110,10 +110,14 @@ jobs:
         if: matrix.image == ''
         env:
           AUTAN_GITHUB_TOKEN: ${{ github.token }}
+        # The token goes through stdin, not env's arguments, to stay out of the process list.
         run: |
           home=$(mktemp -d)
-          env -i HOME="$home" PATH=/usr/bin:/bin:/usr/sbin:/sbin AUTAN_GITHUB_TOKEN="$AUTAN_GITHUB_TOKEN" \
-            sh packaging/test-install.sh "$PWD"
+          # shellcheck disable=SC2016 # expanded by the inner sh, after env -i
+          printf '%s\n' "$AUTAN_GITHUB_TOKEN" |
+            env -i HOME="$home" PATH=/usr/bin:/bin:/usr/sbin:/sbin sh -c \
+              'IFS= read -r AUTAN_GITHUB_TOKEN; export AUTAN_GITHUB_TOKEN; exec sh packaging/test-install.sh "$1"' \
+              sh "$PWD"
 
   offline:
     name: Offline wheelhouse (${{ matrix.target }})
