@@ -461,6 +461,19 @@ TEST_CASE("the history marks provisional exactly the steps of the first-order st
   const double counted = field(out.run, "SolverFirstOrderSteps", "RestartState").front();
   CHECK(marked < 201);
   CHECK(counted == static_cast<double>(marked - 1));
+  // The log names the rule that ended the start, once, at its last step.
+  std::vector<Json> ends;
+  std::istringstream log(read(out.run / "log.jsonl"));
+  for (std::string line; std::getline(log, line);) {
+    if (line.empty()) continue;
+    const Json e = Json::parse(line);
+    if (e["source"] == "solver" && e["data"].is_object() && e["data"].contains("rule")) {
+      ends.push_back(e);
+    }
+  }
+  REQUIRE(ends.size() == 1);
+  CHECK(ends.front()["data"]["rule"] == "stall");
+  CHECK(ends.front()["iteration"] == marked);
   // Unsteady lines leave it out.
   const auto steps = run(input("hybrid.solver-input.json", [](Json& d) {
     inviscid_along_x(d, "fp64");
@@ -2411,7 +2424,6 @@ TEST_CASE("on a device, a diverged run names the cell whose stored state is not 
 TEST_CASE("the first-order start ends with its 201st step or earlier on a drop or a stall",
           "[euler]") {
   // euler.md#time-stepping.
-  // Each sequence gives the step the start ends with and the rule that ends it.
   using End = autan::physics::FirstOrderStart::End;
   const auto ends_with = [](const auto& drop) {
     autan::physics::FirstOrderStart start;

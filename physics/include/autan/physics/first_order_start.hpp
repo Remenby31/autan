@@ -28,7 +28,6 @@ class FirstOrderStart {
     return true;
   }
 
-  /// What ended the start: the drop to `drop_to`, the stall, or the step cap.
   enum class End { none, drop, stall, cap };
   [[nodiscard]] End end() const noexcept { return end_; }
   [[nodiscard]] static const char* name(End e) noexcept {
