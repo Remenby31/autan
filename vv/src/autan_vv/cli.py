@@ -457,7 +457,7 @@ def _cmd_verify(args: argparse.Namespace) -> None:
                     (e["drop"] for e in check["equations"].values() if e["drop"] is not None),
                     default=None,
                 )
-                shown = "non-finite" if worst is None else f"{worst:.2f}"
+                shown = "none (identically zero)" if worst is None else f"{worst:.2f}"
                 _say(f"{check['run_id']}: {check['status']}, smallest drop {shown} orders")
         state = {True: "PASS", False: "FAIL", None: "REPORTED, NOT GATED"}[verdict["pass"]]
         if verdict["investigate"]:

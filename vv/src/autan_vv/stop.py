@@ -169,7 +169,7 @@ def residual_drops(results: autan.Results) -> dict[str, float | None]:
     """Orders of magnitude each equation's residual fell from its reference (case-schema.md#time:
     iteration 1, `start.residual_reference` of a continuation, the largest of its kind for an
     equation identically zero there) to the last line of the history, whatever the run's status;
-    None for an equation identically zero to the end. NaN when the last residual is not finite."""
+    None for an equation identically zero to the end. History residuals are finite (results.md)."""
     history = results.history
     equations = history.equations
     if not equations:
@@ -182,10 +182,11 @@ def residual_drops(results: autan.Results) -> dict[str, float | None]:
     for e, name in enumerate(equations):
         if exempt_until[e] == len(residuals):
             out[name] = None
-        elif not math.isfinite(last[e]):
-            out[name] = math.nan
         else:
-            out[name] = math.inf if last[e] == 0.0 else math.log10(reference[e] / last[e])
+            # A difference of logarithms: the quotient of two extreme residuals can underflow.
+            out[name] = (
+                math.inf if last[e] == 0.0 else math.log10(reference[e]) - math.log10(last[e])
+            )
     return out
 
 

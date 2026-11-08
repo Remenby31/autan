@@ -612,8 +612,8 @@ def _json_ready(value: Any) -> Any:
 def _residual_drop_verdict(gate: Gate, opened: list[autan.Results], against: str) -> dict[str, Any]:
     """A `residual-drop` gate on runs of the oracle's case (V0724 apart from their status), one
     precision (V0726), one case apart from the mesh, one build, distinct meshes (V0727). Each run is
-    judged alone: every equation dropped at least `gate.lower` orders (residual_drops), an equation
-    identically zero to the end passing. Outside `fp64` the drops are reported and `pass` is None."""
+    judged alone: within its case's max_iterations, every equation dropped at least `gate.lower`
+    orders (residual_drops), an equation identically zero to the end passing. Outside `fp64` the drops are reported and `pass` is None."""
     oracle = get_oracle(against)
     for results in opened:
         reasons = _check_compatible(results, oracle, finished=False)
@@ -644,11 +644,14 @@ def _residual_drop_verdict(gate: Gate, opened: list[autan.Results], against: str
             }
             for name, d in drops.items()
         }
+        budget = results.case.time.max_iterations  # type: ignore[union-attr]
+        within = run.iterations <= budget
         checks.append(
             {
                 "run_id": run.run_id,
                 "status": run.status,
                 "iterations": run.iterations,
+                "max_iterations": budget,
                 "precision": run.precision,
                 "solver_commit": run.solver.commit,
                 "case_sha256": run.case.sha256,
@@ -656,7 +659,7 @@ def _residual_drop_verdict(gate: Gate, opened: list[autan.Results], against: str
                 "plateau": list(run.convergence.plateau) if run.convergence is not None else [],
                 "equations": equations,
                 "lower": gate.lower,
-                "pass": bool(equations) and all(e["pass"] for e in equations.values()),
+                "pass": within and bool(equations) and all(e["pass"] for e in equations.values()),
             }
         )
     not_evidence = []

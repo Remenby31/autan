@@ -282,7 +282,7 @@ def test_degraded_mesh_convergence_judges_each_equations_drop_whatever_the_statu
     completed = run(1, lines(1.0, 1e-5, {"density": 1e-7}), status="completed")
     diverged = run(
         2,
-        lines(1.0, 10.0),
+        lines(1e-200, 1e200),
         status="diverged",
         diagnostics=(diagnostic("D0107", "divergence", iteration=2),),
     )
@@ -298,8 +298,18 @@ def test_degraded_mesh_convergence_judges_each_equations_drop_whatever_the_statu
     assert checks["completed"]["equations"]["density"]["drop"] == pytest.approx(7.0)
     assert checks["completed"]["equations"]["energy"]["drop"] == pytest.approx(9.0)
     assert not checks["completed"]["pass"]
-    assert checks["diverged"]["equations"]["density"]["drop"] == pytest.approx(-1.0)
+    assert checks["diverged"]["equations"]["density"]["drop"] == pytest.approx(-400.0)
     assert not checks["diverged"]["pass"]
+    # Nine orders, but on a fourth line past max_iterations = 3.
+    late = run(
+        1,
+        lines(1.0, 1e-3, 1e-7, 1e-9),
+        status="diverged",
+        diagnostics=(diagnostic("D0107", "divergence", iteration=4),),
+    )
+    (check,) = verify([late], "mms-euler", gate)["verdict"]["checks"]
+    assert check["equations"]["density"]["drop"] == pytest.approx(9.0)
+    assert not check["pass"]
     assert verify([converged, completed], "mms-euler", gate)["verdict"]["pass"] is False
     assert verify([converged], "mms-euler", gate)["verdict"]["pass"] is True
     # Outside fp64 the drops are reported, not judged.
