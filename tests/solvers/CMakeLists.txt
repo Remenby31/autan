@@ -16,6 +16,7 @@ if(AUTAN_ENABLE_CUDA)
     test_multigrid_gpu.cpp
     test_coarse_gpu.cpp
     test_line_smoother_gpu.cpp
+    test_line_sweep_gpu.cpp
   )
   target_link_libraries(
     autan_solvers_gpu_tests

@@ -17,7 +17,7 @@ target_include_directories(
 target_link_libraries(autan_solvers PUBLIC autan::core PRIVATE autan_compile_options)
 set_target_properties(autan_solvers PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-# The multigrid's device kernels (docs/design/multigrid-gpu.md). nvcc does not take the host
+# The device kernels of the multigrid and the line smoother (docs/design/multigrid-gpu.md). nvcc does not take the host
 # warning flags of autan_compile_options.
 if(AUTAN_ENABLE_CUDA)
   find_package(CUDAToolkit REQUIRED)
@@ -27,6 +27,7 @@ if(AUTAN_ENABLE_CUDA)
     src/multigrid_gpu.cu
     src/coarse_gpu.cu
     src/line_smoother_gpu.cu
+    src/line_sweep_gpu.cu
   )
   target_link_libraries(autan_solvers_cuda PRIVATE autan::kernels CUDA::cudart)
   target_include_directories(autan_solvers_cuda PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
