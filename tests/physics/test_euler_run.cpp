@@ -19,6 +19,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -2409,18 +2410,21 @@ TEST_CASE("on a device, a diverged run names the cell whose stored state is not 
 
 TEST_CASE("the first-order start ends with its 201st step or earlier on a drop or a stall",
           "[euler]") {
-  // euler.md#time-stepping. Each sequence gives the step the start ends with.
+  // euler.md#time-stepping.
+  // Each sequence gives the step the start ends with and the rule that ends it.
+  using End = autan::physics::FirstOrderStart::End;
   const auto ends_with = [](const auto& drop) {
     autan::physics::FirstOrderStart start;
     for (int step = 1; step <= 1000; ++step) {
-      if (start.ends_after(drop(step))) return step;
+      if (start.ends_after(drop(step))) return std::pair{step, start.end()};
     }
-    return 0;
+    return std::pair{0, start.end()};
   };
   // Never three orders down, a new plateau reference every 50 steps (0.85 < 0.9): the 201st.
-  CHECK(ends_with([](int step) { return 0.5 * std::pow(0.85, (step - 1) / 50); }) == 201);
+  CHECK(ends_with([](int step) { return 0.5 * std::pow(0.85, (step - 1) / 50); }) ==
+        std::pair{201, End::cap});
   // The same drop throughout: 100 steps without a new reference after the first.
-  CHECK(ends_with([](int) { return 0.5; }) == 101);
+  CHECK(ends_with([](int) { return 0.5; }) == std::pair{101, End::stall});
   // Three orders down at once.
-  CHECK(ends_with([](int) { return 1e-4; }) == 1);
+  CHECK(ends_with([](int) { return 1e-4; }) == std::pair{1, End::drop});
 }

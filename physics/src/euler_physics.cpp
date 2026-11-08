@@ -1358,6 +1358,10 @@ class EulerPhysics final : public runtime::Physics {
     if (second_order_) return;
     // Also once the drop is on a round-off plateau: in fp32+acc64 three orders can lie below it.
     if (first_order_.ends_after(drop)) {
+      ctx_.log.write(
+          "info", "solver", "first-order start ended", {},
+          nlohmann::json{{"rule", FirstOrderStart::name(first_order_.end())}, {"drop", drop}}
+              .dump());
       second_order_ = true;
       euler_.set_second_order(true);
       if (device_) device_->set_second_order(true);

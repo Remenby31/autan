@@ -16,7 +16,33 @@ class FirstOrderStart {
   /// The relative drop of the step just taken; true when the start ends with that step.
   bool ends_after(double drop) {
     const bool flat = plateau_.add(drop);
-    return drop < drop_to || flat || ++steps_ > max_steps;
+    if (drop < drop_to) {
+      end_ = End::drop;
+    } else if (flat) {
+      end_ = End::stall;
+    } else if (++steps_ > max_steps) {
+      end_ = End::cap;
+    } else {
+      return false;
+    }
+    return true;
+  }
+
+  /// What ended the start: the drop to `drop_to`, the stall, or the step cap.
+  enum class End { none, drop, stall, cap };
+  [[nodiscard]] End end() const noexcept { return end_; }
+  [[nodiscard]] static const char* name(End e) noexcept {
+    switch (e) {
+      case End::drop:
+        return "drop";
+      case End::stall:
+        return "stall";
+      case End::cap:
+        return "cap";
+      case End::none:
+        break;
+    }
+    return "none";
   }
 
   /// What a continued run carries over, in the physics' RestartState.
@@ -33,6 +59,7 @@ class FirstOrderStart {
  private:
   runtime::Plateau plateau_;
   int steps_ = 0;
+  End end_ = End::none;
 };
 
 }  // namespace autan::physics
