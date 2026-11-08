@@ -118,16 +118,7 @@ struct Euler<P>::Impl {
       ek::cpu::primitives(d);
     }
     fill_ghosts(prim, 5);
-    {
-      // Every local boundary face, ghosts' included: the boundary values a stencil of an owned
-      // cell or of its face neighbour samples may lie on a ghost's face (the quadratic band, the
-      // viscous boundary fits), and each is its owner's, computed from filled primitives.
-      auto all = d;
-      all.topo.n_owned_cells = all.topo.n_cells;
-      all.topo.n_owned_interior_faces = all.topo.n_interior_faces;
-      all.topo.n_owned_faces = all.topo.n_faces;
-      ek::cpu::boundary_states(all);
-    }
+    ek::cpu::boundary_states(d);
     if (scheme.second_order) {
       if (scheme.gradient_fit == GradientFit::quadratic) {
         band_gradients();

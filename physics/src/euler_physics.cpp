@@ -698,9 +698,7 @@ class EulerPhysics final : public runtime::Physics {
     }
     // The ghosts' density may not be filled yet: their owners' rho nt.
     fill_ghost_values(t.rnu);
-    // On several ranks every rank sweeps the colours, a part without ghosts too: each colour
-    // ends in a collective exchange.
-    if (keys_ || ctx_.ranks.size() > 1) {
+    if (keys_ || owned_ < n_) {
       t.colours.assign(static_cast<std::size_t>(ctx_.n_colours), {});
       for (std::size_t c = 0; c < owned_; ++c) {
         t.colours[static_cast<std::size_t>(ctx_.cell_colours[c])].push_back(c);
@@ -1157,8 +1155,9 @@ class EulerPhysics final : public runtime::Physics {
                         [this](std::span<double> x) { fill_ghost_values(x); });
         }
         // Local under-relaxation of the SA update: rho nt changes by at most a fraction of
-        // max(|rho nt|, rho nt_inf) per step, which the converged state never reaches.
-        for (std::size_t c = 0; c < n_; ++c) {
+        // max(|rho nt|, rho nt_inf) per step, which the converged state never reaches. Owned
+        // cells; the ghosts take their owners' values.
+        for (std::size_t c = 0; c < owned_; ++c) {
           const double scale = std::max(std::abs(t.rnu[c]), u_[c] * t.nt_inf);
           t.rnu[c] +=
               alpha * std::clamp(t.dx[c], -nt_max_decrease * scale, nt_max_increase * scale);
