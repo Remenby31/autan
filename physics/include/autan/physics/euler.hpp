@@ -97,11 +97,12 @@ class Euler {
   /// and stencil entries in global order and every face is evaluated in its global orientation,
   /// so that the residual and the Jacobian of each owned cell have the same bits on any number
   /// of ranks and in any cell order (solver-input.md, reproducibility "ranks"). The spans must
-  /// outlive the constructor only. `ghosts` is the stencil the ghosts of a partitioned `mesh`
-  /// hold (LocalPartition::ghosts); a mesh with ghosts whose scheme needs more (ghost_stencil)
-  /// is E0148.
+  /// outlive the constructor only. On a partition, `ghosts` is the stencil its ghosts hold
+  /// (LocalPartition::ghosts), face2 when not given for a mesh with ghosts; none for a whole
+  /// mesh without ghosts. A scheme that needs more (ghost_stencil) is E0148, ghosts or not.
   Euler(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme,
-        const kernels::GlobalKeys* keys = nullptr, GhostStencil ghosts = GhostStencil::face2);
+        const kernels::GlobalKeys* keys = nullptr,
+        std::optional<GhostStencil> ghosts = std::nullopt);
   ~Euler();
   Euler(const Euler&) = delete;
   Euler& operator=(const Euler&) = delete;

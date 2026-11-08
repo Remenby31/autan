@@ -1091,3 +1091,35 @@ TEMPLATE_TEST_CASE(
     }
   }
 }
+
+TEST_CASE("a part without ghosts refuses a stencil its ghost stencil does not hold", "[euler]") {
+  // Two hexahedra sharing one corner node: on two face2 parts neither cell has a ghost, yet each
+  // one's vertex stencil on the whole mesh holds the other. A part's declared ghost stencil, not
+  // its ghost count, decides: the vertex gradient is E0148 there, face2 runs.
+  autan::test::ReferenceCell first = autan::test::affine_cell(
+      autan::CellShape::hexa, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}, {0, 0, 0});
+  autan::CellwiseMesh cells = std::move(first.mesh);
+  std::vector<autan::index_t> nodes{6};  // the first cell's corner (1, 1, 1)
+  for (const auto& r : std::vector<std::array<double, 3>>{
+           {2, 1, 1}, {2, 2, 1}, {1, 2, 1}, {1, 1, 2}, {2, 1, 2}, {2, 2, 2}, {1, 2, 2}}) {
+    cells.x.push_back(r[0]);
+    cells.y.push_back(r[1]);
+    cells.z.push_back(r[2]);
+    nodes.push_back(static_cast<autan::index_t>(cells.x.size() - 1));
+  }
+  cells.add_cell(autan::CellShape::hexa, nodes, 0);
+  const autan::Mesh global = autan::assemble(autan::to_face_based(std::move(cells)));
+  const auto part = autan::extract_partition(global, autan::compute_geometry(global),
+                                             std::vector<std::int32_t>{0, 1}, 2, 0);
+  REQUIRE(part.mesh.n_cells() == part.mesh.n_owned_cells());
+  Scheme s = second_order(Flux::roe, 0.5);
+  CHECK_NOTHROW(
+      Euler<autan::kernels::fp64>(part.mesh, part.geometry, air, s, nullptr, part.ghosts));
+  s.gradient = autan::physics::GradientStencil::vertex;
+  try {
+    Euler<autan::kernels::fp64> e(part.mesh, part.geometry, air, s, nullptr, part.ghosts);
+    FAIL("expected E0148");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == autan::ErrorCode::partition_stencil_not_local);
+  }
+}

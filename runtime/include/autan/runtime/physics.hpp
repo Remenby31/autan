@@ -121,9 +121,10 @@ struct PhysicsContext {
   std::span<const index_t> group_cells;
   std::span<const std::int32_t> cell_group_colours;
   std::int32_t n_group_colours = 0;
-  /// The stencil the ghost cells of `mesh` hold (LocalPartition::ghosts): the one the physics
-  /// declared (PhysicsRegistry::Entry::ghosts). A mesh without ghosts holds every stencil.
-  GhostStencil ghost_stencil = GhostStencil::face2;
+  /// On a partition, the stencil its ghost cells hold (LocalPartition::ghosts): the one the
+  /// physics declared (PhysicsRegistry::Entry::ghosts). Empty on the whole mesh, which holds
+  /// every stencil.
+  std::optional<GhostStencil> ghost_stencil;
 };
 
 // case-schema.md#time: the round-off floor is C * eps32 times an equation's flux scale, C = 0.5.

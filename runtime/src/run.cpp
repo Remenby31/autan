@@ -1810,7 +1810,7 @@ class Run final : public Log {
                                  .group_cells = group_cells_,
                                  .cell_group_colours = group_colours_,
                                  .n_group_colours = n_group_colours_,
-                                 .ghost_stencil = p_.ghosts};
+                                 .ghost_stencil = local_ ? std::optional(p_.ghosts) : std::nullopt};
     std::string status = "running";
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {

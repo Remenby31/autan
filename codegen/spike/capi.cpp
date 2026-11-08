@@ -596,6 +596,7 @@ int autan_spike_mesh_partition(const void* global, const std::int32_t* parts, st
     auto m = finish(std::move(lp.mesh), std::move(lg));
     m->face_global_id = std::move(lp.face_global_id);
     m->face_reversed = std::move(lp.face_reversed);
+    m->ghosts = lp.ghosts;
     *out = m.release();
   });
 }
@@ -607,6 +608,7 @@ int autan_spike_mesh_partition(const void* global, const std::int32_t* parts, st
 int autan_spike_set_global_order(void* mesh, int stencil_kind, char* err, std::size_t err_len) {
   auto* m = static_cast<SpikeMesh*>(mesh);
   return guarded(err, err_len, [&] {
+    require_held(*m, stencil_kind);
     const auto nc = static_cast<std::size_t>(m->mesh.n_cells());
     const auto nf = static_cast<std::size_t>(m->mesh.n_faces());
     const auto gid = m->mesh.cell_global_id();
@@ -672,6 +674,7 @@ int autan_spike_set_stencil(void* mesh, int kind, std::int64_t* size, char* err,
                             std::size_t err_len) {
   auto* m = static_cast<SpikeMesh*>(mesh);
   return guarded(err, err_len, [&] {
+    require_held(*m, kind);
     if (kind < 0) {
       m->stencil = {};
       m->packed.stencil_lsq_weight.clear();

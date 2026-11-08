@@ -29,10 +29,10 @@ namespace {
 
 // `mesh`, once its ghosts hold the stencil of `scheme`: E0148 otherwise, so that no owned cell
 // computes on a truncated stencil.
-const Mesh& holding(const Mesh& mesh, const Scheme& scheme, GhostStencil ghosts) {
-  if (mesh.n_cells() == mesh.n_owned_cells()) return mesh;
+const Mesh& holding(const Mesh& mesh, const Scheme& scheme, std::optional<GhostStencil> ghosts) {
+  if (!ghosts && mesh.n_cells() == mesh.n_owned_cells()) return mesh;
   const auto needed = ghost_stencil(scheme);
-  if (!needed || *needed > ghosts) {
+  if (!needed || *needed > ghosts.value_or(GhostStencil::face2)) {
     throw Error(ErrorCode::partition_stencil_not_local,
                 needed ? "the gradient stencil reaches beyond the partition's ghost stencil"
                        : "the quadratic gradient's two vertex rings are not local on a partition");
@@ -713,7 +713,7 @@ struct Euler<P>::Impl {
 
 template <class P>
 Euler<P>::Euler(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme,
-                const kernels::GlobalKeys* keys, GhostStencil ghosts)
+                const kernels::GlobalKeys* keys, std::optional<GhostStencil> ghosts)
     : impl_(std::make_unique<Impl>(holding(mesh, scheme, ghosts), geometry, gas, scheme, keys)) {}
 
 template <class P>
