@@ -108,6 +108,7 @@ Options parse(int argc, char** argv) {
       fail("unknown flag " + std::string(f));
   }
   if (o.fit != "linear" && o.fit != "quadratic") fail("--fit is linear or quadratic");
+  if (o.warmup < 0 || o.reps < 1 || o.batch < 1) fail("--warmup >= 0, --reps >= 1, --batch >= 1");
   return o;
 }
 
@@ -170,8 +171,29 @@ struct Run {
   bool verified = true;
   double ns_difference = 0.0;
   double sa_difference = 0.0;
+  double other_difference = 0.0;  // eddy viscosity and spectral radius
   double tolerance = 0.0;
 };
+
+template <class T>
+std::vector<T> download(const T* device, std::size_t n) {
+  std::vector<T> v(n);
+  gpu::check(cudaMemcpy(v.data(), device, n * sizeof(T), cudaMemcpyDeviceToHost), "download");
+  return v;
+}
+
+// max_i |a_i - b_i| / max_i |b_i|.
+template <class T>
+double relative_to(const std::vector<T>& a, const std::vector<T>& b) {
+  double num = 0.0, den = 0.0;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    const double x = static_cast<double>(a[i]), y = static_cast<double>(b[i]);
+    if (!std::isfinite(x)) return std::numeric_limits<double>::infinity();
+    num = std::max(num, std::abs(x - y));
+    den = std::max(den, std::abs(y));
+  }
+  return den > 0.0 ? num / den : num;
+}
 
 // max_k max_i |a - b| / max_i |b| over the equations of `b` (n values each).
 template <class R>
@@ -249,6 +271,12 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& g) {
   sa.eddy_viscosity(rs);
   host.residual(stored, r_ns);
   sa.residual(rs, r_sa);
+  // The host's spectral radius (convective plus 4 viscous, NavierStokes<P>::spectral_radius) and
+  // eddy viscosity, which the device's loops below must give too.
+  std::vector<S> lambda(n);
+  host.spectral_radius(lambda);
+  const std::vector<S> mu_t(host.data().mu_t, host.data().mu_t + n);
+  const std::vector<S> mu_t_b(host.data().mu_t_b + ni, host.data().mu_t_b + ni + nb);
 
   // Element counts of the topologies each module's loops run on: the Euler loops on the
   // gradient stencil, the boundary fit on its own, SA on the flow's gradient stencil.
@@ -291,6 +319,30 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& g) {
   const auto& v = stepper.viscous();
   const auto& a = model.data();
   constexpr auto gather = gpu::Strategy::store_gather;
+  {
+    // The loops timed outside the residuals, checked from poisoned outputs: the spectral radius
+    // (Euler's, then the viscous one, combined as the stepper does) and the eddy viscosity.
+    gpu::check(cudaMemset(d.lam, 0xff, n * sizeof(*d.lam)), "poison");
+    gpu::check(cudaMemset(v.lam_v, 0xff, n * sizeof(*v.lam_v)), "poison");
+    ek::gpu_loops::spectral_radius(d, sched);
+    nk::gpu_loops::viscous_spectral_radius(v, sched);
+    const auto lam = download(d.lam, n);
+    const auto lam_v = download(v.lam_v, n);
+    std::vector<S> total(n);
+    for (std::size_t c = 0; c < n; ++c) total[c] = S(lam[c] + S(4) * lam_v[c]);
+    gpu::check(cudaMemset(v.mu_t, 0xff, n * sizeof(*v.mu_t)), "poison");
+    gpu::check(cudaMemset(v.mu_t_b, 0xff, (ni + nb) * sizeof(*v.mu_t_b)), "poison");
+    sk::gpu_loops::nt_values(a, sched);
+    sk::gpu_loops::boundary_values(a, sched);
+    sk::gpu_loops::eddy_viscosities(a, sched);
+    sk::gpu_loops::boundary_eddy_viscosities(a, sched);
+    const auto d_mu = download(v.mu_t, n);
+    const auto all_b = download(v.mu_t_b, ni + nb);
+    const std::vector<S> d_mu_b(all_b.begin() + static_cast<std::ptrdiff_t>(ni), all_b.end());
+    out.other_difference = std::max(
+        {relative_to(total, lambda), relative_to(d_mu, mu_t), relative_to(d_mu_b, mu_t_b)});
+    out.verified = out.verified && out.other_difference <= out.tolerance;
+  }
   const bool planar = host.euler().planar();
   const double cs = static_cast<double>(n);
   // dev::store_state: the conserved state (double) read, the stored state written.
@@ -491,8 +543,8 @@ int main(int argc, char** argv) {
   }
   std::printf("]}\n");
   std::fprintf(stderr,
-               "max relative difference to the host: Navier-Stokes %.3e, Spalart-Allmaras %.3e "
-               "(tolerance %.1e)\n",
-               r.ns_difference, r.sa_difference, r.tolerance);
+               "max relative difference to the host: Navier-Stokes %.3e, Spalart-Allmaras %.3e, "
+               "eddy viscosity and spectral radius %.3e (tolerance %.1e)\n",
+               r.ns_difference, r.sa_difference, r.other_difference, r.tolerance);
   return r.verified ? 0 : 1;
 }

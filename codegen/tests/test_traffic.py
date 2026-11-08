@@ -15,7 +15,32 @@ from autan_codegen.generate import generate
 ROOT = Path(__file__).resolve().parents[2]
 
 # Every Counts field a distinct prime, so that a term counted over the wrong set changes the total.
-PRIMES = dict(zip(traffic.COUNTS, (1009, 997, 991, 983, 977, 971, 967, 953, 947, 941), strict=True))
+PRIMES = dict(
+    zip(
+        traffic.COUNTS,
+        (
+            1031,
+            1021,
+            1019,
+            1013,
+            1009,
+            997,
+            991,
+            983,
+            977,
+            971,
+            967,
+            953,
+            947,
+            941,
+            937,
+            929,
+            919,
+            911,
+        ),
+        strict=True,
+    )
+)
 CSR = {**PRIMES, "stencil_sliced": False, "incidence_sliced": False, "incidence_cell": False}
 # autan/kernels/runtime.hpp: index_t is int32_t, offset_t int64_t; the policies' storage types.
 INDEX = {"index_t": 4, "offset_t": 8}
@@ -39,6 +64,8 @@ ub = faces.field("ub", State)
 g = cells.field("g", State.Vec3)
 top = cells.field("top", State)
 jac = faces.field("jac", Jac.shape(2, 5, 5))
+h = faces.field("h", State.Vec2)
+hs = cells.field("hs", State)
 
 
 @pointwise
@@ -87,6 +114,14 @@ def first(q: State.Vec5) -> State:
 
 
 face_values = boundary_loop(first, q=u.left, out=Write(fb), frozen=True)
+
+
+@pointwise
+def half(a: State, b: State) -> State:
+    return a
+
+
+halves = cell_reduce(half, a=h.near, b=h.far, acc=Sum(hs))
 """
 
 # The same face loop reading one more component of the right cell (qr[2]).
@@ -131,12 +166,13 @@ def test_a_face_loop_counts_the_components_its_body_reads_through_the_maps(
     m = _module(tmp_path, MODULE)
     sz = ROLE_BYTES[policy]
     p = PRIMES
-    # ql[0] and qr[1] of u over the cells, |S_f| per owned interior face, the residual read and
-    # written over the cells, owner and neighbour per face.
+    # ql[0] of the faces' owners and qr[1] of their neighbours, |S_f| per owned interior face,
+    # the residual read and written in the faces' cells, owner and neighbour per face.
     partial = (
-        p["cells"] * 2 * sz["state"]
+        p["face_owner_cells"] * sz["state"]
+        + p["face_neighbour_cells"] * sz["state"]
         + p["owned_interior_faces"] * sz["geom_value"]
-        + p["cells"] * 2 * 5 * sz["residual"]
+        + p["face_cells"] * 2 * 5 * sz["residual"]
         + p["owned_interior_faces"] * 2 * INDEX["index_t"]
     )
     assert _bytes(m, "partial", policy) == partial
@@ -153,9 +189,10 @@ def test_a_reduction_counts_geometry_at_its_storage_and_the_incidence_maps(
     sz = ROLE_BYTES[policy]
     p = PRIMES
     # Centroids are read through rel(): stored as geom (FP64 in both policies); the volume as a
-    # value only: geom_value. Own centroid and the one across count once over the cells.
+    # value only: geom_value. Own centroid and the one across count once, over the owned cells and
+    # the cells across.
     expected = (
-        p["cells"] * 3 * sz["geom"]
+        p["incidence_touched_cells"] * 3 * sz["geom"]
         + p["owned_boundary_faces"] * 3 * sz["geom"]
         + p["owned_cells"] * sz["geom_value"]
         + p["owned_cells"] * 3 * sz["state"]
@@ -186,9 +223,112 @@ def test_a_boundary_loop_writing_face_data_runs_over_every_boundary_face(
     # Its range is [n_interior_faces, n_faces), owned or not (emit_cpu.face_write_range): q[0] of
     # each owner, fb written and the owner index per boundary face.
     expected = (
-        p["boundary_cells"] * s + p["boundary_faces"] * s + p["boundary_faces"] * INDEX["index_t"]
+        p["all_boundary_cells"] * s
+        + p["boundary_faces"] * s
+        + p["boundary_faces"] * INDEX["index_t"]
     )
     assert _bytes(m, "face_values", policy) == expected
+
+
+@pytest.mark.parametrize("policy", ["fp64", "fp32+acc64"])
+def test_near_and_far_read_both_halves_of_the_interior_faces_of_the_owned_cells(
+    tmp_path: Path, policy: str
+) -> None:
+    m = _module(tmp_path, MODULE)
+    s = ROLE_BYTES[policy]["state"]
+    p = PRIMES
+    interior = p["faces"] - p["owned_boundary_faces"]
+    # `a` (near) takes half 0 of a face for its left cell and half 1 for its right one: both
+    # halves of every interior face of the owned cells; `b` (far) reaches no output. hs written.
+    common = interior * 2 * s + p["owned_cells"] * s + p["incidences"] * INDEX["index_t"]
+    csr = common + (p["owned_cells"] + 1) * INDEX["offset_t"] + interior * 2 * INDEX["index_t"]
+    assert _bytes(m, "halves", policy) == csr
+    # Sliced, with the column index: lengths, the column index, and the owner choosing the half.
+    sliced = {**CSR, "incidence_sliced": True, "incidence_cell": True}
+    expected = (
+        common
+        + p["owned_cells"] * (INDEX["offset_t"] + INDEX["index_t"])
+        + p["incidences"] * INDEX["index_t"]
+        + interior * INDEX["index_t"]
+    )
+    assert _bytes(m, "halves", policy, sliced) == expected
+
+
+TOPOLOGY = """
+#include <cstdio>
+#include "autan/kernels/traffic.hpp"
+
+int main() {
+  using autan::kernels::index_t;
+  using autan::kernels::offset_t;
+  // Cells 0 | 1 | 2 in a row, 2 a halo cell: interior faces 0 (0|1) and 1 (1|2), boundary faces
+  // 2 (of 0, owned) and 3 (of the halo cell 2). Stencils: 0 -> {1, face 2}, 1 -> {0, 2}, 2 -> {}.
+  const index_t owner[] = {0, 1, 0, 2};
+  const index_t neighbour[] = {1, 2};
+  const offset_t cell_face_offsets[] = {0, 2, 4, 6};
+  const index_t cell_faces[] = {0, 2, 0, 1, 1, 3};
+  const offset_t stencil_offsets[] = {0, 2, 4, 4};
+  const index_t stencil[] = {1, -3, 0, 2};
+  autan::kernels::Topology t{};
+  t.n_cells = 3;
+  t.n_owned_cells = 2;
+  t.n_faces = 4;
+  t.n_interior_faces = 2;
+  t.n_owned_interior_faces = 2;
+  t.n_owned_faces = 3;
+  t.n_incidences = 6;
+  t.owner = owner;
+  t.neighbour = neighbour;
+  t.cell_face_offsets = cell_face_offsets;
+  t.cell_faces = cell_faces;
+  t.n_stencil = 4;
+  t.stencil_offsets = stencil_offsets;
+  t.stencil = stencil;
+  const auto n = autan::kernels::counts(t);
+  std::printf("%g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g\n", n.owned_cells,
+              n.face_owner_cells, n.face_neighbour_cells, n.face_cells, n.owned_interior_faces,
+              n.boundary_faces, n.owned_boundary_faces, n.boundary_cells, n.all_boundary_cells,
+              n.faces, n.incidences, n.incidence_cells, n.incidence_touched_cells, n.stencil,
+              n.stencil_rows, n.stencil_cells, n.stencil_touched_cells, n.stencil_boundary_faces);
+}
+"""
+
+
+@pytest.mark.skipif(shutil.which("c++") is None, reason="needs a host C++ compiler")
+def test_the_counts_of_a_partition_are_those_counted_by_hand(tmp_path: Path) -> None:
+    unit = tmp_path / "counts.cpp"
+    unit.write_text(TOPOLOGY)
+    exe = tmp_path / "counts"
+    subprocess.run(
+        ["c++", "-std=c++20", "-Wall", "-Wextra", "-Werror", f"-I{ROOT / 'codegen' / 'include'}",
+         str(unit), "-o", str(exe)],
+        check=True,
+    )  # fmt: skip
+    got = subprocess.run([str(exe)], check=True, capture_output=True, text=True).stdout.split()
+    # Counted from the comment's mesh: owners {0, 1} and neighbours {1, 2} of the interior faces;
+    # boundary owners {0} owned, {0, 2} in all; the owned cells' faces {0, 1, 2}; across them
+    # {1} from 0 and {0, 2} from 1; stencil rows {0, 1}, its cells {0, 1, 2}, its face {2}.
+    expected = {
+        "owned_cells": 2,
+        "face_owner_cells": 2,
+        "face_neighbour_cells": 2,
+        "face_cells": 3,
+        "owned_interior_faces": 2,
+        "boundary_faces": 2,
+        "owned_boundary_faces": 1,
+        "boundary_cells": 1,
+        "all_boundary_cells": 2,
+        "faces": 3,
+        "incidences": 4,
+        "incidence_cells": 3,
+        "incidence_touched_cells": 3,
+        "stencil": 4,
+        "stencil_rows": 2,
+        "stencil_cells": 3,
+        "stencil_touched_cells": 3,
+        "stencil_boundary_faces": 1,
+    }
+    assert dict(zip(traffic.COUNTS, map(float, got), strict=True)) == expected
 
 
 def test_a_component_the_body_reads_more_or_less_changes_the_count_by_its_bytes(
@@ -199,7 +339,7 @@ def test_a_component_the_body_reads_more_or_less_changes_the_count_by_its_bytes(
     wide = _module(tmp_path / "wider", WIDER)
     for policy in ("fp64", "fp32+acc64"):
         added = _bytes(wide, "partial", policy) - _bytes(narrow, "partial", policy)
-        assert added == PRIMES["cells"] * ROLE_BYTES[policy]["state"]
+        assert added == PRIMES["face_neighbour_cells"] * ROLE_BYTES[policy]["state"]
 
 
 def test_derived_reductions_write_only_their_written_accumulators_and_read_no_twins(
@@ -216,12 +356,13 @@ def test_derived_reductions_write_only_their_written_accumulators_and_read_no_tw
         + p["incidences"] * INDEX["index_t"]
         + (p["faces"] - p["owned_boundary_faces"]) * 2 * INDEX["index_t"]
     )
-    primal = p["cells"] * s + p["owned_boundary_faces"] * s + maps
+    primal = p["incidence_cells"] * s + p["owned_boundary_faces"] * s + maps
     assert _bytes(m, "largest", "fp64") == primal + p["owned_cells"] * s
-    assert _bytes(m, "largest_tangent", "fp64") == primal + p["cells"] * s + p["owned_cells"] * s
+    tangent = primal + p["incidence_cells"] * s + p["owned_cells"] * s
+    assert _bytes(m, "largest_tangent", "fp64") == tangent
     # The adjoint reads the primal's data once, reads and zeroes the seed (top_adj) and
     # increments sc_adj across the entries; the deterministic strategy's twins are not counted.
-    adjoint = primal + p["owned_cells"] * 2 * s + p["cells"] * 2 * s
+    adjoint = primal + p["owned_cells"] * 2 * s + p["incidence_cells"] * 2 * s
     assert _bytes(m, "largest_adjoint", "fp64") == adjoint
     lm = next(lm for lm in m.loops if lm.name == "largest_adjoint")
     assert all("twin" not in t.size for t in traffic.traffic(lm))

@@ -3,19 +3,25 @@
 The convention (docs/infra/bench.md, bytes_per_rep): each element component the loop needs is
 read once and written once, at the storage type of its Data<P> member. These are bytes touched,
 not bytes moved: re-reads through the maps and cache misses are not counted, so a bandwidth
-computed from them is a lower bound on the real traffic. A component counts when the optimised
-IR of the loop's bodies uses it (the compiler drops the loads of the others). Counted:
-- datasets read through bindings, over the elements the loop's range reaches;
-- outputs: Inc read and written, Write and written accumulators written, Jacobian blocks and
-  per-entry values written;
-- the maps a loop reads: owner and neighbour per face, offsets and entries of a reduction.
+computed from them is a lower bound on the real traffic.
+
+- A component counts when it reaches a live output through the optimised IR of the loop's bodies
+  (the compiler drops the loads of the others): an output a loop writes, a Min or Max that
+  selects for a written Follow, an accumulator a finalise reads.
+- Each dataset component counts once, over the union of the elements the loop reaches it on
+  (`_UNION`): a cell read as `self` and across the entries counts once over the cells touched.
+- Outputs: Inc read and written, Write and written accumulators written, Jacobian blocks and
+  per-entry values written; a reduction adjoint reads and zeroes its seeds and increments the
+  adjoints of its active arguments.
+- The maps a loop reads: owner and neighbour per face, offsets (or lengths) and entries of a
+  reduction, the column index or owner and neighbour of an incidence.
+
 Not counted: strategy scratch and the deterministic adjoint's twin pass (store-gather, atomics),
-colour lists, Topology::face_reversed, and parameters.
+colour lists, Topology::face_reversed (face loops are counted in the mesh's orientation), and
+parameters.
 
 Element counts come at run time from autan::kernels::Counts (autan/kernels/traffic.hpp), filled
-from the real Topology: every term below is a linear combination of its fields. A face loop
-reads its cells over `cells`: every cell has an interior face on a connected mesh of two cells
-or more.
+from the real Topology (`counts`): every term is a linear combination of its fields.
 """
 
 from __future__ import annotations
@@ -25,40 +31,60 @@ from typing import TYPE_CHECKING
 
 from autan_codegen import dsl
 from autan_codegen.derive import ReduceAdjoint, adj_ds
+from autan_codegen.errors import Code, CodegenError
+from autan_codegen.ir import Function, dce
 
 if TYPE_CHECKING:
-    from autan_codegen.ir import Function
     from autan_codegen.model import LoopModel
 
 # Fields of autan::kernels::Counts, in declaration order.
 COUNTS = (
-    "cells",
     "owned_cells",
+    "face_owner_cells",
+    "face_neighbour_cells",
+    "face_cells",
     "owned_interior_faces",
     "boundary_faces",
     "owned_boundary_faces",
     "boundary_cells",
+    "all_boundary_cells",
     "faces",
     "incidences",
+    "incidence_cells",
+    "incidence_touched_cells",
     "stencil",
+    "stencil_rows",
+    "stencil_cells",
+    "stencil_touched_cells",
     "stencil_boundary_faces",
 )
 # Layout flags of autan::kernels::Counts: which maps a reduction reads.
 FLAGS = ("stencil_sliced", "incidence_sliced", "incidence_cell")
 
-# Element sets each set contains: a component read over two sets of one dataset counts once,
-# over the larger.
-_WITHIN = {
-    "owned_cells": {"cells"},
-    "boundary_cells": {"owned_cells", "cells"},
-    "owned_interior_faces": {"faces"},
-    "owned_boundary_faces": {"boundary_faces", "faces"},
-    "boundary_faces": set(),
-    "stencil_boundary_faces": {"boundary_faces"},
-    "faces": set(),
-    "cells": set(),
-    "incidences": set(),
-    "stencil": set(),
+# Element sets that are not fields: their counts as combinations of fields.
+_DERIVED = {"incidence_interior_faces": {"faces": 1, "owned_boundary_faces": -1}}
+
+# The set of elements two sets of one dataset reach together (each contains the other or is
+# their union field); a pair absent here is refused rather than double counted.
+_UNION = {
+    frozenset({"owned_cells", "boundary_cells"}): "owned_cells",
+    frozenset({"owned_cells", "stencil_rows"}): "owned_cells",
+    frozenset({"face_owner_cells", "face_neighbour_cells"}): "face_cells",
+    frozenset({"face_cells", "face_owner_cells"}): "face_cells",
+    frozenset({"face_cells", "face_neighbour_cells"}): "face_cells",
+    frozenset({"stencil_rows", "stencil_cells"}): "stencil_touched_cells",
+    frozenset({"stencil_touched_cells", "stencil_rows"}): "stencil_touched_cells",
+    frozenset({"stencil_touched_cells", "stencil_cells"}): "stencil_touched_cells",
+    frozenset({"owned_cells", "incidence_cells"}): "incidence_touched_cells",
+    frozenset({"incidence_touched_cells", "owned_cells"}): "incidence_touched_cells",
+    frozenset({"incidence_touched_cells", "incidence_cells"}): "incidence_touched_cells",
+    frozenset({"boundary_cells", "all_boundary_cells"}): "all_boundary_cells",
+    frozenset({"faces", "owned_interior_faces"}): "faces",
+    frozenset({"faces", "owned_boundary_faces"}): "faces",
+    frozenset({"faces", "incidence_interior_faces"}): "faces",
+    frozenset({"incidence_interior_faces", "owned_boundary_faces"}): "faces",
+    frozenset({"owned_boundary_faces", "boundary_faces"}): "boundary_faces",
+    frozenset({"stencil_boundary_faces", "boundary_faces"}): "boundary_faces",
 }
 
 
@@ -78,8 +104,18 @@ def _count(**fields: int) -> tuple[tuple[str, int], ...]:
     return tuple(sorted(fields.items()))
 
 
-def used(fn: Function) -> set[tuple[int, int]]:
-    """(argument, component) of every input the function's instructions or outputs use."""
+def _of(where: str) -> tuple[tuple[str, int], ...]:
+    return _count(**_DERIVED.get(where, {where: 1}))
+
+
+def used(fn: Function, live: list[int] | None = None) -> set[tuple[int, int]]:
+    """(argument, component) of every input that reaches the outputs `live` (indices into
+    fn.outputs; None: all) through the function's instructions."""
+    if live is not None:
+        kept = Function(
+            fn.name, fn.arg_names, fn.arg_sizes, list(fn.instrs), [fn.outputs[i] for i in live]
+        )
+        fn = dce(kept)
     inputs = {v: i.attr for v, i in enumerate(fn.instrs) if i.op == "input"}
     out: set[tuple[int, int]] = set()
     for i in fn.instrs:
@@ -92,80 +128,106 @@ def used(fn: Function) -> set[tuple[int, int]]:
     return out
 
 
-def _sets(kind: str, b: dsl.Binding) -> str:
-    """The element set a binding's loads reach in a loop of `kind`."""
+class _Touched:
+    """Per dataset component: the element sets it is reached on and whether it is read, written
+    or both."""
+
+    def __init__(self) -> None:
+        self.sets: dict[str, dict[int, set[str]]] = {}
+        self.modes: dict[str, dict[int, set[str]]] = {}
+
+    def add(self, name: str, where: str, comps: set[int] | range, mode: str) -> None:
+        for c in comps:
+            self.sets.setdefault(name, {}).setdefault(c, set()).add(where)
+            self.modes.setdefault(name, {}).setdefault(c, set()).update(mode)
+
+    def terms(self) -> list[Term]:
+        out: dict[tuple[str, str, int], int] = {}
+        for name, by_comp in self.sets.items():
+            for c, places in by_comp.items():
+                where = _union(places)
+                times = 2 if self.modes[name][c] == {"r", "w"} else 1
+                key = (name, where, times)
+                out[key] = out.get(key, 0) + 1
+        return [Term(_of(where), name, n * times) for (name, where, times), n in out.items()]
+
+
+def _union(places: set[str]) -> str:
+    sets = set(places)
+    while len(sets) > 1:
+        a, b = sorted(sets)[:2]
+        u = _UNION.get(frozenset({a, b}))
+        if u is None:
+            raise CodegenError(Code.INVALID_BINDING, f"no element count for {a} together with {b}")
+        sets -= {a, b}
+        sets.add(u)
+    return sets.pop()
+
+
+def _where(kind: str, over: str, b: dsl.Binding, finalise: bool = False) -> str:
+    """The elements a binding's loads reach in a loop of `kind`."""
     ds = b.dataset
     assert isinstance(ds, dsl.Dataset)
     cells = ds.set is dsl.MeshSet.CELLS
+    stencil = over == dsl.STENCIL
+    if finalise or kind == "cell":
+        return "owned_cells"
     if kind in ("face", "face_write"):
-        return "cells" if cells else "owned_interior_faces"
+        if not cells:
+            return "owned_interior_faces"
+        return "face_owner_cells" if b.via == "left" else "face_neighbour_cells"
     if kind == "boundary":
         return "boundary_cells" if cells else "owned_boundary_faces"
     if kind == "boundary_write":
-        return "boundary_cells" if cells else "boundary_faces"
-    if kind == "cell":
-        return "owned_cells"
-    # Reductions (and their adjoints): self over the owned cells, other across their entries.
+        return "all_boundary_cells" if cells else "boundary_faces"
+    # Reductions: self in the cells whose rows have entries, other across the entries.
     if cells:
-        return "owned_cells" if b.via == "self" else "cells"
+        if b.via == "self":
+            return "stencil_rows" if stencil else "owned_cells"
+        return "stencil_cells" if stencil else "incidence_cells"
     if ds.set is dsl.MeshSet.STENCIL:
         return "stencil"
     if ds.set is dsl.MeshSet.INCIDENCES:
         return "incidences"
     if b.via == "on_boundary":
         return "owned_boundary_faces"
+    if b.via in ("near", "far"):
+        return "incidence_interior_faces"
     return "faces"
 
 
-class _Reads:
-    """Components read per dataset and element set; a component counts over its largest set."""
-
-    def __init__(self) -> None:
-        self.sets: dict[str, dict[str, set[int]]] = {}
-
-    def add(self, name: str, where: str, comps: set[int]) -> None:
-        self.sets.setdefault(name, {}).setdefault(where, set()).update(comps)
-
-    def terms(self) -> list[Term]:
-        out = []
-        for name, by_set in self.sets.items():
-            for where, comps in by_set.items():
-                larger = [s for s in by_set if s in _WITHIN[where]]
-                n = len(comps - set().union(*(by_set[s] for s in larger)))
-                if n:
-                    out.append(Term(_count(**{where: 1}), name, n))
-        return out
+def _components(b: dsl.Binding, comps: set[int], size: int) -> set[int]:
+    """The dataset components argument components `comps` load: near and far read either half
+    of a (2, ...) dataset, as the entry's cell is the face's left or right one."""
+    if b.via in ("near", "far"):
+        return comps | {c + size for c in comps}
+    return comps
 
 
-def _bound_reads(
-    reads: _Reads, kind: str, over: str, fn: Function, names: list[str],
-    bindings: dict[str, dsl.Binding], skip: int = 0, extra: Function | None = None,
+def _bound(
+    touched: _Touched, kind: str, over: str, fn: Function, names: list[str],
+    bindings: dict[str, dsl.Binding], sizes: list[int], live: list[int] | None = None,
+    finalise: bool = False,
 ) -> None:  # fmt: skip
-    """The components of each bound argument that `fn` (and `extra`, on the same arguments)
-    uses, from argument `skip` on."""
-    use = used(fn) | (used(extra) if extra is not None else set())
+    """The components of each bound argument of `fn` that reach its outputs `live`."""
+    use = used(fn, live)
     for k, name in enumerate(names):
-        if k < skip:
-            continue
         b = bindings.get(name)
         if b is None or isinstance(b.dataset, dsl.Parameter):
             continue
         comps = {c for (a, c) in use if a == k}
         if not comps:
             continue
-        where = "owned_cells" if kind == "finalise" else _sets(kind, b)
-        reads.add(b.dataset.name, where, comps)
+        touched.add(
+            b.dataset.name, _where(kind, over, b, finalise), _components(b, comps, sizes[k]), "r"
+        )
         if b.via == "other" and b.boundary is not None:
-            reads.add(b.boundary.name, _boundary_of(over), comps)
+            where = "stencil_boundary_faces" if over == dsl.STENCIL else "owned_boundary_faces"
+            touched.add(b.boundary.name, where, comps, "r")
 
 
-def _boundary_of(over: str) -> str:
-    return "stencil_boundary_faces" if over == dsl.STENCIL else "owned_boundary_faces"
-
-
-def _maps(kind: str, over: str, across: bool) -> list[Term]:
-    """The Topology arrays a loop's range reads; `across`: a reduction that needs the entry's
-    other cell or face."""
+def _maps(kind: str, over: str, vias: set[str]) -> list[Term]:
+    """The Topology arrays a loop's range reads; `vias`: how its bindings are loaded."""
     if kind in ("face", "face_write"):
         return [Term(_count(owned_interior_faces=1), "index_t", 2)]
     if kind == "boundary":
@@ -180,89 +242,123 @@ def _maps(kind: str, over: str, across: bool) -> list[Term]:
         Term(_count(owned_cells=1), "offset_t", 1, flag),
         Term(_count(owned_cells=1), "index_t", 1, flag),
     ]
+    across = bool(vias & {"other", "near", "far", "on_boundary"})
     if over == dsl.STENCIL:
         if across:
             out.append(Term(_count(stencil=1), "index_t", 1))
         return out
     out.append(Term(_count(incidences=1), "index_t", 1))
     if across:
+        # The cell across: the column index, or the owner and neighbour of interior faces.
         out.append(Term(_count(incidences=1), "index_t", 1, "incidence_cell"))
-        out.append(Term(_count(faces=1, owned_boundary_faces=-1), "index_t", 2, "!incidence_cell"))
+        out.append(Term(_of("incidence_interior_faces"), "index_t", 2, "!incidence_cell"))
+        if vias & {"near", "far"}:
+            # The half near and far take: the face's owner (read above without the column index).
+            out.append(Term(_of("incidence_interior_faces"), "index_t", 1, "incidence_cell"))
     return out
 
 
-def _across(lm: LoopModel) -> bool:
-    return any(b.via in ("other", "near", "far", "on_boundary") for b in lm.loop.bindings.values())
-
-
-def _write_set(kind: str) -> str:
-    """The elements a loop of `kind` writes its outputs to (Inc: reads and writes)."""
+def _write_set(kind: str, o: object = None) -> str:
+    """The elements a loop of `kind` writes output `o` to (Inc: reads and writes)."""
     if kind == "face_write":
         return "owned_interior_faces"
     if kind == "boundary_write":
         return "boundary_faces"
     if kind == "boundary":
         return "boundary_cells"
-    if kind == "face":
-        return "cells"
+    if kind == "face" and isinstance(o, dsl.Inc):
+        if o.left and o.right:
+            return "face_cells"
+        return "face_owner_cells" if o.left else "face_neighbour_cells"
     return "owned_cells"
+
+
+def _live(lm: LoopModel) -> list[int] | None:
+    """The outputs of a reduction's body that reach what it writes (None: all)."""
+    loop = lm.loop
+    if lm.kind not in ("reduce", "reduce_stencil") or lm.fin_fn is not None:
+        return None
+    accs = loop.outputs
+    leaders = {o.leader for o in accs if isinstance(o, dsl.Follow) and o.write}
+    live, k = [], 0
+    for i, o in enumerate(accs):
+        size = o.dataset.type.size
+        if o.write or i in leaders:
+            live += range(k, k + size)
+        k += size
+    for w in loop.entries:
+        live += range(k, k + w.dataset.type.size)
+        k += w.dataset.type.size
+    return live
 
 
 def traffic(lm: LoopModel) -> list[Term]:
     """The terms of the minimum bytes loop `lm` touches."""
-    loop = lm.loop
-    kind = "reduce" if lm.kind == "reduce_adjoint" else lm.kind
-    over = loop.over
-    reads = _Reads()
-    out: list[Term] = []
     ra = lm.radj if isinstance(lm.radj, ReduceAdjoint) else None
     p = ra.primal if ra is not None else lm
-    extra = ra.body_adj if ra is not None else None
-    _bound_reads(reads, kind, over, p.fn, p.sig.names, p.loop.bindings, extra=extra)
-    for _, jfn in lm.jac_fns:
-        _bound_reads(reads, kind, over, jfn, lm.sig.names, loop.bindings)
-    fin_fn = ra.fin_adj if ra is not None and ra.fin_adj is not None else p.fin_fn
-    if fin_fn is not None and p.fin_sig is not None:
-        n_acc = len(p.loop.outputs)
-        _bound_reads(
-            reads, "finalise", over, fin_fn, p.fin_sig.names, p.loop.finalise_bindings, skip=n_acc
-        )
-    out += reads.terms()
-    out += _maps(kind, over, _across(p))
-    if ra is not None:
-        # Seeds: the adjoints of the outputs, read then zeroed; the adjoints of the active
-        # arguments incremented, of the owned cells (self, finalise) or across the entries.
-        for o in p.loop.outputs:
+    loop = p.loop
+    kind = "reduce" if lm.kind in ("reduce_adjoint", "reduce_stencil") else lm.kind
+    over = loop.over
+    t = _Touched()
+    sizes = [ty.size for ty in p.sig.types]
+    if ra is None:
+        _bound(t, kind, over, lm.fn, lm.sig.names, loop.bindings, sizes, _live(lm))
+        for _, jfn in lm.jac_fns:
+            _bound(t, kind, over, jfn, lm.sig.names, loop.bindings, sizes)
+        if lm.fin_fn is not None and lm.fin_sig is not None:
+            fin_sizes = [ty.size for ty in lm.fin_sig.types]
+            _bound(t, kind, over, lm.fin_fn, lm.fin_sig.names, loop.finalise_bindings, fin_sizes,
+                   finalise=True)  # fmt: skip
+    else:
+        # The adjoint recomputes the primal only where the finalise's adjoint reads its
+        # accumulators or a Min or Max selects; the body's adjoint needs every bound input.
+        accs = loop.outputs
+        if ra.fin_adj is not None:
+            _bound(t, kind, over, p.fn, p.sig.names, loop.bindings, sizes)
+        else:
+            live, k = [], 0
+            for o in accs:
+                if isinstance(o, dsl.Min | dsl.Max):
+                    live += range(k, k + o.dataset.type.size)
+                k += o.dataset.type.size
+            if live:
+                _bound(t, kind, over, p.fn, p.sig.names, loop.bindings, sizes, live)
+        _bound(t, kind, over, ra.body_adj, p.sig.names, loop.bindings, sizes)
+        if ra.fin_adj is not None and p.fin_sig is not None:
+            fin_sizes = [ty.size for ty in p.fin_sig.types]
+            _bound(t, kind, over, ra.fin_adj, p.fin_sig.names, loop.finalise_bindings, fin_sizes,
+                   finalise=True)  # fmt: skip
+        for o in accs:
             a = adj_ds(o.dataset)
-            out.append(Term(_count(owned_cells=1), a.name, 2 * a.type.size))
+            t.add(a.name, "owned_cells", range(a.type.size), "rw")
         for k in ra.body_active:
-            b = p.loop.bindings[p.sig.names[k]]
+            b = loop.bindings[p.sig.names[k]]
             a = adj_ds(b.dataset)  # type: ignore[arg-type]
-            where = "owned_cells" if b.via == "self" else "cells"
-            out.append(Term(_count(**{where: 1}), a.name, 2 * a.type.size))
+            t.add(a.name, _where(kind, over, b), range(a.type.size), "rw")
         if p.fin_sig is not None:
-            for k in ra.fin_active[len(p.loop.outputs) :]:
-                b = p.loop.finalise_bindings[p.fin_sig.names[k]]
+            for k in ra.fin_active[len(accs) :]:
+                b = loop.finalise_bindings[p.fin_sig.names[k]]
                 a = adj_ds(b.dataset)  # type: ignore[arg-type]
-                out.append(Term(_count(owned_cells=1), a.name, 2 * a.type.size))
-        return out
+                t.add(a.name, "owned_cells", range(a.type.size), "rw")
+        vias = {b.via for b in loop.bindings.values()}
+        return t.terms() + _maps(kind, over, vias)
     for o in loop.outputs:
         size = o.dataset.type.size
         if isinstance(o, dsl.Inc):
-            out.append(Term(_count(**{_write_set(kind): 1}), o.dataset.name, 2 * size))
+            t.add(o.dataset.name, _write_set(kind, o), range(size), "rw")
         elif isinstance(o, dsl.Write):
-            out.append(Term(_count(**{_write_set(kind): 1}), o.dataset.name, size))
+            t.add(o.dataset.name, _write_set(kind, o), range(size), "w")
         elif o.write:
-            out.append(Term(_count(owned_cells=1), o.dataset.name, size))
+            t.add(o.dataset.name, "owned_cells", range(size), "w")
     for w in loop.entries:
         where = "stencil" if over == dsl.STENCIL else "incidences"
-        out.append(Term(_count(**{where: 1}), w.dataset.name, w.dataset.type.size))
+        t.add(w.dataset.name, where, range(w.dataset.type.size), "w")
     for j in loop.jacobians:
         where = {"face": "owned_interior_faces", "boundary": "owned_boundary_faces"}.get(
             kind, "owned_cells"
         )
-        out.append(Term(_count(**{where: 1}), j.dataset.name, j.dataset.type.size))
-    return out
+        t.add(j.dataset.name, where, range(j.dataset.type.size), "w")
+    return t.terms() + _maps(kind, over, {b.via for b in loop.bindings.values()})
 
 
 def evaluate(terms: list[Term], counts: dict[str, float], sizes: dict[str, int]) -> float:
