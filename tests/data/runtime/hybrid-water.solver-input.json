@@ -153,6 +153,7 @@
   },
   "physics": {
     "kind": "incompressible",
+    "flux": null,
     "turbulence": {
       "model": "laminar",
       "base": null,

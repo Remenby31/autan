@@ -308,6 +308,27 @@ def test_reader_rejects_non_conforming_directories(
     assert error.value.codes == [code]
 
 
+def test_a_run_from_before_the_flux_key_opens_only_with_its_own_sdk(
+    crm_run: autan.Results,
+) -> None:
+    # results.md#runjson: a run is read by the SDK of its own solver.commit. A run recorded before
+    # `physics.flux` existed hashed its case without the key; this SDK fills the default in, so
+    # the hashes differ and the run is refused (E0701), deliberately, not repaired.
+    import hashlib  # noqa: PLC0415 -- only this test hashes a document by hand
+
+    import rfc8785  # noqa: PLC0415
+
+    document = autan.load(crm_run.path / "case.toml").spec.document()
+    del document["physics"]["flux"]
+    run = json.loads((crm_run.path / "run.json").read_text())
+    run["case"]["sha256"] = hashlib.sha256(rfc8785.dumps(document)).hexdigest()
+    run["identity"] = identity_of(run)
+    (crm_run.path / "run.json").write_text(json.dumps(run))
+    with pytest.raises(autan.CaseError) as error:
+        autan.Results.open(crm_run.path)
+    assert error.value.codes == ["E0701"]
+
+
 def test_diverged_run_without_solution_opens_for_its_history(
     tmp_path: Path, crm_mesh: autan.MeshInfo
 ) -> None:
