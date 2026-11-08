@@ -174,6 +174,52 @@ def test_continue_and_warm_from_the_same_run_have_different_identities(
     assert continued.run.identity != warm.run.identity
 
 
+UNSTEADY = "from autan.units import s\ncase.time = autan.Unsteady(steps=20, dt=1e-3 * s)\n"
+DDES = ("autan.SA()", "autan.DDES(base=autan.SA())")
+
+
+@pytest.mark.parametrize(
+    ("source", "target", "inherits"),
+    [("steady", "steady", True), ("steady", "unsteady", False), ("unsteady", "steady", False)],
+)
+def test_a_warm_start_takes_the_source_reference_only_from_steady_to_steady(
+    source: str,
+    target: str,
+    inherits: bool,
+    write_case: Callable[..., Path],
+    crm_mesh: autan.MeshInfo,
+    tmp_path: Path,
+) -> None:
+    # case-schema.md#time: a steady warm start from a steady run converges against the source's
+    # reference; any other start measures from its own iteration 1.
+    def body(kind: str, mach: str) -> str:
+        text = CRM_HL.replace("mach=0.2,", f"mach={mach},")
+        return text.replace(*DDES) + UNSTEADY if kind == "unsteady" else text
+
+    previous = autan.load(write_case(body(source, "0.2"), name="source.py")).run(
+        crm_mesh, backend=autan.FakeBackend(iterations=10), runs=tmp_path
+    )
+    other = autan.load(write_case(body(target, "0.25"), name="target.py"))
+    warm = other.run(
+        crm_mesh,
+        backend=autan.FakeBackend(iterations=5),
+        runs=tmp_path,
+        start=previous,
+        mode="warm",
+    )
+    start = warm.run.start
+    assert start is not None
+    if inherits:
+        assert start.residual_reference == json.loads(history(previous)[0])["residuals"]
+        assert start.woken == []
+        # A continuation of the warm run carries that reference on.
+        resumed = other.run(crm_mesh, backend=autan.FakeBackend(), runs=tmp_path, start=warm)
+        assert resumed.run.start is not None
+        assert resumed.run.start.residual_reference == start.residual_reference
+    else:
+        assert (start.residual_reference, start.woken) == (None, None)
+
+
 def test_a_chain_of_continuations_keeps_the_original_residual_reference(
     case: autan.Case, crm_mesh: autan.MeshInfo, tmp_path: Path
 ) -> None:
@@ -304,9 +350,17 @@ def test_a_continuation_carries_the_woken_equations(
     )
     assert third.run.start is not None
     assert third.run.start.woken == woken  # carried along the chain
-    warm = case.run(crm_mesh, backend=autan.FakeBackend(), runs=tmp_path, start=first, mode="warm")
+    # A warm start takes the chain's reference but no woken equation: it solves another problem.
+    warm = case.run(
+        crm_mesh,
+        backend=autan.FakeBackend(),
+        runs=tmp_path,
+        start=autan.Results.open(first.path),
+        mode="warm",
+    )
     assert warm.run.start is not None
-    assert warm.run.start.woken is None
+    assert warm.run.start.woken == []
+    assert warm.run.start.residual_reference == json.loads(history(first)[0])["residuals"]
 
 
 @pytest.mark.parametrize(

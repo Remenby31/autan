@@ -2150,22 +2150,24 @@ class Run final : public Log {
     const bool steady = in.time.kind == "steady";
     const std::int64_t budget = steady ? in.time.max_iterations : in.time.steps;
     const auto equations = residual_names(in);
-    // Steady convergence is measured against iteration 1 of the original run
-    // (solver-input.md, `start`); a `continue` goes on counting and timing.
+    // Steady convergence is measured against the run's reference (case-schema.md#time): its own
+    // iteration 1, or the one `start` carries for a `continue` or a steady `warm` from a steady
+    // run; only a `continue` goes on counting and timing.
+    const bool inherited = in.start && in.start->residual_reference;
     std::vector<double> first;
+    if (inherited) first = *in.start->residual_reference;
     // The equations that left their floor, in the chain so far: a checkpoint carries them.
     std::set<std::string> woken;
-    if (continued() && in.start->woken)
+    if (inherited && in.start->woken)
       woken.insert(in.start->woken->begin(), in.start->woken->end());
     RoundOffExemption exempt(
-        equations, continued() && in.start->woken ? *in.start->woken : std::vector<std::string>{});
+        equations, inherited && in.start->woken ? *in.start->woken : std::vector<std::string>{});
     // One round-off plateau per equation, counted from this run's first step.
     std::vector<ResidualPlateau> plateaus(equations.size());
     double time = 0.0, average_start = 0.0;
     std::int64_t from = 1;
     if (continued()) {
       const Start& s = *in.start;
-      if (s.residual_reference) first = *s.residual_reference;
       if (s.time) time = *s.time;
       from = s.iterations + 1;
       if (!info_["averaging"].is_null()) average_start = info_["averaging"]["from_time"];
