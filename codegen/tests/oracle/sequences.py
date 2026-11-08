@@ -205,7 +205,7 @@ def _incident(read: ReadMesh) -> list[list[int]]:
     return [[int(f) for f in read.cell_faces[o[k] : o[k + 1]]] for k in range(read.n_cells)]
 
 
-def _construct(read: ReadMesh) -> dict[str, list[list[Pair]]]:
+def construct(read: ReadMesh) -> dict[str, list[list[Pair]]]:
     pts: list[Vec] = [
         (_k(F(float(r[0]))), _k(F(float(r[1]))), _k(F(float(r[2])))) for r in read.points
     ]
@@ -345,12 +345,12 @@ def _construct(read: ReadMesh) -> dict[str, list[list[Pair]]]:
 
 def geometry_replay(read: ReadMesh) -> dict[str, list[list[Fraction]]]:
     """Every array the gradient kernels read, as the declared construction executes it."""
-    return {k: [[p.e for p in row] for row in rows] for k, rows in _construct(read).items()}
+    return {k: [[p.e for p in row] for row in rows] for k, rows in construct(read).items()}
 
 
 def geometry_certified(read: ReadMesh) -> dict[str, list[list[c.Cert]]]:
     """The certificate of every array the gradient kernels read."""
-    return {k: [[p.c for p in row] for row in rows] for k, rows in _construct(read).items()}
+    return {k: [[p.c for p in row] for row in rows] for k, rows in construct(read).items()}
 
 
 # The intended geometry, evaluated exactly from the nodes, independently of the declared sequence:
