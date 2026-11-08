@@ -44,7 +44,7 @@ Our geometry and grids are the paper's: the sharp-trailing-edge NACA 0012 (eqs. 
 ## Consequences
 
 - The `naca0012-m080-a125-cl` row changes in `acceptance.md`; the CD part of the row does not.
-- The implementation is a separate PR by the owner of `vv/`, with every consumer:
+- The implementation is in the same PR (#589), with every consumer:
   - `autan_vv.cases.naca0012`: the gate bounds, Fs per rule 2, and the overlap test;
   - `autan_vv.order.richardson`: Fs and the order cap as parameters, the cap applied to both CL∞ and U, and only for this gate (the other gates keep their extrapolation); its guards (it rejects p > 64 and 0 < p ≤ 10⁻⁸) are reconciled with rule 1's codes, so that the code and this ADR give the same verdict on every triplet;
   - `vv/tests/test_naca0012.py`;
