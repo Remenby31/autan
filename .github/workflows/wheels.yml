@@ -104,12 +104,16 @@ jobs:
         if: matrix.image != ''
         env:
           IMAGE: ${{ matrix.image }}
-        run: docker run --rm -v "$PWD:/w:ro" "$IMAGE" sh /w/packaging/test-install.sh /w
+          AUTAN_GITHUB_TOKEN: ${{ github.token }}
+        run: docker run --rm -e AUTAN_GITHUB_TOKEN -v "$PWD:/w:ro" "$IMAGE" sh /w/packaging/test-install.sh /w
       - name: Install and check with an empty home directory
         if: matrix.image == ''
+        env:
+          AUTAN_GITHUB_TOKEN: ${{ github.token }}
         run: |
           home=$(mktemp -d)
-          env -i HOME="$home" PATH=/usr/bin:/bin:/usr/sbin:/sbin sh packaging/test-install.sh "$PWD"
+          env -i HOME="$home" PATH=/usr/bin:/bin:/usr/sbin:/sbin AUTAN_GITHUB_TOKEN="$AUTAN_GITHUB_TOKEN" \
+            sh packaging/test-install.sh "$PWD"
 
   offline:
     name: Offline wheelhouse (${{ matrix.target }})
