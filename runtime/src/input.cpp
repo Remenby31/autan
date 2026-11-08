@@ -723,9 +723,15 @@ SolverInput parse_solver_input(const std::string& text) {
     in.memory_bytes_device = m.integer("bytes_device", 0);
   }
   {
-    const Object p(root.get("physics"), "physics", {"kind", "turbulence"});
+    const Object p(root.get("physics"), "physics", {"kind", "turbulence", "flux"});
     in.physics_kind = p.tag("kind", {"compressible", "incompressible"});
     in.turbulence = parse_turbulence(p, in.physics_kind);
+    // case-schema.md#physics: the convective flux of compressible flow, null otherwise.
+    if (in.physics_kind == "compressible") {
+      in.flux = p.tag("flux", {"roe", "hllc", "ausm+up"});
+    } else if (!p.is_null("flux")) {
+      invalid(p.at("flux"), "expected null: only compressible physics names a flux");
+    }
   }
   const bool compressible = in.physics_kind == "compressible";
   const bool sa = in.turbulence.nu_tilde_ratio.has_value();

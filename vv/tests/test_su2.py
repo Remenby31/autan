@@ -340,7 +340,9 @@ def _watcher(script: str) -> str:
     return "\n".join(line.strip() for line in match.group(1).split("\n"))
 
 
-def _history_csv(path: Path, residuals: dict[str, np.ndarray]) -> None:
+def _history_csv(
+    path: Path, residuals: dict[str, np.ndarray], cd: np.ndarray | None = None
+) -> None:
     header = (DATA / "su2-v8.6.0-naca0012-m080-a125-n0032-2d.csv").read_text().split("\n")[0]
     names = [h.strip().strip('"') for h in header.split(",")]
     columns = dict(
@@ -350,7 +352,9 @@ def _history_csv(path: Path, residuals: dict[str, np.ndarray]) -> None:
     rows = [header]
     rows += [
         ",".join(
-            repr(float(np.log10(columns[c][i]))) if c in columns else ("0.01" if c == "Time(sec)" else "0")
+            repr(float(np.log10(columns[c][i]))) if c in columns
+            else repr(float(cd[i])) if c == "CD" and cd is not None
+            else ("0.01" if c == "Time(sec)" else "0")
             for c in names
         )
         for i in range(n)
@@ -360,12 +364,17 @@ def _history_csv(path: Path, residuals: dict[str, np.ndarray]) -> None:
 
 @pytest.mark.skipif(shutil.which("awk") is None, reason="awk is not installed")
 def test_runner_stops_su2_where_the_criterion_is_met(tmp_path: Path) -> None:
+    scripts = Path(__file__).parents[1] / "su2"
+    for script in ("run.sh", "campaign.sh"):
+        assert subprocess.run(["bash", "-n", str(scripts / script)], check=False).returncode == 0
     program = _watcher("run.sh")
     assert program == _watcher("campaign.sh")
     (tmp_path / "watch.awk").write_text(program)
 
-    def stops(residuals: dict[str, np.ndarray], skip_zero: int = 0) -> bool:
-        _history_csv(tmp_path / "history.csv", residuals)
+    def stops(
+        residuals: dict[str, np.ndarray], skip_zero: int = 0, cd: np.ndarray | None = None
+    ) -> bool:
+        _history_csv(tmp_path / "history.csv", residuals, cd)
         cmd = [
             "awk",
             "-F,",
@@ -375,6 +384,8 @@ def test_runner_stops_su2_where_the_criterion_is_met(tmp_path: Path) -> None:
             "stall=2000",
             "-v",
             f"skipzero={skip_zero}",
+            "-v",
+            "stopfile=stop.csv",
             "-f",
             "watch.awk",
             "history.csv",
@@ -406,6 +417,34 @@ def test_runner_stops_su2_where_the_criterion_is_met(tmp_path: Path) -> None:
     assert stops({"d": slow, "u": slow, "w": woken, "e": slow})
     assert not stops({"d": slow, "u": slow, "w": woken, "e": slow}, skip_zero=1)
     assert not stops({**met, "w": woken[:600]}, skip_zero=1)
+    # With a stop.csv (#493): every residual at or below its threshold and CD stationary to 1e-7
+    # over the window. The verdict does not depend on the first residuals; a woken equation at
+    # the floor converges; CD still moving, or one equation above its threshold, does not.
+    stop = "\n".join(
+        [f"threshold,{c},-8.0" for c in ("rms[Rho]", "rms[RhoU]", "rms[RhoV]", "rms[RhoE]")]
+        + ["output,CD", "window,100", "rtol,1e-07"]
+    )
+    (tmp_path / "stop.csv").write_text(stop + "\n")
+    n = 400
+    floor = np.full(n, 1e-9)
+    settled = np.full(n, 2.8e-3)
+    assert stops({"d": floor, "u": floor, "w": floor, "e": floor}, cd=settled)
+    shifted = floor.copy()
+    shifted[:5] = 1e3
+    assert stops({"d": shifted, "u": floor, "w": woken[:n], "e": floor}, cd=settled)
+    moving = 2.8e-3 * (1 + 1e-5 * np.cos(np.arange(n)))
+    assert not stops({"d": floor, "u": floor, "w": floor, "e": floor}, cd=moving)
+    assert not stops({"d": floor, "u": floor, "w": floor, "e": np.full(n, 1e-7)}, cd=settled)
+    # SU2 writes its history in buffered blocks: a last line cut short is not a row.
+    _history_csv(
+        tmp_path / "history.csv", {"d": floor, "u": floor, "w": floor, "e": floor}, settled
+    )
+    text = (tmp_path / "history.csv").read_text()
+    (tmp_path / "history.csv").write_text(text + text.splitlines()[-1][:40])
+    cmd = ["awk", "-F,", "-v", "orders=10", "-v", "stall=2000", "-v", "skipzero=0", "-v",
+           "stopfile=stop.csv", "-f", "watch.awk", "history.csv"]  # fmt: skip
+    assert subprocess.run(cmd, cwd=tmp_path, check=False).returncode == 0
+    (tmp_path / "stop.csv").unlink()
 
 
 def _geometric_like(residuals: dict[str, np.ndarray]) -> history.History:
@@ -828,13 +867,21 @@ CFL3D_CD = {816: 0.295438152e-2, 3264: 0.288437885e-2, 13056: 0.286620917e-2,
 
 
 def _flat_plate_run(
-    run: Path, model: str, cells: int, drop: float, first: float = -2.0, nu: float = 0.0
+    run: Path,
+    model: str,
+    cells: int,
+    drop: float,
+    first: float = -2.0,
+    nu: float = 0.0,
+    rows: int = 30,
+    settle: float = 0.0,
 ) -> None:
     from autan_vv.su2 import flatplate  # noqa: PLC0415
 
     run.mkdir(parents=True)
     (run / "m.su2").write_text(f"mesh {cells}\n")
     (run / "case.cfg").write_text("MESH_FILENAME= m.su2\n")
+    shutil.copy(DATA / "su2-v8.6.0-flatplate-35x25-log-freestream.txt", run / "log.txt")
     sha = {f: hashlib.sha256((run / f).read_bytes()).hexdigest() for f in ("m.su2", "case.cfg")}
     (run / "level.json").write_text(json.dumps({
         "model": model, "cells": cells, "case_sha256": sha["case.cfg"],
@@ -848,17 +895,17 @@ def _flat_plate_run(
     header = (DATA / "su2-v8.6.0-flatplate-35x25-history.csv").read_text().split("\n")[0]
     names = [h.strip().strip('"') for h in header.split(",")]
     lines = [header]
-    for i in range(30):
-        rms = first - drop * i / 29
-        row = {"Inner_Iter": i, "Time(sec)": 0.01, "CD": CFL3D_CD[cells]}
+    for i in range(rows):
+        rms = first - drop * i / (rows - 1)
+        row = {"Inner_Iter": i, "Time(sec)": 0.01, "CD": CFL3D_CD[cells] * (1 + settle * 0.97**i)}
         lines.append(",".join(
             str(row.get(n, rms + nu * (n == "rms[nu]") if n.startswith("rms[") else 0.0))
             for n in names
         ))  # fmt: skip
     (run / "history.csv").write_text("\n".join(lines) + "\n")
-    rows = ['"PointID","x","y","Skin_Friction_Coefficient_x"']
-    rows += [f"{k}, {x}, 0.0, {CFL3D_CF[cells]!r}" for k, x in enumerate((0.0, 0.5, 1.5, 2.0))]
-    (run / f"{flatplate.SURFACE}.csv").write_text("\n".join(rows) + "\n")
+    surface = ['"PointID","x","y","Skin_Friction_Coefficient_x"']
+    surface += [f"{k}, {x}, 0.0, {CFL3D_CF[cells]!r}" for k, x in enumerate((0.0, 0.5, 1.5, 2.0))]
+    (run / f"{flatplate.SURFACE}.csv").write_text("\n".join(surface) + "\n")
 
 
 def test_flat_plate_report_against_tmr(tmp_path: Path) -> None:
@@ -882,6 +929,36 @@ def test_flat_plate_report_against_tmr(tmp_path: Path) -> None:
     assert model["continuum"]["cd"]["estimate"] == pytest.approx(2.85924e-3, abs=5e-9)
     assert all(lv["gap"]["CFL3D"] == {"cf": 0.0, "cd": 0.0} for lv in model["levels"])
     assert model["pass"]
+    # The absolute criterion of #493 needs a baseline whose CD settles for a window: thirty
+    # iterations are not one.
+    with pytest.raises(VVError) as err:
+        flatplate.results(root, cache, ("sa-noft2",), absolute=root)
+    assert err.value.code == "V0904"
+    # Runs of 900 iterations whose CD is CFL3D's times 1 + 1e-3 0.97^i: CD is within 1e-7 of its
+    # final value from i = 303 (0.97^i <= 1e-4), so it has been stationary over 500 iterations
+    # from i = 803, the 804th iteration; the residuals are below their thresholds from 303 on.
+    settled = tmp_path / "settled"
+    for cells in CFL3D_CF:
+        _flat_plate_run(settled / "sa-noft2" / f"n{cells}", "sa-noft2", cells, drop=11.0,
+                        rows=900, settle=1e-3)  # fmt: skip
+    absolute = flatplate.results(settled, cache, ("sa-noft2",), absolute=settled)
+    absolute = absolute["models"]["sa-noft2"]
+    assert [lv["absolute"]["iterations"] for lv in absolute["levels"]] == [804] * 5
+    assert absolute["absolute"]["continuum"]["cd"]["estimate"] == pytest.approx(
+        2.85924e-3, abs=5e-9
+    )
+    # The stop.csv `prepare --absolute` writes stops the runner's watcher on that history.
+    finest = settled / "sa-noft2" / "n208896"
+    mesh = hashlib.sha256((finest / "m.su2").read_bytes()).hexdigest()
+    (finest / "stop.csv").write_text(flatplate.stop_csv(flatplate.stop_rule(finest, mesh)))
+    (finest / "watch.awk").write_text(_watcher("run.sh"))
+    cmd = ["awk", "-F,", "-v", "orders=10", "-v", "stall=2000", "-v", "skipzero=0", "-v",
+           "stopfile=stop.csv", "-f", "watch.awk", "history.csv"]  # fmt: skip
+    assert subprocess.run(cmd, cwd=finest, check=False).returncode == 0
+    # Its first 800 iterations do not meet it yet.
+    lines = (finest / "history.csv").read_text().splitlines()
+    (finest / "history.csv").write_text("\n".join(lines[:801]) + "\n")
+    assert subprocess.run(cmd, cwd=finest, check=False).returncode == 1
     # A variant whose first residuals are three orders lower stops 8.5 orders down, at or below the
     # levels the published runs had at the criterion: not converged by the protocol's rule, so no
     # estimate, but converged by the amended one (#195), with CFL3D's continuum again. The
@@ -919,3 +996,61 @@ def test_flat_plate_report_against_tmr(tmp_path: Path) -> None:
     with pytest.raises(VVError) as err:
         flatplate.results(root, cache)
     assert err.value.code == "V0904"
+
+
+def test_absolute_criterion_does_not_depend_on_the_initial_state() -> None:
+    n = 800
+    it = np.arange(n, dtype=np.float64)
+    decay = 1e-2 * 0.9**it + 1e-14
+    cd = 2.8e-3 * (1.0 + 0.5**it)
+    scales = {"d": 1.0, "u": 10.0, "e": 1e5}
+
+    def run(residuals: dict[str, np.ndarray], drag: np.ndarray = cd) -> history.History:
+        return history.History(
+            iterations=it.astype(np.int64), residuals=residuals, cl=np.zeros(n), cd=drag,
+            cmy=np.zeros(n), wall_seconds=None,
+        )  # fmt: skip
+
+    base = run({eq: decay * s for eq, s in scales.items()})
+    # cd is within 1e-7 of its final value from 0.5^i <= 1e-7 (1 + 0.5^799), i = 24; epsilon is the
+    # largest scaled residual there, every equation's being decay[24].
+    eps = history.epsilon(base, scales, ("cd",))
+    assert eps == pytest.approx(decay[24], rel=1e-12)
+    thresholds = {eq: eps * s for eq, s in scales.items()}
+    # The residuals reach the thresholds at 24, cd is then stationary over 500 iterations at 524.
+    at = history.absolute_converged_at(base, thresholds, ("cd",))
+    assert at == 524
+    # First residuals three orders higher: the relative criterion moves, the absolute does not.
+    shifted = {eq: np.where(it < 5, 1e3, 1.0) * decay * s for eq, s in scales.items()}
+    assert history.converged_at(run(shifted), 10.0) != history.converged_at(base, 10.0)
+    assert history.absolute_converged_at(run(shifted), thresholds, ("cd",)) == at
+    # An equation that starts identically zero and wakes to the floor converges.
+    woken = {**base.residuals, "u": np.where(it < 1, 1e-30, 1e-13)}
+    assert history.absolute_converged_at(run(woken), thresholds, ("cd",)) == at
+    # cd moving by 1e-6 never is stationary to 1e-7.
+    wobble = 2.8e-3 * (1.0 + 1e-6 * np.cos(it))
+    assert history.absolute_converged_at(run(base.residuals, wobble), thresholds, ("cd",)) is None
+    # SU2 v8.6.0's own freestream table (35x25 flat plate log): its values, and the flux scales
+    # from them with H = E + p / rho and nu_tilde = 3 mu / rho.
+    fs = history.su2_freestream(
+        (DATA / "su2-v8.6.0-flatplate-35x25-log-freestream.txt").read_text()
+    )
+    assert fs == {"pressure": 114455.0, "density": 1.32905, "energy": 217705.0,
+                  "speed": 69.4448, "viscosity": 1.84592e-05}  # fmt: skip
+    flux = history.flux_scales(fs, 1.0)
+    assert flux["density"] == pytest.approx(1.32905 * 69.4448, rel=1e-15)
+    assert flux["energy"] == pytest.approx(
+        1.32905 * 69.4448 * (217705.0 + 114455.0 / 1.32905), rel=1e-15
+    )
+    assert flux["nu-tilde"] == pytest.approx(3.0 * 1.84592e-05 / 1.32905 * 69.4448, rel=1e-15)
+    # The residuals are in the solver's units, the "Non-dim. value" column; an Euler run prints no
+    # viscosity and has no SA scale.
+    table = (DATA / "su2-v8.6.0-flatplate-35x25-log-freestream.txt").read_text()
+    pressure = "|       Static Pressure|        114455|             1|        Pa|        114455|"
+    assert pressure in table
+    euler = table.replace(pressure, pressure[: -len("114455|")] + "0.7142857|")
+    euler = "\n".join(line for line in euler.splitlines() if "Viscosity" not in line)
+    fs = history.su2_freestream(euler)
+    assert fs["pressure"] == 0.7142857
+    assert "viscosity" not in fs
+    assert "nu-tilde" not in history.flux_scales(fs, 1.0)
