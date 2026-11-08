@@ -26,6 +26,10 @@ if(AUTAN_ENABLE_CUDA)
     set(CMAKE_CUDA_ARCHITECTURES native)
   endif()
   enable_language(CUDA)
+  # No FMA contraction in device code, as -ffp-contract=off on the host: both sides run the same
+  # arithmetic, so a device result can equal the host's bit for bit (#571). Explicit fma() calls
+  # and the CUDA math library's own implementations are not affected.
+  string(APPEND CMAKE_CUDA_FLAGS " --fmad=false")
 endif()
 
 add_library(autan_compile_options INTERFACE)
@@ -75,5 +79,8 @@ if(AUTAN_BUILD_TESTS)
   add_subdirectory(tests/solvers)
   if(AUTAN_ENABLE_CGNS)
     add_subdirectory(tests/runtime)
+  endif()
+  if(AUTAN_ENABLE_CUDA)
+    add_subdirectory(tests/toolchain)
   endif()
 endif()
