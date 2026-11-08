@@ -348,6 +348,14 @@ A launcher started several ranks of a build without MPI.
 
 Fix: Run this build on one rank, or use a build with MPI, such as the dev image.
 
+## E0147
+
+**Not a run's solution** (error)
+
+`autan-vtu` was given a CGNS file without a `FlowSolution`: a mesh, not a run's `solution.cgns` (vtu.md).
+
+Fix: Give it the `solution.cgns` of a run directory.
+
 ## W0150
 
 **Periodic nodes moved** (warning)

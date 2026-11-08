@@ -117,20 +117,23 @@ void BlockMatrix::zero() {
 
 void BlockMatrix::multiply(std::span<const double> x, std::span<double> y) const {
   const std::size_t n = n_cells_;
-  auto add = [&](const double* a, std::size_t row, std::size_t col) {
-    for (std::size_t i = 0; i < 5; ++i) {
-      double s = 0.0;
-      for (std::size_t j = 0; j < 5; ++j) s += a[5 * i + j] * x[j * n + col];
-      y[i * n + row] += s;
+  // Row by row, the off-diagonal blocks in the order relax() takes them: under order_rows() the
+  // product does not depend on the face numbering either.
+  for (std::size_t c = 0; c < n; ++c) {
+    std::array<double, 5> r{};
+    auto add = [&](const double* a, std::size_t col) {
+      for (std::size_t i = 0; i < 5; ++i) {
+        for (std::size_t j = 0; j < 5; ++j) r[i] += a[5 * i + j] * x[j * n + col];
+      }
+    };
+    add(&diag_[25 * c], c);
+    for (auto k = cell_offsets_[c]; k < cell_offsets_[c + 1]; ++k) {
+      const auto f = static_cast<std::size_t>(cell_faces_[static_cast<std::size_t>(k)]);
+      const bool owned = static_cast<std::size_t>(owner_[f]) == c;
+      add(owned ? &upper_[25 * f] : &lower_[25 * f],
+          static_cast<std::size_t>(owned ? neighbour_[f] : owner_[f]));
     }
-  };
-  std::fill(y.begin(), y.end(), 0.0);
-  for (std::size_t c = 0; c < n; ++c) add(&diag_[25 * c], c, c);
-  for (std::size_t f = 0; f < neighbour_.size(); ++f) {
-    const auto o = static_cast<std::size_t>(owner_[f]);
-    const auto nb = static_cast<std::size_t>(neighbour_[f]);
-    add(&upper_[25 * f], o, nb);
-    add(&lower_[25 * f], nb, o);
+    for (std::size_t i = 0; i < 5; ++i) y[i * n + c] = r[i];
   }
 }
 

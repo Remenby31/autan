@@ -2058,7 +2058,6 @@ class Run final : public Log {
 
   // A run diagnostic goes to run.json and, with the same code and data, to
   // log.jsonl (results.md). Every rank records it; rank 0 logs it.
-
   void add_diagnostic(const Diagnostic& d) {
     const Json entry = Json::parse(d.json());
     info_["diagnostics"].push_back(entry);
@@ -2248,6 +2247,7 @@ class Run final : public Log {
                   {"time", steady ? Json(nullptr) : Json(step_time)},
                   {"residuals", residuals},
                   {"monitors", Json::object()}};
+      if (steady) record["provisional"] = report.provisional;
       for (std::size_t m = 0; m < in.monitors.size(); ++m) {
         const auto& monitor = in.monitors[m];
         if (it % monitor.every != 0) continue;

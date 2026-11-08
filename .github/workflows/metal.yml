@@ -42,6 +42,8 @@ jobs:
           echo "PYTHON=$(uv run --locked python -c 'import sys; print(sys.executable)')" >> "${GITHUB_ENV}"
       # CGNS is off: the spike driver builds its meshes from face arrays.
       - name: Configure
+        env:
+          AUTAN_GITHUB_TOKEN: ${{ github.token }}
         run: >-
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAUTAN_BUILD_TESTS=ON
           -DAUTAN_ENABLE_CGNS=OFF -DAUTAN_ENABLE_METAL=ON -DAUTAN_WARNINGS_AS_ERRORS=ON

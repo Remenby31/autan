@@ -440,6 +440,38 @@ TEST_CASE("a continued steady run ends its first-order start where the uninterru
   }
 }
 
+TEST_CASE("the history marks provisional exactly the steps of the first-order start", "[euler]") {
+  // results.md#history: a steady line carries `provisional`, true for the first-order start's
+  // steps (euler.md#time-stepping). A uniform flow's start ends on its stall, before the cap, and
+  // the stalling step is not counted by FirstOrderStart: n < 201 marked lines, a prefix, and
+  // n - 1 counted steps in the restart state, second order on.
+  const auto out = run(input("hybrid.solver-input.json", [](Json& d) {
+    inviscid_along_x(d, "fp64");
+    d["time"]["max_iterations"] = 250;
+  }));
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  const auto lines = history(out.run);
+  std::size_t marked = 0;
+  while (marked < lines.size() && lines[marked]["provisional"] == true) ++marked;
+  for (std::size_t i = marked; i < lines.size(); ++i) CHECK(lines[i]["provisional"] == false);
+  REQUIRE(marked >= 1);
+  REQUIRE(marked < lines.size());
+  CHECK(field(out.run, "SolverSecondOrder", "RestartState").front() == 1.0);
+  const double counted = field(out.run, "SolverFirstOrderSteps", "RestartState").front();
+  CHECK(marked < 201);
+  CHECK(counted == static_cast<double>(marked - 1));
+  // Unsteady lines leave it out.
+  const auto steps = run(input("hybrid.solver-input.json", [](Json& d) {
+    inviscid_along_x(d, "fp64");
+    d["time"] = {{"kind", "unsteady"},      {"steps", 3},
+                 {"dt", nullptr},           {"cfl", 0.8},
+                 {"average_from", nullptr}, {"checkpoint", {{"seconds", 1800.0}}}};
+  }));
+  REQUIRE(steps.status == ExitStatus::finished);
+  for (const auto& line : history(steps.run)) CHECK_FALSE(line.contains("provisional"));
+}
+
 TEST_CASE("checkpoints change no Euler result", "[euler]") {
   const char* precision = GENERATE("fp64", "fp32+acc64");
   const bool steady = GENERATE(true, false);
@@ -1869,9 +1901,9 @@ TEST_CASE("a continued Spalart-Allmaras run repeats the uninterrupted one bit fo
     REQUIRE(r.status == ExitStatus::finished);
     return r.run;
   };
-  // A few steps past the switch to second order (step 35 in fp64, 155 in fp32+acc64); the
+  // A few steps past the switch to second order (step 35 in fp64, 192 in fp32+acc64); the
   // checks below fail if it moves past the budget.
-  const int budget = std::string(precision) == "fp64" ? 40 : 160;
+  const int budget = std::string(precision) == "fp64" ? 40 : 200;
   const auto whole = finished(doc(budget));
   const auto steps = static_cast<int>(history(whole).size());
   REQUIRE(field(whole, "SolverSecondOrder", "RestartState").front() == 1.0);

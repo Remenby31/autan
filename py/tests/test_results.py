@@ -94,6 +94,7 @@ def test_history_lines_carry_every_equation_and_monitors_at_their_period(
         ]
         assert ("forces" in line["monitors"]) == (line["iteration"] % 10 == 0)
         assert line["time"] is None
+        assert line["provisional"] is False
     first, last = lines[0]["residuals"]["density"], lines[-1]["residuals"]["density"]
     assert isinstance(crm_run.case.time, autan.Steady)
     assert math.log10(first / last) >= crm_run.case.time.residual_orders - 1e-9
@@ -556,6 +557,12 @@ def _drop_last_line(path: Path) -> None:
             (p / "history.jsonl").read_text().replace("1.0, ", "NaN, ", 1)
         ),
         lambda p: (p / "history.jsonl").write_text((p / "history.jsonl").read_text()[:-20]),
+        lambda p: (p / "history.jsonl").write_text(
+            (p / "history.jsonl").read_text().replace(', "provisional": false', "", 1)
+        ),
+        lambda p: (p / "history.jsonl").write_text(
+            (p / "history.jsonl").read_text().replace('"provisional": false', '"provisional": 0', 1)
+        ),
     ],
 )
 def test_reader_checks_every_contract_invariant(

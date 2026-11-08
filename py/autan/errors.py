@@ -304,6 +304,13 @@ _CODES = [
         "Run this build on one rank, or use a build with MPI, such as the dev image.",
     ),
     Code(
+        "E0147",
+        "Not a run's solution",
+        "`autan-vtu` was given a CGNS file without a `FlowSolution`: a mesh, not a run's "
+        "`solution.cgns` (vtu.md).",
+        "Give it the `solution.cgns` of a run directory.",
+    ),
+    Code(
         "W0150",
         "Periodic nodes moved",
         "The nodes of a periodic pair matched within the tolerance but not exactly, so assembly "

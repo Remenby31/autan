@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from fractions import Fraction
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -83,9 +84,11 @@ def fit_order(h: npt.ArrayLike, errors: npt.ArrayLike) -> OrderFit:
 
 @dataclass(frozen=True)
 class RichardsonResult:
-    """Three-grid Richardson extrapolation and GCI following Celik et al. (2008), level 1 being the finest."""
+    """Three-grid Richardson extrapolation and GCI following Celik et al. (2008), level 1 being the
+    finest: `order` observed, `effective_order` the one the extrapolation and the GCI use."""
 
     order: float
+    effective_order: float
     extrapolated: float
     gci_fine: float
     gci_medium: float
@@ -113,14 +116,23 @@ def _require_finite(*values: float) -> None:
         raise VVError(msg, code="V0103")
 
 
-def richardson(h: Sequence[float], values: Sequence[float]) -> RichardsonResult:
+def richardson(
+    h: Sequence[float],
+    values: Sequence[float],
+    *,
+    safety: float = GCI_SAFETY_THREE_GRIDS,
+    max_order: float | None = None,
+) -> RichardsonResult:
     """Extrapolate a functional from its values on three grids and bound its discretisation error.
 
     Inputs are in any order; level 1 is the finest. The observed order solves Celik et al. (2008),
-    eqs. 3a-3c, written for f = f0 + a h^p as (f3 - f2)/(f2 - f1) = r21^p (r32^p - 1)/(r21^p - 1),
-    by bisection in log form, which holds for any refinement ratios. GCI uses Roache's safety
-    factor 1.25. Differences of opposite signs (oscillatory, V0107) or a ratio no positive order
-    explains (V0108, V0109) raise: the order is then meaningless.
+    eqs. 3a-3c, written for f = f0 + a h^p as (f3 - f2)/(f2 - f1) = r21^p (r32^p - 1)/(r21^p - 1):
+    in closed form for a constant ratio r, p = ln((f3 - f2)/(f2 - f1)) / ln r, with the bounds
+    p <= 0 and p > 64 decided in exact arithmetic; by bisection in log form over [1e-8, 64]
+    otherwise. Differences of opposite signs (oscillatory, V0107), two equal values (V0106) or an
+    order outside those bounds (V0108 below, V0109 above) raise: the order is then meaningless.
+    The extrapolation and the GCI use the observed order capped at `max_order`
+    (`effective_order`), the GCI the safety factor `safety`; Roache's 1.25 and no cap by default.
     """
     if len(h) != 3 or len(values) != 3:
         msg = "Richardson extrapolation needs exactly three grids"
@@ -140,30 +152,39 @@ def richardson(h: Sequence[float], values: Sequence[float]) -> RichardsonResult:
         msg = "oscillatory convergence: observed order undefined"
         raise VVError(msg, code="V0107")
     ln21, ln32 = math.log(r21), math.log(r32)
-    target = math.log(eps32 / eps21)
-    # The model ratio increases with p from ln r32 / ln r21 (p -> 0).
-    p_lo, p_hi = 1e-8, 64.0
-    if target <= _log_ratio_model(p_lo, ln21, ln32):
+    if r21 == r32:
+        ratio = (Fraction(f3) - Fraction(f2)) / (Fraction(f2) - Fraction(f1))
+        below, above = ratio <= 1, ratio > Fraction(r21) ** 64
+        p = 0.0 if below or above else math.log(ratio) / ln21
+    else:
+        # The model ratio increases with p from ln r32 / ln r21 (p -> 0).
+        target = math.log(eps32 / eps21)
+        p_lo, p_hi = 1e-8, 64.0
+        below = target <= _log_ratio_model(p_lo, ln21, ln32)
+        above = target >= _log_ratio_model(p_hi, ln21, ln32)
+        for _ in range(200):
+            p = 0.5 * (p_lo + p_hi)
+            if _log_ratio_model(p, ln21, ln32) < target:
+                p_lo = p
+            else:
+                p_hi = p
+        p = 0.5 * (p_lo + p_hi)
+    if below:
         msg = "the solutions do not converge as h^p for any positive p"
         raise VVError(msg, code="V0108")
-    if target >= _log_ratio_model(p_hi, ln21, ln32):
+    if above:
         msg = "observed order above 64: the grids are not in a power-law range"
         raise VVError(msg, code="V0109")
-    for _ in range(200):
-        p = 0.5 * (p_lo + p_hi)
-        if _log_ratio_model(p, ln21, ln32) < target:
-            p_lo = p
-        else:
-            p_hi = p
-    p = 0.5 * (p_lo + p_hi)
+    p_eff = p if max_order is None else min(p, max_order)
     # eps / (r^p - 1) evaluated as eps * exp(-log(expm1(p ln r))) so that large r^p cannot overflow.
-    scale21 = math.exp(-_log_expm1(p * ln21))
-    scale32 = math.exp(-_log_expm1(p * ln32))
+    scale21 = math.exp(-_log_expm1(p_eff * ln21))
+    scale32 = math.exp(-_log_expm1(p_eff * ln32))
     extrapolated = f1 - eps21 * scale21
-    gci21 = GCI_SAFETY_THREE_GRIDS * abs(eps21) * scale21
-    gci32 = GCI_SAFETY_THREE_GRIDS * abs(eps32) * scale32
+    gci21 = safety * abs(eps21) * scale21
+    gci32 = safety * abs(eps32) * scale32
     return RichardsonResult(
         order=p,
+        effective_order=p_eff,
         extrapolated=extrapolated,
         gci_fine=gci21,
         gci_medium=gci32,
