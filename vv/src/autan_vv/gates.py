@@ -6,6 +6,7 @@ gate with its source and its identifier; `test_harness.py` checks the two agree.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 CONSERVED = ("rho", "rhou", "rhov", "rhow", "rhoE")
@@ -23,7 +24,10 @@ class Gate:
     finest-pair order of each field's `norm` error must lie in [lower, upper]; a field the oracle
     makes identically zero must instead stay zero to `PRESERVED` epsilons) or `max-error` (the
     relative `norm` error of each field at most `upper` epsilons of the run precision, on every
-    run). `fields` None means every field the run writes. `time` and `domain` are prerequisites:
+    run) or `residual-drop` (in `fp64`, every equation's residual, the SA variable included, dropped at least
+    `lower` orders from its reference to the last line of each run's history, whatever the run's
+    status; other precisions are reported, not judged). `fields` None means every field the run
+    writes. `time` and `domain` are prerequisites:
     every run must reach that physical time, and the mesh must span `domain` (per axis, min and max).
     With `upper_blocks` False, an order above `upper` is a warning, and above `investigate_above` the
     verdict asks for an explanation; neither fails the gate. With `monotone`, each field's error
@@ -117,6 +121,16 @@ GATES: dict[str, Gate] = {
             upper_blocks=False,
             investigate_above=2.6,
             monotone=True,
+        ),
+        Gate(
+            "degraded-mesh-convergence",
+            ("mms-euler", "mms-navier-stokes", "mms-rans-sa"),
+            "residual-drop",
+            "L2",
+            None,
+            8.0,
+            math.inf,
+            "M3",
         ),
         Gate(
             "couette-velocity-exact",

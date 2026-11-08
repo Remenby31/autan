@@ -7,17 +7,19 @@ at iteration 1 and exact powers of ten after it, floors of 1e-8, plateaus of con
 import math
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import autan
 import numpy as np
 import pytest
 from autan.errors import diagnostic
-from autan.results import Convergence, StartInfo
-from autan.units import K, Pa
+from autan.results import Convergence, StartInfo, field_names
+from autan.units import K, Pa, kg, mol, s
 from autan_vv.errors import VVError
-from autan_vv.harness import verify
+from autan_vv.harness import UNIVERSAL_GAS_CONSTANT, verify
 from autan_vv.meshes.families import cartesian
 from autan_vv.meshes.fluent import write_fluent
+from autan_vv.oracles.registry import get_oracle
 from autan_vv.runs import mesh_info, write_run
 
 Lines = list[dict[str, float]]
@@ -234,3 +236,88 @@ def test_a_plateau_follows_the_residual_level_not_its_lowest_draw(
         ],
         "freestream",
     )
+
+
+def test_degraded_mesh_convergence_judges_each_equations_drop_whatever_the_status(
+    tmp_path: Path,
+) -> None:
+    oracle = get_oracle("mms-euler")
+    gas = autan.IdealGas(
+        name="manufactured",
+        molar_mass=UNIVERSAL_GAS_CONSTANT / oracle.gas_constant * kg / mol,
+        gamma=oracle.gamma,
+        prandtl=0.72,
+        viscosity=autan.ConstantViscosity(mu=1e-5 * Pa * s),
+    )
+    meshes = []
+    for n in (3, 4, 5):
+        mesh, path = cartesian((n, n, n)), tmp_path / f"box-{n}.msh"
+        write_fluent(mesh, path, "fluid")
+        meshes.append((mesh, path))
+
+    def run(level: int, history: Lines, precision: str = "fp64", **options: Any) -> Path:
+        mesh, path = meshes[level]
+        case = autan.Case("degraded", mesh=path)
+        case.physics = autan.Compressible(
+            turbulence=autan.Inviscid(),
+            precision=precision,  # type: ignore[arg-type]
+            gas=gas,
+        )
+        case.freestream(mach=0.3, pressure=1e5 * Pa, temperature=300 * K)
+        case.time = autan.Steady(max_iterations=3, residual_orders=8.0)
+        case.boundary("*").farfield()
+        exact = oracle.fields(mesh.geometry.cell_centroid, None)
+        fields = {k: exact[k] for k in field_names(case.spec)}
+        info = mesh_info(mesh, path, "fluent")
+        return write_run(
+            tmp_path / "runs", case, mesh, info, fields, residuals=history, **options
+        ).path
+
+    gate = "degraded-mesh-convergence"
+    # Converged: 8.5 orders on every equation but momentum-y, identically zero.
+    converged = run(
+        0, [{e: 0.0 if e == "momentum-y" else v for e in EQUATIONS} for v in (1.0, 10.0**-8.5)]
+    )
+    # Completed at max_iterations with density 7 orders down; diverged, residuals rising.
+    completed = run(1, lines(1.0, 1e-5, {"density": 1e-7}), status="completed")
+    diverged = run(
+        2,
+        lines(1e-200, 1e200),
+        status="diverged",
+        diagnostics=(diagnostic("D0107", "divergence", iteration=2),),
+    )
+    report = verify([converged, completed, diverged], "mms-euler", gate)
+    checks = {c["status"]: c for c in report["verdict"]["checks"]}
+    assert checks["converged"]["equations"]["density"]["drop"] == pytest.approx(8.5)
+    assert checks["converged"]["equations"]["momentum-y"] == {
+        "drop": None,
+        "identically_zero": True,
+        "pass": True,
+    }
+    assert checks["converged"]["pass"]
+    assert checks["completed"]["equations"]["density"]["drop"] == pytest.approx(7.0)
+    assert checks["completed"]["equations"]["energy"]["drop"] == pytest.approx(9.0)
+    assert not checks["completed"]["pass"]
+    assert checks["diverged"]["equations"]["density"]["drop"] == pytest.approx(-400.0)
+    assert not checks["diverged"]["pass"]
+    # Nine orders, but on a fourth line past max_iterations = 3.
+    late = run(
+        1,
+        lines(1.0, 1e-3, 1e-7, 1e-9),
+        status="diverged",
+        diagnostics=(diagnostic("D0107", "divergence", iteration=4),),
+    )
+    (check,) = verify([late], "mms-euler", gate)["verdict"]["checks"]
+    assert check["equations"]["density"]["drop"] == pytest.approx(9.0)
+    assert not check["pass"]
+    assert verify([converged, completed], "mms-euler", gate)["verdict"]["pass"] is False
+    assert verify([converged], "mms-euler", gate)["verdict"]["pass"] is True
+    # Outside fp64 the drops are reported, not judged.
+    fp32 = run(0, lines(1.0, 1e-3, 1e-4), "fp32+acc64", status="completed")
+    verdict = verify([fp32], "mms-euler", gate)["verdict"]
+    assert verdict["pass"] is None
+    assert verdict["checks"][0]["equations"]["density"]["drop"] == pytest.approx(4.0)
+    # A run of another physics is still refused.
+    with pytest.raises(VVError) as err:
+        verify([converged], "mms-navier-stokes", gate)
+    assert err.value.code == "V0724"
