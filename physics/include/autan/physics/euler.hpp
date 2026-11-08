@@ -54,9 +54,10 @@ struct Scheme {
   GradientFit gradient_fit = GradientFit::linear;
   /// Linear reconstruction with least-squares gradients; first order otherwise.
   bool second_order = true;
-  /// Venkatakrishnan limiter with threshold eps_k^2 = (K h / length)^3 scale_k^2, h^3 = V.
+  /// Limiter of Michalak and Ollivier-Gooch (2009), off below the threshold
+  /// (K h / length)^3 scale_k^2, h^3 = V (docs/design/euler.md, Limiter).
   bool limiter = true;
-  double venkat_k = 10.0;
+  double limiter_k = 10.0;
   double length = 1.0;                                   ///< m
   std::array<double, 5> scale{1.0, 1.0, 1.0, 1.0, 1.0};  ///< W units: rho, u, v, w, p
   /// Cut-off Mach number of AUSM+-up's low-Mach scaling (the freestream Mach number).

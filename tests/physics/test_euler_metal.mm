@@ -229,6 +229,7 @@ std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Schem
   d.grad = buf.zeros<typename M::grad>(15 * nc);
   d.wmin = buf.zeros<S>(5 * nc);
   d.wmax = buf.zeros<S>(5 * nc);
+  d.mmax = buf.zeros<S>(nc);
   d.phi = buf.put<S>(std::vector<double>(5 * nc, s.second_order && !s.limiter ? 1.0 : 0.0));
   d.source = buf.zeros<S>(5 * nc);
   d.res = buf.zeros<R>(5 * nc);
@@ -246,7 +247,7 @@ std::vector<double> metal_residual(mtl::Context& ctx, const Case& c, const Schem
   for (std::size_t k = 0; k < 5; ++k) d.u_ref[k] = typename M::param(r0[k]);
   d.p_ref[0] = typename M::param(
       (air.gamma - 1.0) * (r0[4] - 0.5 * (r0[1] * r0[1] + r0[2] * r0[2] + r0[3] * r0[3]) / r0[0]));
-  const double k3 = std::pow(s.venkat_k / s.length, 3);
+  const double k3 = std::pow(s.limiter_k / s.length, 3);
   for (std::size_t k = 0; k < 5; ++k) {
     d.limiter_scale[k] = typename M::param(k3 * s.scale[k] * s.scale[k]);
   }

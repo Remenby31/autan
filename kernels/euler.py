@@ -5,8 +5,9 @@ variables W = (rho, u, v, w, p), ideal gas with ratio of specific heats `gamma`.
 
 Residual R_c = sum over the faces of c of F(W_L, W_R) . S - s_c V_c, with
 - gradients of W by weighted least squares over face neighbours and boundary states,
-- the Venkatakrishnan (1995) limiter with bounds over the gradient stencil, J. Comput. Phys. 118:120-130, eq. 5, with the per-component
-  threshold eps^2 = scale_k V_c (scale_k = K^3 q_k^2 / L^3, set by the caller),
+- the limiter of Michalak and Ollivier-Gooch (2009), J. Comput. Phys. 228:8693-8711, with bounds over
+  the gradient stencil and the per-component threshold (K dx)^3 = scale_k V_c (scale_k = K^3 q_k^2 /
+  L^3, set by the caller),
 - face states W_f = W_c + phi (grad W) (x_f - x_c),
 - one of three numerical fluxes: Roe with Harten's entropy fix, HLLC, AUSM+-up,
 - boundary states per face from its condition code (`BC_*` below) and the face data `bc`.
@@ -71,6 +72,7 @@ grad = cells.field("grad", Grad.Mat53)
 wmin = cells.field("wmin", State.Vec5)
 wmax = cells.field("wmax", State.Vec5)
 phi = cells.field("phi", State.Vec5)
+mmax = cells.field("mmax", State)  # largest Mach number of the cell averages of the stencil
 source = cells.field("source", State.Vec5)
 res = cells.field("res", Residual.Vec5)
 
@@ -508,17 +510,34 @@ band_gradients = cell_reduce(
 
 
 @pointwise
+def cell_mach(w: State.Vec5, g: Param, pref: Param) -> State:
+    # Mach number of a cell average; 0 for the zero state a boundary entry of the stencil carries
+    # (prim.other(boundary=None)), which is not a cell average (Michalak and Ollivier-Gooch 2009,
+    # section 4.4.2). The denominators are guarded: both branches are evaluated.
+    ok = w[0] > 0.0 and w[4] + pref > 0.0
+    c2 = g * (w[4] + pref) / (w[0] if ok else 1.0)
+    q2 = w[1] * w[1] + w[2] * w[2] + w[3] * w[3]
+    return sqrt(q2 / (c2 if ok else 1.0)) if ok else 0.0
+
+
+@pointwise
 def lsq_term(
-    wc: State.Vec5, wn: State.Vec5, w: Geom.Vec3
-) -> tuple[Grad.Mat53, State.Vec5, State.Vec5]:
-    return outer(wn - wc, w), wn, wn
+    wc: State.Vec5, wn: State.Vec5, w: Geom.Vec3, mn: State.Vec5, g: Param, pref: Param
+) -> tuple[Grad.Mat53, State.Vec5, State.Vec5, State]:
+    return outer(wn - wc, w), wn, wn, cell_mach(mn, g, pref)
 
 
 @pointwise
 def include_own_value(
-    gsum: Residual.Mat53, lo: Residual.Vec5, hi: Residual.Vec5, wc: State.Vec5
-) -> tuple[Grad.Mat53, State.Vec5, State.Vec5]:
-    return gsum, min(lo, wc), max(hi, wc)
+    gsum: Residual.Mat53,
+    lo: Residual.Vec5,
+    hi: Residual.Vec5,
+    m: Residual,
+    wc: State.Vec5,
+    g: Param,
+    pref: Param,
+) -> tuple[Grad.Mat53, State.Vec5, State.Vec5, State]:
+    return gsum, min(lo, wc), max(hi, wc), max(m, cell_mach(wc, g, pref))
 
 
 @pointwise
@@ -526,12 +545,15 @@ def include_own_value_quadratic(
     gsum: Residual.Mat53,
     lo: Residual.Vec5,
     hi: Residual.Vec5,
+    m: Residual,
     wc: State.Vec5,
     gb: Grad.Mat53,
     q: Geom,
-) -> tuple[Grad.Mat53, State.Vec5, State.Vec5]:
-    g = gb if q > 0.5 else gsum
-    return g, min(lo, wc), max(hi, wc)
+    g: Param,
+    pref: Param,
+) -> tuple[Grad.Mat53, State.Vec5, State.Vec5, State]:
+    gr = gb if q > 0.5 else gsum
+    return gr, min(lo, wc), max(hi, wc), max(m, cell_mach(wc, g, pref))
 
 
 # Least squares over the cell stencil (vertex or face2 neighbours, Topology::stencil): over face
@@ -543,9 +565,12 @@ gradients = cell_reduce(
     wc=prim.self_,
     wn=prim.other(boundary=prim_b),
     w=geometry.stencil_lsq_weight,
-    acc=[Sum(grad), Min(wmin), Max(wmax)],
+    mn=prim.other(boundary=None),
+    g=gamma,
+    pref=p_ref,
+    acc=[Sum(grad), Min(wmin), Max(wmax), Max(mmax)],
     finalise=include_own_value,
-    finalise_args={"wc": prim},
+    finalise_args={"wc": prim, "g": gamma, "pref": p_ref},
 )
 # The same pass under the quadratic gradient, which replaces the linear one where `band` = 1.
 quadratic_gradients = cell_reduce(
@@ -554,17 +579,23 @@ quadratic_gradients = cell_reduce(
     wc=prim.self_,
     wn=prim.other(boundary=prim_b),
     w=geometry.stencil_lsq_weight,
-    acc=[Sum(grad), Min(wmin), Max(wmax)],
+    mn=prim.other(boundary=None),
+    g=gamma,
+    pref=p_ref,
+    acc=[Sum(grad), Min(wmin), Max(wmax), Max(mmax)],
     finalise=include_own_value_quadratic,
-    finalise_args={"wc": prim, "gb": grad_band, "q": band},
+    finalise_args={"wc": prim, "gb": grad_band, "q": band, "g": gamma, "pref": p_ref},
 )
 
 
 @pointwise
-def venkat(d: State, dmax: State, dmin: State, eps2: State) -> State:
-    # Venkatakrishnan (1995), eq. 5: smooth limiter of the extrapolated increment d.
-    dp = dmax if d > 0.0 else dmin
-    return (dp * dp + eps2 + 2.0 * d * dp) / (dp * dp + 2.0 * d * d + d * dp + eps2)
+def smooth_min(d: State, dmax: State, dmin: State) -> State:
+    # Michalak and Ollivier-Gooch (2009), section 3, step 3 (preprint p. 4) with their smooth
+    # min(1, y) of section 4.2 (p. 8): P(y) = y - 4 y^3 / 27 below y_t = 1.5, 1 above; 1 where the
+    # face increment d is zero. The denominator is guarded: both branches are evaluated.
+    nonzero = d > 0.0 or d < 0.0
+    y = (dmax if d > 0.0 else dmin) / (d if nonzero else 1.0)
+    return y - (4.0 / 27.0) * y * y * y if nonzero and y < 1.5 else 1.0
 
 
 @pointwise
@@ -573,24 +604,60 @@ def limiter_term(
     gc: Grad.Mat53,
     lo: State.Vec5,
     hi: State.Vec5,
-    vol: Geom,
     xf: Geom.Vec3,
     xc: Geom.Vec3,
-    scale: Param.Vec5,
 ) -> State.Vec5:
+    # Every face of the cell, boundary faces included. This departs from the paper's first measure
+    # of section 4.4 (p. 10), which leaves boundary faces out of step 3 in a scheme that also has
+    # wall ghost volumes (sections 4.4.1-4.4.2) bounding the near-wall cells. Without those ghosts,
+    # leaving the boundary faces out made ONERA M6 leave the admissible states at its wall cells
+    # (#244, diagnosis D-L1).
     d = gc @ rel(xf, xc)
     return Vec5(
-        venkat(d[0], hi[0] - wc[0], lo[0] - wc[0], scale[0] * vol),
-        venkat(d[1], hi[1] - wc[1], lo[1] - wc[1], scale[1] * vol),
-        venkat(d[2], hi[2] - wc[2], lo[2] - wc[2], scale[2] * vol),
-        venkat(d[3], hi[3] - wc[3], lo[3] - wc[3], scale[3] * vol),
-        venkat(d[4], hi[4] - wc[4], lo[4] - wc[4], scale[4] * vol),
+        smooth_min(d[0], hi[0] - wc[0], lo[0] - wc[0]),
+        smooth_min(d[1], hi[1] - wc[1], lo[1] - wc[1]),
+        smooth_min(d[2], hi[2] - wc[2], lo[2] - wc[2]),
+        smooth_min(d[3], hi[3] - wc[3], lo[3] - wc[3]),
+        smooth_min(d[4], hi[4] - wc[4], lo[4] - wc[4]),
     )
 
 
 @pointwise
-def at_most_one(p: Residual.Vec5) -> State.Vec5:
-    return Vec5(min(p[0], 1.0), min(p[1], 1.0), min(p[2], 1.0), min(p[3], 1.0), min(p[4], 1.0))
+def uniform_blend(p: Residual, lo: State, hi: State, e: State) -> State:
+    # Michalak and Ollivier-Gooch (2009), section 4.3, eqs. 9-11 (p. 9): Phi~ = sigma + (1 - sigma)
+    # Phi, sigma = 1 for dU^2 <= e, s((dU^2 - e) / e) up to 2 e, 0 above, s(y) = 2 y^3 - 3 y^2 + 1,
+    # dU = max - min over the stencil and e = (K dx)^3. The ratio's denominator is guarded: e = 0
+    # takes the outer branches.
+    du2 = (hi - lo) * (hi - lo)
+    r = (du2 - e) / (e if e > 0.0 else 1.0)
+    sigma = 1.0 if du2 <= e else (0.0 if du2 >= 2.0 * e else 2.0 * r * r * r - 3.0 * r * r + 1.0)
+    phi = min(p, 1.0)
+    return sigma + (1.0 - sigma) * phi
+
+
+@pointwise
+def subsonic_blend(mm: State) -> State:
+    # Michalak and Ollivier-Gooch (2009), section 4.4.2, eqs. 13-14 (pp. 12-13): sigma^ = 1 for
+    # M_max <= M1, s((M_max - M1) / (M2 - M1)) up to M2, 0 above, M_max the largest Mach number of
+    # the stencil's cell averages, with the paper's M1 = 0.8 and M2 = 0.85: no shock can reach a
+    # stencil without supersonic flow.
+    r = (mm - 0.8) / 0.05
+    return 1.0 if mm <= 0.8 else (0.0 if mm >= 0.85 else 2.0 * r * r * r - 3.0 * r * r + 1.0)
+
+
+@pointwise
+def limiter_finalise(
+    p: Residual.Vec5, lo: State.Vec5, hi: State.Vec5, vol: Geom, scale: Param.Vec5, mm: State
+) -> State.Vec5:
+    # Phi^ = sigma^ + (1 - sigma^) Phi~ (eq. 13) on the uniform-region blend Phi~ (eq. 9).
+    sh = subsonic_blend(mm)
+    return Vec5(
+        sh + (1.0 - sh) * uniform_blend(p[0], lo[0], hi[0], scale[0] * vol),
+        sh + (1.0 - sh) * uniform_blend(p[1], lo[1], hi[1], scale[1] * vol),
+        sh + (1.0 - sh) * uniform_blend(p[2], lo[2], hi[2], scale[2] * vol),
+        sh + (1.0 - sh) * uniform_blend(p[3], lo[3], hi[3], scale[3] * vol),
+        sh + (1.0 - sh) * uniform_blend(p[4], lo[4], hi[4], scale[4] * vol),
+    )
 
 
 limiter = cell_reduce(
@@ -599,12 +666,17 @@ limiter = cell_reduce(
     gc=grad.self_,
     lo=wmin.self_,
     hi=wmax.self_,
-    vol=geometry.cell_volume.self_,
     xf=geometry.face_centroid,
     xc=geometry.cell_centroid.self_,
-    scale=limiter_scale,
     acc=Min(phi),
-    finalise=at_most_one,
+    finalise=limiter_finalise,
+    finalise_args={
+        "lo": wmin,
+        "hi": wmax,
+        "vol": geometry.cell_volume,
+        "scale": limiter_scale,
+        "mm": mmax,
+    },
 )
 
 
@@ -621,7 +693,7 @@ def reconstruct(
     w: State.Vec5, gw: Grad.Mat53, lim: State.Vec5, r: Geom.Vec3, pref: Param
 ) -> State.Vec5:
     # Falls back to the cell value where the linear reconstruction would make the density or the
-    # (absolute) pressure non-positive: the Venkatakrishnan limiter does not preserve positivity.
+    # (absolute) pressure non-positive: the limiter does not preserve positivity.
     d = gw @ r
     wf = w + Vec5(lim[0] * d[0], lim[1] * d[1], lim[2] * d[2], lim[3] * d[3], lim[4] * d[4])
     return wf if wf[0] > 0.0 and wf[4] + pref > 0.0 else w

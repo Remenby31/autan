@@ -10,6 +10,7 @@
 #include <numbers>
 #include <random>
 #include <span>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -25,8 +26,10 @@
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
+#include "autan/physics/manufactured.hpp"
 #include "autan/physics/point_vortex.hpp"
 #include "euler_cpu.hpp"
+#include "fixtures.hpp"
 
 namespace {
 
@@ -281,7 +284,7 @@ TEMPLATE_TEST_CASE("the planar loops give the full loops' residual where every f
   };
   Scheme s = second_order(flux, 0.3);
   s.limiter = limiter;
-  s.venkat_k = 0.1;
+  s.limiter_k = 0.1;
   Euler<P> e(c.mesh, c.geometry, air, s);
   const std::string name(file);
   if (name.starts_with("tet") || name.starts_with("hex")) REQUIRE(e.all_planar());
@@ -825,6 +828,222 @@ TEST_CASE("the point-vortex farfield state is the freestream plus the Prandtl-Gl
   }
 }
 
+TEMPLATE_TEST_CASE("the limiter is Michalak and Ollivier-Gooch's by hand on a uniform hex block",
+                   "[euler]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // Michalak and Ollivier-Gooch (2009), J. Comput. Phys. 228:8693, preprint pp. 4, 8 and 9: per
+  // interior face y = (stencil max or min - W_c) / (grad W . (x_f - x_c)), phi_f = P(y) =
+  // y - 4 y^3 / 27 below y_t = 1.5 and 1 above; Phi the minimum over the faces; then
+  // Phi~ = sigma + (1 - sigma) Phi, sigma = s((dU^2 - e) / e) between e and 2 e, s(y) =
+  // 2 y^3 - 3 y^2 + 1, dU = max - min over the stencil, e = (K / L)^3 q_k^2 V. On 5^3 unit-cube
+  // hexahedra (h = 0.2) every primitive is base_k + amp_k f(t), t = (x - 0.5) / h, and q_k =
+  // amp_k. The centre cell's two-ring stencil is symmetric, so its least-squares gradient is
+  // f'(0) / h along x and 0 across. y divides differences of values of size |W_k| by increments
+  // of size amp_k, so its round-off grows with |base_k| / amp_k, which the tolerance carries.
+  // Every cell is supersonic (M 1.08-1.33), so the subsonic blend of eqs. 13-14 is 0.
+  using P = TestType;
+  const auto mesh =
+      autan::assemble(autan::to_face_based(autan::test::box(5, autan::test::BoxFill::hexa)));
+  const auto g = autan::compute_geometry(mesh);
+  const auto nc = static_cast<std::size_t>(mesh.n_cells());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+  constexpr double h = 0.2;
+  const std::array<double, 5> base{1.2, 400.0, 30.0, 10.0, 1e5};
+  const std::array<double, 5> amp{0.1, 10.0, 10.0, 10.0, 1e4};
+  const auto cell_at = [&](double x) {
+    for (std::size_t i = 0; i < nc; ++i) {
+      if (std::abs(g.cell_centroid_x[i] - x) < 1e-9 &&
+          std::abs(g.cell_centroid_y[i] - 0.5) < 1e-9 &&
+          std::abs(g.cell_centroid_z[i] - 0.5) < 1e-9) {
+        return i;
+      }
+    }
+    FAIL("no cell centred at x = " << x);
+    return nc;
+  };
+  // phi of every cell, for the field f and the limiter's K, the boundary states exact.
+  const auto limiter = [&](double (*f)(double), double k) {
+    const auto prim = [&](double x) {
+      const double t = (x - 0.5) / h;
+      return Prim{base[0] + amp[0] * f(t),
+                  {base[1] + amp[1] * f(t), base[2] + amp[2] * f(t), base[3] + amp[3] * f(t)},
+                  base[4] + amp[4] * f(t)};
+    };
+    std::vector<BoundaryKind> kind(nb, BoundaryKind::state);
+    std::vector<double> data(5 * nb);
+    for (std::size_t b = 0; b < nb; ++b) {
+      const auto face = ni + b;
+      const auto w = prim(g.face_centroid_x[face]);
+      const std::array<double, 5> v{w.rho, w.v[0], w.v[1], w.v[2], w.p};
+      for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = v[j];
+    }
+    std::vector<double> u(5 * nc);
+    for (std::size_t i = 0; i < nc; ++i) {
+      const auto q = conserved(prim(g.cell_centroid_x[i]));
+      for (std::size_t j = 0; j < 5; ++j) u[j * nc + i] = q[j];
+    }
+    Scheme s = second_order(Flux::roe, 0.3);
+    s.limiter_k = k;
+    s.scale = amp;
+    Euler<P> e(mesh, g, air, s);
+    e.set_boundary(kind, data);
+    const auto state = stored(e, u);
+    std::vector<typename P::residual> r(5 * nc);
+    e.residual(state, r);
+    std::vector<double> phi(5 * nc);
+    for (std::size_t j = 0; j < phi.size(); ++j) phi[j] = static_cast<double>(e.data().phi[j]);
+    return phi;
+  };
+  const auto tol = [&](std::size_t k) { return 64 * eps<P>() * (1.0 + base[k] / amp[k]); };
+  const auto centre = cell_at(0.5);
+  // f = t - t^2 / 2: the stencil's max is f(1) = 0.5 and its min f(-2) = -4, so at the +x face
+  // y = 0.5 / 0.5 = 1 and Phi = P(1) = 23/27; the -x face has y = -4 / -0.5 = 8.
+  const auto dome = [](double t) { return t - 0.5 * t * t; };
+  {
+    const auto phi = limiter(dome, 1.0);  // e = V = 0.008, dU^2 = 20.25: sigma = 0
+    for (std::size_t k = 0; k < 5; ++k) {
+      INFO("component " << k);
+      CHECK(std::abs(phi[k * nc + centre] - 23.0 / 27.0) <= tol(k));
+    }
+  }
+  {
+    // K^3 V = dU^2 / 1.5: sigma = s(0.5) = 0.5, Phi~ = 0.5 + 0.5 * 23/27 = 25/27.
+    const auto phi = limiter(dome, std::cbrt(20.25 / 1.5) / h);
+    for (std::size_t k = 0; k < 5; ++k) {
+      INFO("component " << k);
+      CHECK(std::abs(phi[k * nc + centre] - 25.0 / 27.0) <= tol(k));
+    }
+  }
+  // f = t, exact boundary states: every interior face has y >= 2 > y_t. Boundary faces enter the
+  // minimum too (a departure from the paper's section 4.4, kernels/euler.py): the cells at x = 0.1
+  // and 0.9 see their xmin or xmax face state f(-2.5) or f(2.5) as the stencil's extremum, so that
+  // face has y = 0.5 / 0.5 = 1 and Phi = 23/27 there; every other cell keeps Phi = 1.
+  const auto line = [](double t) { return t; };
+  {
+    const auto phi = limiter(line, 1.0);
+    for (std::size_t j = 0; j < phi.size(); ++j) {
+      const double x = g.cell_centroid_x[j % nc];
+      const bool end = std::abs(x - 0.1) < 1e-9 || std::abs(x - 0.9) < 1e-9;
+      INFO("component " << j / nc << " cell " << j % nc << " x " << x);
+      CHECK(std::abs(phi[j] - (end ? 23.0 / 27.0 : 1.0)) <= tol(j / nc));
+    }
+  }
+}
+
+TEMPLATE_TEST_CASE("the limiter is off where no stencil cell is supersonic", "[euler]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // Michalak and Ollivier-Gooch (2009), section 4.4.2, eqs. 13-14 (preprint pp. 12-13): Phi^ =
+  // sigma^ + (1 - sigma^) Phi~, sigma^ = s((M_max - 0.8) / 0.05) between M 0.8 and 0.85, 1 below
+  // and 0 above, M_max the largest Mach number of the stencil's cell averages. On 5^3 unit-cube
+  // hexahedra (h = 0.2), rho = 1.2 and p = 1e5 everywhere, u = U0 along x and v = f(t), t =
+  // (x - 0.5) / h, f = t - t^2 / 2. Over the centre cell's stencil |v| is largest at f(-2) = -4,
+  // so M_max = sqrt(U0^2 + 16) / c; its v component has Phi = P(1) = 23/27 (the hand case of the
+  // test above) and the uniform components Phi~ = 1.
+  using P = TestType;
+  const auto mesh =
+      autan::assemble(autan::to_face_based(autan::test::box(5, autan::test::BoxFill::hexa)));
+  const auto g = autan::compute_geometry(mesh);
+  const auto nc = static_cast<std::size_t>(mesh.n_cells());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+  constexpr double h = 0.2;
+  const double c = std::sqrt(air.gamma * 1e5 / 1.2);
+  std::size_t centre = nc;
+  for (std::size_t i = 0; i < nc; ++i) {
+    if (std::abs(g.cell_centroid_x[i] - 0.5) < 1e-9 &&
+        std::abs(g.cell_centroid_y[i] - 0.5) < 1e-9 &&
+        std::abs(g.cell_centroid_z[i] - 0.5) < 1e-9) {
+      centre = i;
+    }
+  }
+  REQUIRE(centre < nc);
+  // Phi^ of the centre cell's v component when the stencil's largest Mach number is m.
+  const auto phi_v = [&](double m) {
+    const double u0 = std::sqrt(m * c * m * c - 16.0);
+    const auto prim = [&](double x) {
+      const double t = (x - 0.5) / h;
+      return Prim{1.2, {u0, t - 0.5 * t * t, 0.0}, 1e5};
+    };
+    std::vector<BoundaryKind> kind(nb, BoundaryKind::state);
+    std::vector<double> data(5 * nb);
+    for (std::size_t b = 0; b < nb; ++b) {
+      const auto w = prim(g.face_centroid_x[ni + b]);
+      const std::array<double, 5> v{w.rho, w.v[0], w.v[1], w.v[2], w.p};
+      for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = v[j];
+    }
+    std::vector<double> u(5 * nc);
+    for (std::size_t i = 0; i < nc; ++i) {
+      const auto q = conserved(prim(g.cell_centroid_x[i]));
+      for (std::size_t j = 0; j < 5; ++j) u[j * nc + i] = q[j];
+    }
+    Scheme s = second_order(Flux::roe, 0.3);
+    s.limiter_k = 1.0;
+    s.scale = {1.0, 1.0, 1.0, 1.0, 1.0};
+    Euler<P> e(mesh, g, air, s);
+    e.set_boundary(kind, data);
+    const auto state = stored(e, u);
+    std::vector<typename P::residual> r(5 * nc);
+    e.residual(state, r);
+    return static_cast<double>(e.data().phi[2 * nc + centre]);
+  };
+  // dsigma^/dM = -1.5 / 0.05 = -30 at M 0.825: the Mach number's round-off is amplified 30 times.
+  const double tol = 64 * eps<P>() * 30;
+  CHECK(std::abs(phi_v(0.9) - 23.0 / 27.0) <= tol);    // sigma^ = 0
+  CHECK(std::abs(phi_v(0.825) - 25.0 / 27.0) <= tol);  // sigma^ = s(0.5) = 0.5
+  CHECK(std::abs(phi_v(0.7) - 1.0) <= tol);            // sigma^ = 1: the limiter is off
+}
+
+TEMPLATE_TEST_CASE("the limiter does not act at the manufactured state of any cell family",
+                   "[euler]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // #244, gate 2: verification runs leave the limiter off, so its effect on the smooth
+  // manufactured solution (vv's `euler`, Roy et al. 2004) is checked here: with the limiter on at
+  // the runtime's K = 10, every cell keeps Phi = 1 at the exact state, every boundary face at the
+  // exact state too.
+  using P = TestType;
+  const char* file = GENERATE(from_range(meshes));
+  INFO(file);
+  const Case c(file);
+  std::ifstream in(std::filesystem::path{AUTAN_EULER_MMS}, std::ios::binary);
+  std::ostringstream text;
+  text << in.rdbuf();
+  const autan::physics::Manufactured mms(text.str());
+  const auto nc = static_cast<std::size_t>(c.mesh.n_cells());
+  const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
+  const auto ni = static_cast<std::size_t>(c.mesh.n_interior_faces());
+  const std::array<std::string, 5> names{"rho", "u", "v", "w", "p"};
+  std::vector<std::array<double, 3>> cells(nc), faces(nb);
+  for (std::size_t i = 0; i < nc; ++i) {
+    cells[i] = {c.geometry.cell_centroid_x[i], c.geometry.cell_centroid_y[i],
+                c.geometry.cell_centroid_z[i]};
+  }
+  for (std::size_t b = 0; b < nb; ++b) {
+    faces[b] = {c.geometry.face_centroid_x[ni + b], c.geometry.face_centroid_y[ni + b],
+                c.geometry.face_centroid_z[ni + b]};
+  }
+  const auto wc = mms.evaluate("fields", names, cells);
+  const auto wb = mms.evaluate("fields", names, faces);
+  std::vector<BoundaryKind> kind(nb, BoundaryKind::state);
+  std::vector<double> data(5 * nb), u(5 * nc);
+  for (std::size_t b = 0; b < nb; ++b) {
+    for (std::size_t k = 0; k < 5; ++k) data[k * nb + b] = wb[k][b];
+  }
+  for (std::size_t i = 0; i < nc; ++i) {
+    const auto q = conserved({wc[0][i], {wc[1][i], wc[2][i], wc[3][i]}, wc[4][i]});
+    for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = q[k];
+  }
+  Scheme s = second_order(Flux::roe, 0.3);
+  s.limiter_k = 10.0;
+  Euler<P> e(c.mesh, c.geometry, air, s);
+  e.set_boundary(kind, data);
+  const auto state = stored(e, u);
+  std::vector<typename P::residual> r(5 * nc);
+  e.residual(state, r);
+  for (std::size_t j = 0; j < 5 * nc; ++j) {
+    INFO("component " << j / nc << " cell " << j % nc);
+    CHECK(std::abs(static_cast<double>(e.data().phi[j]) - 1.0) <= 64 * eps<P>());
+  }
+}
+
 TEMPLATE_TEST_CASE("the limited residual is that of the generated loops run one after another",
                    "[euler]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
   // The reference runs the loops in the scheme's order on a second instance's arrays.
@@ -835,14 +1054,15 @@ TEMPLATE_TEST_CASE("the limited residual is that of the generated loops run one 
   const Case c(file);
   const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
   const auto nc = static_cast<std::size_t>(c.mesh.n_cells());
-  const Prim w{1.2, {100.0, 30.0, 10.0}, 1e5};
+  const Prim w{1.2, {500.0, 30.0, 10.0}, 1e5};
   std::vector<BoundaryKind> kind(nb, BoundaryKind::farfield);
   std::vector<double> data(5 * nb);
   for (std::size_t b = 0; b < nb; ++b) {
     const std::array<double, 5> v = {w.rho, w.v[0], w.v[1], w.v[2], w.p};
     for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = v[j];
   }
-  // Jumps across x = 0.5 in every primitive, which the limiter must clip there, and a source.
+  // Jumps across x = 0.5 in every primitive, which the limiter must clip there, and a source. The
+  // right state is supersonic (M 1.46), so the stencils at the jump are limited (eq. 14).
   std::vector<double> u(5 * nc), source(5 * nc);
   for (std::size_t i = 0; i < nc; ++i) {
     const bool left = c.geometry.cell_centroid_x[i] < 0.5;
@@ -856,7 +1076,7 @@ TEMPLATE_TEST_CASE("the limited residual is that of the generated loops run one 
     }
   }
   Scheme s = second_order(Flux::roe, 0.3);
-  s.venkat_k = 0.5;
+  s.limiter_k = 0.5;
   Euler<P> e(c.mesh, c.geometry, air, s);
   e.set_boundary(kind, data);
   e.set_source(source);

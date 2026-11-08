@@ -4,6 +4,7 @@ add_executable(
   test_implicit.cpp
   test_manufactured.cpp
   test_navier_stokes.cpp
+  ${PROJECT_SOURCE_DIR}/tests/core/fixtures.cpp
 )
 target_link_libraries(
   autan_physics_tests
@@ -16,7 +17,10 @@ target_compile_definitions(
     AUTAN_EULER_MMS="${PROJECT_SOURCE_DIR}/py/tests/fixtures/euler.mms.json"
 )
 # The generated loops' data, which Euler::data() returns.
-target_include_directories(autan_physics_tests PRIVATE ${PROJECT_BINARY_DIR}/physics/generated)
+target_include_directories(
+  autan_physics_tests
+  PRIVATE ${PROJECT_BINARY_DIR}/physics/generated ${PROJECT_SOURCE_DIR}/tests/core
+)
 catch_discover_tests(autan_physics_tests)
 
 # The manufactured-solution study's C ABI, through the shared library euler_mms.py loads.

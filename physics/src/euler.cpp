@@ -53,8 +53,8 @@ struct Euler<P>::Impl {
   std::vector<std::size_t> kept_cells;  // gradient_tangent's: those cells, listed on first use
   index_t first_linear = -1;
   std::vector<double> bc_kind;
-  std::vector<State> bc, prim_b, prim, wmin, wmax, phi, source, prim_tan, zero_state;
-  std::vector<State> wmin_tan, wmax_tan;  // gradient_tangent's
+  std::vector<State> bc, prim_b, prim, wmin, wmax, mmax, phi, source, prim_tan, zero_state;
+  std::vector<State> wmin_tan, wmax_tan, mmax_tan;  // gradient_tangent's
   std::vector<typename P::jac> face_jac, bnd_jac, dwdu, bnd_state_jac;
   std::vector<double> prim_b_tan;  // gradient_tangent's, boundary faces only
   std::vector<Res> discarded;      // boundary_states_jacobian's increment
@@ -166,6 +166,7 @@ struct Euler<P>::Impl {
     prim.assign(5 * nc, State(0));
     wmin.assign(5 * nc, State(0));
     wmax.assign(5 * nc, State(0));
+    mmax.assign(nc, State(0));
     phi.assign(5 * nc, State(scheme.second_order && !scheme.limiter ? 1 : 0));
     source.assign(5 * nc, State(0));
     grad.assign(15 * nc, Gr(0));
@@ -185,6 +186,7 @@ struct Euler<P>::Impl {
     d.grad = grad.data();
     d.wmin = wmin.data();
     d.wmax = wmax.data();
+    d.mmax = mmax.data();
     d.phi = phi.data();
     d.source = source.data();
     d.prim_b = prim_b.data();
@@ -211,9 +213,9 @@ struct Euler<P>::Impl {
     for (std::size_t c = 0; c < 5; ++c) d.u_ref[c] = typename P::param(r[c]);
     d.p_ref[0] = typename P::param((gas.gamma - 1.0) *
                                    (r[4] - 0.5 * (r[1] * r[1] + r[2] * r[2] + r[3] * r[3]) / r[0]));
-    // Venkatakrishnan (1995), eq. 5, threshold eps^2 = (K h)^3 made dimensional:
-    // eps_k^2 = (K / L)^3 V q_k^2.
-    const double k3 = std::pow(scheme.venkat_k / scheme.length, 3);
+    // Michalak and Ollivier-Gooch (2009), section 4.3, eq. 10: the threshold (K dx)^3 made
+    // dimensional per component, (K / L)^3 V q_k^2 with dx^3 = V.
+    const double k3 = std::pow(scheme.limiter_k / scheme.length, 3);
     for (std::size_t c = 0; c < 5; ++c) {
       d.limiter_scale[c] = typename P::param(k3 * scheme.scale[c] * scheme.scale[c]);
     }
@@ -737,11 +739,12 @@ void Euler<P>::linear_gradient(std::span<typename P::grad> out) {
   }
   // The linear gradients loop, its limiter bounds into scratch.
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
-  std::vector<State> lo(5 * nc), hi(5 * nc);
+  std::vector<State> lo(5 * nc), hi(5 * nc), mach(nc);
   auto d = m.d;
   d.grad = out.data();
   d.wmin = lo.data();
   d.wmax = hi.data();
+  d.mmax = mach.data();
   ek::cpu::gradients(d);
 }
 
@@ -945,6 +948,7 @@ void Euler<P>::gradient_tangent(std::span<const State> s, std::span<const State>
     m.grad_band_tan.assign(15 * nc, typename P::grad(0));
     m.wmin_tan.assign(5 * nc, State(0));
     m.wmax_tan.assign(5 * nc, State(0));
+    m.mmax_tan.assign(nc, State(0));
     m.band_tan.assign(nc, typename decltype(m.band_tan)::value_type(0));
   }
   // dW = dW/dU du, then the gradients' tangent: a weighted sum of dW over each stencil, whose
@@ -960,6 +964,7 @@ void Euler<P>::gradient_tangent(std::span<const State> s, std::span<const State>
   d.grad_tan = m.grad_tan.data();
   d.wmin_tan = m.wmin_tan.data();
   d.wmax_tan = m.wmax_tan.data();
+  d.mmax_tan = m.mmax_tan.data();
   if (m.scheme.gradient_fit == GradientFit::quadratic) {
     d.grad_band_tan = m.grad_band_tan.data();
     d.band_tan = m.band_tan.data();
