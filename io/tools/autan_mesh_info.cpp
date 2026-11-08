@@ -26,7 +26,7 @@ namespace {
 
 constexpr const char* usage =
     "usage: autan-mesh-info [--json] [--scale S] [--cell-order rcm|input]\n"
-    "                       [--ranks N [--groups lines]] MESH\n"
+    "                       [--ranks N [--groups lines]] [--ghosts face2|vertex] MESH\n"
     "       autan-mesh-info --surface OUT MESH\n"
     "\n"
     "Reads MESH (Gmsh .msh 4.1, Fluent .msh, CGNS, or an OpenFOAM polyMesh or\n"
@@ -35,7 +35,9 @@ constexpr const char* usage =
     "run computes on it with S metres per mesh unit (default 1), its smoother\n"
     "lines in the cell order of --cell-order (default rcm, the run's),\n"
     "and the partition of a run on one rank, or with --ranks N on N ranks,\n"
-    "keeping the smoother's lines whole with --groups lines (N >= 2). With\n"
+    "keeping the smoother's lines whole with --groups lines (N >= 2), each\n"
+    "part holding the ghosts of --ghosts (default face2, the stencil the\n"
+    "run's physics declares). With\n"
     "--surface OUT, writes its boundary faces by zone to OUT (schema\n"
     "autan.surface/1) and prints nothing.\n"
     "Exits 1 with a coded error (E01xx) if the mesh cannot be read or cannot\n"
@@ -112,6 +114,7 @@ int main(int argc, char* const* argv) {
   std::optional<double> scale;
   std::optional<autan::io::RanksRequest> ranks;
   bool groups = false;
+  std::optional<autan::GhostStencil> ghosts;
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i];
     const std::string_view next = i + 1 < argc ? argv[i + 1] : "";
@@ -132,6 +135,9 @@ int main(int argc, char* const* argv) {
     } else if (arg == "--groups" && !groups && next == "lines") {
       groups = true;
       ++i;
+    } else if (arg == "--ghosts" && !ghosts && (next == "face2" || next == "vertex")) {
+      ghosts = next == "vertex" ? autan::GhostStencil::vertex : autan::GhostStencil::face2;
+      ++i;
     } else if (arg == "-h" || arg == "--help") {
       std::fputs(usage, stdout);
       return 0;
@@ -142,7 +148,7 @@ int main(int argc, char* const* argv) {
       return 2;
     }
   }
-  const bool counted = scale || order || ranks || groups;
+  const bool counted = scale || order || ranks || groups || ghosts;
   if (path == nullptr || (surface != nullptr && (json || counted)) || (counted && !json) ||
       (groups && (!ranks || ranks->ranks < 2))) {
     std::fputs(usage, stderr);
@@ -164,7 +170,8 @@ int main(int argc, char* const* argv) {
     } else if (json) {
       const auto zone_groups = autan::io::read_zone_groups(path, mesh, hash);
       const auto run = autan::io::run_counts(mesh, scale.value_or(1.0),
-                                             order.value_or(autan::io::CellOrder::rcm), ranks);
+                                             order.value_or(autan::io::CellOrder::rcm), ranks,
+                                             ghosts.value_or(autan::GhostStencil::face2));
       std::printf("%s\n",
                   autan::io::mesh_info_json(mesh, hash, autan::io::mesh_bytes(path),
                                             autan::io::mesh_logical_bytes(path), run, zone_groups)
