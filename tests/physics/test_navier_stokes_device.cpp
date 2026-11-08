@@ -543,14 +543,17 @@ TEMPLATE_TEST_CASE("the device's residual with farfield and inlet faces stays wi
   };
   const double tolerance = 64.0 * (1.0 + big_l) * eps;
 
+  // One flow for every data set: its boundary fit depends on the conditions only
+  // (NavierStokes<P>::set_boundary_data), so it is built once.
+  NavierStokes<P> probe(mesh, g, air, pb.s, pb.t, &pb.keys);
+  probe.set_boundary(pb.kind, pb.data);
+  probe.set_second_order(true);
+  std::vector<typename P::state> probe_state(5 * n);
+  probe.state(pb.u, probe_state);
   auto host_residual = [&](const std::vector<double>& data) {
-    NavierStokes<P> m(mesh, g, air, pb.s, pb.t, &pb.keys);
-    m.set_boundary(pb.kind, data);
-    m.set_second_order(true);
-    std::vector<typename P::state> stored(5 * n);
-    m.state(pb.u, stored);
+    probe.set_boundary_data(data);
     std::vector<typename P::residual> r(5 * n);
-    m.residual(stored, r);
+    probe.residual(probe_state, r);
     return r;
   };
   NavierStokes<P> host(mesh, g, air, pb.s, pb.t, &pb.keys);
@@ -561,6 +564,7 @@ TEMPLATE_TEST_CASE("the device's residual with farfield and inlet faces stays wi
   std::vector<typename P::residual> r_host(5 * n);
   host.residual(stored, r_host);
   REQUIRE(finite(r_host));
+  REQUIRE(bit_difference(host_residual(pb.data), r_host).first == 0);
 
   {
     // G_i over the gradient stencils the residual reads: the linear one and, under the
