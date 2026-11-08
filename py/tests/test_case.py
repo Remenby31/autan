@@ -140,7 +140,8 @@ def test_toml_quantities_are_checked(value: str, code: str, tmp_path: Path) -> N
         (lambda d: d["freestream"].pop("ref_length"), ["E0306"]),
         (lambda d: d["freestream"].update(velocity="50 m/s"), ["E0306"]),
         (lambda d: d["physics"].update(turbulence={"model": "wmles"}), ["E0305"]),
-        (lambda d: d["physics"].update(kind="incompressible"), ["E0003", "E0003"]),
+        # Incompressible physics takes no gas and no flux, and needs a fluid.
+        (lambda d: d["physics"].update(kind="incompressible"), ["E0003", "E0003", "E0003"]),
         (lambda d: d.update(time={"kind": "unsteady", "steps": 10}), ["E0003"]),
         (lambda d: d["physics"]["gas"].update(gamma=0.9), ["E0304"]),
     ],
@@ -305,6 +306,7 @@ def test_defaults_are_materialized_before_hashing(tmp_path: Path) -> None:
             turbulence={"model": "ddes", "base": {"model": "sa", "intensity": 0.1}}
         ),
         lambda d: d["time"].update(matrix_free=True),  # an SA case
+        lambda d: d["physics"].update(flux="jst"),
         lambda d: d["time"].update(checkpoint={}),
         lambda d: d["time"].update(checkpoint={"seconds": "100 s", "iterations": 5}),
         lambda d: (
