@@ -100,6 +100,7 @@ if(AUTAN_ENABLE_CUDA AND AUTAN_ENABLE_CGNS)
   add_executable(
     autan_euler_device_tests
     test_euler_device.cpp
+    test_euler_jacobian_device.cpp
     test_navier_stokes_device.cpp
     ${PROJECT_SOURCE_DIR}/tests/core/fixtures.cpp
   )

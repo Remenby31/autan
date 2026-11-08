@@ -15,6 +15,7 @@
 #include "autan/physics/euler_device.hpp"
 #include "autan/runtime/exact_sum.cuh"
 #include "euler_gpu.cuh"
+#include "euler_jacobian_device.cuh"
 
 namespace autan::physics::device {
 
@@ -216,6 +217,7 @@ class CudaStepper : public DeviceStepper<P> {
         scheme_(host.scheme()),
         second_order_(second_order),
         planar_(host.planar()),
+        moments_(moments || !planar_),
         n_(static_cast<std::size_t>(mesh.n_cells())),
         owned_(static_cast<std::size_t>(mesh.n_owned_cells())),
         nf_(static_cast<std::size_t>(mesh.n_faces())),
@@ -370,6 +372,39 @@ class CudaStepper : public DeviceStepper<P> {
     }
   }
 
+  void assemble(std::span<const double> shift) override {
+    if (!moments_) {
+      throw std::logic_error(
+          "the device Jacobian reads face moments, which a planar stepper omits");
+    }
+    if (mesh_.topology().incidence_stride != 1) {
+      throw std::logic_error("the device Jacobian assembles the CSR incidence layout only");
+    }
+    if (dwdu_.size() == 0) {
+      // Allocated on first use, as on the host: explicit steps carry no Jacobian.
+      face_jac_ = gpu::DeviceArray<J>(50 * nf_, stream_);
+      bnd_jac_ = gpu::DeviceArray<J>(25 * nf_, stream_);
+      dwdu_ = gpu::DeviceArray<J>(25 * n_, stream_);
+      shift_ = gpu::DeviceArray<double>(n_, stream_);
+      jac_.diag = gpu::DeviceArray<double>(25 * n_, stream_);
+      jac_.off = gpu::DeviceArray<J>(25 * static_cast<std::size_t>(mesh_.topology().n_incidences),
+                                     stream_);
+      d_.face_jac = face_jac_.get();
+      d_.bnd_jac = bnd_jac_.get();
+      d_.dwdu = dwdu_.get();
+    }
+    shift_.upload(shift, stream_);
+    residual(u_.get(), true);
+    assemble_blocks<J><<<blocks(n_), block, 0, stream_>>>(mesh_.topology(), face_jac_.get(),
+                                                          bnd_jac_.get(), dwdu_.get(), shift_.get(),
+                                                          jac_.diag.get(), jac_.off.get());
+    check(cudaGetLastError(), "assemble_blocks");
+  }
+
+  DeviceStepperBlocks jacobian_blocks() override {
+    return download_blocks(mesh_.topology(), jac_, stream_);
+  }
+
   void upload(std::span<const double> u) override { u_.upload(u, stream_); }
   void download(std::span<double> u) override { u_.download(u, stream_); }
 
@@ -379,14 +414,21 @@ class CudaStepper : public DeviceStepper<P> {
 
   static index_t index(std::size_t n) { return static_cast<index_t>(n); }
 
-  // Euler<P>::residual of the stored state of `u`.
-  void residual(const double* u) {
+  // Euler<P>::residual of the stored state of `u`; with `jacobian`,
+  // Euler<P>::residual_and_jacobian: dW/dU and the face blocks too, from the loops that are not
+  // planar.
+  void residual(const double* u, bool jacobian = false) {
     store_state<<<blocks(n_), block, 0, stream_>>>(index(n_), u, ref_, state_.get());
     check(cudaGetLastError(), "store_state");
     const auto& sched = mesh_.schedule();
     // As Euler<P>::Impl::cell_loops: each loop's output into the ghosts before a later loop
     // reads it there.
-    ek::gpu_loops::primitives(d_, sched);
+    if (jacobian) {
+      ek::gpu_loops::primitives_jacobian(d_, sched);
+      fill_ghosts(dwdu_.get(), 25);
+    } else {
+      ek::gpu_loops::primitives(d_, sched);
+    }
     fill_ghosts(prim_.get(), 5);
     ek::gpu_loops::boundary_states(d_, sched);
     if (second_order_) {
@@ -406,6 +448,23 @@ class CudaStepper : public DeviceStepper<P> {
     }
     ek::gpu_loops::sources(d_, sched);
     constexpr auto deterministic = gpu::Strategy::store_gather;
+    if (jacobian) {
+      switch (scheme_.flux) {
+        case Flux::roe:
+          ek::gpu_loops::roe_faces_jacobian(d_, deterministic, sched);
+          ek::gpu_loops::roe_boundaries_jacobian(d_, deterministic, sched);
+          break;
+        case Flux::hllc:
+          ek::gpu_loops::hllc_faces_jacobian(d_, deterministic, sched);
+          ek::gpu_loops::hllc_boundaries_jacobian(d_, deterministic, sched);
+          break;
+        case Flux::ausm_up:
+          ek::gpu_loops::ausm_faces_jacobian(d_, deterministic, sched);
+          ek::gpu_loops::ausm_boundaries_jacobian(d_, deterministic, sched);
+          break;
+      }
+      return;
+    }
     if (planar_) {
       switch (scheme_.flux) {
         case Flux::roe:
@@ -496,6 +555,7 @@ class CudaStepper : public DeviceStepper<P> {
   Scheme scheme_;
   bool second_order_;
   bool planar_;
+  bool moments_;
   std::size_t n_, owned_, nf_;
   double gamma_, p_ref_ = 0.0;
   Five ref_{};
@@ -523,6 +583,11 @@ class CudaStepper : public DeviceStepper<P> {
   gpu::DeviceArray<element<decltype(D::band_weight)>> band_weight_;
   gpu::DeviceArray<element<decltype(D::grad_band)>> grad_band_;
   kernels::Topology band_topo_{};
+  // The implicit step's (assemble only).
+  using J = element<decltype(D::face_jac)>;
+  gpu::DeviceArray<J> face_jac_, bnd_jac_, dwdu_;
+  gpu::DeviceArray<double> shift_;
+  JacobianBlocks<J> jac_;
   D d_{};
 };
 
