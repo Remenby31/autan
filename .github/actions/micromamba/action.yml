@@ -1,0 +1,68 @@
+name: micromamba environment
+description: >-
+  Create a conda-forge environment with micromamba 2.3.3-0 under MAMBA_ROOT_PREFIX (~/micromamba,
+  exported for the job's later steps). The binary comes from the actions cache or from its GitHub
+  release, downloaded with the workflow's token, and is checked against its pinned SHA-256 either
+  way. setup-micromamba resolves its binary on GitHub even with download-micromamba false, and
+  downloads it without the token.
+inputs:
+  token:
+    description: The workflow's GITHUB_TOKEN, read access only.
+    required: true
+  environment-name:
+    description: The environment's name, under MAMBA_ROOT_PREFIX/envs.
+    required: true
+  create-args:
+    description: Channels and package specs for micromamba create, split on spaces.
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: asset
+      shell: bash
+      env:
+        PLATFORM: ${{ runner.os }}-${{ runner.arch }}
+      run: |
+        case "$PLATFORM" in
+          Linux-X64) name=micromamba-linux-64; sha=9496f94a8b78c536573c93d946ec9bba74bd9ff79ee55aaa4b546e30db8f511b ;;
+          Linux-ARM64) name=micromamba-linux-aarch64; sha=0289350c2c89f7410554041e25b444cce30df326b227e70ead3e4a1e0b316286 ;;
+          macOS-ARM64) name=micromamba-osx-arm64; sha=aa23d0e01d6f492f43aa86720c0f4c8db91978b81f8af46a852f6c4fcf6737d5 ;;
+          *) echo "::error::no pinned micromamba for $PLATFORM"; exit 1 ;;
+        esac
+        {
+          echo "name=$name"
+          echo "sha=$sha"
+        } >> "$GITHUB_OUTPUT"
+    - id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.autan-micromamba/2.3.3-0
+        key: micromamba-2.3.3-0-${{ steps.asset.outputs.name }}-${{ steps.asset.outputs.sha }}
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+        NAME: ${{ steps.asset.outputs.name }}
+      run: |
+        mkdir -p ~/.autan-micromamba/2.3.3-0
+        curl -fsSL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 120 \
+          -H "Authorization: Bearer $GITHUB_TOKEN" -o ~/.autan-micromamba/2.3.3-0/micromamba \
+          "https://github.com/mamba-org/micromamba-releases/releases/download/2.3.3-0/$NAME"
+    # Every run, cache hit or not: a cache entry is checked like a download.
+    - shell: bash
+      env:
+        SHA: ${{ steps.asset.outputs.sha }}
+        ENV_NAME: ${{ inputs.environment-name }}
+        CREATE_ARGS: ${{ inputs.create-args }}
+      run: |
+        exe=~/.autan-micromamba/2.3.3-0/micromamba
+        echo "$SHA  $exe" | shasum -a 256 -c -
+        chmod +x "$exe"
+        "$exe" --version
+        root=~/micromamba
+        # shellcheck disable=SC2086 # CREATE_ARGS is a list of arguments.
+        "$exe" create -y -r "$root" -n "$ENV_NAME" $CREATE_ARGS
+        {
+          echo "MAMBA_ROOT_PREFIX=$root"
+          echo "MAMBA_EXE=$exe"
+        } >> "$GITHUB_ENV"
