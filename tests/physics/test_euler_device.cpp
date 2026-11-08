@@ -2,10 +2,13 @@
 // cell, on the test meshes of the unit cube.
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <numeric>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -62,22 +65,31 @@ std::array<double, 5> conserved(const std::array<double, 5>& w) {
 
 }  // namespace
 
-TEMPLATE_TEST_CASE("one device residual equals the host's to round-off, cell by cell",
-                   "[euler][gpu]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
-  // |R_device - R_host| <= 500 eps f_k A_i: eps of the storage precision, f_k the face flux
-  // magnitude of the reference state (rho q, rho q^2, rho H q with q = |v| + c) and A_i the
-  // surface of cell i (docs/contracts/case-schema.md, Time: Phi_k taken per cell). Both sum the
-  // same face fluxes, in different orders and with or without fused multiply-adds.
+TEMPLATE_TEST_CASE("one device residual equals the host's, cell by cell", "[euler][gpu]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // Without keys, |R_device - R_host| <= 500 eps f_k A_i: eps of the storage precision, f_k the
+  // face flux magnitude of the reference state (rho q, rho q^2, rho H q with q = |v| + c) and A_i
+  // the surface of cell i (docs/contracts/case-schema.md, Time: Phi_k taken per cell): the host
+  // scatters the face fluxes, the device gathers them. Under the mesh's own numbering as global
+  // keys both gather each cell's faces in the same order with the same operations (#586): the
+  // same bits.
   using P = TestType;
   const char* file = GENERATE(from_range(meshes));
   const auto flux = GENERATE(Flux::roe, Flux::hllc, Flux::ausm_up);
   const bool limiter = GENERATE(false, true);
-  CAPTURE(file, static_cast<int>(flux), limiter);
+  const bool keyed = GENERATE(false, true);
+  CAPTURE(file, static_cast<int>(flux), limiter, keyed);
   const auto mesh = autan::io::read_mesh(mesh_dir / file);
   const auto g = autan::compute_geometry(mesh);
   const auto n = static_cast<std::size_t>(mesh.n_cells());
   const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
   const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  std::vector<std::int64_t> face_id(ni + nb);
+  std::iota(face_id.begin(), face_id.end(), std::int64_t{0});
+  const std::vector<std::uint8_t> not_reversed(ni + nb, 0);
+  const autan::kernels::GlobalKeys identity{
+      .cell = mesh.cell_global_id(), .face = face_id, .reversed = not_reversed, .shift = {}};
+  const autan::kernels::GlobalKeys* keys = keyed ? &identity : nullptr;
   const auto ref = flow(0.5, 0.5, 0.5);
   Scheme s;
   s.flux = flux;
@@ -88,8 +100,9 @@ TEMPLATE_TEST_CASE("one device residual equals the host's to round-off, cell by 
   s.reference = conserved(ref);
   // A limiter that clips enough of this flow for its effect to exceed the tolerance (below).
   s.venkat_k = 0.1;
-  Euler<P> host(mesh, g, air, s);
-  // Every condition: farfield on x, slip walls on y, the flow's state on z.
+  Euler<P> host(mesh, g, air, s, keys);
+  // Farfield on x (outlet when keyed: farfield_state calls exp and log, whose last bits differ
+  // between the host and the device, #586), slip walls on y, the flow's state on z.
   std::vector<BoundaryKind> kind(nb);
   std::vector<double> data(5 * nb, 0.0);
   for (std::size_t b = 0; b < nb; ++b) {
@@ -97,7 +110,7 @@ TEMPLATE_TEST_CASE("one device residual equals the host's to round-off, cell by 
     const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[f])].name;
     std::array<double, 5> w = ref;
     if (zone[0] == 'x') {
-      kind[b] = BoundaryKind::farfield;
+      kind[b] = keyed ? BoundaryKind::outlet : BoundaryKind::farfield;
     } else if (zone[0] == 'y') {
       kind[b] = BoundaryKind::slip;
     } else {
@@ -163,10 +176,34 @@ TEMPLATE_TEST_CASE("one device residual equals the host's to round-off, cell by 
 
   autan::runtime::OneRank rank;
   NoGhosts ghosts;
-  auto device =
-      autan::physics::make_device_stepper<P>(mesh, g, host, air.gamma, true, rank, ghosts, nullptr);
+  auto device = autan::physics::make_device_stepper<P>(mesh, g, host, air.gamma, true, rank, ghosts,
+                                                       nullptr, keys);
   std::vector<double> r_device(5 * n);
   device->residual(u, r_device);
+  if (keyed) {
+    REQUIRE(
+        std::ranges::all_of(r_host, [](auto x) { return std::isfinite(static_cast<double>(x)); }));
+    REQUIRE(std::ranges::all_of(r_device, [](double x) { return std::isfinite(x); }));
+    // Distance in units in the last place of the residual's type, from the ordered bit patterns.
+    std::size_t differ = 0;
+    std::uint64_t ulps = 0;
+    for (std::size_t i = 0; i < r_device.size(); ++i) {
+      const auto a = std::bit_cast<std::int64_t>(static_cast<double>(r_host[i]));
+      const auto b = std::bit_cast<std::int64_t>(r_device[i]);
+      if (a == b) continue;
+      ++differ;
+      auto ordered = [](std::int64_t v) {
+        return v < 0 ? std::numeric_limits<std::int64_t>::min() - v : v;
+      };
+      const auto d =
+          static_cast<std::uint64_t>(ordered(a)) - static_cast<std::uint64_t>(ordered(b));
+      ulps = std::max(ulps, std::min(d, std::uint64_t{0} - d));
+    }
+    INFO(differ << " of " << r_device.size() << " components differ, by at most " << ulps
+                << " ulp of the double they are read as");
+    CHECK(differ == 0);
+    return;
+  }
   const double worst = distance(r_device);
   REQUIRE(std::isfinite(worst));
   INFO("worst difference " << worst << " eps f_k A_i");

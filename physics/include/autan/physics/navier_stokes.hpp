@@ -6,8 +6,14 @@
 
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
+#include "autan/kernels/geometry.hpp"
 #include "autan/physics/block_matrix.hpp"
 #include "autan/physics/euler.hpp"
+
+namespace autan::kernels::navier_stokes {
+template <class P>
+struct Data;
+}  // namespace autan::kernels::navier_stokes
 
 namespace autan::physics {
 
@@ -33,8 +39,11 @@ class NavierStokes {
   using Res = typename P::residual;
   using Faces = typename Euler<P>::Faces;
 
+  /// With `keys`, as Euler<P>'s: its Euler<P> takes them, and the viscous face loops gather each
+  /// cell's faces in global order and orientation. The boundary fit keeps the mesh's order, and
+  /// assemble() refuses keys that reverse a face (std::logic_error).
   NavierStokes(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme,
-               Transport transport);
+               Transport transport, const kernels::GlobalKeys* keys = nullptr);
   ~NavierStokes();
   NavierStokes(const NavierStokes&) = delete;
   NavierStokes& operator=(const NavierStokes&) = delete;
@@ -96,6 +105,12 @@ class NavierStokes {
     double gas_constant;
   };
   [[nodiscard]] Arrays arrays() noexcept;
+
+  /// For a device copy of the residual, after set_boundary: the Euler residual it adds to, and
+  /// the viscous loops' data in host memory (geometry, the boundary fit's stencil and weights,
+  /// eddy viscosity, parameters).
+  [[nodiscard]] const Euler<P>& euler() const noexcept;
+  [[nodiscard]] const kernels::navier_stokes::Data<P>& data() const;
 
  private:
   struct Impl;
