@@ -31,6 +31,10 @@ struct SpikeMesh {
   std::vector<std::int64_t> cell_key{}, face_key{};
   autan::kernels::GlobalOrder order{};
   bool global = false;
+  /// Set only by autan_spike_test_only_drop_incidence (ADR 0003, control 3): the incidence list
+  /// without the dropped entry, which topo then points to.
+  std::vector<autan::kernels::offset_t> test_only_offsets{};
+  std::vector<autan::kernels::index_t> test_only_cell_faces{};
   [[nodiscard]] autan::kernels::GlobalKeys keys() const {
     return {cell_key, face_key, face_reversed, mesh.ghost_translation()};
   }
@@ -108,6 +112,23 @@ template <class T, class A>
 void bind(const T*& member, const A& array) {
   member = array.template as<T>();
 }
+
+/// TEST ONLY (ADR 0003, control 11): fp32_acc64 with its accumulation narrowed to binary32
+/// (accum and residual float). It exists only to show that check 3 and check 4 catch a wrong
+/// precision. It lives in the spike, is dispatched only by autan_spike_gradients under the name
+/// "fp32+acc32-test-only", and must never appear in runtime.hpp or a product target
+/// (test_spike_isolation). The kernels it runs are the generator's, instantiated with it.
+struct Fp32Acc32TestOnly {
+  using state = float;
+  using grad = float;
+  using residual = float;
+  using geom = double;
+  using geom_value = float;
+  using param = double;
+  using jac = float;
+  using compute = float;
+  using accum = float;
+};
 
 /// Calls f with the policy object named by `policy`; throws for an unknown name.
 template <class F>

@@ -25,6 +25,7 @@ Verification tooling only: nothing outside codegen/tests imports it.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from fractions import Fraction
 
@@ -209,3 +210,150 @@ def cast(x: Cert, fmt: Format, *, narrowing: bool = True) -> Cert:
             raise Invalid(msg)
         return tidy(Cert(x.value, x.radius, fmt))
     return _rounded(x.value, x.radius, fmt)
+
+
+# The two operations beyond the four rules (ADR 0003 amendment, decided on #43).
+
+ROOT_BITS = 80  # significant bits of the rational root witnesses, whatever the magnitude
+
+
+def _scale_bits(q: Fraction) -> int:
+    """k such that the root of q * 4^k has about ROOT_BITS bits before the binary point."""
+    e = q.numerator.bit_length() - q.denominator.bit_length()
+    return ROOT_BITS - e // 2
+
+
+def _root_floor(q: Fraction) -> Fraction:
+    """A rational l >= 0 with l^2 <= q: proposed by an integer square root, validated exactly."""
+    if q <= 0:
+        return Fraction(0)
+    k = _scale_bits(q)
+    scaled = q * Fraction(4) ** k
+    out = Fraction(math.isqrt(scaled.numerator // scaled.denominator)) / Fraction(2) ** k
+    if out * out > q:
+        msg = "a lower root witness failed its exact check"
+        raise Invalid(msg)
+    return out
+
+
+def _root_ceil(q: Fraction) -> Fraction:
+    """A rational U >= 0 with U^2 >= q: proposed by an integer square root, validated exactly."""
+    if q <= 0:
+        return Fraction(0)
+    k = _scale_bits(q)
+    scaled = q * Fraction(4) ** k
+    n = -(-scaled.numerator // scaled.denominator)
+    root = math.isqrt(n)
+    if root * root < n:
+        root += 1
+    out = Fraction(root) / Fraction(2) ** k
+    if out * out < q:
+        msg = "an upper root witness failed its exact check"
+        raise Invalid(msg)
+    return out
+
+
+def _enclose_root(q: Fraction) -> tuple[Fraction, Fraction]:
+    """A rational centre mu and radius rho with (mu - rho)^2 <= q <= (mu + rho)^2, mu - rho >= 0."""
+    lo, hi = _root_floor(q), _root_ceil(q)
+    mu, rho = (lo + hi) / 2, (hi - lo) / 2
+    if mu - rho < 0 or not ((mu - rho) ** 2 <= q <= (mu + rho) ** 2):
+        msg = "a root enclosure failed its exact check"
+        raise Invalid(msg)
+    return mu, rho
+
+
+def sqrt(x: Cert, fmt: Format) -> Cert:
+    """Correctly rounded square root of an executed x with |X - x| <= r, X - r > 0:
+    |y - sqrt(X)| <= r / (l + m) + u U (+ eta), with l^2 <= X - r, m^2 <= X, U^2 >= X + r; the
+    certified value is a rational centre mu with rho >= |mu - sqrt(X)|."""
+    big_x, r = x.value, x.radius
+    if big_x - r <= 0:
+        msg = f"{fmt.name}: sqrt of an interval that reaches zero or below"
+        raise Invalid(msg)
+    ell, m, big_u = _root_floor(big_x - r), _root_floor(big_x), _root_ceil(big_x + r)
+    if ell <= 0 or m <= 0:
+        msg = f"{fmt.name}: sqrt witnesses are not positive"
+        raise Invalid(msg)
+    mu, rho = _enclose_root(big_x)
+    radius = rho + r / (ell + m) + fmt.u * big_u
+    if mu - radius < fmt.normal_min:
+        radius += fmt.eta
+    return Cert(mu, radius, fmt)
+
+
+# Exact emulation of IEEE round to nearest even (gradual underflow), to replay declared sequences
+# bit for bit; never a reference for direct rounding through another format.
+
+
+def _exponent(a: Fraction) -> int:
+    """floor(log2 a) for a > 0."""
+    e = a.numerator.bit_length() - a.denominator.bit_length()
+    if Fraction(2) ** e > a:
+        e -= 1
+    return e
+
+
+def round_to(v: Fraction, fmt: Format) -> Fraction:
+    """v rounded to the nearest value of `fmt`, ties to even; Invalid if it overflows."""
+    if v == 0:
+        return Fraction(0)
+    a = abs(v)
+    e = max(_exponent(a), fmt.emin)
+    scale = Fraction(2) ** (fmt.p - 1 - e)  # one unit in the last place is 1 after scaling
+    scaled = a * scale
+    n = scaled.numerator // scaled.denominator
+    rest = scaled - n
+    if rest > Fraction(1, 2) or (rest == Fraction(1, 2) and n % 2 == 1):
+        n += 1
+    r = Fraction(n) / scale
+    if r > fmt.max:
+        msg = f"{fmt.name}: the rounded result overflows"
+        raise Invalid(msg)
+    return r if v > 0 else -r
+
+
+def _ulp(a: Fraction, fmt: Format) -> Fraction:
+    """The spacing of `fmt` at a > 0 (above a, within a's binade)."""
+    return Fraction(2) ** (max(_exponent(a), fmt.emin) - fmt.p + 1)
+
+
+def round_sqrt(v: Fraction, fmt: Format) -> Fraction:
+    """The correctly rounded square root of a rational v >= 0 (round to nearest even)."""
+    if v < 0:
+        msg = "round_sqrt of a negative value"
+        raise Invalid(msg)
+    if v == 0:
+        return Fraction(0)
+    r = round_to(_root_floor(v), fmt)
+    for _ in range(4):
+        up = r + _ulp(r, fmt)
+        below = r - (
+            _ulp(r, fmt) / 2
+            if r == Fraction(2) ** _exponent(r) and _exponent(r) > fmt.emin
+            else _ulp(r, fmt)
+        )
+        hi, lo = (r + up) / 2, (r + below) / 2  # the midpoints with the neighbours
+        if hi * hi < v or (hi * hi == v and (r / _ulp(r, fmt)) % 2 == 1):
+            r = up
+        elif lo * lo > v or (lo * lo == v and (r / _ulp(r, fmt)) % 2 == 1):
+            r = below
+        else:
+            return r
+    msg = "round_sqrt did not settle"
+    raise Invalid(msg)
+
+
+def fl_add(a: Fraction, b: Fraction, fmt: Format) -> Fraction:
+    return round_to(a + b, fmt)
+
+
+def fl_mul(a: Fraction, b: Fraction, fmt: Format) -> Fraction:
+    return round_to(a * b, fmt)
+
+
+def fl_div(a: Fraction, b: Fraction, fmt: Format) -> Fraction:
+    if b == 0:
+        msg = "division by zero"
+        raise Invalid(msg)
+    return round_to(a / b, fmt)

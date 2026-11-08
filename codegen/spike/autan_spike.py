@@ -92,6 +92,33 @@ def mesh(fa: FaceArrays, n_ghost_cells: int = 0) -> Mesh:
     return _wrap(h)
 
 
+def mesh_nodes(m: Mesh) -> tuple[F64, npt.NDArray[np.int64], npt.NDArray[np.int32]]:
+    """The assembled mesh's points (n, 3) and face node lists (offsets, nodes): read-only."""
+    err = ctypes.create_string_buffer(512)
+    counts = np.zeros(2, dtype=np.int64)
+    rc = lib().autan_spike_mesh_nodes(
+        m.handle, _p(counts), None, None, None, err, ctypes.c_size_t(len(err))
+    )
+    _check(rc, err)
+    xyz = np.zeros(3 * int(counts[0]))
+    offsets = np.zeros(m.n_faces + 1, dtype=np.int64)
+    nodes = np.zeros(int(counts[1]), dtype=np.int32)
+    rc = lib().autan_spike_mesh_nodes(
+        m.handle, _p(counts), _p(xyz), _p(offsets), _p(nodes), err, ctypes.c_size_t(len(err))
+    )
+    _check(rc, err)
+    return xyz.reshape(-1, 3), offsets, nodes
+
+
+def face_area_magnitude(m: Mesh) -> F64:
+    """The face area magnitudes exactly as the kernels read them: read-only."""
+    err = ctypes.create_string_buffer(512)
+    out = np.zeros(m.n_faces)
+    rc = lib().autan_spike_mesh_face_magnitude(m.handle, _p(out), err, ctypes.c_size_t(len(err)))
+    _check(rc, err)
+    return out
+
+
 def partition(m: Mesh, parts: npt.NDArray[np.int32], n_parts: int, rank: int, layers: int) -> Mesh:
     """Part `rank` of `parts` (one per cell of the unpartitioned `m`) with `layers` ghost layers,
     ghost geometry filled from `m` (autan::extract_partition)."""
@@ -227,6 +254,29 @@ def gradients(
     )  # fmt: skip
     _check(rc, err)
     return grad.reshape(3, -1).T, qmin, qmax
+
+
+def test_only_set_lsq_weight(m: Mesh, k: int, w: tuple[float, float, float]) -> None:
+    """TEST ONLY (ADR 0003, controls 1 and 2): overwrite the stored LSQ weight of incidence k."""
+    v = np.ascontiguousarray(w, dtype=np.float64)
+    if v.shape != (3,):
+        msg = f"a weight has three components, got shape {v.shape}"
+        raise ValueError(msg)
+    err = ctypes.create_string_buffer(512)
+    rc = lib().autan_spike_test_only_set_lsq_weight(
+        m.handle, ctypes.c_int64(k), _p(v), ctypes.c_int64(3), err, ctypes.c_size_t(len(err))
+    )
+    _check(rc, err)
+
+
+def test_only_drop_incidence(m: Mesh, k: int) -> None:
+    """TEST ONLY (ADR 0003, control 3): drop incidence k from its cell's list in the kernels'
+    topology (the Python arrays of `m` are not updated)."""
+    err = ctypes.create_string_buffer(512)
+    rc = lib().autan_spike_test_only_drop_incidence(
+        m.handle, ctypes.c_int64(k), err, ctypes.c_size_t(len(err))
+    )
+    _check(rc, err)
 
 
 def advection(

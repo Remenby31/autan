@@ -186,6 +186,14 @@ def _perturb(
 
 def build(kind: str, n: int, perturbation: float = 0.0, seed: int = 0) -> FaceArrays:
     """Mesh of the unit cube with about n cells per edge; kinds: hex, tet, hybrid, poly."""
+    return to_faces(*cells(kind, n, perturbation, seed))
+
+
+def cells(
+    kind: str, n: int, perturbation: float = 0.0, seed: int = 0
+) -> tuple[npt.NDArray[np.float64], list[Cell], list[int] | None]:
+    """The points, each cell's outward polygons and the agglomeration that `build` merges: what an
+    independent topology check reads (ADR 0003, check 1)."""
     pts, idx = _grid(n)
     h = 1.0 / n
     cells: list[Cell] = []
@@ -224,7 +232,7 @@ def build(kind: str, n: int, perturbation: float = 0.0, seed: int = 0) -> FaceAr
         # Cube corners move; cell-centre nodes of the hybrid transition layer stay put.
         n_grid = (n + 1) ** 3
         pts = np.vstack([_perturb(pts[:n_grid], h, perturbation, seed), pts[n_grid:]])
-    return to_faces(pts, cells, agglomerate)
+    return pts, cells, agglomerate
 
 
 def _cell_centre(pts: npt.NDArray[np.float64], cell: Cell) -> npt.NDArray[np.float64]:
