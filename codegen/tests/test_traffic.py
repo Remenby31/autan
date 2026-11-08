@@ -37,6 +37,7 @@ PRIMES = dict(
             929,
             919,
             911,
+            907,
         ),
         strict=True,
     )
@@ -285,11 +286,12 @@ int main() {
   t.stencil_offsets = stencil_offsets;
   t.stencil = stencil;
   const auto n = autan::kernels::counts(t);
-  std::printf("%g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g\n", n.owned_cells,
-              n.face_owner_cells, n.face_neighbour_cells, n.face_cells, n.owned_interior_faces,
-              n.boundary_faces, n.owned_boundary_faces, n.boundary_cells, n.all_boundary_cells,
-              n.faces, n.incidences, n.incidence_cells, n.incidence_touched_cells, n.stencil,
-              n.stencil_rows, n.stencil_cells, n.stencil_touched_cells, n.stencil_boundary_faces);
+  std::printf(
+      "%g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g %g\\n", n.owned_cells,
+      n.face_owner_cells, n.face_neighbour_cells, n.face_cells, n.owned_interior_faces,
+      n.boundary_faces, n.owned_boundary_faces, n.boundary_cells, n.all_boundary_cells, n.faces,
+      n.incidences, n.incidence_cells, n.incidence_touched_cells, n.stencil, n.stencil_rows,
+      n.stencil_cells, n.stencil_touched_cells, n.stencil_owned_cells, n.stencil_boundary_faces);
 }
 """
 
@@ -326,6 +328,7 @@ def test_the_counts_of_a_partition_are_those_counted_by_hand(tmp_path: Path) -> 
         "stencil_rows": 2,
         "stencil_cells": 3,
         "stencil_touched_cells": 3,
+        "stencil_owned_cells": 3,
         "stencil_boundary_faces": 1,
     }
     assert dict(zip(traffic.COUNTS, map(float, got), strict=True)) == expected

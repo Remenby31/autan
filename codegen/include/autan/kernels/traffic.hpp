@@ -29,6 +29,7 @@ struct Counts {
   double stencil_rows = 0;             ///< owned cells with at least one entry
   double stencil_cells = 0;            ///< distinct cells among the entries
   double stencil_touched_cells = 0;    ///< the rows' cells and the entries' cells
+  double stencil_owned_cells = 0;      ///< the owned cells and the entries' cells
   double stencil_boundary_faces = 0;   ///< distinct boundary faces among the entries
   bool stencil_sliced = false;         ///< Topology::stencil_stride > 1
   bool incidence_sliced = false;       ///< Topology::incidence_stride > 1
@@ -121,6 +122,7 @@ inline Counts counts(const Topology& t) {
     n.stencil_rows = count(rows);
     n.stencil_cells = count(cells);
     n.stencil_touched_cells = any(rows, cells);
+    n.stencil_owned_cells = any(self, cells);
     n.stencil_boundary_faces = count(bnd);
   }
   return n;

@@ -56,6 +56,7 @@ COUNTS = (
     "stencil_rows",
     "stencil_cells",
     "stencil_touched_cells",
+    "stencil_owned_cells",
     "stencil_boundary_faces",
 )
 # Layout flags of autan::kernels::Counts: which maps a reduction reads.
@@ -75,6 +76,12 @@ _UNION = {
     frozenset({"stencil_rows", "stencil_cells"}): "stencil_touched_cells",
     frozenset({"stencil_touched_cells", "stencil_rows"}): "stencil_touched_cells",
     frozenset({"stencil_touched_cells", "stencil_cells"}): "stencil_touched_cells",
+    frozenset({"owned_cells", "stencil_cells"}): "stencil_owned_cells",
+    frozenset({"owned_cells", "stencil_touched_cells"}): "stencil_owned_cells",
+    frozenset({"stencil_owned_cells", "owned_cells"}): "stencil_owned_cells",
+    frozenset({"stencil_owned_cells", "stencil_rows"}): "stencil_owned_cells",
+    frozenset({"stencil_owned_cells", "stencil_cells"}): "stencil_owned_cells",
+    frozenset({"stencil_owned_cells", "stencil_touched_cells"}): "stencil_owned_cells",
     frozenset({"owned_cells", "incidence_cells"}): "incidence_touched_cells",
     frozenset({"incidence_touched_cells", "owned_cells"}): "incidence_touched_cells",
     frozenset({"incidence_touched_cells", "incidence_cells"}): "incidence_touched_cells",
