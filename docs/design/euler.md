@@ -13,7 +13,7 @@ R_c = Σ_f F(W_L, W_R)·S_f − s_c V_c over the faces of cell c, in conserved v
 | Limiter | Venkatakrishnan, bounds over the gradient stencil, ε_k² = (K/L)³ V q_k², K = 10, L the reference length, q_k the freestream scale of W_k | Venkatakrishnan (1995), eq. 5 |
 | Face states | W_f = W_c + φ ∘ (∇W · (x_f − x_c)) | |
 | Warped faces | flux of the linear reconstruction through the fan triangles: Σ_j dF_j[W; ∇W · M_{:,j}], M = Σ_t (c_t − x_f) ⊗ S_t | [Warped faces](#warped-faces) |
-| Fluxes | Roe with Harten's fix on the acoustic waves only; HLLC with Einfeldt speeds; AUSM+-up with M_co the freestream Mach number | Roe (1981); Toro, Spruce, Speares (1994); Batten et al. (1997); Liou (2006) |
+| Fluxes | Roe with Harten's fix on the acoustic waves only; HLLC with Einfeldt speeds; AUSM+-up with M_co the freestream Mach number; the case's `physics.flux` picks one, Roe by default ([case-schema.md](../contracts/case-schema.md#physics)) | Roe (1981); Toro, Spruce, Speares (1994); Batten et al. (1997); Liou (2006) |
 
 Harten's fix stays off the contact and shear eigenvalue so that every flux keeps a stationary contact exact (`tests/physics/test_euler.cpp`).
 

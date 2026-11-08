@@ -246,12 +246,14 @@ def _air() -> IdealGas:
 
 
 class Compressible(Spec):
-    """Density-based compressible flow; ``gas`` is the default medium of fluid zones."""
+    """Density-based compressible flow; ``gas`` is the default medium of fluid zones, ``flux``
+    the convective flux: Roe, HLLC or AUSM+-up."""
 
     kind: Literal["compressible"] = "compressible"
     turbulence: Turbulence
     precision: Precision = "fp32+acc64"
     reproducibility: Reproducibility = "run"
+    flux: Literal["roe", "hllc", "ausm+up"] = "roe"
     gas: IdealGas = Field(default_factory=_air)
 
 
