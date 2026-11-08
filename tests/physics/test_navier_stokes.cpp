@@ -693,15 +693,18 @@ TEST_CASE(
   // tangents of the interior and boundary faces add the rest, convective and viscous, so without a
   // limiter A v + T_interior v + T_boundary v = dR/dU v (docs/design/euler.md, Time stepping),
   // with or without an eddy viscosity (SA's mean flow holds mu_t). The boundary faces' tangent
-  // changes only the rows of cells with a boundary face.
+  // changes only the rows of cells with a boundary face. Across the one-cell-thick slab of the 2D
+  // cases, symmetry planes on its layer faces, only boundary values determine a cell's gradient.
   using P = autan::kernels::fp64;
-  const char* file = GENERATE(from_range(meshes));
+  const std::size_t which = GENERATE(range(std::size_t{0}, meshes.size() + 1));
   const Flux flux = GENERATE(Flux::roe, Flux::hllc, Flux::ausm_up);
   const bool eddy = GENERATE(false, true);
   const bool adiabatic = GENERATE(false, true);
+  const char* file = which < meshes.size() ? meshes[which] : "one-cell-thick slab";
   INFO(file << " flux " << static_cast<int>(flux) << (eddy ? " eddy viscosity" : "")
             << (adiabatic ? " adiabatic walls" : " isothermal walls"));
-  const auto mesh = autan::io::read_mesh(mesh_dir / file);
+  const auto mesh = which < meshes.size() ? autan::io::read_mesh(mesh_dir / file)
+                                          : stretched_slab({.first = 0.02});
   const auto geometry = autan::compute_geometry(mesh);
   const auto nc = static_cast<std::size_t>(mesh.n_cells());
   const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
@@ -718,7 +721,9 @@ TEST_CASE(
   for (std::size_t b = 0; b < nb; ++b) {
     const auto f = ni + b;
     const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[f])].name;
-    kind[b] = zone == "ymin" ? BoundaryKind::wall : kinds[b % kinds.size()];
+    kind[b] = zone == "ymin"    ? BoundaryKind::wall
+              : zone == "sides" ? BoundaryKind::slip
+                                : kinds[b % kinds.size()];
     const double vn = v0[0] * geometry.face_area_x[f] + v0[1] * geometry.face_area_y[f] +
                       v0[2] * geometry.face_area_z[f];
     if (kind[b] == BoundaryKind::inlet && vn >= 0.0) kind[b] = BoundaryKind::farfield;
@@ -817,6 +822,8 @@ TEST_CASE(
   for (std::size_t i = 0; i < u.size(); ++i) {
     const double fd = (rp[i] - rm[i]) / (2.0 * h);
     REQUIRE(std::isfinite(fd));
+    REQUIRE(std::isfinite(av[i]));
+    REQUIRE(std::isfinite(tan[i]));
     diff = std::max(diff, std::abs(fd - av[i] - tan[i]));
     without = std::max(without, std::abs(fd - av[i]));
     norm = std::max(norm, std::abs(fd));

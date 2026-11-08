@@ -150,8 +150,8 @@ class Euler {
   /// GradientFit::linear.
   void linear_gradient(std::span<typename P::grad> out);
   /// After residual(s) or residual_and_jacobian(s): the tangent of linear_gradient's gradient,
-  /// d grad W/dU du, into `out` (its layout), with the boundary values held fixed as in
-  /// gradient_tangent.
+  /// d grad W/dU du, into `out` (its layout), the boundary values the fit keeps following their
+  /// owner cell as in gradient_tangent.
   void linear_gradient_tangent(std::span<const State> s, std::span<const State> du,
                                std::span<typename P::grad> out);
   /// The primitives' tangent dW/dU du (5 x n_cells) at the state s.
