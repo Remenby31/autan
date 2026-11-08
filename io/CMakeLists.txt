@@ -71,7 +71,12 @@ if(AUTAN_ENABLE_CGNS)
   endif()
   target_sources(
     autan_io
-    PRIVATE src/cgns_read.cpp src/cgns_write.cpp src/cgns_solution.cpp src/self_contained.cpp
+    PRIVATE
+      src/cgns_read.cpp
+      src/cgns_write.cpp
+      src/cgns_solution.cpp
+      src/self_contained.cpp
+      src/vtu.cpp
   )
   target_link_libraries(autan_io PRIVATE autan_cgns)
   target_compile_definitions(autan_io PRIVATE AUTAN_HAVE_CGNS)
@@ -103,3 +108,9 @@ target_link_libraries(
   autan-mesh-prisms
   PRIVATE autan::io nlohmann_json::nlohmann_json autan_compile_options
 )
+
+# A run's solution.cgns as a VTU (docs/contracts/vtu.md).
+if(AUTAN_ENABLE_CGNS)
+  add_executable(autan-vtu tools/autan_vtu.cpp)
+  target_link_libraries(autan-vtu PRIVATE autan::io autan_compile_options)
+endif()

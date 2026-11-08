@@ -37,6 +37,7 @@ class NavierStokes {
  public:
   using State = typename P::state;
   using Res = typename P::residual;
+  using Faces = typename Euler<P>::Faces;
 
   /// With `keys`, as Euler<P>'s: its Euler<P> takes them, and the viscous face loops gather each
   /// cell's faces in global order and orientation. The boundary fit keeps the mesh's order, and
@@ -72,6 +73,12 @@ class NavierStokes {
   /// A = diag(shift) + J~ into `a`: Euler<P>'s blocks, the viscous face Jacobians and, through
   /// the boundary fit, the viscous fluxes' dependence on the fitted cell and the face's other cell.
   void assemble(std::span<const double> shift, BlockMatrix& a) const;
+  /// After residual_and_jacobian(s): adds to dres the chosen faces' derivative through the
+  /// gradients that `assemble` leaves out, convective (Euler<P>::gradient_tangent) and viscous
+  /// (the cell gradients, and the boundary fit's stencil entries outside the block pattern), the
+  /// limiter, the eddy viscosity and the fits' boundary values held fixed.
+  void gradient_tangent(std::span<const State> s, std::span<const State> du, std::span<Res> dres,
+                        typename Euler<P>::Faces faces);
   /// After assemble: Frobenius norms of the boundary fit's Jacobian blocks it added and of those
   /// outside the block pattern (stencil entries that are not the face's cells), which it leaves
   /// out.

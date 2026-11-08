@@ -686,6 +686,17 @@ TEMPLATE_TEST_CASE("under global keys, renumbered cells have the residual and Ja
     }
   }
   CHECK(update_differs == 0);
+  // The product, a Krylov method's operator, sums each row in the same order.
+  std::vector<double> ya(5 * nc), yb(5 * nc);
+  ma.multiply(xa, ya);
+  mb.multiply(xb, yb);
+  std::size_t product_differs = 0;
+  for (std::size_t c = 0; c < nc; ++c) {
+    for (std::size_t k = 0; k < 5; ++k) {
+      product_differs += bits_differ(yb[k * nc + c], ya[k * nc + cell(c)]);
+    }
+  }
+  CHECK(product_differs == 0);
 
   // The Navier-Stokes residual under the same keys: its viscous face loops gather too. Without a
   // state or wall face there is no boundary fit, whose stencil keeps the mesh's order.
