@@ -50,10 +50,27 @@ class LineSmoother {
   void sweep(std::span<const double> b, std::span<double> x, int sweeps,
              const std::function<void(std::span<double>)>& exchange) const;
 
- private:
+  /// A line, or a lone cell: the cells cells()[first, first + size), in sweep order.
   struct Unit {
-    std::size_t first, size;  // cells cells_[first, first + size)
+    std::size_t first, size;
   };
+  /// The sweep's structure, for a copy on a device (gpu::LineSweep): the units, lines first, the
+  /// units of each colour, and each owned cell's interior faces in the order its sums take them.
+  [[nodiscard]] std::size_t n_cells() const noexcept { return n_cells_; }
+  [[nodiscard]] std::size_t n_owned() const noexcept { return n_owned_; }
+  [[nodiscard]] std::span<const Unit> units() const noexcept { return units_; }
+  [[nodiscard]] std::span<const index_t> cells() const noexcept { return cells_; }
+  [[nodiscard]] std::span<const std::vector<std::size_t>> colour_units() const noexcept {
+    return by_colour_;
+  }
+  [[nodiscard]] std::span<const offset_t> cell_face_offsets() const noexcept {
+    return cell_offsets_;
+  }
+  [[nodiscard]] std::span<const index_t> cell_faces() const noexcept { return cell_faces_; }
+  [[nodiscard]] std::span<const index_t> owner() const noexcept { return owner_; }
+  [[nodiscard]] std::span<const index_t> neighbour() const noexcept { return neighbour_; }
+
+ private:
   // The coupling A(c, m) of cell c to cell m summed over the faces they share, into out.
   void coupling(std::size_t c, std::size_t m, double* out) const;
   void solve_unit(const Unit& u, std::span<const double> b, std::span<double> x) const;
