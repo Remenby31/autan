@@ -38,6 +38,8 @@ if(AUTAN_ENABLE_CUDA)
     APPEND AUTAN_NS_KERNELS
     ${AUTAN_PHYSICS_GENERATED}/navier_stokes_gpu.cuh
     ${AUTAN_PHYSICS_GENERATED}/navier_stokes_gpu.cu
+    ${AUTAN_PHYSICS_GENERATED}/spalart_allmaras_gpu.cuh
+    ${AUTAN_PHYSICS_GENERATED}/spalart_allmaras_gpu.cu
   )
 endif()
 add_custom_command(
@@ -49,7 +51,7 @@ add_custom_command(
   COMMAND
     ${CMAKE_COMMAND} -E env PYTHONPATH=${PROJECT_SOURCE_DIR}/codegen/src ${Python3_EXECUTABLE} -m
     autan_codegen ${PROJECT_SOURCE_DIR}/kernels/spalart_allmaras.py --out ${AUTAN_PHYSICS_GENERATED}
-    --backends cpu
+    --backends ${ns_backends}
   DEPENDS
     ${PROJECT_SOURCE_DIR}/kernels/spalart_allmaras.py
     ${PROJECT_SOURCE_DIR}/kernels/navier_stokes.py
@@ -140,6 +142,7 @@ if(AUTAN_ENABLE_CGNS)
       ${AUTAN_PHYSICS_GENERATED}/euler_gpu.cu
       src/navier_stokes_device.cu
       ${AUTAN_PHYSICS_GENERATED}/navier_stokes_gpu.cu
+      ${AUTAN_PHYSICS_GENERATED}/spalart_allmaras_gpu.cu
     )
     target_include_directories(autan_physics_device PRIVATE ${AUTAN_PHYSICS_GENERATED})
     target_link_libraries(autan_physics_device PRIVATE autan::physics autan::runtime CUDA::cudart)

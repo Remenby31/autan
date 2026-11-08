@@ -9,6 +9,7 @@
 #include <map>
 #include <random>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 #include <catch2/catch_template_test_macros.hpp>
@@ -25,6 +26,7 @@
 #include "autan/physics/block_matrix.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/navier_stokes.hpp"
+#include "autan/physics/spalart_allmaras.hpp"
 #include "navier_stokes.hpp"
 #include "stretched_slab.hpp"
 
@@ -36,6 +38,7 @@ using autan::physics::BoundaryKind;
 using autan::physics::Euler;
 using autan::physics::Flux;
 using autan::physics::NavierStokes;
+using autan::physics::SpalartAllmaras;
 using autan::physics::Transport;
 
 const fs::path mesh_dir{AUTAN_TEST_MESH_DIR};
@@ -517,7 +520,8 @@ TEMPLATE_TEST_CASE("under global keys, renumbered cells have the residual and Ja
   // solver-input.md, reproducibility "ranks": what a cell sums must not depend on how the mesh is
   // numbered. Renumbering the cells (reverse Cuthill-McKee) re-sorts the faces and flips some,
   // as a partition does; with the global keys of the original mesh the second-order residual,
-  // limiter on, every block of the Jacobian and the Navier-Stokes residual must keep their bits.
+  // limiter on, every block of the Jacobian and the Navier-Stokes and Spalart-Allmaras residuals
+  // must keep their bits.
   using P = TestType;
   const char* file = GENERATE(from_range(meshes));
   INFO(file);
@@ -729,4 +733,44 @@ TEMPLATE_TEST_CASE("under global keys, renumbered cells have the residual and Ja
   }
   REQUIRE(viscous_terms >= 4 * nc * 9 / 10);
   CHECK(viscous_differs == 0);
+
+  // Spalart-Allmaras on those flows: its face loops follow the flow's keys.
+  std::vector<double> rnu_a(nc), rnu_b(nc), dist_a(nc), dist_b(nc), nt_bc_a(nb), nt_bc_b(nb);
+  for (std::size_t c = 0; c < nc; ++c) {
+    const double x = ga.cell_centroid_x[c], y = ga.cell_centroid_y[c];
+    rnu_a[c] = ua[c] * 1e-3 * (1.0 + 0.5 * std::sin(2.0 * x + 3.0 * y));
+    dist_a[c] = 0.05 + y;
+  }
+  for (std::size_t c = 0; c < nc; ++c) {
+    rnu_b[c] = rnu_a[cell(c)];
+    dist_b[c] = dist_a[cell(c)];
+  }
+  for (std::size_t k = 0; k < nb; ++k) nt_bc_a[k] = 1e-3 * (1.0 + 0.1 * static_cast<double>(k % 7));
+  for (std::size_t f = ni; f < nf; ++f) {
+    nt_bc_b[f - ni] = nt_bc_a[static_cast<std::size_t>(face_a[f]) - ni];
+  }
+  SpalartAllmaras<P> sa_a(a, ga, flow_a, viscous);
+  SpalartAllmaras<P> sa_b(b, gb, flow_b, viscous);
+  sa_a.set_wall_distance(dist_a);
+  sa_b.set_wall_distance(dist_b);
+  sa_a.set_boundary(nt_bc_a);
+  sa_b.set_boundary(nt_bc_b);
+  std::vector<typename P::state> nt_a(nc), nt_b(nc);
+  for (std::size_t c = 0; c < nc; ++c) {
+    nt_a[c] = typename P::state(rnu_a[c]);
+    nt_b[c] = typename P::state(rnu_b[c]);
+  }
+  std::vector<typename P::residual> sa_ra(nc), sa_rb(nc);
+  sa_a.residual(nt_a, sa_ra);
+  sa_b.residual(nt_b, sa_rb);
+  REQUIRE(finite(sa_ra));
+  std::size_t sa_differs = 0;
+  for (std::size_t c = 0; c < nc; ++c) sa_differs += bits_differ(sa_rb[c], sa_ra[cell(c)]);
+  CHECK(sa_differs == 0);
+  // Under keys that reverse faces their viscous and SA blocks are in global orientation: the
+  // assembly, written for the mesh's own, refuses them.
+  BlockMatrix viscous_b(b);
+  CHECK_THROWS_AS(flow_b.assemble(shift_b, viscous_b), std::logic_error);
+  std::vector<double> sa_diag(nc), sa_upper(ni), sa_lower(ni);
+  CHECK_THROWS_AS(sa_b.assemble(shift_b, sa_diag, sa_upper, sa_lower), std::logic_error);
 }
