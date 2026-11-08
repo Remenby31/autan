@@ -668,6 +668,8 @@ Start parse_start(const Json& value, const SolverInput& in) {
       invalid(path, "no equation '" + names.back() + "'");
     if (i > 0 && !(names[i - 1] < names[i])) invalid(path, "names must be sorted and distinct");
   }
+  // A warm start begins with no equation woken (case-schema.md#time).
+  if (!continued && !names.empty()) invalid(o.at("woken"), "must be empty for a warm start");
   start.woken = std::move(names);
   return start;
 }

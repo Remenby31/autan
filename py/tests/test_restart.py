@@ -180,7 +180,12 @@ DDES = ("autan.SA()", "autan.DDES(base=autan.SA())")
 
 @pytest.mark.parametrize(
     ("source", "target", "inherits"),
-    [("steady", "steady", True), ("steady", "unsteady", False), ("unsteady", "steady", False)],
+    [
+        ("steady", "steady", True),
+        ("steady", "unsteady", False),
+        ("unsteady", "steady", False),
+        ("unsteady", "unsteady", False),
+    ],
 )
 def test_a_warm_start_takes_the_source_reference_only_from_steady_to_steady(
     source: str,

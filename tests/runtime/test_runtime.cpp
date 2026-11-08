@@ -2183,6 +2183,44 @@ TEST_CASE("A warm start converges against the reference of the run it starts fro
   CHECK_FALSE(met(lines[lines.size() - 2]));
 }
 
+TEST_CASE("A warm start begins with no equation woken and wakes against its reference's floor",
+          "[runtime]") {
+  // case-schema.md#time: momentum-x is silent in the reference, so exempt; the source woke it
+  // (iterations 10-14), but a warm start begins with none woken and reports its own W0710 when
+  // momentum-x rises above the floor of the reference it takes.
+  autan_test::RelaxationOptions source;
+  source.silent_equation = 1;
+  source.wake_at = 10;
+  source.sleep_at = 15;
+  const auto doc = [](std::int64_t n) {
+    return input([n](Json& d) {
+      d["reproducibility"] = "run";
+      d["time"]["max_iterations"] = n;
+    });
+  };
+  const Outcome a = run(doc(20), source);
+  REQUIRE(a.status == ExitStatus::finished);
+  Json next = doc(40);
+  next["start"] = start_from(a.run, "warm");
+  CHECK(next["start"]["woken"] == Json::array());
+  autan_test::RelaxationOptions warm;
+  warm.silent_equation = 1;
+  warm.wake_at = 3;
+  warm.sleep_at = 6;
+  const Outcome b = run(next, warm);
+  INFO(b.err);
+  REQUIRE(b.status == ExitStatus::finished);
+  const Json info = Json::parse(read(b.run / "run.json"));
+  CHECK(info["start"]["residual_reference"] == history(a.run)[0]["residuals"]);
+  std::vector<Json> wakes;
+  for (const auto& d : info["diagnostics"]) {
+    if (d["code"] == "W0710") wakes.push_back(d["data"]);
+  }
+  REQUIRE(wakes.size() == 1);
+  CHECK(wakes[0]["equation"] == "momentum-x");
+  CHECK(wakes[0]["iteration"] == 3);
+}
+
 TEST_CASE("A start from a run with the longest case name and mesh path is honoured", "[runtime]") {
   // results.md, RunMetadata: a case name of 4096 control bytes, which ensure_ascii writes as
   // \u00XX (6 bytes each), and a mesh path as long as the system allows (about 4000 bytes on
@@ -2399,6 +2437,11 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
     require_error(from([](Json& d) {
                     d["start"]["mode"] = "warm";
                     d["start"]["time"] = 0.5;
+                  }),
+                  "E0705");
+    require_error(from([](Json& d) {
+                    d["start"]["mode"] = "warm";
+                    d["start"]["woken"] = Json::array({"momentum-y"});
                   }),
                   "E0705");
     require_error(from([](Json& d) { d["time"]["max_iterations"] = 4; }), "E0705");

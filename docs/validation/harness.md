@@ -15,7 +15,7 @@ The command prints the worst error of each run, the L2 order of each field and t
 
 1. Opens each run with `autan.Results.open`, which checks the directory against the contract.
 2. Recomputes the stop verdict of every steady `converged` or `completed` run from its `history.jsonl`, its case and its `run.json` under the rule of [case-schema.md](../contracts/case-schema.md#time), and refuses the run when `run.json` disagrees (`V0730`, naming the iteration and the equation). It is implemented from that text, not by the solver (`autan_vv.stop`). It checks:
-   - a `converged` run stops at the first line where every equation has dropped `residual_orders` from its reference (iteration 1, or `start.residual_reference` of a continuation or a steady warm start), is identically zero and still at its floor, or in `fp32+acc64` is on a round-off plateau within 10 floors, the lines marked `provisional` counting towards none, at most at `max_iterations`;
+   - a `converged` run stops at the first line where every equation has dropped `residual_orders` from its reference (iteration 1, or `start.residual_reference` of a continuation or a steady warm start), is identically zero and still at its floor, or in `fp32+acc64` is on a round-off plateau within 10 floors, the lines marked `provisional` counting towards no plateau (they can still meet the drop, a warm start's even at iteration 1), at most at `max_iterations`;
    - `convergence.plateau` names the equations met on a plateau;
    - each equation that leaves its zero floor has its `W0710`;
    - a `completed` run has no such line and ends at `max_iterations`.
