@@ -202,8 +202,7 @@ def test_gates_on_the_papers_flo82_sequences() -> None:
         },
     )
     estimates = cases.continuum(transonic_lift)
-    for name in ("naca0012-m080-a125-cl", "naca0012-m080-a125-cd"):
-        assert cases.check(cases.GATES[name], transonic_lift, estimates)["pass"]
+    assert cases.check(cases.GATES["naca0012-m080-a125-cd"], transonic_lift, estimates)["pass"]
     nonlifting = _levels(FLO82_TRANSONIC, {"cd": [0.008338967, 0.008341760, 0.008342211]})
     gate = cases.GATES["naca0012-m080-a000-cd"]
     assert cases.check(gate, nonlifting, cases.continuum(nonlifting))["pass"]
@@ -224,14 +223,110 @@ def test_gates_on_the_papers_flo82_sequences() -> None:
     assert not cases.check(gate, full, cases.continuum(full))["pass"]
 
 
+LIFT = cases.GATES["naca0012-m080-a125-cl"]
+
+
+def _triplet(fine: float, eps21: float, order: float) -> tuple[list[float], list[float]]:
+    """h and values of 2048², 1024², 512² with f2 - f1 = eps21 and (f3 - f2)/(f2 - f1) = 2^order."""
+    f2 = fine + eps21
+    return [1 / 2048, 1 / 1024, 1 / 512], [fine, f2, f2 + eps21 * 2.0**order]
+
+
+def test_lift_interval_on_flo82s_triplet() -> None:
+    # Table 3: FLO82's three finest CL extrapolate to 0.356208937 at order 1.151, inside rule 2's
+    # range, so Fs = 1.25 and no cap; U is then the fine-grid GCI of Celik et al.'s eq. 7.
+    f1, f2, f3 = 0.357142338, 0.358281928, 0.360812844  # 4096², 2048², 1024²
+    p = math.log2((f3 - f2) / (f2 - f1))
+    u = 1.25 * abs(f2 - f1) / (2.0**p - 1.0)
+    verdict = cases.lift_interval(LIFT, [1 / 4096, 1 / 2048, 1 / 1024], [f1, f2, f3])
+    assert verdict["order"] == pytest.approx(1.151, abs=1e-3)
+    assert verdict["safety_factor"] == 1.25
+    assert verdict["value"] == pytest.approx(0.356208937, abs=2e-9)
+    assert verdict["uncertainty"] == pytest.approx(u, rel=1e-12)
+    assert verdict["pass"]
+
+
+@pytest.mark.parametrize(
+    ("order", "safety"), [(0.5001, 1.25), (0.4999, 3.0), (2.4999, 1.25), (2.5001, 3.0), (3.0, 3.0)]
+)
+def test_lift_interval_caps_the_order_at_two_and_widens_outside_its_range(
+    order: float, safety: float
+) -> None:
+    assert cases.interval_safety(0.5) == cases.interval_safety(2.5) == 1.25  # bounds inclusive
+    h, values = _triplet(0.352, -1e-4, order)
+    p_eff = min(order, 2.0)
+    verdict = cases.lift_interval(LIFT, h, values)
+    assert verdict["order"] == pytest.approx(order, abs=1e-9)
+    assert verdict["effective_order"] == pytest.approx(p_eff, abs=1e-9)
+    assert verdict["safety_factor"] == safety
+    assert verdict["value"] == pytest.approx(0.352 + 1e-4 / (2.0**p_eff - 1.0), rel=1e-12)
+    assert verdict["uncertainty"] == pytest.approx(safety * 1e-4 / (2.0**p_eff - 1.0), rel=1e-9)
+
+
+def test_lift_interval_fails_an_uncertainty_above_half_the_four_code_range() -> None:
+    # ADR 0004, Consequences: at p = 0.3, Fs = 3.0 makes U about 13 |eps21|. Centred in the range,
+    # the interval overlaps it whatever U, so only the ceiling fails it.
+    centre = (LIFT.lower + LIFT.upper) / 2.0
+    for eps21, passes in ((-0.003991446 / 13.1, True), (-0.003991446 / 12.9, False)):
+        h, values = _triplet(centre + eps21 / (2.0**0.3 - 1.0), eps21, 0.3)
+        verdict = cases.lift_interval(LIFT, h, values)
+        assert verdict["uncertainty"] / abs(eps21) == pytest.approx(3.0 / (2.0**0.3 - 1.0))
+        assert verdict["pass"] is passes
+
+
+@pytest.mark.parametrize("edge", ["upper", "lower"])
+def test_lift_interval_passes_an_overlap_at_either_edge_of_the_range(edge: str) -> None:
+    # Order 2: Fs = 1.25, CL∞ = f1 - eps21/3 and U = 1.25 |eps21| / 3 = 1.25e-3.
+    eps21, u = -3e-3, 1.25e-3
+    for offset, passes in ((-1e-9, True), (1e-9, False)):
+        value = LIFT.upper + u + offset if edge == "upper" else LIFT.lower - u - offset
+        h, values = _triplet(value + eps21 / 3.0, eps21, 2.0)
+        verdict = cases.lift_interval(LIFT, h, values)
+        assert verdict["uncertainty"] == pytest.approx(u, rel=1e-9)
+        assert verdict["pass"] is passes, (edge, offset)
+
+
+@pytest.mark.parametrize(
+    ("values", "code"),
+    [
+        ([0.3580, 0.3577, 0.3582], "V0107"),  # not monotone
+        ([0.3580, 0.3580, 0.3582], "V0106"),  # two equal values
+        ([0.3580, 0.3582, 0.3583], "V0108"),  # differences growing under refinement
+    ],
+)
+def test_lift_interval_fails_a_triplet_with_no_continuum(values: list[float], code: str) -> None:
+    verdict = cases.lift_interval(LIFT, [1 / 2048, 1 / 1024, 1 / 512], values)
+    assert not verdict["pass"]
+    assert code in verdict["reason"]
+
+
+def test_lift_gate_needs_the_four_levels_and_reports_the_gap_to_flo82() -> None:
+    cl = [0.3602690, 0.3582398, 0.3577427, 0.3581995]
+    verdict = cases.check(LIFT, _levels([256, 512, 1024, 2048], {"cl": cl}), {})
+    assert "V0107" in verdict["reason"]  # the four levels are there; the triplet is not monotone
+    assert verdict["gap_to_flo82"] == pytest.approx(
+        {"1024": 0.3577427 - 0.360812844, "2048": 0.3581995 - 0.358281928}
+    )
+    _, values = _triplet(0.354, -1e-4, 1.0)
+    family = _levels([256, 512, 1024, 2048], {"cl": [values[2] + 2e-4, *values[::-1]]})
+    assert cases.check(LIFT, family, {})["pass"]
+    for nc in ([128, 256, 512, 1024], [512, 1024, 2048], [256, 512, 1024, 2048, 2048]):
+        verdict = cases.check(LIFT, _levels(nc, {"cl": [0.35] * len(nc)}), {})
+        assert not verdict["pass"]
+        assert "levels" in verdict["reason"]
+
+
 def test_every_gate_is_stated_in_acceptance_md() -> None:
     text = (Path(__file__).parents[2] / "docs/validation/acceptance.md").read_text()
     for gate in cases.GATES.values():
         row = next((line for line in text.splitlines() if f"`{gate.id}`" in line), None)
         assert row is not None, gate.id
-        for value in (gate.target, gate.lower, gate.upper):
+        stated: tuple[float, ...] = (gate.target, gate.lower, gate.upper)
+        if gate.measure == "interval":
+            stated += (gate.tolerance,)
+        for value in stated:
             if value:
-                assert f"{value:g}" in row, gate.id
+                assert repr(value) in row, gate.id
 
 
 def test_study_reads_a_family_of_runs(tmp_path: Path) -> None:

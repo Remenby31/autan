@@ -92,6 +92,14 @@ def test_richardson_rejects_oscillatory_and_divergent_triplets(
     assert err.value.code == code
 
 
+def test_richardson_gives_any_positive_order_on_a_constant_ratio() -> None:
+    # (f3 - f2)/(f2 - f1) = 1 + 2^-30, exact in binary, is p = log2(1 + 2^-30) > 0 for r = 2: an
+    # order, not V0108.
+    d = 2.0**-10
+    res = richardson([0.1, 0.2, 0.4], [0.0, d, d + d * (1.0 + 2.0**-30)])
+    assert res.order == pytest.approx(math.log2(1.0 + 2.0**-30), rel=1e-9)
+
+
 def test_two_grid_gci_uses_safety_factor_three() -> None:
     gci = gci_two_grids([0.1, 0.2], [1.0, 1.03], order=2.0)
     assert gci == pytest.approx(3.0 * 0.03 / 3.0)

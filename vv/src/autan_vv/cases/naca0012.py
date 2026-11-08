@@ -52,9 +52,10 @@ CONDITIONS = {
 class ForceGate:
     """A force gate of acceptance.md on the continuum estimate of `coefficient`.
 
-    `within`: |estimate - target| <= tolerance. `band`: the estimate lies in [lower, upper] widened
-    by its own GCI. `vanishing`: the magnitude of the coefficient decreases strictly from every level
-    to the next finer one and |estimate| <= tolerance.
+    `within`: |estimate - target| <= tolerance. `interval`: ADR 0004 (`lift_interval`), the
+    uncertainty U at most `tolerance` and [estimate - U, estimate + U] overlapping [lower, upper].
+    `vanishing`: the magnitude of the coefficient decreases strictly from every level to the next
+    finer one and |estimate| <= tolerance.
     """
 
     id: str
@@ -67,16 +68,34 @@ class ForceGate:
     upper: float = 0.0
 
 
-# Vassberg and Jameson (2010), Tables 10-11; the point-vortex far-field band for CL (datasets §M2).
+# Vassberg and Jameson (2010), Tables 10-11. CL: ADR 0004, the four-code range of Table 11 and half
+# its width as the ceiling of U.
 GATES = {
     g.id: g
     for g in (
         ForceGate("naca0012-m080-a000-cd", "m080-a000", "cd", "within", 0.008342, COUNT),
-        ForceGate("naca0012-m080-a125-cl", "m080-a125", "cl", "band", lower=0.3516, upper=0.3562),
+        ForceGate(
+            "naca0012-m080-a125-cl",
+            "m080-a125",
+            "cl",
+            "interval",
+            tolerance=0.003991446,
+            lower=0.348226045,
+            upper=0.356208937,
+        ),
         ForceGate("naca0012-m080-a125-cd", "m080-a125", "cd", "within", 0.02268, COUNT),
         ForceGate("naca0012-m050-a125-cd", "m050-a125", "cd", "vanishing", tolerance=0.5 * COUNT),
     )
 }
+
+# ADR 0004: the levels (NC) run, the three the verdict uses, the order cap and the safety factors.
+INTERVAL_LEVELS = (256, 512, 1024, 2048)
+INTERVAL_MAX_ORDER = 2.0
+INTERVAL_FS = 1.25
+INTERVAL_FS_OUTSIDE = 3.0
+INTERVAL_ORDER_RANGE = (0.5, 2.5)
+# Vassberg and Jameson (2010), Table 3 (p. 1159): FLO82's CL at M 0.8, alpha 1.25 deg, per NC.
+FLO82_CL = {1024: 0.360812844, 2048: 0.358281928}
 
 
 def case(
@@ -234,10 +253,63 @@ def _order_if_zero(values: Sequence[float], finest: Sequence[LevelForces]) -> fl
     return math.log(medium / fine) / math.log(finest[1].h / finest[0].h)
 
 
+def interval_safety(order: float) -> float:
+    """ADR 0004 rule 2: Celik et al.'s 1.25 for an observed order in [0.5, 2.5], else 3.0."""
+    lo, hi = INTERVAL_ORDER_RANGE
+    return INTERVAL_FS if lo <= order <= hi else INTERVAL_FS_OUTSIDE
+
+
+def lift_interval(gate: ForceGate, h: Sequence[float], values: Sequence[float]) -> dict[str, Any]:
+    """ADR 0004 rules 1-3 on one triplet: CL∞ and U from the observed order capped at 2 and the
+    safety factor of rule 2; PASS when U <= the gate's tolerance and CL∞ ± U overlaps [lower,
+    upper], bounds inclusive. A triplet with no continuum fails with richardson's code."""
+    try:
+        r = richardson(h, values, safety=interval_safety, max_order=INTERVAL_MAX_ORDER)
+    except VVError as err:
+        return {"gate": gate.id, "pass": False, "reason": f"no continuum estimate ({err.code})"}
+    value, u = r.extrapolated, r.gci_fine
+    return {
+        "gate": gate.id,
+        "value": value,
+        "uncertainty": u,
+        "order": r.order,
+        "effective_order": r.effective_order,
+        "safety_factor": interval_safety(r.order),
+        "interval": (value - u, value + u),
+        "bounds": (gate.lower, gate.upper),
+        "uncertainty_ceiling": gate.tolerance,
+        "pass": u <= gate.tolerance and value - u <= gate.upper and value + u >= gate.lower,
+    }
+
+
+def _interval_check(gate: ForceGate, levels: Sequence[LevelForces]) -> dict[str, Any]:
+    """ADR 0004 rules 4-5: the levels 256² to 2048², the verdict on the three finest, and the gap
+    to FLO82 at each level Table 3 gives, as a diagnostic."""
+    nc = {round(math.sqrt(lv.n_cells)): lv for lv in levels}
+    gaps = {
+        f"{n}": getattr(nc[n], gate.coefficient) - flo82 for n, flo82 in FLO82_CL.items() if n in nc
+    }
+    if (
+        len(levels) != len(INTERVAL_LEVELS)
+        or sorted(nc) != list(INTERVAL_LEVELS)
+        or any(n * n != nc[n].n_cells for n in nc)
+    ):
+        cells = sorted(lv.n_cells for lv in levels)
+        reason = f"ADR 0004 needs the levels NC {INTERVAL_LEVELS}, one run each; got {cells} cells"
+        return {"gate": gate.id, "pass": False, "reason": reason, "gap_to_flo82": gaps}
+    finest = [nc[n] for n in INTERVAL_LEVELS[1:]]
+    verdict = lift_interval(
+        gate, [lv.h for lv in finest], [getattr(lv, gate.coefficient) for lv in finest]
+    )
+    return {**verdict, "gap_to_flo82": gaps}
+
+
 def check(
     gate: ForceGate, levels: Sequence[LevelForces], estimates: dict[str, Any]
 ) -> dict[str, Any]:
     """Verdict of `gate` on the levels of its condition and their continuum estimates."""
+    if gate.measure == "interval":
+        return _interval_check(gate, levels)
     est = estimates[gate.coefficient]
     if "error" in est:
         return {"gate": gate.id, "pass": False, "reason": f"no continuum estimate ({est['error']})"}
@@ -245,8 +317,6 @@ def check(
     verdict: dict[str, Any] = {"gate": gate.id, "value": value, "gci": gci}
     if gate.measure == "within":
         verdict["bounds"] = (gate.target - gate.tolerance, gate.target + gate.tolerance)
-    elif gate.measure == "band":
-        verdict["bounds"] = (gate.lower - gci, gate.upper + gci)
     else:
         verdict["bounds"] = (-gate.tolerance, gate.tolerance)
         series = [getattr(lv, gate.coefficient) for lv in sorted(levels, key=lambda lv: -lv.h)]
