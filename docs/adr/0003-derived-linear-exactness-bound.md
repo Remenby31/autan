@@ -1,6 +1,6 @@
 # 0003: Linear exactness is judged against certified per-cell radii, not a fixed 64 ε
 
-**Status:** proposed, 2026-11-07, revision 4, amended 2026-11-07 for √ and `hypot` (after the third review on #577; accepted once these changes are in, the orchestrator decided, with Codex re-checking them in the freeze-commit review). Not accepted. The orchestrator has it reviewed again before any verdict changes, and no PASS is recorded before that review and the held-out validation below. **Decided by:** to be decided by the orchestrator, for the lead's delegate. **Issues:** #43, #566 (scope decision 3).
+**Status:** proposed, 2026-11-07, revision 4, amended 2026-11-07 for √ and `hypot` (after the third review on #577; accepted once these changes are in, the orchestrator decided, with Codex re-checking them in the freeze-commit review). **Amended 2026-11-08** for the kernel replay value for value, the declared precision contract, R_D1, R₄ and control 11 (decided on #43 by the orchestrator, before any held-out run; Codex reviews it and the orchestrator approves it in writing before the freeze commit). Not accepted. The orchestrator has it reviewed again before any verdict changes, and no PASS is recorded before that review and the held-out validation below. **Decided by:** to be decided by the orchestrator, for the lead's delegate. **Issues:** #43, #566 (scope decision 3).
 
 ## Context
 
@@ -86,6 +86,18 @@ The refinement holds because rounding a representable value under round-to-neare
 
 The **values**, unlike the radii, never come from the code under test.
 
+**Kernel replay, value for value** (amendment 2026-11-08, decided on #43, revised after Codex's review). The kernel bodies' declared sequence is replayed per instance by exact emulation of IEEE 754 round-to-nearest-even. It follows each policy's formats (`runtime.hpp`), `emit_cpp.py`'s conversions (storage type, then role type, then the body's compute type; `rel` in the role type, on inputs that are not converted otherwise), and `emit_cpu.py`'s accumulation order. Every quantity is carried as a pair: the executed value and its certificate.
+- **The declared precision contract.** The replay's formats are **not** taken from the generator. They come from a table written by hand from the specification: `runtime.hpp`'s policies, the roles and casts table above, and the roles declared in `kernels/gradients.py`.
+  - **What it covers:** the inventory of loops, bodies, finalise bodies and arguments; each dataset's storage type, outputs included; each body's compute type; each argument's role.
+  - **How it is checked:** the inventory is exhaustive. On every instance, the generator's choices must equal the table, or the instance is **invalid**. This cuts the common mode between the generator under test and the replay.
+- **The frozen code.** The generated gradient headers the build compiles (`gradients.hpp`, `gradients_cpu.hpp`, digested without their `#line` directives) and `runtime.hpp` are frozen as reviewed. That pins the accumulator declarations, the conversions and their placement, the loop order and the policy aliases. On every instance, their SHA-256 must equal the frozen ones, or the instance is invalid. The table and the digests are recorded in FREEZE.md.
+- **The frozen library.** Source digests do not identify the executable: a library built from other source, with the headers restored afterwards, would pass them. So the spike library built from the freeze commit, in the frozen image and with the frozen flags, is itself frozen: its SHA-256 is in the freeze manifest. On every held-out instance, the loaded library's SHA-256 must equal it, or the instance is invalid. It covers what the header digests cannot, including the spike's policy dispatch.
+- **Order.** These structural conditions are checked first, before any replay. A failure makes the instance invalid at once.
+- **Validity condition of checks 3 and 4:** on every cell and component, the replay's executed value must equal the kernel's output **value for value**. ±0 are identified, since the sign of a zero is outside the certificates. A mismatch means the build does not execute the declared sequence (another order, another precision, an FMA). The instance is then **invalid**, fail-closed, never a pass.
+- **Its limit.** The replay detects departures from the declared sequence that change an output value on the tested instances. **Output-equivalent departures are covered only by the structural checks above** (the declared contract and the frozen code). An example is a weight stored in binary64 where binary32 is declared: the body narrows it to the same binary32 value.
+  - What neither covers: an output-equivalent departure made by the compiler below the frozen source, such as instruction selection. Only the frozen build flags (`-ffp-contract=off`, FREEZE.md) and the value-for-value replay constrain that.
+- This is a condition on the instance, as for `hypot`. It enlarges no radius and moves no threshold. The radii still bound every execution of the declared sequence; the replay checks that this build's outputs are those of one such execution.
+
 **Correspondence obligation.** A radius bounds the distance from the computed value to the *exact evaluation of the declared sequence*. The checks centre their intervals on the *intended operator's* exact value. The two must be the same number.
 
 So, on every instance and for every quantity that enters a check (each geometric array entry, each weight, each cell's gradient component), the oracle evaluates the declared sequence **with every rounding removed**, in exact rationals on the exact data, and verifies that it equals the intended operator's exact value. Any mismatch makes the instance **invalid**, reported as a correspondence failure (the code computes another function), never a pass.
@@ -112,8 +124,18 @@ The gate "linear fields exact to 64 ε" becomes four mandatory checks per instan
    - For GG: the face reconstruction, face sum and division, with the exact areas, moments, centroids and volumes.
 
    The check is |ĝ_u − g_int,u| ≤ R_D1,c,u, where R_D1 propagates the geometry construction, the weights, the casts and the kernel arithmetic, but not the field's rounding.
+
+   **R_D1, centred on the intended value** (amendment 2026-11-08). The certified replay gives a centre v and a radius R that bounds |ĝ − v|. v is not g_int in general: √ and `hypot` are certified through rational witnesses. So:
+   - R_D1 = R + |v − g_int|, centred on g_int. This is sound by the triangle inequality, |ĝ − g_int| ≤ |ĝ − v| + |v − g_int|, and at most 2R.
+   - The instance is **invalid** if |v − g_int| > R, that is, if g_int lies outside [v − R, v + R]. This interval consistency is an additional, fail-closed condition. It does not replace the correspondence obligation: the declared sequence with every rounding removed must still equal the intended operator **exactly**, on every instance (for D1, on the stored inputs; for check 4, on the exact fixture).
+   - Measured on the step-B cases (development only): max |v − g_int| / R = 1.0 × 10⁻²⁴ over 48 instances, so R_D1 is R to within 10⁻²⁴ relative.
 4. **The linear-exactness bound.** First, the oracle verifies exactly that the intended operator reproduces G on the exact field with the exact geometry. This holds by construction for LSQ, Σw dᵀ = I. For GG it is the design premise of the face moment, and is checked per cell; a cell where it fails is reported as a property of the operator, never covered by a tolerance.
    Then |ĝ_u − G_u| ≤ R_c,u, where R propagates everything from the exact data (nodes, a, G): the field's evaluation and storage, the geometry, the weights, the casts and the kernel arithmetic.
+
+   **R₄, centred on G** (amendment 2026-11-08), on the same reasoning as R_D1:
+   - R₄ = R + |v − G|, and the instance is invalid if |v − G| > R.
+   - The fixture's field is declared as a + ((x₀G₀ + x₁G₁) + x₂G₂) in binary64, on the constructed centroids, then stored in the state type.
+   - Measured on the step-B cases (development only): max |v − G| / R = 4.5 × 10⁻²⁴ over 96 instances.
    R replaces "T_arith + T_data + T_geom". The coordinate and injected-gradient terms of GG are inside R by construction, not added by hand. For reporting, R is also propagated with one source class at a time (field, geometry, gradient injection, arithmetic). Each such radius bounds that class alone; the gate uses the joint R.
 
 **Fail-closed.** PASS requires all of the following:
@@ -154,7 +176,16 @@ The fields of the corruption controls have every neighbour difference q_k − q_
 | 8 | one cell centroid moved by more than 2 r_x | 2 |
 | 9 | one interior face's owner and neighbour swapped, its area not negated | 1 |
 | 10 | the kernel's output offset to the representable value beyond G ± R (the next float past the interval's far side, so it is outside whatever its sign or R = 0) | 4 |
-| 11 | wrong precision: the gradient evaluated with its accumulation narrowed to binary32 under fp32+acc64. Inexact binary32 intermediates do not imply a wrong output ((1, 2⁻²⁵, −2⁻²⁵) sums to 1 in both precisions). So a fixture qualifies only if **exact emulation** of the narrowed sequence, step by step in binary32 under round-to-nearest, gives a final output outside both the D1 interval and the bound interval of fp32+acc64. Its witness is that **exactly emulated, rounded output itself**: a singleton, radius 0, not the generic unrounded centre with its radius. The generic rule cannot show the failure of a mutation that changes only precision. Fixtures are searched in a declared, frozen family; if none qualifies, the control is not demonstrated | 3 and 4 |
+| 11 | wrong precision: the gradient evaluated with its accumulation narrowed to binary32 under fp32+acc64 (amended 2026-11-08, see below). Inexact binary32 intermediates do not imply a wrong output ((1, 2⁻²⁵, −2⁻²⁵) sums to 1 in both precisions). So the control is demonstrated by **exact emulation**: the narrowed sequence, step by step in binary32 under round-to-nearest, must give a final output that differs from the declared sequence's on at least one entry of a declared fixture. The nominal kernel on that fixture must pass checks 3 and 4. The run of the narrowed kernel, generated by the generator under a test-only policy, must then give exactly that emulated output, and the instance must be **invalid** under the value-for-value replay condition. If no entry differs on the declared fixture, the control is not demonstrated | 3 and 4: invalid |
+
+**Control 11, amended 2026-11-08** (decided on #43, before any held-out run):
+- **(a) How it is demonstrated.** Through the validity condition of checks 3 and 4: the replay's executed value equals the kernel's output, value for value. Exact emulation shows that the narrowed sequence differs from the declared one on at least one entry. The run, whose kernel output must equal the narrowed emulation, then makes the instance invalid at that entry.
+- **(b) Limit, stated plainly.** On the measured fixtures, the envelopes R_D1 and R₄ alone did **not** separate binary32 from binary64 accumulation. On the step-B fixtures, the narrowed kernel differs from fp32+acc64 on 38 to 753 entries per fixture. Yet its exactly emulated output never leaves either envelope: at most 0.80 of R_D1 and 0.44 of R₄.
+  - The likely reason: R_D1 already carries a binary32 rounding per product (the bodies compute in binary32), the same order as binary32 rounding of the partial sums. R₄ is dominated by the field's storage rounding.
+  - This is an observation on those fixtures, not a theorem. In general binary32 partial sums can leave an envelope: exact terms (1, 2⁻²⁴, −1) sum to 2⁻²⁴ in binary64 but to 0 in sequential binary32. No claim is made beyond the fixtures measured.
+  - Detection of a wrong accumulation precision rests on the value-for-value replay, **not** on the bounds. A wrong precision that changes no output value is caught only by the structural checks: the declared precision contract, the frozen generated code and `runtime.hpp`, and the frozen library.
+- **(c)** The change to control 11 enlarges no radius and moves no threshold. It replaces a "must fail outside the interval" that the measured fixtures could not meet with a fail-closed invalidity the run demonstrates.
+  - Separately, and declared above: R_D1 and R₄ are an explicit **outward re-centring** of the certified radius, R + |v − centre|, centred on the intended value. That is a larger acceptance radius than R whenever v differs from the centre: at most 2R, and 10⁻²⁴ relative on the step-B cases.
 
 ### Prospective protocol
 
