@@ -311,9 +311,11 @@ def partition_groups(spec: CaseSpec, device_kind: DeviceKind) -> str:
     return "lines" if lines and device_kind == "cpu" else "none"
 
 
-# The ghost stencil a run's partition holds: the one its physics declares, face2 for every scheme
-# a case selects (docs/contracts/mesh-info.md).
-PARTITION_GHOST_STENCIL = "face2"
+def partition_ghost_stencil(spec: CaseSpec) -> str:
+    # The ghost stencil a run's partition holds: the one its physics declares (mesh-info.md),
+    # vertex4 for the Navier-Stokes physics, whose boundary fits reach three vertex rings of an
+    # owned cell's face neighbours, face2 for every Euler scheme a case selects.
+    return "face2" if isinstance(spec.physics.turbulence, Inviscid) else "vertex4"
 
 
 def _check_prepared(
@@ -334,7 +336,7 @@ def _check_prepared(
             f"the case's mesh_unit is {scale:g} m"
         )
     partition = mesh.partition
-    ghost_stencil = PARTITION_GHOST_STENCIL
+    ghost_stencil = partition_ghost_stencil(spec)
     if gpus == 1 and extracts(spec, mesh, 1):
         if partition is None or partition.ranks != 1:
             problems.append(

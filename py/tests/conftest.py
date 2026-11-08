@@ -68,10 +68,13 @@ def one_part(document: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def prepared(document: dict[str, Any], *, scale: float = 1.0, ranks: int = 1) -> dict[str, Any]:
+def prepared(
+    document: dict[str, Any], *, scale: float = 1.0, ranks: int = 1, ghost_stencil: str = "face2"
+) -> dict[str, Any]:
     """``document`` as autan-mesh-info writes it for a run at ``scale`` metres per mesh unit on
-    ``ranks`` ranks (mesh-info.md): its lines' scale and, on several ranks, a partition. The
-    partition is an even split without ghosts or groups: these tests plan something else."""
+    ``ranks`` ranks (mesh-info.md): its lines' scale and, on several ranks, a partition labelled
+    with ``ghost_stencil``. The partition is an even split without ghosts or groups: these tests
+    plan something else."""
     document = copy.deepcopy(document)
     document["quality"]["lines"]["scale"] = scale
     if ranks == 1:
@@ -86,7 +89,7 @@ def prepared(document: dict[str, Any], *, scale: float = 1.0, ranks: int = 1) ->
         document["partition"] = {
             "ranks": ranks,
             "groups": "none",
-            "ghost_stencil": "face2",
+            "ghost_stencil": ghost_stencil,
             "cells_by_rank": split(counts["cells"]),
             "ghosts_by_rank": [0] * ranks,
             "faces_by_rank": split(counts["faces"]),

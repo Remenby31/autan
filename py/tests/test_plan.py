@@ -303,7 +303,7 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     # partition the MeshInfo gives for them (mesh-info.md), without which the plan is refused.
     assert "E0212" in diagnostic_codes(autan.load(write_case(CRM_HL)).plan(crm_mesh, gpus=4))
     on_four = autan.MeshInfo.from_document(
-        prepared(mesh_document("crm-hl"), ranks=4), autan.Location()
+        prepared(mesh_document("crm-hl"), ranks=4, ghost_stencil="vertex4"), autan.Location()
     )
     four = autan.load(write_case(CRM_HL)).plan(on_four, gpus=4, device_kind="cuda").memory
     # A steady CPU run with the lines solver keeps its lines whole: a partition without them is
@@ -311,12 +311,13 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     lines = autan.load(write_case(CRM_HL + "case.time = autan.Steady(linear_solver='lines')\n"))
     assert "E0212" in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cpu"))
     assert "E0212" not in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cuda"))
-    # Nor is a partition holding the vertex stencil's ghosts that of a face2 run.
-    vertex = prepared(mesh_document("crm-hl"), ranks=4)
-    vertex["partition"]["ghost_stencil"] = "vertex"
-    on_vertex = autan.MeshInfo.from_document(vertex, autan.Location())
+    # Nor is a partition holding other ghosts than the physics reads: four vertex rings for the
+    # Navier-Stokes physics (its boundary fits).
+    on_face2 = autan.MeshInfo.from_document(
+        prepared(mesh_document("crm-hl"), ranks=4), autan.Location()
+    )
     assert "E0212" in diagnostic_codes(
-        autan.load(write_case(CRM_HL)).plan(on_vertex, gpus=4, device_kind="cuda")
+        autan.load(write_case(CRM_HL)).plan(on_face2, gpus=4, device_kind="cuda")
     )
     by_name = {c.name: c for c in four.components}
     assert by_name["mesh"] == {c.name: c for c in cuda.components}["mesh"]
