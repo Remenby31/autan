@@ -928,6 +928,10 @@ void NavierStokes<P>::gradient_tangent(std::span<const State> s, std::span<const
   // eddy viscosity and the fits' boundary values held: the fits' tangent covers every stencil
   // entry, so the blocks `assemble` already adds for them are subtracted (fit_jacobian).
   m.euler.linear_gradient_tangent(s, du, m.grad_v_tan);
+  // Under the linear fit the viscous terms read the reconstruction's gradient, zero at first order.
+  if (!m.quadratic && !m.euler.scheme().second_order) {
+    std::fill(m.grad_v_tan.begin(), m.grad_v_tan.end(), typename P::grad(0));
+  }
   if (m.prim_tan.size() != 5 * nc) {
     m.prim_tan.assign(5 * nc, State(0));
     m.ut_tan.assign(5 * nc, State(0));

@@ -695,14 +695,22 @@ TEST_CASE(
   // with or without an eddy viscosity (SA's mean flow holds mu_t). The boundary faces' tangent
   // changes only the rows of cells with a boundary face. Across the one-cell-thick slab of the 2D
   // cases, symmetry planes on its layer faces, only boundary values determine a cell's gradient.
+  // Under the linear fit the viscous terms read the reconstruction's gradient, which a first-order
+  // scheme leaves zero: only the boundary fits' term then. The quadratic fit, which the runtime
+  // uses, keeps the viscous cell gradient at both orders.
   using P = autan::kernels::fp64;
   const std::size_t which = GENERATE(range(std::size_t{0}, meshes.size() + 1));
   const Flux flux = GENERATE(Flux::roe, Flux::hllc, Flux::ausm_up);
   const bool eddy = GENERATE(false, true);
   const bool adiabatic = GENERATE(false, true);
+  const auto fit =
+      GENERATE(autan::physics::GradientFit::linear, autan::physics::GradientFit::quadratic);
+  const bool second_order = GENERATE(true, false);
+  const bool gradients = second_order || fit == autan::physics::GradientFit::quadratic;
   const char* file = which < meshes.size() ? meshes[which] : "one-cell-thick slab";
   INFO(file << " flux " << static_cast<int>(flux) << (eddy ? " eddy viscosity" : "")
-            << (adiabatic ? " adiabatic walls" : " isothermal walls"));
+            << (adiabatic ? " adiabatic walls" : " isothermal walls") << " fit "
+            << static_cast<int>(fit) << (second_order ? " second order" : " first order"));
   const auto mesh = which < meshes.size() ? autan::io::read_mesh(mesh_dir / file)
                                           : stretched_slab({.first = 0.02});
   const auto geometry = autan::compute_geometry(mesh);
@@ -737,6 +745,8 @@ TEST_CASE(
   Scheme scheme;
   scheme.flux = flux;
   scheme.limiter = false;
+  scheme.gradient_fit = fit;
+  scheme.second_order = second_order;
   scheme.mach_ref = 1.0;
   scheme.reference = {rho, rho * v0[0], rho * v0[1], rho * v0[2], 1e5 / (air.gamma - 1.0)};
   Transport t;
@@ -808,28 +818,37 @@ TEST_CASE(
   }
   REQUIRE(scale > 0.0);
   CHECK(diff32 <= 1024 * std::numeric_limits<float>::epsilon() * scale);
-  const double h = 1e-6;
-  std::vector<double> up(u), um(u);
-  for (std::size_t i = 0; i < u.size(); ++i) {
-    up[i] += h * v[i];
-    um[i] -= h * v[i];
-  }
-  ns.state(up, state);
-  ns.residual(state, rp);
-  ns.state(um, state);
-  ns.residual(state, rm);
-  double diff = 0.0, without = 0.0, norm = 0.0;
-  for (std::size_t i = 0; i < u.size(); ++i) {
-    const double fd = (rp[i] - rm[i]) / (2.0 * h);
-    REQUIRE(std::isfinite(fd));
-    REQUIRE(std::isfinite(av[i]));
-    REQUIRE(std::isfinite(tan[i]));
-    diff = std::max(diff, std::abs(fd - av[i] - tan[i]));
-    without = std::max(without, std::abs(fd - av[i]));
-    norm = std::max(norm, std::abs(fd));
+  // Central differences at two steps, the closer kept: a kink of the fluxes (AUSM+up's split Mach
+  // number) straddled by one step spoils that step only. Each has O(h^2) truncation and O(eps / h)
+  // round-off, relative.
+  double diff = std::numeric_limits<double>::infinity(), without = 0.0, norm = 0.0;
+  for (const double h : {1e-6, 1e-7}) {
+    std::vector<double> up(u), um(u);
+    for (std::size_t i = 0; i < u.size(); ++i) {
+      up[i] += h * v[i];
+      um[i] -= h * v[i];
+    }
+    ns.state(up, state);
+    ns.residual(state, rp);
+    ns.state(um, state);
+    ns.residual(state, rm);
+    double d = 0.0, w = 0.0, n = 0.0;
+    for (std::size_t i = 0; i < u.size(); ++i) {
+      const double fd = (rp[i] - rm[i]) / (2.0 * h);
+      REQUIRE(std::isfinite(fd));
+      REQUIRE(std::isfinite(av[i]));
+      REQUIRE(std::isfinite(tan[i]));
+      d = std::max(d, std::abs(fd - av[i] - tan[i]));
+      w = std::max(w, std::abs(fd - av[i]));
+      n = std::max(n, std::abs(fd));
+    }
+    if (d / n < diff / std::max(norm, 1e-300)) {
+      diff = d;
+      without = w;
+      norm = n;
+    }
   }
   INFO("diff " << diff / norm << " without the gradient tangents " << without / norm);
-  // Central differences: O(h^2) truncation and O(eps / h) round-off, relative.
   CHECK(diff <= 1e-6 * norm);
-  CHECK(without >= 1e3 * diff);
+  if (gradients) CHECK(without >= 1e3 * diff);
 }
