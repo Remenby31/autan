@@ -907,7 +907,8 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
 
 TEST_CASE("a Navier-Stokes case outside the physics' scope is refused before any directory exists",
           "[navier-stokes]") {
-  // The viscous terms fill no ghosts of their own, steady or not: E0706 at `periodic`. Under
+  // Across a periodic pair the boundary fits would need the image ghosts' translated stencils:
+  // E0706 at `periodic`, steady or not. Under
   // reproducibility "ranks" the steady multigrid still sums in local cell order: E1109, laminar
   // and SA alike.
   const auto [model, ranks] =
