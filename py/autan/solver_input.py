@@ -195,6 +195,14 @@ class TurbulenceInput(_Strict):
 class PhysicsInput(_Strict):
     kind: Literal["compressible", "incompressible"]
     turbulence: TurbulenceInput
+    flux: Literal["roe", "hllc", "ausm+up"] | None
+
+    @model_validator(mode="after")
+    def _flux_of_compressible_flow(self) -> Self:
+        if (self.flux is None) == (self.kind == "compressible"):
+            msg = "flux is given exactly for compressible physics"
+            raise ValueError(msg)
+        return self
 
 
 class FreestreamInput(_Strict):
@@ -850,7 +858,11 @@ def build(
         memory=MemoryInput(
             bytes_host=plan.memory.bytes_host, bytes_device=plan.memory.bytes_device
         ),
-        physics=PhysicsInput(kind=spec.physics.kind, turbulence=turbulence),
+        physics=PhysicsInput(
+            kind=spec.physics.kind,
+            turbulence=turbulence,
+            flux=spec.physics.flux if isinstance(spec.physics, Compressible) else None,
+        ),
         freestream=freestream,
         boundaries=tuple(boundaries),
         periodic=tuple(
@@ -914,6 +926,10 @@ def json_schema() -> dict[str, Any]:
             }
         }
         for (model, base), values in TURBULENCE_VALUES.items()
+    ]
+    defs["PhysicsInput"]["oneOf"] = [
+        {"properties": {"kind": {"const": "compressible"}, "flux": {"type": "string"}}},
+        {"properties": {"kind": {"const": "incompressible"}, "flux": {"type": "null"}}},
     ]
     defs["StartInput"]["oneOf"] = [
         {"properties": {"residual_reference": {"type": "null"}, "woken": {"type": "null"}}},
