@@ -60,19 +60,11 @@ With `MemorySpace::cuda`, packing and unpacking run as CUDA kernels and device b
 
 `PartitionOptions::group_offsets` and `group_cells` name groups of cells that must share a part, a smoother's lines for instance. `partition_cells` contracts each group into one node of the graph its method partitions, weighing the sum of its cells, then gives every cell its group's part.
 
-A multigrid level is a graph, `GraphLevel`: nodes with global ids, and edges between them. `coarse_parts` gives each coarse node the part of its child with the least global id; every rank holds the same hierarchy, so all agree. `extract_graph` builds a rank's share of a level, `LocalGraph`:
+A multigrid level is a graph, `GraphLevel`: nodes with global ids, and edges between them. `coarse_parts` gives each coarse node the part of its child with the least global id; `level_parts` does the same except that every node of a line of at least two nodes takes the part of the line's least child, so that each line is solved on one rank. Levels are taken in order, each from the finer level's final parts; every rank holds the same hierarchy, so all agree (#259 D2). `extract_graph` builds a rank's share of a level, `LocalGraph`:
 - **Nodes:** owned nodes in increasing global id, then ghost nodes ordered by owning part and global id. The ghosts are the edge neighbours of the owned nodes and, with coarse parts given, the remote children (`remote_children`: children, owned elsewhere, of the coarse nodes this rank owns) and their neighbours.
 - **Edges:** those with an end owned or a remote child, each owned by the part of its owner node, in global orientation flagged by `edge_reversed`.
 - **Halos:** `node_halo` and `edge_halo` are HaloPatterns, so `HaloExchange` moves per-node and per-edge data. A coarse owner then restricts and assembles from all its children's values, summed in global id order: the same bits on any number of ranks, with no reverse sum (#259).
-
-## Groups and graph levels
-
-`PartitionOptions::group_offsets` and `group_cells` name groups of cells that must share a part, a smoother's lines for instance. `partition_cells` contracts each group into one node of the graph its method partitions, weighing the sum of its cells, then gives every cell its group's part.
-
-A multigrid level is a graph, `GraphLevel`: nodes with global ids, and edges between them. `coarse_parts` gives each coarse node the part of its child with the least global id; every rank holds the same hierarchy, so all agree. `extract_graph` builds a rank's share of a level, `LocalGraph`:
-- **Nodes:** owned nodes in increasing global id, then ghost nodes ordered by owning part and global id. The ghosts are the edge neighbours of the owned nodes and, with coarse parts given, the remote children (`remote_children`: children, owned elsewhere, of the coarse nodes this rank owns) and their neighbours.
-- **Edges:** those with an end owned or a remote child, each owned by the part of its owner node, in global orientation flagged by `edge_reversed`.
-- **Halos:** `node_halo` and `edge_halo` are HaloPatterns, so `HaloExchange` moves per-node and per-edge data. A coarse owner then restricts and assembles from all its children's values, summed in global id order: the same bits on any number of ranks, with no reverse sum (#259).
+- **Parents:** `parent_import` gives a rank the coarse nodes, owned elsewhere, that hold one of its fine nodes, after its own coarse nodes, with the HaloPattern that brings them: the prolongation's transfer down, which a rank needs even when it owns no coarse node.
 
 ## Tests
 

@@ -169,6 +169,105 @@ std::vector<index_t> remote_children(std::int32_t rank, std::span<const std::int
   return out;
 }
 
+std::vector<std::int32_t> level_parts(std::span<const std::int32_t> parts,
+                                      std::span<const index_t> coarse_node,
+                                      std::span<const std::int64_t> global_id, std::size_t n_coarse,
+                                      std::span<const offset_t> line_offsets,
+                                      std::span<const index_t> line_nodes) {
+  if (parts.size() != coarse_node.size() || global_id.size() != coarse_node.size())
+    invalid("parts, coarse_node and global_id differ in size");
+  if (line_offsets.empty() || line_offsets.front() != 0 ||
+      at(line_offsets.back()) != line_nodes.size() || !std::ranges::is_sorted(line_offsets))
+    invalid("the coarse lines are not offsets over line_nodes");
+  std::vector<std::int32_t> out(n_coarse, -1);
+  std::vector<std::int64_t> least(n_coarse, 0);
+  for (std::size_t v = 0; v < coarse_node.size(); ++v) {
+    const index_t c = coarse_node[v];
+    if (c < 0 || at(c) >= n_coarse) invalid("a coarse node is out of range");
+    if (out[at(c)] == -1 || global_id[v] < least[at(c)]) {
+      least[at(c)] = global_id[v];
+      out[at(c)] = parts[v];
+    }
+  }
+  if (std::ranges::find(out, -1) != out.end()) invalid("a coarse node has no child");
+  std::vector<std::uint8_t> lined(n_coarse, 0);
+  for (std::size_t l = 0; l + 1 < line_offsets.size(); ++l) {
+    const auto first = at(line_offsets[l]), last = at(line_offsets[l + 1]);
+    std::size_t lead = 0;
+    for (std::size_t k = first; k < last; ++k) {
+      const index_t c = line_nodes[k];
+      if (c < 0 || at(c) >= n_coarse) invalid("a line node is out of range");
+      if (lined[at(c)] != 0) invalid("a node is in two lines");
+      lined[at(c)] = 1;
+      if (k == first || least[at(c)] < least[lead]) lead = at(c);
+    }
+    if (last - first < 2) continue;
+    const std::int32_t part = out[lead];
+    for (std::size_t k = first; k < last; ++k) out[at(line_nodes[k])] = part;
+  }
+  return out;
+}
+
+ParentImport parent_import(std::span<const std::int32_t> parts,
+                           std::span<const index_t> coarse_node,
+                           std::span<const std::int32_t> coarse_parts,
+                           std::span<const std::int64_t> coarse_global_id, std::int32_t n_parts,
+                           std::int32_t rank) {
+  if (rank < 0 || rank >= n_parts) invalid("rank " + std::to_string(rank) + " out of range");
+  if (parts.size() != coarse_node.size()) invalid("parts and coarse_node differ in size");
+  if (coarse_parts.size() != coarse_global_id.size())
+    invalid("coarse_parts and coarse_global_id differ in size");
+  for (const std::int32_t p : parts) {
+    if (p < 0 || p >= n_parts) invalid("part " + std::to_string(p) + " out of range");
+  }
+  for (const std::int32_t p : coarse_parts) {
+    if (p < 0 || p >= n_parts) invalid("coarse part " + std::to_string(p) + " out of range");
+  }
+  for (const index_t c : coarse_node) {
+    if (c < 0 || at(c) >= coarse_parts.size()) invalid("a coarse node is out of range");
+  }
+  const auto imports = [&](std::int32_t q) {
+    std::set<std::size_t> held;
+    for (std::size_t v = 0; v < parts.size(); ++v) {
+      const auto c = at(coarse_node[v]);
+      if (parts[v] == q && coarse_parts[c] != q) held.insert(c);
+    }
+    std::vector<std::size_t> out(held.begin(), held.end());
+    std::ranges::sort(out, [&](std::size_t a, std::size_t b) {
+      return std::tuple(coarse_parts[a], coarse_global_id[a]) <
+             std::tuple(coarse_parts[b], coarse_global_id[b]);
+    });
+    return out;
+  };
+  ParentImport out;
+  std::vector<std::size_t> owned;
+  for (std::size_t c = 0; c < coarse_parts.size(); ++c) {
+    if (coarse_parts[c] == rank) owned.push_back(c);
+  }
+  std::ranges::sort(owned, [&](std::size_t a, std::size_t b) {
+    return coarse_global_id[a] < coarse_global_id[b];
+  });
+  std::vector<index_t> local(coarse_parts.size(), -1);
+  for (std::size_t k = 0; k < owned.size(); ++k) {
+    local[owned[k]] = static_cast<index_t>(k);
+    out.owned.push_back(static_cast<index_t>(owned[k]));
+  }
+  std::vector<std::int32_t> ghost_parts;
+  for (const std::size_t c : imports(rank)) {
+    out.parents.push_back(static_cast<index_t>(c));
+    ghost_parts.push_back(coarse_parts[c]);
+  }
+  std::vector<std::vector<index_t>> sends(at(n_parts));
+  for (std::int32_t q = 0; q < n_parts; ++q) {
+    if (q == rank) continue;
+    for (const std::size_t c : imports(q)) {
+      if (coarse_parts[c] == rank) sends[at(q)].push_back(local[c]);
+    }
+  }
+  out.halo = pattern(rank, n_parts, ghost_parts, sends);
+  return out;
+}
+
 LocalGraph extract_graph(const GraphLevel& level, std::span<const std::int32_t> parts,
                          std::int32_t n_parts, std::int32_t rank,
                          std::span<const index_t> coarse_node,

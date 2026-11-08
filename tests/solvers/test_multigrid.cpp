@@ -524,6 +524,102 @@ TEST_CASE("wall layers form one line per wall cell, kept through the coarse leve
   }
 }
 
+namespace {
+
+// #259 D2: level by level from the cells' parts, each coarse node's part by the definition (a
+// node of a line of at least two nodes takes the part of the line's least child, any other node
+// that of its own least child; global ids: the cell index on level 0, the node index above),
+// checked against level_parts. Returns the number of lines whose nodes' own least children lie on
+// more than one part, where the line rule decides.
+std::size_t check_level_parts(const std::vector<Level>& levels, std::vector<std::int32_t> parts) {
+  std::size_t straddling = 0;
+  for (std::size_t l = 1; l < levels.size(); ++l) {
+    const auto& fine = levels[l - 1];
+    const auto& coarse = levels[l];
+    std::vector<std::int64_t> ids(fine.n_nodes);
+    std::iota(ids.begin(), ids.end(), std::int64_t{0});
+    const auto coarse_parts = autan::level_parts(parts, fine.coarse_node, ids, coarse.n_nodes,
+                                                 coarse.line_offsets, coarse.line_nodes);
+    std::vector<std::size_t> least(coarse.n_nodes, fine.n_nodes);
+    for (std::size_t v = 0; v < fine.n_nodes; ++v) {
+      const auto c = static_cast<std::size_t>(fine.coarse_node[v]);
+      least[c] = std::min(least[c], v);
+    }
+    std::vector<std::uint8_t> lined(coarse.n_nodes, 0);
+    for (std::size_t li = 0; li < coarse.n_lines(); ++li) {
+      const auto first = static_cast<std::size_t>(coarse.line_offsets[li]);
+      const auto last = static_cast<std::size_t>(coarse.line_offsets[li + 1]);
+      if (last - first < 2) continue;
+      std::size_t lead = fine.n_nodes;
+      std::set<std::int32_t> own;
+      for (std::size_t k = first; k < last; ++k) {
+        const auto c = static_cast<std::size_t>(coarse.line_nodes[k]);
+        lined[c] = 1;
+        lead = std::min(lead, least[c]);
+        own.insert(parts[least[c]]);
+      }
+      if (own.size() > 1) ++straddling;
+      for (std::size_t k = first; k < last; ++k)
+        CHECK(coarse_parts[static_cast<std::size_t>(coarse.line_nodes[k])] == parts[lead]);
+    }
+    for (std::size_t c = 0; c < coarse.n_nodes; ++c) {
+      if (lined[c] == 0) CHECK(coarse_parts[c] == parts[least[c]]);
+    }
+    parts = coarse_parts;
+  }
+  return straddling;
+}
+
+}  // namespace
+
+TEST_CASE("on N parts, every coarse node goes to one part and every coarse line stays whole",
+          "[multigrid]") {
+  const std::int32_t n_parts = GENERATE(2, 3, 4);
+  CAPTURE(n_parts);
+  SECTION("wall layers") {
+    // Slabs along x keep the wall lines whole, as a partition does; layers by decade of the wall
+    // distance (part = floor(-log10 z) mod N) cut them, so that the line rule decides.
+    const Fill fill = GENERATE(Fill::hexa, Fill::prism);
+    const bool across = GENERATE(false, true);
+    CAPTURE(across);
+    const auto mesh = layered_box(8, 1e-4, fill);
+    const auto g = autan::compute_geometry(mesh);
+    const auto levels = autan::solvers::agglomerate(mesh, g);
+    REQUIRE(levels.size() >= 3);
+    std::vector<std::int32_t> parts(static_cast<std::size_t>(mesh.n_cells()));
+    for (std::size_t c = 0; c < parts.size(); ++c) {
+      parts[c] =
+          across
+              ? static_cast<std::int32_t>(std::floor(-std::log10(g.cell_centroid_z[c]))) % n_parts
+              : std::min(n_parts - 1, static_cast<std::int32_t>(g.cell_centroid_x[c] * n_parts));
+    }
+    const std::size_t straddling = check_level_parts(levels, parts);
+    if (across) CHECK(straddling > 0);
+  }
+  SECTION("reference meshes") {
+    // Tetrahedra, hexahedra, polyhedra and a hybrid mesh, in slabs along x.
+    const char* file = GENERATE(from_range(meshes));
+    INFO(file);
+    const auto mesh = autan::io::read_mesh(mesh_dir / file);
+    const auto g = autan::compute_geometry(mesh);
+    autan::solvers::AgglomerationOptions opt;
+    opt.coarsest_nodes = 4;
+    const auto levels = autan::solvers::agglomerate(mesh, g, opt);
+    REQUIRE(levels.size() >= 2);
+    double lo = std::numeric_limits<double>::max(), hi = std::numeric_limits<double>::lowest();
+    for (const double x : g.cell_centroid_x) {
+      lo = std::min(lo, x);
+      hi = std::max(hi, x);
+    }
+    std::vector<std::int32_t> parts(static_cast<std::size_t>(mesh.n_cells()));
+    for (std::size_t c = 0; c < parts.size(); ++c) {
+      const double t = (g.cell_centroid_x[c] - lo) / (hi - lo);
+      parts[c] = std::min(n_parts - 1, static_cast<std::int32_t>(t * n_parts));
+    }
+    (void)check_level_parts(levels, parts);
+  }
+}
+
 TEST_CASE(
     "wall layers of a one-cell-thick mesh form wall-normal lines and coarsen to a direct solve",
     "[multigrid]") {

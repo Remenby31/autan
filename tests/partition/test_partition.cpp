@@ -927,6 +927,202 @@ TEST_CASE("Graph parts send each other exactly the ghosts they hold", "[partitio
   }
 }
 
+TEST_CASE("A coarse line goes whole to the part of its least child", "[partition][graph]") {
+  // #259 D2. Fine ids 0..6; coarse 0 = {3, 4}, coarse 1 = {1, 5}, coarse 2 = {0}, coarse 3 =
+  // {2, 6}. Line {0, 1}: its least child is fine 1 (id 1, part 2), so both nodes go to part 2,
+  // although coarse 0's own least child (fine 3) is on part 0. Line {3}: one node, its own least
+  // child's part. Node 2 is in no line.
+  const std::vector<std::int32_t> parts{1, 2, 0, 0, 1, 1, 2};
+  const std::vector<index_t> coarse{2, 1, 3, 0, 0, 1, 3};
+  std::vector<std::int64_t> ids(parts.size());
+  std::iota(ids.begin(), ids.end(), std::int64_t{0});
+  const std::vector<autan::offset_t> offsets{0, 2, 3};
+  const std::vector<index_t> lines{0, 1, 3};
+  CHECK(autan::level_parts(parts, coarse, ids, 4, offsets, lines) ==
+        std::vector<std::int32_t>{2, 2, 1, 0});
+  // Without lines, every node takes its own least child's part.
+  const std::vector<autan::offset_t> none{0};
+  CHECK(autan::level_parts(parts, coarse, ids, 4, none, {}) ==
+        std::vector<std::int32_t>{0, 2, 1, 0});
+  // Ids are not indices: with fine 4 the least id (0) and fine 1 the largest, coarse 0's least
+  // child is fine 4 (part 1), coarse 1's is fine 5 (part 1), and line {0, 1} goes to part 1.
+  const std::vector<std::int64_t> shuffled{6, 9, 3, 5, 0, 2, 4};
+  CHECK(autan::level_parts(parts, coarse, shuffled, 4, offsets, lines) ==
+        std::vector<std::int32_t>{1, 1, 1, 0});
+  const auto refused = [&](std::span<const autan::offset_t> o, std::span<const index_t> l) {
+    require_error(autan::ErrorCode::partition_invalid_request,
+                  [&] { (void)autan::level_parts(parts, coarse, ids, 4, o, l); });
+  };
+  refused(std::vector<autan::offset_t>{0, 2, 4}, std::vector<index_t>{0, 1, 1, 3});  // twice
+  refused(offsets, std::vector<index_t>{0, 4, 3});                                   // range
+  refused(std::vector<autan::offset_t>{0, 2}, lines);                                // size
+  refused(std::vector<autan::offset_t>{0, 2, 1, 3}, lines);                          // order
+  require_error(autan::ErrorCode::partition_invalid_request, [&] {
+    (void)autan::level_parts(parts, coarse, ids, 5, offsets, lines);  // coarse 4 empty
+  });
+}
+
+TEST_CASE("Parts import exactly the parents of the fine nodes they own", "[partition][graph]") {
+  // #259 D2. The dual graph of a box in slabs, coarsened into pairs of cells from both ends of
+  // the cell order (cells c and n - 1 - c), so that coarse nodes hold children of different
+  // slabs, far apart. Each part imports the parents, owned elsewhere, of its fine nodes,
+  // ordered by owning part then id, after its own coarse nodes in increasing id; what it
+  // receives from each part is what that part sends, by id.
+  const autan::Mesh mesh =
+      autan::assemble(autan::to_face_based(autan::test::box(4, autan::test::BoxFill::tetra, 0.2)));
+  const DualLevel dual(mesh);
+  const autan::Geometry g = autan::compute_geometry(mesh);
+  const std::int32_t n_parts = GENERATE(1, 2, 4);
+  CAPTURE(n_parts);
+  const auto parts = slabs(g, n_parts, 1.0);
+  std::vector<index_t> coarse(at(mesh.n_cells()));
+  const std::size_t n_coarse = coarse.size() / 2;
+  for (std::size_t c = 0; c < coarse.size(); ++c)
+    coarse[c] = static_cast<index_t>(std::min(c, coarse.size() - 1 - c));
+  // Coarse ids in reverse index order, so that id order and index order differ.
+  std::vector<std::int64_t> coarse_ids(n_coarse);
+  for (std::size_t c = 0; c < n_coarse; ++c)
+    coarse_ids[c] = static_cast<std::int64_t>(n_coarse - c);
+  const auto cp = autan::coarse_parts(parts, coarse, dual.ids, n_coarse);
+  std::vector<autan::ParentImport> imports;
+  for (std::int32_t r = 0; r < n_parts; ++r)
+    imports.push_back(autan::parent_import(parts, coarse, cp, coarse_ids, n_parts, r));
+  std::size_t imported = 0;
+  for (std::int32_t r = 0; r < n_parts; ++r) {
+    const auto& im = imports[at(r)];
+    std::vector<std::pair<std::int64_t, index_t>> owned, parents;
+    std::set<index_t> wanted;
+    for (std::size_t v = 0; v < parts.size(); ++v) {
+      if (parts[v] == r && cp[at(coarse[v])] != r) wanted.insert(coarse[v]);
+    }
+    for (std::size_t c = 0; c < n_coarse; ++c) {
+      if (cp[c] == r) owned.emplace_back(coarse_ids[c], static_cast<index_t>(c));
+    }
+    std::ranges::sort(owned);
+    std::vector<index_t> expected_owned;
+    for (const auto& [id, c] : owned) expected_owned.push_back(c);
+    CHECK(im.owned == expected_owned);
+    CHECK(std::set<index_t>(im.parents.begin(), im.parents.end()) == wanted);
+    CHECK(im.parents.size() == wanted.size());
+    for (std::size_t k = 1; k < im.parents.size(); ++k) {
+      const auto a = at(im.parents[k - 1]), b = at(im.parents[k]);
+      CHECK(std::pair(cp[a], coarse_ids[a]) < std::pair(cp[b], coarse_ids[b]));
+    }
+    imported += im.parents.size();
+  }
+  if (n_parts > 1) CHECK(imported > 0);
+  // The first transfer up (cells to level 1) is extract_graph on the cells with the coarse
+  // parts: it holds every remote child however far it lies from the owned cells, beyond any
+  // stencil's halo (face2 reaches 2 face steps).
+  std::size_t far = 0;
+  for (std::int32_t r = 0; r < n_parts; ++r) {
+    std::vector<int> steps(parts.size(), -1);
+    std::vector<std::size_t> front;
+    for (std::size_t v = 0; v < parts.size(); ++v) {
+      if (parts[v] == r) {
+        steps[v] = 0;
+        front.push_back(v);
+      }
+    }
+    for (std::size_t k = 0; k < front.size(); ++k) {
+      for (index_t f = 0; f < mesh.n_interior_faces(); ++f) {
+        const auto a = at(dual.owner[at(f)]), b = at(dual.neighbour[at(f)]);
+        for (const auto& [from, to] : {std::pair(a, b), std::pair(b, a)}) {
+          if (from == front[k] && steps[to] < 0) {
+            steps[to] = steps[from] + 1;
+            front.push_back(to);
+          }
+        }
+      }
+    }
+    const autan::LocalGraph l = autan::extract_graph(dual.level, parts, n_parts, r, coarse, cp);
+    const std::set<std::int64_t> held(l.node_global_id.begin(), l.node_global_id.end());
+    const std::set<std::int64_t> edges(l.edge_global_id.begin(), l.edge_global_id.end());
+    for (const index_t v : autan::remote_children(r, parts, coarse, cp)) {
+      CHECK(held.contains(dual.ids[at(v)]));
+      if (steps[at(v)] >= 0 && steps[at(v)] <= 2) continue;
+      ++far;
+      // Its faces too, for the Galerkin blocks of its agglomerate.
+      for (index_t f = 0; f < mesh.n_interior_faces(); ++f) {
+        if (dual.owner[at(f)] == v || dual.neighbour[at(f)] == v) CHECK(edges.contains(f));
+      }
+    }
+  }
+  if (n_parts > 1) CHECK(far > 0);
+  // The exchange, emulated: the coarse nodes received from q are those q sends, in order.
+  for (std::int32_t r = 0; r < n_parts; ++r) {
+    const autan::HaloPattern& h = imports[at(r)].halo;
+    std::size_t received_total = 0;
+    for (std::size_t i = 0; i < h.neighbours.size(); ++i) {
+      const std::int32_t q = h.neighbours[i];
+      const autan::HaloPattern& hq = imports[at(q)].halo;
+      const auto j =
+          at(std::find(hq.neighbours.begin(), hq.neighbours.end(), r) - hq.neighbours.begin());
+      REQUIRE(j < hq.neighbours.size());
+      std::vector<index_t> received, sent;
+      for (index_t k = h.recv_offsets[i]; k < h.recv_offsets[i + 1]; ++k)
+        received.push_back(imports[at(r)].parents[at(k)]);
+      for (index_t k = hq.send_offsets[j]; k < hq.send_offsets[j + 1]; ++k)
+        sent.push_back(imports[at(q)].owned[at(hq.send_cells[at(k)])]);
+      CHECK(received == sent);
+      received_total += received.size();
+    }
+    CHECK(received_total == imports[at(r)].parents.size());
+  }
+}
+
+TEST_CASE("A part imports its parents grouped by owning part, then by id", "[partition][graph]") {
+  // #259 D2. Part 2 owns fine nodes 4..7, children of coarse nodes owned by parts 0 and 1 whose
+  // ids interleave: coarse 0 (id 5, part 1), 1 (id 3, part 0), 2 (id 4, part 1), 3 (id 1, part
+  // 0). It imports part 0's first (ids 1, 3), then part 1's (ids 4, 5).
+  const std::vector<std::int32_t> parts{1, 0, 1, 0, 2, 2, 2, 2};
+  const std::vector<index_t> coarse{0, 1, 2, 3, 0, 1, 2, 3};
+  const std::vector<std::int32_t> cp{1, 0, 1, 0};
+  const std::vector<std::int64_t> ids{5, 3, 4, 1};
+  const auto two = autan::parent_import(parts, coarse, cp, ids, 3, 2);
+  CHECK(two.owned.empty());
+  CHECK(two.parents == std::vector<index_t>{3, 1, 2, 0});
+  CHECK(two.halo.neighbours == std::vector<std::int32_t>{0, 1});
+  CHECK(two.halo.recv_offsets == std::vector<index_t>{0, 2, 4});
+  // Each owner sends its nodes in part 2's order: part 0 owns coarse 3 and 1 (local 0 and 1 in
+  // increasing id), part 1 owns coarse 2 and 0 (local 0 and 1).
+  for (const std::int32_t owner : {0, 1}) {
+    const auto im = autan::parent_import(parts, coarse, cp, ids, 3, owner);
+    CHECK(im.owned == (owner == 0 ? std::vector<index_t>{3, 1} : std::vector<index_t>{2, 0}));
+    CHECK(im.halo.neighbours == std::vector<std::int32_t>{2});
+    CHECK(im.halo.send_cells == std::vector<index_t>{0, 1});
+  }
+}
+
+TEST_CASE("A part that owns no coarse node still imports its parents", "[partition][graph]") {
+  // #259 D2. Four fine nodes, one coarse node whose least child is on part 0: part 1 owns none
+  // of the coarse level and imports node 0 from part 0.
+  const std::vector<std::int32_t> parts{0, 0, 1, 1};
+  const std::vector<index_t> coarse{0, 0, 0, 0};
+  const std::vector<std::int32_t> cp{0};
+  const std::vector<std::int64_t> ids{0};
+  const auto one = autan::parent_import(parts, coarse, cp, ids, 2, 1);
+  CHECK(one.owned.empty());
+  CHECK(one.parents == std::vector<index_t>{0});
+  CHECK(one.halo.neighbours == std::vector<std::int32_t>{0});
+  CHECK(one.halo.recv_offsets == std::vector<index_t>{0, 1});
+  const auto zero = autan::parent_import(parts, coarse, cp, ids, 2, 0);
+  CHECK(zero.owned == std::vector<index_t>{0});
+  CHECK(zero.parents.empty());
+  CHECK(zero.halo.send_cells == std::vector<index_t>{0});
+  for (const std::int32_t wrong : {-1, 2}) {
+    require_error(autan::ErrorCode::partition_invalid_request,
+                  [&] { (void)autan::parent_import(parts, coarse, cp, ids, 2, wrong); });
+    auto bad = cp;
+    bad.front() = wrong;
+    require_error(autan::ErrorCode::partition_invalid_request,
+                  [&] { (void)autan::parent_import(parts, coarse, bad, ids, 2, 0); });
+  }
+  require_error(autan::ErrorCode::partition_invalid_request, [&] {
+    (void)autan::parent_import(parts, std::vector<index_t>{0, 0, 0, 1}, cp, ids, 2, 0);
+  });
+}
+
 TEST_CASE("Greedy colouring visits nodes by increasing global id", "[partition][colour]") {
   using autan::offset_t;
   // A path 0-1-2-3 with ids 3, 2, 1, 0: visited 3, 2, 1, 0, so colours alternate from node 3.
