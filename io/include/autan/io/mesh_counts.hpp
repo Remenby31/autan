@@ -4,6 +4,7 @@
 #include <optional>
 
 #include "autan/core/geometry.hpp"
+#include "autan/core/ghost_stencil.hpp"
 #include "autan/core/mesh.hpp"
 #include "autan/io/mesh_info.hpp"
 
@@ -40,8 +41,11 @@ struct RanksRequest {
 /// - with `ranks`, the partition of a run on that many ranks: the run's METIS
 ///   partition (cell_cost_weights, its groups kept whole), and each rank's owned
 ///   cells, ghost cells, faces, interior faces, face2 stencil entries and the three ring counts.
-/// Throws as partition_cells for an invalid rank count (E0140 to E0143).
+/// Every partition holds the ghosts of `ghosts`, face2 or vertex, the stencil the run's physics
+/// declares. Throws as partition_cells for an invalid rank count (E0140 to E0143), and E0148 as
+/// extract_partition.
 MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
-                       std::optional<RanksRequest> ranks = std::nullopt);
+                       std::optional<RanksRequest> ranks = std::nullopt,
+                       GhostStencil ghosts = GhostStencil::face2);
 
 }  // namespace autan::io
