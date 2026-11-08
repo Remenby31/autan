@@ -1405,14 +1405,17 @@ TEST_CASE("Navier-Stokes on several ranks gives the one-rank solution bit for bi
   same_arrays(one.run, many);
   if (steady && ranks == 4 && std::string(model) == "sa" && std::string(linear) == "gauss-seidel") {
     // Written on 2 ranks after the switch to second order, continued on 4: the restart state
-    // carries SA's variable and the switch, so the two runs are the uninterrupted one, with
-    // no stop on the residual orders, past step 300.
+    // carries SA's variable and the switch, so the two runs are the uninterrupted one. 340 steps,
+    // before any stop: the orders are out of reach, and a continued run counts its round-off
+    // plateau from its own first iteration (case-schema.md#time), which ends the uninterrupted
+    // fp32+acc64 run at 379 and not the continued one.
     Json whole_doc = doc;
     whole_doc["time"]["residual_orders"] = 30.0;
+    whole_doc["time"]["max_iterations"] = 340;
     const auto whole = run(whole_doc);
     INFO(whole.err);
     REQUIRE(whole.status == ExitStatus::finished);
-    REQUIRE(history(whole.run).size() > 300);
+    REQUIRE(history(whole.run).size() == 340);
     Json first_doc = whole_doc;
     first_doc["time"]["max_iterations"] = 300;
     const fs::path first = run_on_ranks(first_doc, 2);
