@@ -3339,9 +3339,12 @@ TEST_CASE("A physics' warning reaches run.json and log.jsonl", "[runtime]") {
   const Outcome o = run(input(), options);
   REQUIRE(o.status == ExitStatus::finished);
   const Json info = Json::parse(read(o.run / "run.json"));
-  REQUIRE(info["diagnostics"].size() == 1);
-  CHECK(info["diagnostics"][0]["code"] == "W0717");
-  CHECK(info["diagnostics"][0]["data"]["source"] == "relaxation");
+  std::vector<Json> listed;
+  for (const auto& d : info["diagnostics"]) {
+    if (d["code"] == "W0717") listed.push_back(d);
+  }
+  REQUIRE(listed.size() == 1);
+  CHECK(listed[0]["data"]["source"] == "relaxation");
   std::vector<Json> warnings;
   std::ifstream in(o.run / "log.jsonl");
   for (std::string line; std::getline(in, line);) {
@@ -3374,6 +3377,20 @@ TEST_CASE("Several ranks record a physics' warning once, rank 0's, and log every
   }
   std::ranges::sort(logged);
   CHECK(logged == std::vector<int>{0, 1});
+
+  // The failed run.json of a run whose rank 1 fails after the warning, written by that rank, lists
+  // the warning too.
+  const Json failed = Json::parse(read(
+      run_on_ranks(input(), ranks,
+                   {"AUTAN_TEST_WARN=1", "AUTAN_TEST_THROW_AT=1", "AUTAN_TEST_THROW_RANK=1"}, 1) /
+      "run.json"));
+  CHECK(failed["status"] == "failed");
+  auto has = [&](const char* code) {
+    return std::ranges::count_if(failed["diagnostics"],
+                                 [&](const Json& d) { return d["code"] == code; }) == 1;
+  };
+  CHECK(has("W0717"));
+  CHECK(has("E0704"));
 }
 
 TEST_CASE("The ranks of a host share its memory", "[runtime][mpi]") {
