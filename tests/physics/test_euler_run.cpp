@@ -17,8 +17,10 @@
 #include <random>
 #include <ranges>
 #include <set>
+#include <span>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -472,16 +474,20 @@ TEST_CASE("a continued steady run ends its first-order start where the uninterru
   // results.md: a `continue` run gives the uninterrupted run's history, bit for bit. A uniform
   // flow's first-order drop is round-off, so its first-order start ends on its stall
   // (euler.md#time-stepping), about 100 steps in: a continuation from iteration 60 must carry
-  // that count over.
-  auto doc = input("hybrid.solver-input.json", [](Json& d) {
-    inviscid_along_x(d, "fp64");
-    d["time"]["max_iterations"] = 200;
+  // that count over. In fp32+acc64 the start's window of 100 residuals (#611) crosses the restart:
+  // partly filled at 60, one short of full at 99 (the start ends at 100), after the switch at 150.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  const int split = GENERATE(60, 99, 150);
+  CAPTURE(precision, split);
+  auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, precision);
+    d["time"]["max_iterations"] = 250;
   });
   const auto whole = run(doc);
   INFO(whole.err);
   REQUIRE(whole.status == ExitStatus::finished);
   auto part = doc;
-  part["time"]["max_iterations"] = 60;
+  part["time"]["max_iterations"] = split;
   const auto first = run(part);
   REQUIRE(first.status == ExitStatus::finished);
   auto rest = doc;
@@ -501,11 +507,18 @@ TEST_CASE("a continued steady run ends its first-order start where the uninterru
 
 TEST_CASE("the history marks provisional exactly the steps of the first-order start", "[euler]") {
   // results.md#history: a steady line carries `provisional`, true for the first-order start's
-  // steps (euler.md#time-stepping). A uniform flow's start ends on its stall, before the cap, and
-  // the stalling step is not counted by FirstOrderStart: n < 201 marked lines, a prefix, and
-  // n - 1 counted steps in the restart state, second order on.
-  const auto out = run(input("hybrid.solver-input.json", [](Json& d) {
-    inviscid_along_x(d, "fp64");
+  // steps (euler.md#time-stepping). In fp64 a uniform flow's start ends on its stall, before the
+  // cap, and the stalling step is not counted by FirstOrderStart: n < 201 marked lines, a prefix,
+  // and n - 1 counted steps in the restart state, second order on. In fp32+acc64 the level rule
+  // (#611, design revision 2) cannot end the start before its window of 100 residuals is full, and
+  // ends it at the first full window if every watched level is within 10 floors. That this
+  // fixture's round-off residuals are within the band from the first step is observed, not
+  // derived: the step-100 expectation is a regression guard on that observation.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  const bool fp64 = std::string_view(precision) == "fp64";
+  CAPTURE(precision);
+  const auto out = run(input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, precision);
     d["time"]["max_iterations"] = 250;
   }));
   INFO(out.err);
@@ -518,8 +531,11 @@ TEST_CASE("the history marks provisional exactly the steps of the first-order st
   REQUIRE(marked < lines.size());
   CHECK(field(out.run, "SolverSecondOrder", "RestartState").front() == 1.0);
   const double counted = field(out.run, "SolverFirstOrderSteps", "RestartState").front();
-  CHECK(marked < 201);
-  CHECK(counted == static_cast<double>(marked - 1));
+  CHECK(marked <= 201);
+  if (fp64) {
+    CHECK(marked < 201);
+    CHECK(counted == static_cast<double>(marked - 1));
+  }
   // The log names the rule that ended the start, once, at its last step.
   std::vector<Json> ends;
   std::istringstream log(read(out.run / "log.jsonl"));
@@ -531,7 +547,12 @@ TEST_CASE("the history marks provisional exactly the steps of the first-order st
     }
   }
   REQUIRE(ends.size() == 1);
-  CHECK(ends.front()["data"]["rule"] == "stall");
+  if (fp64) {
+    CHECK(ends.front()["data"]["rule"] == "stall");
+  } else {
+    CHECK(ends.front()["data"]["rule"] == "level");
+    CHECK(marked == 100);
+  }
   CHECK(ends.front()["iteration"] == marked);
   // Unsteady lines leave it out.
   const auto steps = run(input("hybrid.solver-input.json", [](Json& d) {
@@ -2564,4 +2585,104 @@ TEST_CASE("the first-order start ends with its 201st step or earlier on a drop o
   CHECK(ends_with([](int) { return 0.5; }) == std::pair{101, End::stall});
   // Three orders down at once.
   CHECK(ends_with([](int) { return 1e-4; }) == std::pair{1, End::drop});
+}
+
+TEST_CASE("in fp32+acc64 the first-order start ends where its residual level crosses the band",
+          "[euler]") {
+  // euler.md#time-stepping, #611: the level of each watched equation is the median of its last
+  // 100 residuals (the mean of the two middle ones); the start ends at the first step whose
+  // levels are all at most 10 floors, after a full window, or on three orders, or at the 201st.
+  using autan::physics::FirstOrderStart;
+  using End = FirstOrderStart::End;
+  constexpr std::array<double, 5> floors{1.0, 1.0, 1.0, 1.0, 1.0};
+  // Residuals r(step) on every equation; the drop is r(step) / r(1), or 0.5 where the test is
+  // about the level alone.
+  const auto ends_with = [&](const auto& r, std::span<const double> fl, bool drops = true) {
+    FirstOrderStart start(true);
+    for (int step = 1; step <= 1000; ++step) {
+      std::array<double, 5> res{};
+      res.fill(r(step));
+      const double drop = drops ? r(step) / r(1) : 0.5;
+      if (start.ends_after(drop, res, fl)) return std::pair{step, start.end()};
+    }
+    return std::pair{0, start.end()};
+  };
+  // A falling curve, 1000 x 0.95^step. Over the last 100 steps the two middle values are those
+  // of steps n - 49 and n - 50, so the level of step n is 1000 x 0.95^(n - 50) (1 + 0.95) / 2:
+  // the crossing is the first n >= 100 where that is at most 10 (n = 140).
+  const auto curve = [](int step) { return 1000.0 * std::pow(0.95, step); };
+  int crossing = 100;
+  while (1000.0 * std::pow(0.95, crossing - 50) * (1.0 + 0.95) / 2.0 > 10.0) ++crossing;
+  REQUIRE(crossing > 100);
+  REQUIRE(crossing < 201);
+  CHECK(ends_with(curve, floors, false) == std::pair{crossing, End::level});
+  // The same curve with 1 % noise, two seeds: the crossing moves by at most one step, the curve
+  // falling 5 % a step.
+  for (const unsigned seed : {1u, 2u}) {
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<double> noise(-0.01, 0.01);
+    std::vector<double> factor(1001);
+    for (double& f : factor) f = 1.0 + noise(rng);
+    const auto [step, end] = ends_with(
+        [&](int k) { return curve(k) * factor[static_cast<std::size_t>(k)]; }, floors, false);
+    CHECK(end == End::level);
+    CHECK(std::abs(step - crossing) <= 1);
+  }
+  // A residual that grazes the band from above, or stalls far above it: the 201st, where fp64
+  // stalls at 101.
+  CHECK(ends_with([](int) { return 10.5; }, floors) == std::pair{201, End::cap});
+  CHECK(ends_with([](int) { return 50.0; }, floors) == std::pair{201, End::cap});
+  // Below the band from the start: the window must fill first, so the 100th.
+  CHECK(ends_with([](int k) { return 5.0 + 1e-3 * k; }, floors) == std::pair{100, End::level});
+  // No equation watched: never on the level.
+  constexpr std::array<double, 5> none{};
+  CHECK(ends_with(curve, none, false) == std::pair{201, End::cap});
+  // The level is the mean of the two middle values: 50 values of 8 and 50 of 12 give 10, within
+  // the band of 10 floors (inclusive), at the 100th; the upper middle value alone, 12, would not.
+  CHECK(ends_with([](int k) { return k % 2 == 0 ? 8.0 : 12.0; }, floors, false) ==
+        std::pair{100, End::level});
+  // Every watched equation must be in the band, and an unwatched one is left out: equations with
+  // their own residuals and floors.
+  const auto mixed = [&](const std::array<double, 5>& scale, const std::array<double, 5>& fl) {
+    FirstOrderStart start(true);
+    for (int step = 1; step <= 1000; ++step) {
+      std::array<double, 5> res{};
+      for (std::size_t k = 0; k < 5; ++k) res[k] = scale[k] * curve(step);
+      if (start.ends_after(0.5, res, fl)) return std::pair{step, start.end()};
+    }
+    return std::pair{0, start.end()};
+  };
+  // Energy 1000 times higher than its floor allows: never in the band, so the 201st.
+  CHECK(mixed({1, 1, 1, 1, 1000}, floors) == std::pair{201, End::cap});
+  // The same energy, not watched: the others cross at their own step.
+  CHECK(mixed({1, 1, 1, 1, 1000}, {1, 1, 1, 1, 0}) == std::pair{crossing, End::level});
+  // Each equation against its own floor: residuals and floors scaled together cross together.
+  CHECK(mixed({1, 2, 3, 4, 5}, {1, 2, 3, 4, 5}) == std::pair{crossing, End::level});
+  // Three orders first.
+  CHECK(ends_with([](int k) { return k == 1 ? 1.0 : 1e-4; }, floors) == std::pair{2, End::drop});
+  // A start restored from a window that has rolled over (150 samples) goes on as the original:
+  // the curve 1000 x 0.97^step crosses later than its window's first fill.
+  const auto slow = [](int step) { return 1000.0 * std::pow(0.97, step); };
+  FirstOrderStart whole(true), part(true);
+  int ended = 0;
+  for (int step = 1; step <= 150; ++step) {
+    std::array<double, 5> res{};
+    res.fill(slow(step));
+    REQUIRE_FALSE(whole.ends_after(0.5, res, floors));
+    REQUIRE_FALSE(part.ends_after(0.5, res, floors));
+  }
+  FirstOrderStart restored(true);
+  restored.restore(part.state());
+  restored.restore_window(part.window_state());
+  for (int step = 151; step <= 1000 && ended == 0; ++step) {
+    std::array<double, 5> res{};
+    res.fill(slow(step));
+    const bool a = whole.ends_after(0.5, res, floors);
+    const bool b = restored.ends_after(0.5, res, floors);
+    CHECK(a == b);
+    if (a) ended = step;
+  }
+  CHECK(ended > 150);
+  CHECK(restored.end() == whole.end());
+  CHECK(restored.window_state() == whole.window_state());
 }
