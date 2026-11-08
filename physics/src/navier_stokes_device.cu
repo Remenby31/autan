@@ -122,6 +122,9 @@ class NavierStokesStepper final : public device::CudaStepper<P> {
                                  std::span<double> /*dres*/) override {
     throw std::logic_error("the Navier-Stokes physics has no device Jacobian");
   }
+  std::vector<double> evaluate_jacobian() override {
+    throw std::logic_error("the Navier-Stokes physics has no device Jacobian");
+  }
 
  private:
   // NavierStokes<P>::residual after the Euler residual: under the quadratic fit the linear

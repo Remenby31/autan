@@ -2139,7 +2139,11 @@ TEST_CASE("a point vortex takes the viscous lift of its walls", "[navier-stokes]
 #ifdef AUTAN_PHYSICS_CUDA
 namespace {
 
-void on_device(Json& d) { d["devices"] = {{"kind", "cuda"}, {"count", 1}}; }
+// On a device a steady case takes the implicit step with the `lines` solver (E0716 otherwise).
+void on_device(Json& d) {
+  d["devices"] = {{"kind", "cuda"}, {"count", 1}};
+  if (d["time"]["kind"] == "steady") d["time"]["linear_solver"] = "lines";
+}
 
 }  // namespace
 
@@ -2188,8 +2192,9 @@ TEST_CASE("on a device, checkpoints change no Euler result", "[euler][gpu]") {
 
 TEST_CASE("on a device, a verification case converges to the host's discrete solution",
           "[euler][gpu]") {
-  // The device steps explicitly (local time steps), the host implicitly: both converge to the same
-  // discrete solution. fp64: they differ by at most 1e-3 times its discretisation error, per field
+  // The device takes the implicit step with the `lines` solver, the host with the multigrid: both
+  // converge to the same discrete solution. fp64: they differ by at most 1e-3 times its
+  // discretisation error, per field
   // in the volume-weighted L2 norm. fp32+acc64: they agree as fp32+acc64 agrees with fp64
   // (docs/validation/acceptance.md, FP32 conventions: L2 difference over the field's scale, the
   // RMS speed for velocity components, at most 500 x 2^-23).
@@ -2198,7 +2203,7 @@ TEST_CASE("on a device, a verification case converges to the host's discrete sol
   auto doc = [&](bool device) {
     return input("hybrid-verification.solver-input.json", [&](Json& d) {
       d["precision"] = precision;
-      d["time"]["max_iterations"] = device ? 200000 : 20000;
+      d["time"]["max_iterations"] = 20000;
       d["time"]["residual_orders"] = precision == "fp64" ? 10.0 : 5.0;
       if (device) on_device(d);
     });
@@ -2209,17 +2214,20 @@ TEST_CASE("on a device, a verification case converges to the host's discrete sol
   REQUIRE(host.status == ExitStatus::finished);
   REQUIRE(dev.status == ExitStatus::finished);
   CHECK(Json::parse(read(dev.run / "run.json"))["status"] == "converged");
-  // The device run sets up no host linear solver (no BlockMatrix, no multigrid); the host run does.
-  auto linear_events = [](const fs::path& run) {
-    int count = 0;
+  // The device run solves with the line-implicit solver on the device.
+  auto device_lines = [](const fs::path& run) {
     std::istringstream lines(read(run / "log.jsonl"));
     for (std::string line; std::getline(lines, line);) {
-      if (!line.empty() && Json::parse(line)["source"] == "linear") ++count;
+      if (line.empty()) continue;
+      const auto event = Json::parse(line);
+      if (event["source"] == "linear" && event["data"].value("device", false)) {
+        return true;
+      }
     }
-    return count;
+    return false;
   };
-  CHECK(linear_events(host.run) > 0);
-  CHECK(linear_events(dev.run) == 0);
+  CHECK(device_lines(dev.run));
+  CHECK(!device_lines(host.run));
   const auto mesh = autan::io::read_mesh(mesh_path);
   const auto g = autan::compute_geometry(mesh);
   const auto n = static_cast<std::size_t>(mesh.n_cells());
@@ -2351,16 +2359,19 @@ TEST_CASE("on a device, what the device steps cannot honour is refused before an
           "[euler][gpu]") {
   // The device steps take no circulation from the lift (the host's steady step measures it), so a
   // point vortex on a device would keep its initial circulation: E0706, not a silent mismatch.
-  // They sum in local order, so reproducibility "ranks" is E1109.
-  const bool vortex = GENERATE(true, false);
-  CAPTURE(vortex);
+  // They sum in local order, so reproducibility "ranks" is E1109. A steady case has the implicit
+  // step with the `lines` solver only, on one rank without periodic pairs: E0716 otherwise.
+  enum class Case { vortex, ranks, multigrid, periodic };
+  const auto c = GENERATE(Case::vortex, Case::ranks, Case::multigrid, Case::periodic);
+  CAPTURE(static_cast<int>(c));
+  const bool vortex = c == Case::vortex;
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     inviscid_along_x(d, "fp64");
+    if (c == Case::periodic) periodic_box(d, "fp64");
     on_device(d);
-    if (!vortex) {
-      d["reproducibility"] = "ranks";
-      return;
-    }
+    if (c == Case::multigrid) d["time"]["linear_solver"] = "multigrid";
+    if (c == Case::ranks) d["reproducibility"] = "ranks";
+    if (!vortex) return;
     for (auto& b : d["boundaries"]) {
       if (b["zone"] == "zmin") {
         b["kind"] = "slip";
@@ -2376,9 +2387,25 @@ TEST_CASE("on a device, what the device steps cannot honour is refused before an
   CHECK(out.status == ExitStatus::invalid_input);
   CHECK(!fs::exists(out.runs));
   const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
-  CHECK(diagnostic["code"] == (vortex ? "E0706" : "E1109"));
-  CHECK(diagnostic["location"]["path"].get<std::string>().ends_with(vortex ? ".point_vortex"
-                                                                           : "reproducibility"));
+  const auto path = diagnostic["location"]["path"].get<std::string>();
+  switch (c) {
+    case Case::vortex:
+      CHECK(diagnostic["code"] == "E0706");
+      CHECK(path.ends_with(".point_vortex"));
+      break;
+    case Case::ranks:
+      CHECK(diagnostic["code"] == "E1109");
+      CHECK(path.ends_with("reproducibility"));
+      break;
+    case Case::multigrid:
+      CHECK(diagnostic["code"] == "E0716");
+      CHECK(path.ends_with("linear_solver"));
+      break;
+    case Case::periodic:
+      CHECK(diagnostic["code"] == "E0716");
+      CHECK(path.ends_with("periodic"));
+      break;
+  }
 }
 
 TEST_CASE("on a device, a diverged run names the cell whose stored state is not physical",

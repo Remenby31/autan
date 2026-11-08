@@ -286,9 +286,14 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     # The peak: every persistent component and the largest transient one.
     persistent = sum(c.bytes_host for c in cpu.components if not c.transient)
     assert cpu.bytes_host == persistent + max(c.bytes_host for c in cpu.components if c.transient)
-    # A device run solves explicitly: no Jacobian or linear solver, the state on the device.
+    # A viscous device run solves explicitly: no Jacobian or linear solver, the state on the
+    # device. An inviscid one with `lines` takes the implicit step there.
     cuda = memory(device_kind="cuda")
     assert not names(cuda) & {"jacobian", "multigrid", "boundary state tangent"}
+    inviscid_lines = inviscid + "case.time = autan.Steady(linear_solver='lines')\n"
+    implicit = memory(inviscid_lines, device_kind="cuda")
+    assert "device implicit step" in names(implicit)
+    assert implicit.bytes_device > memory(inviscid, device_kind="cuda").bytes_device
     assert cuda.bytes_device > 0
     # The device frees nothing before the iterations: its components add up, all of them.
     on_device = [c.bytes_device for c in cuda.components if c.bytes_device]
