@@ -732,6 +732,46 @@ void unsteady_through_pairs(Json& d, int steps) {
 
 }  // namespace
 
+TEST_CASE("a case runs the convective flux its physics names", "[euler]") {
+  // case-schema.md#physics: `flux` picks Roe, HLLC or AUSM+-up. The fluxes differ wherever the
+  // flow is not uniform, so each gives its own residuals from the second step on.
+  const auto residuals = [](const std::string& flux) {
+    const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+      inviscid_along_x(d, "fp64");
+      d["physics"]["flux"] = flux;
+      d["time"]["max_iterations"] = 3;
+      // One zone at 1.3 times the freestream's pressure and density: not a uniform flow.
+      for (const char* key : {"pressure", "density"}) {
+        auto& v = d["cell_zones"][1]["initial"][key];
+        v = 1.3 * v.get<double>();
+      }
+    });
+    const auto out = run(doc);
+    INFO(flux << " " << out.err);
+    REQUIRE(out.status == ExitStatus::finished);
+    std::vector<Json> steps;
+    for (const auto& line : history(out.run)) steps.push_back(line["residuals"]);
+    return steps;
+  };
+  const auto roe = residuals("roe");
+  const auto hllc = residuals("hllc");
+  const auto ausm = residuals("ausm+up");
+  REQUIRE(roe.size() == 3);
+  CHECK(roe.back() != hllc.back());
+  CHECK(roe.back() != ausm.back());
+  CHECK(hllc.back() != ausm.back());
+  CHECK(residuals("hllc") == hllc);
+  // Any other value is an invalid document at `physics.flux`.
+  const auto out = run(input("hybrid.solver-input.json", [](Json& d) {
+    inviscid_along_x(d, "fp64");
+    d["physics"]["flux"] = "jst";
+  }));
+  CHECK(out.status == ExitStatus::invalid_input);
+  const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
+  CHECK(diagnostic["code"] == "E0705");
+  CHECK(diagnostic["location"]["path"] == "physics.flux");
+}
+
 TEST_CASE("steady cases the steady solver cannot run are refused before any directory exists",
           "[euler]") {
   // The multigrid agglomerates one mesh's cells and takes no image ghosts: E0706 at

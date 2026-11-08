@@ -510,7 +510,10 @@ class EulerPhysics final : public runtime::Physics {
     const double c = std::sqrt(*in.cell_zones.front().medium.gamma * f.pressure / f.density);
     const double speed = std::max(f.speed, c);
     Scheme s;
-    s.flux = Flux::roe;
+    s.flux = in.flux == "hllc"      ? Flux::hllc
+             : in.flux == "ausm+up" ? Flux::ausm_up
+             : in.flux == "roe"     ? Flux::roe
+                                    : throw std::invalid_argument("unknown flux '" + in.flux + "'");
     // A manufactured solution is smooth by construction: verification measures the design
     // order of the unlimited scheme (docs/design/euler.md, Limiter and verification).
     s.limiter = !in.verification.has_value();

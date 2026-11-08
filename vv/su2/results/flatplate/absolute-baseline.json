@@ -1,0 +1,384 @@
+{
+  "schema": "autan.su2-flatplate/1",
+  "orders": 10.0,
+  "models": {
+    "sa-noft2": {
+      "levels": [
+        {
+          "grid": "35x25",
+          "cells": 816,
+          "converged": true,
+          "iterations": 703,
+          "last_iteration": 2985,
+          "drop": {
+            "density": 11.754246827000001,
+            "momentum-x": 11.216247465399999,
+            "momentum-z": 11.921812066000001,
+            "energy": 11.782520565,
+            "nu-tilde": 10.011902494000001
+          },
+          "cd": 0.002805294894,
+          "cf": 0.0027005692880109336,
+          "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+          "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+          "precision": "fp64",
+          "case_sha256": "93e3eb71ceee0c51a1b0401b14f312f4229aa55a4a48a33f375fd81d2f92fb01",
+          "mesh_sha256": "fcc48ec6866e10e5f7d6318dc78df42d64ddcc35e7b5347a8926c5472839b480",
+          "source_sha256": "41c409f49afca8affaafd4a0a49c6ba934eca9007da502fe0c20afbd091500b0",
+          "absolute": {
+            "converged": true,
+            "iterations": 980,
+            "epsilon": 2.492107879252615e-10
+          },
+          "amended": {
+            "converged": true,
+            "iterations": 703,
+            "reference": {
+              "case_sha256": "e98dbcffc739c51e9ed3d6337b13555146e7446ec311c118c1649a2649033037",
+              "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+              "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+              "history_sha256": "262afc90082035784e9b2d83636100a2118e1e86ca47c87baff793222dc72852",
+              "iteration": 702,
+              "thresholds": {
+                "density": 7.416711570443466e-14,
+                "momentum-x": 5.446889814628706e-11,
+                "momentum-z": 1.2436790253145433e-11,
+                "energy": 2.051707740862462e-08,
+                "nu-tilde": 2.496898393911647e-15
+              }
+            }
+          },
+          "gap": {
+            "CFL3D": {
+              "cf": -0.034022355618489986,
+              "cd": -0.05046288876055516
+            },
+            "FUN3D": {
+              "cf": 0.012443513266364281,
+              "cd": 0.01133290985590829
+            }
+          }
+        },
+        {
+          "grid": "69x49",
+          "cells": 3264,
+          "converged": true,
+          "iterations": 808,
+          "last_iteration": 4315,
+          "drop": {
+            "density": 11.217307203,
+            "momentum-x": 10.939472646099999,
+            "momentum-z": 11.4698196929,
+            "energy": 11.4865067,
+            "nu-tilde": 10.005513634
+          },
+          "cd": 0.002836048271,
+          "cf": 0.002714958716143126,
+          "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+          "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+          "precision": "fp64",
+          "case_sha256": "f01815cfae4cc9b9e78dc18d9035e6c42f31316a669d8c8647fa3dedcc1bce82",
+          "mesh_sha256": "983e6cc0a8661d04b92b7f24f3519ab63fe1dfba155646c0ef77b45794691fd0",
+          "source_sha256": "18c1d1c82cf91bdad89b2c2963129fc992fcd8b98fda4b3e79b7397ee52ba223",
+          "absolute": {
+            "converged": true,
+            "iterations": 1079,
+            "epsilon": 1.2138035358991302e-10
+          },
+          "amended": {
+            "converged": true,
+            "iterations": 808,
+            "reference": {
+              "case_sha256": "f01815cfae4cc9b9e78dc18d9035e6c42f31316a669d8c8647fa3dedcc1bce82",
+              "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+              "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+              "history_sha256": "b604cb0fd193b8925049d8f74782f9b511473d6109b8dee94fd2e9f1df6f23e1",
+              "iteration": 807,
+              "thresholds": {
+                "density": 9.31692672717113e-14,
+                "momentum-x": 3.920345111170585e-11,
+                "momentum-z": 1.2840413513340886e-11,
+                "energy": 1.478186382129558e-08,
+                "nu-tilde": 1.7586405389917328e-15
+              }
+            }
+          },
+          "gap": {
+            "CFL3D": {
+              "cf": -0.004907093564010312,
+              "cd": -0.016755974687583053
+            },
+            "FUN3D": {
+              "cf": 0.007414824525603381,
+              "cd": 0.00474990301635958
+            }
+          }
+        },
+        {
+          "grid": "137x97",
+          "cells": 13056,
+          "converged": true,
+          "iterations": 949,
+          "last_iteration": 3172,
+          "drop": {
+            "density": 11.174816664,
+            "momentum-x": 10.28186698175,
+            "momentum-z": 11.1724604174,
+            "energy": 11.176560742,
+            "nu-tilde": 10.005844387
+          },
+          "cd": 0.002850230411,
+          "cf": 0.0027190881395377895,
+          "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+          "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+          "precision": "fp64",
+          "case_sha256": "0cd835ff5c7e16f894c6838e977aed66884c48eeacec49bdb31c1225cdf46a35",
+          "mesh_sha256": "410003c8a7476e029e7f12203c09961fce34c788a85916a2d65ac22f43660d85",
+          "source_sha256": "55ae965f2151e5644e3c7c1b6fecea7ce0a16cf4c34eae6997f27683a4e2ac44",
+          "absolute": {
+            "converged": true,
+            "iterations": 1064,
+            "epsilon": 4.070779307816253e-10
+          },
+          "amended": {
+            "converged": true,
+            "iterations": 949,
+            "reference": {
+              "case_sha256": "0cd835ff5c7e16f894c6838e977aed66884c48eeacec49bdb31c1225cdf46a35",
+              "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+              "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+              "history_sha256": "a9dd1df7ab78a68d9cdf7efdc7b32c16872cf1088859f6269c24b1544bd9930e",
+              "iteration": 948,
+              "thresholds": {
+                "density": 3.68637175624593e-14,
+                "momentum-x": 6.540769731239895e-11,
+                "momentum-z": 9.14391625713941e-12,
+                "energy": 1.0819689607007673e-08,
+                "nu-tilde": 1.2424565787790404e-15
+              }
+            }
+          },
+          "gap": {
+            "CFL3D": {
+              "cf": 0.0029273203155582017,
+              "cd": -0.005574875402411639
+            },
+            "FUN3D": {
+              "cf": 0.006266891415760867,
+              "cd": 0.003586355497888327
+            }
+          }
+        },
+        {
+          "grid": "273x193",
+          "cells": 52224,
+          "converged": true,
+          "iterations": 1694,
+          "last_iteration": 4061,
+          "drop": {
+            "density": 10.984353775,
+            "momentum-x": 10.0001151285,
+            "momentum-z": 11.0097305224,
+            "energy": 10.98881032,
+            "nu-tilde": 10.16341116
+          },
+          "cd": 0.002858512319,
+          "cf": 0.002720742769223669,
+          "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+          "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+          "precision": "fp64",
+          "case_sha256": "77d534ac3f215303e387153a13f021b1a937cfa91b7bb5873f4841902b484bcd",
+          "mesh_sha256": "275dc1368f8d5d867cc354c4312396ab2e52458dbbaff3866b50d85b61308d24",
+          "source_sha256": "40be4c0a92b75892189263a5c3efb63fa112030912480427e1e0787c6cb97955",
+          "absolute": {
+            "converged": true,
+            "iterations": 1600,
+            "epsilon": 4.4753352928897445e-11
+          },
+          "amended": {
+            "converged": true,
+            "iterations": 1694,
+            "reference": {
+              "case_sha256": "77d534ac3f215303e387153a13f021b1a937cfa91b7bb5873f4841902b484bcd",
+              "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+              "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+              "history_sha256": "cfe9ba7938a8232d4c6ee42ec404f9518fb137952b56e894c52d0359b6cde7a8",
+              "iteration": 1693,
+              "thresholds": {
+                "density": 2.0349554690738073e-14,
+                "momentum-x": 4.5083589838034196e-11,
+                "momentum-z": 4.739083273107957e-12,
+                "energy": 5.933341467843732e-09,
+                "nu-tilde": 6.127833407941397e-16
+              }
+            }
+          },
+          "gap": {
+            "CFL3D": {
+              "cf": 0.005174228855000296,
+              "cd": -0.0009775912008903598
+            },
+            "FUN3D": {
+              "cf": 0.006011503995747569,
+              "cd": 0.0037147359154867665
+            }
+          }
+        },
+        {
+          "grid": "545x385",
+          "cells": 208896,
+          "converged": true,
+          "iterations": 3458,
+          "last_iteration": 6280,
+          "drop": {
+            "density": 11.125123168,
+            "momentum-x": 10.000489495899998,
+            "momentum-z": 11.1342153314,
+            "energy": 11.047403299,
+            "nu-tilde": 10.582014417
+          },
+          "cd": 0.002863919136,
+          "cf": 0.0027215542640354725,
+          "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+          "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+          "precision": "fp64",
+          "case_sha256": "372d5ead15a5522c56984766a6fa31eec39ad0915fb7f60bd1db284c44d6420a",
+          "mesh_sha256": "9306d888b472d27c394201afbfa7b1fad520692cefe7e1e3d29b715286c6f999",
+          "source_sha256": "a2b2075ac51944ca2c845b9dfe12129337cee7abe15ec0cd77fc3576640ee889",
+          "absolute": {
+            "converged": true,
+            "iterations": 2683,
+            "epsilon": 8.725882654133877e-12
+          },
+          "amended": {
+            "converged": true,
+            "iterations": 3458,
+            "reference": {
+              "case_sha256": "372d5ead15a5522c56984766a6fa31eec39ad0915fb7f60bd1db284c44d6420a",
+              "su2": "v8.6.0 7048fd35f56d4bf52e586429d6746a36a10255f8",
+              "image_id": "sha256:e2634ed5ee5c614c6a0e912b5d94ed347fc918cfa4ac35320eb0b2ec8d87b597",
+              "history_sha256": "8a2d4c93119cbdc7f07bf0b1a3611d03dcc6b6f59ddaf7e393aa4a300ae9ec01",
+              "iteration": 3457,
+              "thresholds": {
+                "density": 5.220535580049017e-15,
+                "momentum-x": 1.607698771857269e-11,
+                "momentum-z": 1.2628588730242067e-12,
+                "energy": 1.8388807267600511e-09,
+                "nu-tilde": 1.6563475513226838e-16
+              }
+            }
+          },
+          "gap": {
+            "CFL3D": {
+              "cf": 0.005888751940657633,
+              "cd": 0.0014218409724628955
+            },
+            "FUN3D": {
+              "cf": 0.005969361224470893,
+              "cd": 0.004014114088531695
+            }
+          }
+        }
+      ],
+      "continuum": {
+        "cf": {
+          "estimate": 0.0027223353061318575,
+          "order": 1.0278545948215028,
+          "gci_fine": 9.763026204812177e-07
+        },
+        "cd": {
+          "estimate": 0.002874087047231847,
+          "order": 0.61518364898774,
+          "gci_fine": 1.2709889039808638e-05
+        }
+      },
+      "gate": {
+        "cf": {
+          "pass": false,
+          "relative": 0.006185432485163123
+        },
+        "cd": {
+          "pass": false,
+          "relative": 0.005312199528436423
+        }
+      },
+      "pass": false,
+      "amended": {
+        "continuum": {
+          "cf": {
+            "estimate": 0.0027223353061318575,
+            "order": 1.0278545948215028,
+            "gci_fine": 9.763026204812177e-07
+          },
+          "cd": {
+            "estimate": 0.002874087047231847,
+            "order": 0.61518364898774,
+            "gci_fine": 1.2709889039808638e-05
+          }
+        },
+        "gate": {
+          "cf": {
+            "pass": false,
+            "relative": 0.006185432485163123
+          },
+          "cd": {
+            "pass": false,
+            "relative": 0.005312199528436423
+          }
+        },
+        "pass": false
+      },
+      "absolute": {
+        "continuum": {
+          "cf": {
+            "estimate": 0.0027223353061318575,
+            "order": 1.0278545948215028,
+            "gci_fine": 9.763026204812177e-07
+          },
+          "cd": {
+            "estimate": 0.002874087047231847,
+            "order": 0.61518364898774,
+            "gci_fine": 1.2709889039808638e-05
+          }
+        },
+        "gate": {
+          "cf": {
+            "pass": false,
+            "relative": 0.006185432485163123
+          },
+          "cd": {
+            "pass": false,
+            "relative": 0.005312199528436423
+          }
+        },
+        "pass": false
+      }
+    }
+  },
+  "references": {
+    "CFL3D": {
+      "cf": {
+        "estimate": 0.0027052439493453558,
+        "order": 1.9838797536101658,
+        "gci_fine": 4.71975818305278e-07
+      },
+      "cd": {
+        "estimate": 0.0028592366289197303,
+        "order": 1.7500471768149262,
+        "gci_fine": 7.703138503367965e-07
+      }
+    },
+    "FUN3D": {
+      "cf": {
+        "estimate": 0.0027060046668089996,
+        "order": 1.3411017732433166,
+        "gci_fine": 7.499260515243229e-07
+      },
+      "cd": {
+        "estimate": 0.002858607214797135,
+        "order": 0.7982389114357564,
+        "gci_fine": 7.672768496418893e-06
+      }
+    }
+  }
+}
