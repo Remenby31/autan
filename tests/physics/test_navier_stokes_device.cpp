@@ -137,6 +137,35 @@ struct Problem {
   Problem(const Problem&) = delete;
   Problem& operator=(const Problem&) = delete;
 
+  // Farfield on xmin (the flow's state as the freestream) and a subsonic inlet on zmin (total
+  // pressure and temperature of the flow's state there): the conditions whose boundary states
+  // call exp and log. ymin becomes slip: a wall beside them can leave the viscous boundary fit
+  // undetermined, and walls are criterion 1's.
+  void farfield_and_inlet() {
+    const double cp = air.gamma * air.gas_constant / (air.gamma - 1.0);
+    for (std::size_t b = 0; b < nb; ++b) {
+      const auto f = ni + b;
+      const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[f])].name;
+      const auto w = flow(g.face_centroid_x[f], g.face_centroid_y[f], g.face_centroid_z[f]);
+      std::array<double, 5> d = w;
+      if (zone == "ymin") {
+        kind[b] = BoundaryKind::slip;
+        continue;
+      }
+      if (zone == "xmin") {
+        kind[b] = BoundaryKind::farfield;
+      } else if (zone == "zmin") {
+        kind[b] = BoundaryKind::inlet;
+        const double t_static = w[4] / (w[0] * air.gas_constant);
+        const double t0 = t_static + (w[1] * w[1] + w[2] * w[2] + w[3] * w[3]) / (2.0 * cp);
+        d = {w[4] * std::pow(t0 / t_static, air.gamma / (air.gamma - 1.0)), t0, 0.0, 0.0, 0.0};
+      } else {
+        continue;
+      }
+      for (std::size_t k = 0; k < 5; ++k) data[k * nb + b] = d[k];
+    }
+  }
+
   autan::Mesh mesh;
   autan::Geometry g;
   std::size_t n, ni, nb;
@@ -400,4 +429,280 @@ TEMPLATE_TEST_CASE("the device's Spalart-Allmaras residual and eddy viscosity ma
   INFO("flow residual with the eddy viscosity: " << differ << " of " << 5 * n
                                                  << " differ, by at most " << ulps << " ulp");
   CHECK(differ == 0);
+}
+
+TEMPLATE_TEST_CASE("the device's residual with farfield and inlet faces stays within #586's bound",
+                   "[navier-stokes][gpu]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // #586, criterion 2(b), as revised on 2026-11-08 before any device comparison: farfield_state
+  // and inlet_state call exp and log, whose last bits differ between glibc and libdevice. Each
+  // boundary state then differs by at most 32 (1 + L) eps_C |w_b|, L the largest |log| of the
+  // densities and temperature ratios involved. It reaches the residual through its own face
+  // (gain 1), the reconstructed face values (gain G, the stencils' row sum) and the viscous
+  // gradients (gain G_v), each face flux Lipschitz with a constant <= 2 (a stated hypothesis,
+  // supported below from the data side): |R_dev - R_host| <= 64 (1 + L) eps_C A_i
+  // [f_k max(1, G) + f^v_k G_v] per cell and component. G and G_v come from the host's weights
+  // and geometry and are reported.
+  using P = TestType;
+  const Source source = GENERATE(from_range(sources));
+  const auto flux = GENERATE(Flux::roe, Flux::hllc, Flux::ausm_up);
+  const auto fit = GENERATE(GradientFit::linear, GradientFit::quadratic);
+  CAPTURE(name_of(source), static_cast<int>(flux), static_cast<int>(fit));
+  Problem pb(source, flux, true, fit, 300.0);
+  pb.farfield_and_inlet();
+  const auto n = pb.n;
+  const auto& g = pb.g;
+  const auto& mesh = pb.mesh;
+
+  // f_k: the face flux magnitude of the reference state (as the Euler device test); f^v_k:
+  // mu_max q_ref / l_min for momentum, mu_max q_ref^2 / l_min + k_max dT / l_min for energy,
+  // l_min the shortest centroid-to-centroid or centroid-to-face distance, dT the range of T.
+  const auto ref = flow(0.5, 0.5, 0.5);
+  const double c_ref = std::sqrt(air.gamma * ref[4] / ref[0]);
+  const double q = std::hypot(ref[1], ref[2], ref[3]) + c_ref;
+  const double h = c_ref * c_ref / (air.gamma - 1.0) + 0.5 * std::pow(q - c_ref, 2);
+  std::array<double, 5> f_k{ref[0] * q, ref[0] * q * q, ref[0] * q * q, ref[0] * q * q,
+                            ref[0] * h * q};
+  double t_min = std::numeric_limits<double>::infinity(), t_max = 0.0, big_l = 0.0;
+  auto temperature = [&](const std::array<double, 5>& w) {
+    return w[4] / (w[0] * air.gas_constant);
+  };
+  for (std::size_t c = 0; c < n; ++c) {
+    const auto w = flow(g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]);
+    t_min = std::min(t_min, temperature(w));
+    t_max = std::max(t_max, temperature(w));
+    big_l = std::max(big_l, std::abs(std::log(w[0])));
+  }
+  for (std::size_t b = 0; b < pb.nb; ++b) {
+    const auto f = pb.ni + b;
+    const auto w = flow(g.face_centroid_x[f], g.face_centroid_y[f], g.face_centroid_z[f]);
+    if (pb.kind[b] == BoundaryKind::farfield) big_l = std::max(big_l, std::abs(std::log(w[0])));
+    if (pb.kind[b] == BoundaryKind::inlet) {
+      big_l = std::max(big_l, std::abs(std::log(temperature(w) / pb.data[pb.nb + b])));
+    }
+  }
+  const auto& tr = pb.t;
+  auto mu = [&](double t) {
+    return tr.mu_ref * std::pow(t / tr.t_ref, 1.5) * (tr.t_ref + tr.s) / (t + tr.s);
+  };
+  const double mu_max = std::max(mu(t_min), mu(t_max));
+  const double cp = air.gamma * air.gas_constant / (air.gamma - 1.0);
+  double l_min = std::numeric_limits<double>::infinity();
+  std::vector<std::vector<std::size_t>> faces_of(n);
+  for (std::size_t f = 0; f < pb.ni + pb.nb; ++f) {
+    const auto o = static_cast<std::size_t>(mesh.owner()[f]);
+    faces_of[o].push_back(f);
+    auto dist = [&](std::size_t c) {
+      return std::hypot(g.face_centroid_x[f] - g.cell_centroid_x[c],
+                        g.face_centroid_y[f] - g.cell_centroid_y[c],
+                        g.face_centroid_z[f] - g.cell_centroid_z[c]);
+    };
+    l_min = std::min(l_min, dist(o));
+    if (f < pb.ni) {
+      const auto nb_cell = static_cast<std::size_t>(mesh.neighbour()[f]);
+      faces_of[nb_cell].push_back(f);
+      l_min = std::min(l_min, dist(nb_cell));
+    }
+  }
+  std::array<double, 5> f_v{
+      0.0, mu_max * q / l_min, mu_max * q / l_min, mu_max * q / l_min,
+      mu_max * q * q / l_min + cp * mu_max / tr.prandtl * (t_max - t_min) / l_min};
+  std::vector<double> surface(n, 0.0);
+  for (std::size_t f = 0; f < pb.ni + pb.nb; ++f) {
+    surface[static_cast<std::size_t>(mesh.owner()[f])] += g.face_area[f];
+    if (f < pb.ni) surface[static_cast<std::size_t>(mesh.neighbour()[f])] += g.face_area[f];
+  }
+  const double eps = std::numeric_limits<typename P::compute>::epsilon();
+  double gain = 1.0, gain_v = 0.0;  // max(1, G) and G_v, set below from the host's weights
+  // The largest |R - R_ref| of a cell and component, in units of
+  // `unit` A_i [f_k max(1, G) + f^v_k G_v].
+  auto scaled = [&](const auto& r, const auto& r_ref, double unit) {
+    double worst = 0.0;
+    for (std::size_t k = 0; k < 5; ++k) {
+      for (std::size_t c = 0; c < n; ++c) {
+        const double d =
+            std::abs(static_cast<double>(r[k * n + c]) - static_cast<double>(r_ref[k * n + c]));
+        if (!std::isfinite(d)) return std::numeric_limits<double>::infinity();
+        worst = std::max(worst, d / (unit * (f_k[k] * gain + f_v[k] * gain_v) * surface[c]));
+      }
+    }
+    return worst;
+  };
+  const double tolerance = 64.0 * (1.0 + big_l) * eps;
+
+  auto host_residual = [&](const std::vector<double>& data) {
+    NavierStokes<P> m(mesh, g, air, pb.s, pb.t, &pb.keys);
+    m.set_boundary(pb.kind, data);
+    m.set_second_order(true);
+    std::vector<typename P::state> stored(5 * n);
+    m.state(pb.u, stored);
+    std::vector<typename P::residual> r(5 * n);
+    m.residual(stored, r);
+    return r;
+  };
+  NavierStokes<P> host(mesh, g, air, pb.s, pb.t, &pb.keys);
+  host.set_boundary(pb.kind, pb.data);
+  host.set_second_order(true);
+  std::vector<typename P::state> stored(5 * n);
+  host.state(pb.u, stored);
+  std::vector<typename P::residual> r_host(5 * n);
+  host.residual(stored, r_host);
+  REQUIRE(finite(r_host));
+
+  {
+    // G_i over the gradient stencils the residual reads: the linear one and, under the
+    // quadratic fit, the quadratic one.
+    auto amplification = [&](std::span<const std::int64_t> offsets,
+                             std::span<const autan::index_t> entries,
+                             std::span<const double> weights) {
+      const auto ne = entries.size();
+      double worst = 0.0;
+      for (std::size_t c = 0; c + 1 < offsets.size(); ++c) {
+        double reach = 0.0;
+        for (const auto f : faces_of[c]) {
+          reach = std::max(reach, std::hypot(g.face_centroid_x[f] - g.cell_centroid_x[c],
+                                             g.face_centroid_y[f] - g.cell_centroid_y[c],
+                                             g.face_centroid_z[f] - g.cell_centroid_z[c]));
+        }
+        double sum = 0.0;
+        for (auto e = static_cast<std::size_t>(offsets[c]);
+             e < static_cast<std::size_t>(offsets[c + 1]); ++e) {
+          sum += std::hypot(weights[e], weights[ne + e], weights[2 * ne + e]);
+        }
+        worst = std::max(worst, sum * reach);
+      }
+      return worst;
+    };
+    const auto& st = host.euler().stencil();
+    const std::vector<std::int64_t> offsets(st.offsets.begin(), st.offsets.end());
+    const auto weights = host.euler().gradient_weights();
+    double g_max = amplification(offsets, st.entries, weights);
+    const double g_linear = g_max;
+    double g_quadratic = 0.0;
+    if (fit == GradientFit::quadratic) {
+      const auto qg = host.euler().quadratic_gradient();
+      g_quadratic = amplification(qg.offsets, qg.entries, qg.weights);
+      g_max = std::max(g_max, g_quadratic);
+    }
+    // G_v = max_i H_i l_min, H_i the sum of |w_e| over the linear stencil.
+    const auto ne = st.entries.size();
+    for (std::size_t c = 0; c + 1 < offsets.size(); ++c) {
+      double h_i = 0.0;
+      for (auto e = static_cast<std::size_t>(offsets[c]);
+           e < static_cast<std::size_t>(offsets[c + 1]); ++e) {
+        h_i += std::hypot(weights[e], weights[ne + e], weights[2 * ne + e]);
+      }
+      gain_v = std::max(gain_v, h_i * l_min);
+    }
+    gain = std::max(1.0, g_max);
+    WARN(name_of(source) << " fit " << static_cast<int>(fit) << ": G = " << g_linear
+                         << " (linear), " << g_quadratic << " (quadratic), G_v = " << gain_v);
+    // The stated Lipschitz hypothesis, from the data side: each of the 5 data components of each
+    // farfield and inlet face perturbed by a relative delta on its own; the absolute row sums
+    // sum |dR_ik| / delta stay within 2 A_i [f_k max(1, G) + f^v_k G_v].
+    constexpr double delta = 1e-6;
+    std::vector<double> rows(5 * n, 0.0);
+    for (std::size_t b = 0; b < pb.nb; ++b) {
+      if (pb.kind[b] != BoundaryKind::farfield && pb.kind[b] != BoundaryKind::inlet) continue;
+      for (std::size_t j = 0; j < 5; ++j) {
+        const double v = pb.data[j * pb.nb + b];
+        if (v == 0.0) continue;
+        auto moved = pb.data;
+        moved[j * pb.nb + b] = v * (1.0 + delta);
+        const auto r = host_residual(moved);
+        for (std::size_t i = 0; i < 5 * n; ++i) {
+          rows[i] += std::abs(static_cast<double>(r[i]) - static_cast<double>(r_host[i])) / delta;
+        }
+      }
+    }
+    const std::vector<double> zero(5 * n, 0.0);
+    const double row_sum = scaled(rows, zero, 1.0);
+    INFO("row sums " << row_sum << " A_i [f_k max(1, G) + f^v_k G_v]");
+    REQUIRE(row_sum <= 2.0);
+    // Tight: the interior's entropy in place of the freestream's (the farfield data set to the
+    // state of the face's cell) moves the residual by more than ten times the tolerance.
+    auto interior = pb.data;
+    for (std::size_t b = 0; b < pb.nb; ++b) {
+      if (pb.kind[b] != BoundaryKind::farfield) continue;
+      const auto c = static_cast<std::size_t>(mesh.owner()[pb.ni + b]);
+      const auto w = flow(g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]);
+      for (std::size_t k = 0; k < 5; ++k) interior[k * pb.nb + b] = w[k];
+    }
+    CHECK(scaled(host_residual(interior), r_host, tolerance) > 10.0);
+  }
+
+  autan::runtime::OneRank rank;
+  NoGhosts ghosts;
+  auto device = autan::physics::make_device_stepper<P>(mesh, g, host, air.gamma, true, rank, ghosts,
+                                                       nullptr, &pb.keys);
+  std::vector<double> r_device(5 * n);
+  device->residual(pb.u, r_device);
+  REQUIRE(finite(r_device));
+  const auto [differ, ulps] = bit_difference(r_host, r_device);
+  const double distance = scaled(r_device, r_host, tolerance);
+  INFO(differ << " of " << 5 * n << " components differ, by at most " << ulps << " ulp; "
+              << distance << " times the tolerance");
+  CHECK(distance <= 1.0);
+}
+
+TEMPLATE_TEST_CASE("an unsteady laminar run on the device repeats the host's bits at every step",
+                   "[navier-stokes][gpu]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // #586, criterion 4a: N = 20 SSP-RK3 steps (Shu and Osher 1988, eq. 2.18) of one global time
+  // step at CFL 0.5, the host's EulerPhysics::unsteady_step repeated here on the host residual
+  // under the mesh's own numbering as keys, against DeviceStepper::step. Every component of the
+  // state and the time step have the same bits after every step.
+  using P = TestType;
+  const Source source = GENERATE(from_range(sources));
+  const auto fit = GENERATE(GradientFit::linear, GradientFit::quadratic);
+  CAPTURE(name_of(source), static_cast<int>(fit));
+  const Problem pb(source, Flux::roe, true, fit, 300.0);
+  const auto n = pb.n;
+  constexpr int steps = 20;
+  constexpr double cfl = 0.5;
+
+  NavierStokes<P> host(pb.mesh, pb.g, air, pb.s, pb.t, &pb.keys);
+  host.set_boundary(pb.kind, pb.data);
+  host.set_second_order(true);
+  autan::runtime::OneRank rank;
+  NoGhosts ghosts;
+  auto device = autan::physics::make_device_stepper<P>(pb.mesh, pb.g, host, air.gamma, true, rank,
+                                                       ghosts, nullptr, &pb.keys);
+  device->upload(pb.u);
+
+  std::vector<double> u = pb.u, stage(5 * n), on_device(5 * n);
+  std::vector<typename P::state> stored(5 * n), lambda(n);
+  std::vector<typename P::residual> res(5 * n);
+  auto residual_of = [&](const std::vector<double>& v) {
+    host.state(v, stored);
+    host.residual(stored, res);
+  };
+  const std::array<std::array<double, 2>, 3> weights{
+      {{0.0, 1.0}, {0.75, 0.25}, {1.0 / 3.0, 2.0 / 3.0}}};
+  for (int step = 0; step < steps; ++step) {
+    CAPTURE(step);
+    residual_of(u);
+    host.spectral_radius(lambda);
+    double dt = std::numeric_limits<double>::infinity();
+    for (std::size_t c = 0; c < n; ++c) {
+      dt = std::min(dt, cfl * pb.g.cell_volume[c] / static_cast<double>(lambda[c]));
+    }
+    stage = u;
+    for (std::size_t s = 0; s < 3; ++s) {
+      if (s > 0) residual_of(stage);
+      for (std::size_t k = 0; k < 5; ++k) {
+        for (std::size_t c = 0; c < n; ++c) {
+          const auto i = k * n + c;
+          const double next = stage[i] - dt / pb.g.cell_volume[c] * static_cast<double>(res[i]);
+          stage[i] = weights[s][0] * u[i] + weights[s][1] * next;
+        }
+      }
+    }
+    u = stage;
+    REQUIRE(finite(u));
+    const auto r = device->step(cfl, std::nullopt, false);
+    device->download(on_device);
+    CHECK(std::bit_cast<std::uint64_t>(r.time_step) == std::bit_cast<std::uint64_t>(dt));
+    const auto [differ, ulps] = bit_difference(u, on_device);
+    INFO(differ << " of " << 5 * n << " components differ, by at most " << ulps << " ulp");
+    REQUIRE(differ == 0);
+  }
 }

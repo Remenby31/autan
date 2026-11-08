@@ -24,6 +24,7 @@
 #include "autan/physics/first_order_start.hpp"
 #include "autan/physics/manufactured.hpp"
 #include "autan/physics/navier_stokes.hpp"
+#include "autan/physics/navier_stokes_device.hpp"
 #include "autan/physics/point_vortex.hpp"
 #include "autan/physics/spalart_allmaras.hpp"
 #include "autan/runtime/exact_sum.hpp"
@@ -254,9 +255,8 @@ class EulerPhysics final : public runtime::Physics {
     apply_vortices();
     if (ctx.device >= 0) {
 #ifdef AUTAN_PHYSICS_CUDA
-      if constexpr (is_viscous) {
-        throw std::logic_error("the Navier-Stokes physics has no device stepper");
-      } else {
+      {
+        // Euler<P>'s or NavierStokes<P>'s (laminar only: SA has no device entry, E0706).
         device_ = make_device_stepper<P>(mesh, ctx.geometry, euler_, gas_.gamma, second_order_,
                                          ctx.ranks, ctx.ghosts, ctx.stream);
         device_->upload(u_);
@@ -1758,6 +1758,30 @@ std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverI
   }
   return euler_scope(in, ranks);
 }
+
+// The Navier-Stokes physics on a device: one rank, no point vortex, the host's limits otherwise;
+// steady cases take the device's explicit steps. Registered for laminar flow only (ADR 0005): SA
+// on a device has no entry, E0706.
+std::optional<runtime::PhysicsRefusal> navier_stokes_device_scope(const runtime::SolverInput& in,
+                                                                  int ranks) {
+  if (ranks > 1) {
+    return runtime::PhysicsRefusal{
+        .message =
+            "the Navier-Stokes physics runs on one device only, not " + std::to_string(ranks),
+        .path = "devices.kind",
+        .data_json = nlohmann::json{{"ranks", ranks}}.dump()};
+  }
+  for (std::size_t i = 0; i < in.boundaries.size(); ++i) {
+    if (in.boundaries[i].point_vortex) {
+      return runtime::PhysicsRefusal{
+          .message = "the Navier-Stokes physics on a device has no point vortex; boundary zone '" +
+                     in.boundaries[i].zone + "'",
+          .path = "boundaries[" + std::to_string(i) + "].point_vortex",
+          .data_json = nlohmann::json{{"zone", in.boundaries[i].zone}}.dump()};
+    }
+  }
+  return navier_stokes_scope(in, ranks);
+}
 #endif
 
 // EulerPhysics::restart_fields' names: the conserved variables, the averaging sums and weight,
@@ -1825,6 +1849,14 @@ void register_navier_stokes(runtime::PhysicsRegistry& registry) {
                  factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>(),
                  navier_stokes_scope, /*several_ranks=*/false, euler_groups, euler_restart_names);
   }
+#ifdef AUTAN_PHYSICS_CUDA
+  registry.add({"compressible", "laminar", "fp64", "cuda"},
+               factory<kernels::fp64, NavierStokes<kernels::fp64>>(), navier_stokes_device_scope,
+               /*several_ranks=*/false, {}, euler_restart_names);
+  registry.add({"compressible", "laminar", "fp32+acc64", "cuda"},
+               factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>(),
+               navier_stokes_device_scope, /*several_ranks=*/false, {}, euler_restart_names);
+#endif
 }
 
 }  // namespace autan::physics

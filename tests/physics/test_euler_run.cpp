@@ -2229,6 +2229,123 @@ TEST_CASE("on a device, a verification case converges to the host's discrete sol
   }
 }
 
+TEST_CASE("on a device, an unsteady laminar run stays within #586's bound of the host's",
+          "[navier-stokes][gpu]") {
+  // #586, criterion 4b, declared before any measurement: autan-run on the device against
+  // autan-run on the host (which sums its faces in another order), the same unsteady laminar case
+  // of N = 20 SSP-RK3 steps at CFL 0.5. Per stage the residuals differ by at most 500 eps f_k A_i;
+  // with dt <= CFL V_i / lambda_i and lambda_i >= (|v| + c) A_i a stage moves the state by at most
+  // 500 eps CFL U_k, U = f / q = (rho, rho q, rho q, rho q, rho H), q = |v| + c: 1500 eps CFL per
+  // step. The run amplifies a state difference by at most 2 over the N steps (checked below on the
+  // host), hence |u_device - u_host| <= 2 N 1500 eps CFL U_k. Every face is a symmetry plane: no
+  // exp or log in any boundary state. The viscous fluxes of air at this scale are below 1e-4 of
+  // the convective ones and left out of U, which makes the bound stricter.
+  const std::string precision = GENERATE("fp64", "fp32+acc64");
+  INFO(precision);
+  constexpr int steps = 20;
+  constexpr double cfl = 0.5;
+  auto doc = [&](bool device, double lower_density) {
+    return input("hybrid.solver-input.json", [&](Json& d) {
+      laminar_along_x(d, precision.c_str());
+      if (device) on_device(d);
+      for (auto& b : d["boundaries"]) {
+        for (auto& [key, value] : b.items()) {
+          if (key != "zone" && key != "rule") value = nullptr;
+        }
+        b["kind"] = "symmetry";
+      }
+      for (auto& z : d["cell_zones"]) {
+        auto& init = z["initial"];
+        if (z["zone"] == "upper") {
+          init["density"] = 1.2 * init["density"].get<double>();
+          init["pressure"] = 1.3 * init["pressure"].get<double>();
+        } else {
+          init["density"] = lower_density * init["density"].get<double>();
+        }
+      }
+      d["time"] = {{"kind", "unsteady"},      {"steps", steps},
+                   {"dt", nullptr},           {"cfl", cfl},
+                   {"average_from", nullptr}, {"checkpoint", {{"seconds", 1800.0}}}};
+    });
+  };
+  const auto host = run(doc(false, 1.0));
+  INFO(host.err);
+  REQUIRE(host.status == ExitStatus::finished);
+  const auto dev = run(doc(true, 1.0));
+  INFO(dev.err);
+  REQUIRE(dev.status == ExitStatus::finished);
+  // A nudge above the storage precision's round-off, so that the stored state sees it.
+  const double nudge = precision == "fp64" ? 1e-12 : 1e-5;
+  const auto nudged = run(doc(false, 1.0 + nudge));
+  REQUIRE(nudged.status == ExitStatus::finished);
+
+  const double gamma = 1.4;
+  const Json d0 = doc(false, 1.0);
+  double rho = 0.0, q = 0.0, big_h = 0.0;
+  for (const auto& z : d0["cell_zones"]) {
+    const auto& init = z["initial"];
+    const double r = init["density"].get<double>(), p = init["pressure"].get<double>();
+    const auto v = init["velocity"];
+    const double speed = std::hypot(v[0].get<double>(), v[1].get<double>(), v[2].get<double>());
+    const double c = std::sqrt(gamma * p / r);
+    rho = std::max(rho, r);
+    q = std::max(q, speed + c);
+    big_h = std::max(big_h, c * c / (gamma - 1.0) + 0.5 * speed * speed);
+  }
+  const std::array<double, 5> scale{rho, rho * q, rho * q, rho * q, rho * big_h};
+  auto conserved_of = [&](const fs::path& r) {
+    const auto density = field(r, "Density"), vx = field(r, "VelocityX"),
+               vy = field(r, "VelocityY"), vz = field(r, "VelocityZ"), p = field(r, "Pressure");
+    const auto n = density.size();
+    std::vector<double> u(5 * n);
+    for (std::size_t c = 0; c < n; ++c) {
+      const double v2 = vx[c] * vx[c] + vy[c] * vy[c] + vz[c] * vz[c];
+      u[c] = density[c];
+      u[n + c] = density[c] * vx[c];
+      u[2 * n + c] = density[c] * vy[c];
+      u[3 * n + c] = density[c] * vz[c];
+      u[4 * n + c] = p[c] / (gamma - 1.0) + 0.5 * density[c] * v2;
+    }
+    return u;
+  };
+  // The largest difference of a cell and component, in units of U_k.
+  auto distance = [&](const std::vector<double>& a, const std::vector<double>& b) {
+    const auto n = a.size() / 5;
+    double worst = 0.0;
+    for (std::size_t k = 0; k < 5; ++k) {
+      for (std::size_t c = 0; c < n; ++c) {
+        worst = std::max(worst, std::abs(a[k * n + c] - b[k * n + c]) / scale[k]);
+      }
+    }
+    return worst;
+  };
+  const auto u_host = conserved_of(host.run);
+  const auto u_dev = conserved_of(dev.run);
+  // The amplification: the lower zone's density nudged at the start.
+  {
+    double initial = 0.0;
+    for (const auto& z : d0["cell_zones"]) {
+      if (z["zone"] == "upper") continue;
+      const auto& init = z["initial"];
+      const double r = init["density"].get<double>();
+      const auto v = init["velocity"];
+      const double v2 = std::pow(v[0].get<double>(), 2) + std::pow(v[1].get<double>(), 2) +
+                        std::pow(v[2].get<double>(), 2);
+      initial = std::max({nudge * r / scale[0], nudge * r * std::sqrt(v2) / scale[1],
+                          nudge * 0.5 * r * v2 / scale[4]});
+    }
+    const double amplification = distance(conserved_of(nudged.run), u_host) / initial;
+    INFO("amplification " << amplification);
+    REQUIRE(amplification <= 2.0);
+  }
+  const double eps = precision == "fp64" ? std::numeric_limits<double>::epsilon()
+                                         : std::numeric_limits<float>::epsilon();
+  const double bound = 2.0 * steps * 1500.0 * eps * cfl;
+  const double d = distance(u_dev, u_host);
+  INFO("difference " << d / eps << " eps of U_k; bound " << bound / eps << " eps");
+  CHECK(d <= bound);
+}
+
 TEST_CASE("on a device, a run repeats bit for bit and continues bit for bit", "[euler][gpu]") {
   // Deterministic face loops (store-gather) and exact norms: the same input gives the same bits,
   // and a continued run the uninterrupted one's.
