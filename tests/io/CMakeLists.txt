@@ -12,6 +12,8 @@ target_link_libraries(
   PRIVATE
     autan::io
     autan::mesh_counts
+    autan::kernels
+    autan::partition
     nlohmann_json::nlohmann_json
     Catch2::Catch2WithMain
     autan_compile_options

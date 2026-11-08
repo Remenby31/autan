@@ -135,6 +135,44 @@ def _cmd_vortex_cases(args: argparse.Namespace) -> None:
         _say(str(path))
 
 
+def _cmd_sod_cases(args: argparse.Namespace) -> None:
+    from autan_vv.cases import shock_tube  # noqa: PLC0415
+    from autan_vv.initial_state import write_initial_state  # noqa: PLC0415
+    from autan_vv.meshes import tube  # noqa: PLC0415
+    from autan_vv.meshes.families import MANIFEST_SCHEMA, generate_level  # noqa: PLC0415
+    from autan_vv.oracles.inviscid import shock_tube as sod  # noqa: PLC0415
+
+    manifest = json.loads((args.family / "manifest.json").read_text())
+    if manifest.get("schema") != MANIFEST_SCHEMA or manifest.get("kind") != tube.KIND:
+        msg = f"{args.family} is not a {tube.KIND} mesh family ({MANIFEST_SCHEMA})"
+        raise VVError(msg, code="V0805")
+    args.out.mkdir(parents=True, exist_ok=True)
+    out = args.out.resolve()
+    oracle = sod("sod")
+    for level in manifest["levels"]:
+        mesh_file = (args.family / level["file"]).resolve()
+        if hashlib.sha256(mesh_file.read_bytes()).hexdigest() != level["file_sha256"]:
+            msg = f"{level['file']} is not the file its manifest records"
+            raise VVError(msg, code="V0805")
+        mesh, _ = generate_level(tube.KIND, level["n"])
+        if mesh.sha256() != level["mesh_sha256"]:
+            msg = f"{level['file']} does not regenerate from its manifest"
+            raise VVError(msg, code="V0805")
+        stem = Path(level["file"]).stem
+        state = out / f"{stem}.initial.json"
+        digest = write_initial_state(oracle, mesh, mesh_file, state)
+        case = shock_tube.case(
+            os.path.relpath(mesh_file, out),
+            level["n"],
+            autan.StateFile(path=state.name, sha256=digest),
+            finest=max(lv["n"] for lv in manifest["levels"]),
+            precision=args.precision,
+        )
+        path = out / f"{stem}.toml"
+        path.write_text(case.to_toml())
+        _say(str(path))
+
+
 def _cmd_forces(args: argparse.Namespace) -> None:
     from autan_vv.cases import naca0012  # noqa: PLC0415
 
@@ -457,7 +495,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser(
         "meshes",
         help="generate a seeded mesh family of the unit cube, of the Ringleb domain with its face"
-        " states, of the periodic square of the isentropic vortex, or the NACA 0012 O-meshes",
+        " states, of the periodic square of the isentropic vortex, of the Sod tube, or the NACA 0012"
+        " O-meshes",
     )
     p.add_argument(
         "kind",
@@ -471,6 +510,7 @@ def main(argv: list[str] | None = None) -> int:
             "ringleb",
             "vortex-hex",
             "vortex-prism",
+            "sod-tube",
             "naca0012",
             "onera-m6",
         ),
@@ -497,6 +537,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--precision", choices=("fp64", "fp32+acc64"), default="fp64")
     p.add_argument("--out", type=Path, required=True)
     p.set_defaults(func=_cmd_vortex_cases)
+
+    p = sub.add_parser(
+        "sod-cases", help="write the Sod case and initial state of every level of a sod-tube family"
+    )
+    p.add_argument("--family", type=Path, required=True, help="directory of the mesh manifest")
+    p.add_argument("--precision", choices=("fp64", "fp32+acc64"), default="fp64")
+    p.add_argument("--out", type=Path, required=True)
+    p.set_defaults(func=_cmd_sod_cases)
 
     p = sub.add_parser(
         "forces", help="continuum forces of a NACA 0012 family and its gates (exit 1 on failure)"

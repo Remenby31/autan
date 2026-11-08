@@ -16,7 +16,14 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, NoReturn, Self
 
 import numpy as np
 import rfc8785
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    ValidationError,
+    model_validator,
+)
 
 from autan import cgns
 from autan.errors import CaseError, Diagnostic, Location, diagnostic
@@ -54,6 +61,7 @@ class MeshIdentity(_Strict):
 class Solver(_Strict):
     version: str
     commit: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
+    dirty: StrictBool
     backend: Literal["cuda", "hip", "cpu", "fake"]
     binary_sha256: Hex | None
 
