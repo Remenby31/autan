@@ -465,6 +465,22 @@ boundary_states = boundary_loop(
     frozen=True,
 )
 
+# d(prim_b)/d(prim) of the owner, for the gradients' tangent: a cell whose fit keeps its boundary
+# values (Euler::compute_gradient_weights) reads states its conditions compute from the cell. The
+# increment, the boundary states summed per cell, goes to a scratch `res` the caller discards.
+bnd_state_jac = faces.field("bnd_state_jac", Jac.shape(5, 5))
+boundary_states_jacobian = boundary_loop(
+    boundary_primitive,
+    wi=prim.left,
+    kind=bc_kind,
+    data=bc,
+    n=geometry.face_normal,
+    g=gamma,
+    rgas=gas_constant,
+    pr=p_ref,
+    out=[Inc(res, left=+1), Jacobian(bnd_state_jac, wrt="wi")],
+)
+
 
 # Quadratic gradient (`band` = 1 in the cells it serves: every cell whose two vertex rings determine
 # it): the gradient of a quadratic least-squares fit over two vertex rings (docs/design/euler.md,

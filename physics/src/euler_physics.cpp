@@ -1651,6 +1651,19 @@ std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::Solver
         .data_json = "{}",
         .code = "E0429"};
   }
+  // The viscous and turbulence face loops scatter in local face order, and the boundary fit's and
+  // the viscous gradient's stencils follow the local numbering: the results depend on the cell
+  // order (#587).
+  if (in.reproducibility == "ranks") {
+    return runtime::PhysicsRefusal{
+        .message =
+            "the Navier-Stokes physics does not give the same bits in every cell order yet: "
+            "its viscous and turbulence face loops and its boundary fit do not follow the "
+            "global order",
+        .path = "reproducibility",
+        .data_json = "{}",
+        .code = "E1109"};
+  }
   // NavierStokes<P> and SpalartAllmaras<P> fill no ghost cells of their own (their fields, fits
   // and Jacobian blocks would be wrong across a periodic pair): one rank, no periodic pairs.
   if (!in.periodic.empty()) {
