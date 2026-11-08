@@ -8,6 +8,7 @@
 
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
+#include "autan/kernels/geometry.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/runtime/physics.hpp"
 #include "autan/runtime/ranks.hpp"
@@ -42,11 +43,14 @@ class DeviceStepper {
 // The stepper of `host`'s residual (its boundary conditions, source, gradient weights and
 // scheme, as set when this is called; the linear reconstruction if `second_order`) on the
 // current CUDA device, its work on `stream`. Ghost cells (periodic images, other ranks' cells)
-// take the primitives, gradients and limiter through `ghosts`, as on the host.
+// take the primitives, gradients and limiter through `ghosts`, as on the host. With `keys`, those
+// `host` was built with, the face loops gather each cell's faces in the host's global order and
+// orientation, and the geometry is packed with the same keys.
 template <class P>
 std::unique_ptr<DeviceStepper<P>> make_device_stepper(const Mesh& mesh, const Geometry& geometry,
                                                       const Euler<P>& host, double gamma,
                                                       bool second_order, runtime::Ranks& ranks,
-                                                      runtime::GhostExchange& ghosts, void* stream);
+                                                      runtime::GhostExchange& ghosts, void* stream,
+                                                      const kernels::GlobalKeys* keys = nullptr);
 
 }  // namespace autan::physics
