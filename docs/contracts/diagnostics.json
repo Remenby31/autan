@@ -259,6 +259,12 @@
       "fix": "Run this build on one rank, or use a build with MPI, such as the dev image.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0146"
     },
+    "E0147": {
+      "severity": "error",
+      "title": "Not a run's solution",
+      "fix": "Give it the `solution.cgns` of a run directory.",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0147"
+    },
     "W0150": {
       "severity": "warning",
       "title": "Periodic nodes moved",
