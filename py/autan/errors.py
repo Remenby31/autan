@@ -835,11 +835,11 @@ _CODES = [
     ),
     Code(
         "E0716",
-        "Steady case on a device needs the lines solver",
-        "On a device, a steady case takes the implicit step with `time.linear_solver = "
-        '"lines"` (line-implicit block Gauss-Seidel in GCR), on one rank without periodic '
-        "pairs. The device has no multigrid and no plain Gauss-Seidel yet (#163), and no explicit "
-        "steady step: `data` names the solver or the periodic pair that was asked for.",
+        "Steady inviscid case on a device needs the lines solver",
+        "On a device, a steady inviscid case takes the implicit step with "
+        '`time.linear_solver = "lines"` (line-implicit block Gauss-Seidel in GCR), without '
+        "periodic pairs: the device has no multigrid and no plain Gauss-Seidel yet (#163). `data` "
+        "names the solver or the periodic pairs that were asked for.",
         'Set `time.linear_solver = "lines"`, or run the case on the CPU backend.',
     ),
     Code(

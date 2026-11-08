@@ -1806,15 +1806,16 @@ std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverI
   // and no periodic pairs (solvers::gpu::LineSweep): no other solver has a device version yet.
   if (in.time.kind == "steady" && in.time.linear_solver != "lines") {
     return runtime::PhysicsRefusal{
-        .message = "a steady case on a device needs time.linear_solver = \"lines\", not '" +
-                   in.time.linear_solver + "'",
+        .message =
+            "a steady inviscid case on a device needs time.linear_solver = \"lines\", not '" +
+            in.time.linear_solver + "'",
         .path = "time.linear_solver",
         .data_json = nlohmann::json{{"linear_solver", in.time.linear_solver}}.dump(),
         .code = "E0716"};
   }
   if (in.time.kind == "steady" && !in.periodic.empty()) {
     return runtime::PhysicsRefusal{
-        .message = "a steady case on a device runs without periodic pairs",
+        .message = "a steady inviscid case on a device runs without periodic pairs",
         .path = "periodic",
         .data_json = nlohmann::json{{"periodic", in.periodic.size()}}.dump(),
         .code = "E0716"};

@@ -675,7 +675,7 @@
     },
     "E0716": {
       "severity": "error",
-      "title": "Steady case on a device needs the lines solver",
+      "title": "Steady inviscid case on a device needs the lines solver",
       "fix": "Set `time.linear_solver = \"lines\"`, or run the case on the CPU backend.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#e0716"
     },
