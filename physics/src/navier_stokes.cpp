@@ -4,6 +4,8 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -56,9 +58,9 @@ struct NavierStokes<P>::Impl {
   bool bounded = false;  // set_boundary called: the fit is built
   // Under global keys the face loops gather (Euler<P>'s topology, which share() takes).
   bool keyed;
-  // A key reverses a face: the face Jacobians are then in global orientation, which assemble()
-  // does not place.
-  bool reversed;
+  std::vector<std::int64_t> cell_key, face_key;  // global ids, under keys only
+  // Under keys: the interior faces, then the boundary faces, each in ascending global id.
+  std::vector<std::size_t> face_order;
   kernels::CellStencil vertex;
   std::array<std::vector<typename P::grad>, 7> fits;
   const Geometry& geo;  // FP64 geometry of the boundary fit
@@ -143,6 +145,18 @@ struct NavierStokes<P>::Impl {
       }
       std::sort(out.begin(), out.end());
       out.erase(std::unique(out.begin(), out.end()), out.end());
+      if (!cell_key.empty()) {
+        // Under global keys the boundary faces, then the cells, in ascending global id: the
+        // normal matrix sums its entries, and the nearest boundary face is chosen, in that
+        // order, the same in any cell order (runtime.md, Ranks).
+        std::sort(out.begin(), out.end(), [&](index_t a, index_t b) {
+          if ((a < 0) != (b < 0)) return a < 0;
+          return a < 0 ? face_key[static_cast<std::size_t>(-a - 1)] <
+                             face_key[static_cast<std::size_t>(-b - 1)]
+                       : cell_key[static_cast<std::size_t>(a)] <
+                             cell_key[static_cast<std::size_t>(b)];
+        });
+      }
       return out;
     };
     constexpr std::array<std::array<int, 3>, nt> power{{{1, 0, 0},
@@ -358,8 +372,8 @@ struct NavierStokes<P>::Impl {
           if (!solve(c, entries, coef)) {
             throw std::invalid_argument(
                 "the boundary fit of the viscous fluxes is undetermined at cell " +
-                std::to_string(c) + " (" + std::to_string(entries.size()) +
-                " entries within three rings)");
+                std::to_string(cell_key.empty() ? static_cast<std::int64_t>(c) : cell_key[c]) +
+                " (" + std::to_string(entries.size()) + " entries within three rings)");
           }
         }
         fit_entries.insert(fit_entries.end(), entries.begin(), entries.end());
@@ -613,7 +627,11 @@ struct NavierStokes<P>::Impl {
       }
       place(s, dfdphi);
     };
-    for (std::size_t f = 0; f < (product == nullptr || product->interior ? ni : 0); ++f) {
+    // Under global keys the faces in ascending global id (face_order), so that a block or a
+    // residual row sums its faces' contributions in the same order in any cell order.
+    auto at = [&](std::size_t slot) { return face_order.empty() ? slot : face_order[slot]; };
+    for (std::size_t slot = 0; slot < (product == nullptr || product->interior ? ni : 0); ++slot) {
+      const auto f = at(slot);
       const auto l = static_cast<std::size_t>(t.owner[f]);
       const auto r = static_cast<std::size_t>(t.neighbour[f]);
       const bool fl = static_cast<double>(quad[l]) > 0.5, fr = static_cast<double>(quad[r]) > 0.5;
@@ -644,20 +662,30 @@ struct NavierStokes<P>::Impl {
           (out != nullptr ? placed : outside) += chain(dfdphi, k, out, sign);
         }
       };
-      if (fl) {
+      auto side_l = [&] {
         const std::array<double, 3> rf{xf[0] - xl[0], xf[1] - xl[1], xf[2] - xl[2]};
         side(f, l, wl, rf, dlr, dist, k_cond, mf + mt, uf, place);
-      }
-      if (fr) {
+      };
+      auto side_r = [&] {
         // The rise of r's fit runs from r to l, against e: its correction enters with + sign,
         // which `side` gives through the reversed segment.
         const std::array<double, 3> rf{xf[0] - xr[0], xf[1] - xr[1], xf[2] - xr[2]};
         const std::array<double, 3> drl{-dlr[0], -dlr[1], -dlr[2]};
         side(f, r, wr, rf, drl, dist, k_cond, mf + mt, uf, place);
+      };
+      // Both sides add to the same blocks: the global left's first, in any orientation.
+      if (t.face_reversed != nullptr && t.face_reversed[f] != 0) {
+        if (fr) side_r();
+        if (fl) side_l();
+      } else {
+        if (fl) side_l();
+        if (fr) side_r();
       }
     }
     const auto* kind = d.bc_kind;
-    for (std::size_t f = ni; f < (product == nullptr || product->boundary ? nf : ni); ++f) {
+    for (std::size_t slot = ni; slot < (product == nullptr || product->boundary ? nf : ni);
+         ++slot) {
+      const auto f = at(slot);
       const auto c = static_cast<std::size_t>(t.owner[f]);
       if (static_cast<double>(quad[c]) <= 0.5) continue;
       const double kf = static_cast<double>(kind[f]);
@@ -707,9 +735,11 @@ struct NavierStokes<P>::Impl {
       : euler(mesh, geometry, gas, scheme, keys),
         quadratic(scheme.gradient_fit == GradientFit::quadratic),
         keyed(keys != nullptr),
-        reversed(keys != nullptr &&
-                 std::ranges::any_of(keys->reversed, [](auto r) { return r != 0; })),
         geo(geometry) {
+    if (keys != nullptr) {
+      cell_key.assign(keys->cell.begin(), keys->cell.end());
+      face_key.assign(keys->face.begin(), keys->face.end());
+    }
     if (quadratic)
       grad_v.assign(15 * static_cast<std::size_t>(mesh.n_cells()), typename P::grad(0));
     if (!(t.mu_ref > 0.0) || !(t.prandtl > 0.0) || !(t.prandtl_turbulent > 0.0) ||
@@ -718,6 +748,15 @@ struct NavierStokes<P>::Impl {
     }
     const auto packed = kernels::pack_geometry(mesh, geometry, keys);
     topo = kernels::topology(mesh.view());
+    if (!face_key.empty()) {
+      const auto nf = static_cast<std::size_t>(topo.n_faces);
+      const auto ni = static_cast<std::ptrdiff_t>(topo.n_interior_faces);
+      face_order.resize(nf);
+      std::iota(face_order.begin(), face_order.end(), std::size_t{0});
+      auto by_key = [&](std::size_t a, std::size_t b) { return face_key[a] < face_key[b]; };
+      std::sort(face_order.begin(), face_order.begin() + ni, by_key);
+      std::sort(face_order.begin() + ni, face_order.end(), by_key);
+    }
     vertex = kernels::cell_stencil(mesh, packed, kernels::StencilKind::vertex);
     adjacent.assign(static_cast<std::size_t>(mesh.n_cells()), {});
     for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_interior_faces()); ++f) {
@@ -897,7 +936,6 @@ void NavierStokes<P>::residual_and_jacobian(std::span<const State> s, std::span<
 template <class P>
 void NavierStokes<P>::assemble(std::span<const double> shift, BlockMatrix& a) const {
   const auto& m = *impl_;
-  if (m.reversed) throw std::logic_error("NavierStokes: assemble under keys that reverse a face");
   m.euler.assemble(shift, a);
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   const auto nf = static_cast<std::size_t>(m.topo.n_faces);
@@ -918,17 +956,48 @@ void NavierStokes<P>::assemble(std::span<const double> shift, BlockMatrix& a) co
       }
     }
   };
-  for (std::size_t f = 0; f < ni; ++f) {
-    const auto o = static_cast<std::size_t>(m.topo.owner[f]);
-    const auto n = static_cast<std::size_t>(m.topo.neighbour[f]);
-    add(a.diagonal(o), m.visc_jac.data(), nf, f, 0, dwdu, nc, o, 1.0);
-    add(a.upper(f), m.visc_jac.data(), nf, f, 1, dwdu, nc, n, 1.0);
-    add(a.lower(f), m.visc_jac.data(), nf, f, 0, dwdu, nc, o, -1.0);
-    add(a.diagonal(n), m.visc_jac.data(), nf, f, 1, dwdu, nc, n, -1.0);
-  }
-  for (std::size_t f = ni; f < nf; ++f) {
-    const auto o = static_cast<std::size_t>(m.topo.owner[f]);
-    add(a.diagonal(o), m.visc_bnd_jac.data(), nf, f, 0, dwdu, nc, o, 1.0);
+  if (m.keyed) {
+    // As Euler<P>::assemble under global keys: the face loops evaluate each face in its global
+    // orientation (visc_jac: dF/dW of the global left, block 0, and right, block 1), each diagonal
+    // block gathers its cell's faces in Topology::cell_faces order (the global order), and the
+    // off-diagonal blocks are placed in BlockMatrix's local orientation.
+    const auto& t = m.d.topo;
+    auto left = [&](std::size_t f) {
+      const bool rev = t.face_reversed != nullptr && t.face_reversed[f] != 0;
+      return static_cast<std::size_t>(rev ? t.neighbour[f] : t.owner[f]);
+    };
+    for (std::size_t c = 0; c < nc; ++c) {
+      for (auto k = t.cell_face_offsets[c]; k < t.cell_face_offsets[c + 1]; ++k) {
+        const auto f = static_cast<std::size_t>(t.cell_faces[k]);
+        if (f >= ni) {
+          add(a.diagonal(c), m.visc_bnd_jac.data(), nf, f, 0, dwdu, nc, c, 1.0);
+        } else if (left(f) == c) {
+          add(a.diagonal(c), m.visc_jac.data(), nf, f, 0, dwdu, nc, c, 1.0);
+        } else {
+          add(a.diagonal(c), m.visc_jac.data(), nf, f, 1, dwdu, nc, c, -1.0);
+        }
+      }
+    }
+    for (std::size_t f = 0; f < ni; ++f) {
+      const auto o = static_cast<std::size_t>(t.owner[f]);
+      const auto n = static_cast<std::size_t>(t.neighbour[f]);
+      const bool rev = left(f) != o;
+      add(rev ? a.lower(f) : a.upper(f), m.visc_jac.data(), nf, f, 1, dwdu, nc, rev ? o : n, 1.0);
+      add(rev ? a.upper(f) : a.lower(f), m.visc_jac.data(), nf, f, 0, dwdu, nc, rev ? n : o, -1.0);
+    }
+  } else {
+    for (std::size_t f = 0; f < ni; ++f) {
+      const auto o = static_cast<std::size_t>(m.topo.owner[f]);
+      const auto n = static_cast<std::size_t>(m.topo.neighbour[f]);
+      add(a.diagonal(o), m.visc_jac.data(), nf, f, 0, dwdu, nc, o, 1.0);
+      add(a.upper(f), m.visc_jac.data(), nf, f, 1, dwdu, nc, n, 1.0);
+      add(a.lower(f), m.visc_jac.data(), nf, f, 0, dwdu, nc, o, -1.0);
+      add(a.diagonal(n), m.visc_jac.data(), nf, f, 1, dwdu, nc, n, -1.0);
+    }
+    for (std::size_t f = ni; f < nf; ++f) {
+      const auto o = static_cast<std::size_t>(m.topo.owner[f]);
+      add(a.diagonal(o), m.visc_bnd_jac.data(), nf, f, 0, dwdu, nc, o, 1.0);
+    }
   }
   m.fit_norms = m.fit_jacobian(&a, nullptr);
 }

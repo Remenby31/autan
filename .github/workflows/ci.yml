@@ -68,10 +68,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The Linux Debug builds and tests took 9.5 to 19.3 minutes on hosted runners (2026-11-08,
+        # #578, #623, #627), and 20 minutes stopped them on main: 35 leaves room for the slower
+        # runners.
         include:
           - compiler: gcc
             os: ubuntu-24.04
-            timeout: 20
+            timeout: 35
             cc: gcc
             cxx: g++
             hardening: -D_GLIBCXX_ASSERTIONS
@@ -80,13 +83,13 @@ jobs:
           # Mac's Apple Clang.
           - compiler: clang
             os: ubuntu-24.04
-            timeout: 20
+            timeout: 35
             cc: clang
             cxx: clang++
             hardening: -D_GLIBCXX_ASSERTIONS
           - compiler: clang-20
             os: ubuntu-24.04
-            timeout: 20
+            timeout: 35
             cc: clang
             cxx: clang++
             hardening: -D_GLIBCXX_ASSERTIONS
