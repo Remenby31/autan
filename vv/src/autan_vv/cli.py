@@ -451,7 +451,15 @@ def _cmd_verify(args: argparse.Namespace) -> None:
             )
     verdict = report["verdict"]
     if verdict is not None:
-        state = "PASS" if verdict["pass"] else "FAIL"
+        for check in verdict["checks"]:
+            if "equations" in check:
+                worst = min(
+                    (e["drop"] for e in check["equations"].values() if e["drop"] is not None),
+                    default=None,
+                )
+                shown = "non-finite" if worst is None else f"{worst:.2f}"
+                _say(f"{check['run_id']}: {check['status']}, smallest drop {shown} orders")
+        state = {True: "PASS", False: "FAIL", None: "REPORTED, NOT GATED"}[verdict["pass"]]
         if verdict["investigate"]:
             state += ", TO INVESTIGATE"
         for warning in verdict["warnings"]:
@@ -462,7 +470,7 @@ def _cmd_verify(args: argparse.Namespace) -> None:
             else f" (not evidence: {'; '.join(verdict['not_evidence_because'])})"
         )
         _say(f"gate {verdict['gate']}: {state}{note}")
-        if not verdict["pass"]:
+        if verdict["pass"] is False:
             raise SystemExit(1)
 
 

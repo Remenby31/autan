@@ -130,6 +130,65 @@ def _disagreement(h: _History, run: RunInfo, budget: int) -> _Disagreement | Non
     return None
 
 
+def _references(
+    run: RunInfo, equations: list[str], residuals: list[list[float]]
+) -> tuple[list[float], list[int], list[int | None], float]:
+    """Each equation's reference residual, the line before which it is exempt (identically zero,
+    not yet woken), the line where an exempt equation wakes, and the zero floor
+    (case-schema.md#time)."""
+    start = run.start
+    if start is not None and start.residual_reference is not None:
+        reference = [start.residual_reference[e] for e in equations]
+        woken = set(start.woken or [])
+    else:
+        reference, woken = residuals[0], set()
+    zero = ZERO_FLOOR * max(reference)
+    exempt_until = [0] * len(equations)
+    wake: list[int | None] = [None] * len(equations)
+    for e, name in enumerate(equations):
+        if reference[e] < zero and name not in woken:
+            above = next((i for i, line in enumerate(residuals) if line[e] > zero), None)
+            exempt_until[e] = len(residuals) if above is None else above
+            wake[e] = above
+    # A woken equation drops from the largest first residual of its kind: the momentum components
+    # share units, every other equation takes the largest of all (case-schema.md#time).
+    reference = [
+        max(
+            r
+            for k, r in enumerate(reference)
+            if not name.startswith("momentum-") or equations[k].startswith("momentum-")
+        )
+        if reference[e] < zero
+        else reference[e]
+        for e, name in enumerate(equations)
+    ]
+    return reference, exempt_until, wake, zero
+
+
+def residual_drops(results: autan.Results) -> dict[str, float | None]:
+    """Orders of magnitude each equation's residual fell from its reference (case-schema.md#time:
+    iteration 1, `start.residual_reference` of a continuation, the largest of its kind for an
+    equation identically zero there) to the last line of the history, whatever the run's status;
+    None for an equation identically zero to the end. NaN when the last residual is not finite."""
+    history = results.history
+    equations = history.equations
+    if not equations:
+        return {}
+    series = [history.residual(e) for e in equations]
+    residuals = [[float(s[i]) for s in series] for i in range(len(series[0]))]
+    reference, exempt_until, _, _ = _references(results.run, equations, residuals)
+    last = residuals[-1]
+    out: dict[str, float | None] = {}
+    for e, name in enumerate(equations):
+        if exempt_until[e] == len(residuals):
+            out[name] = None
+        elif not math.isfinite(last[e]):
+            out[name] = math.nan
+        else:
+            out[name] = math.inf if last[e] == 0.0 else math.log10(reference[e] / last[e])
+    return out
+
+
 def check_stop(results: autan.Results) -> None:
     """Refuse a steady run whose run.json status is not the one its history gives (V0730).
 
@@ -155,33 +214,10 @@ def check_stop(results: autan.Results) -> None:
     series = [history.residual(e) for e in equations]
     residuals = [[float(s[i]) for s in series] for i in range(len(iterations))]
 
-    start = run.start
-    if start is not None and start.residual_reference is not None:
-        reference = [start.residual_reference[e] for e in equations]
-        woken = set(start.woken or [])
-    else:
-        reference, woken = residuals[0], set()
-    zero = ZERO_FLOOR * max(reference)
-    exempt_until = [0] * len(equations)
-    wakes: set[tuple[str, int]] = set()
-    for e, name in enumerate(equations):
-        if reference[e] < zero and name not in woken:
-            above = next((i for i, line in enumerate(residuals) if line[e] > zero), None)
-            exempt_until[e] = len(residuals) if above is None else above
-            if above is not None:
-                wakes.add((name, iterations[above]))
-    # A woken equation drops from the largest first residual of its kind: the momentum components
-    # share units, every other equation takes the largest of all (case-schema.md#time).
-    reference = [
-        max(
-            r
-            for k, r in enumerate(reference)
-            if not name.startswith("momentum-") or equations[k].startswith("momentum-")
-        )
-        if reference[e] < zero
-        else reference[e]
-        for e, name in enumerate(equations)
-    ]
+    reference, exempt_until, wake, zero = _references(run, equations, residuals)
+    wakes = {
+        (name, iterations[i]) for name, i in zip(equations, wake, strict=True) if i is not None
+    }
     reported = {
         (str(d.data.get("equation")), int(d.data.get("iteration", -1)))
         for d in run.diagnostics
