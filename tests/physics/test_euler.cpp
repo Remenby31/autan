@@ -36,6 +36,7 @@
 #include "euler_cpu.hpp"
 #include "fixtures.hpp"
 #include "navier_stokes_cpu.hpp"
+#include "stretched_slab.hpp"
 
 namespace {
 
@@ -1097,13 +1098,15 @@ TEMPLATE_TEST_CASE(
 namespace {
 
 // The viscous boundary fit of the owned cells (and, with `layer1`, of their ghost face neighbours)
-// of a Navier-Stokes physics built on `part` under its global keys, zone ymin an isothermal wall
-// and the other boundary faces slip walls: per cell by global id, whether it carries a fit, and
-// its stencil entries by global key (StencilKey) with their 19 weights.
+// of a Navier-Stokes physics built on `part` under its global keys, every boundary face an
+// isothermal wall, or with `ymin_only` zone ymin alone and the others slip walls: per cell by
+// global id, whether it carries a fit, and its stencil entries by global key (StencilKey) with
+// their 19 weights.
 using FitRow = std::pair<bool, std::vector<std::pair<StencilKey, std::array<double, 19>>>>;
 
 template <class P>
-std::map<std::int64_t, FitRow> fit_rows(const autan::LocalPartition& part, bool layer1) {
+std::map<std::int64_t, FitRow> fit_rows(const autan::LocalPartition& part, bool layer1,
+                                        bool ymin_only) {
   const auto& m = part.mesh;
   const autan::kernels::GlobalKeys keys{.cell = m.cell_global_id(),
                                         .face = part.face_global_id,
@@ -1117,7 +1120,7 @@ std::map<std::int64_t, FitRow> fit_rows(const autan::LocalPartition& part, bool 
   std::vector<double> data(5 * nb, 0.0);
   for (std::size_t b = 0; b < nb; ++b) {
     const auto zone = static_cast<std::size_t>(m.face_zone()[ni + b]);
-    if (m.face_zones()[zone].name == "ymin") {
+    if (!ymin_only || m.face_zones()[zone].name == "ymin") {
       kind[b] = BoundaryKind::wall;
       data[b] = 300.0;
     }
@@ -1173,13 +1176,17 @@ TEMPLATE_TEST_CASE(
   // to three vertex rings of each (docs/design/ns-sa.md). A part holding four rings
   // (navier_stokes_ghost_stencil) gives the owned cells and their ghost face neighbours the
   // fit of the whole mesh: the same flag, entries in the same global order, and weights of the
-  // same bits. The wall is zone ymin: the cells next to it carry a fit, and those at its ends,
-  // where two rings hold three positions along it, a fit over three rings (docs/design/ns-sa.md).
-  // A part holding three rings is refused (E0148), with ghosts or not.
+  // same bits. Every boundary face is a wall on the four meshes. On a stretched one-cell-thick
+  // slab, zone ymin alone is, as on a flat plate: the cells at its ends, where two rings hold
+  // three positions along it, take a fit over three rings (docs/design/ns-sa.md). A part holding
+  // three rings is refused (E0148), with ghosts or not.
   using P = TestType;
-  const auto* file = GENERATE(from_range(meshes));
-  INFO(file);
-  const autan::Mesh global = autan::io::read_mesh(mesh_dir / file);
+  const int which = GENERATE(range(0, static_cast<int>(meshes.size()) + 1));
+  const bool ymin_only = which == static_cast<int>(meshes.size());
+  INFO((ymin_only ? "stretched slab, wall ymin" : meshes[static_cast<std::size_t>(which)]));
+  const autan::Mesh global =
+      ymin_only ? autan::test::stretched_slab()
+                : autan::io::read_mesh(mesh_dir / meshes[static_cast<std::size_t>(which)]);
   const autan::Geometry gg = autan::compute_geometry(global);
   const auto stencil = autan::physics::navier_stokes_ghost_stencil();
   REQUIRE(stencil == autan::GhostStencil::vertex4);
@@ -1199,8 +1206,9 @@ TEMPLATE_TEST_CASE(
     }
     return part;
   };
-  const auto reference = fit_rows<P>(
-      part_of(std::vector<std::int32_t>(gg.cell_volume.size(), 0), 1, 0, stencil), false);
+  const auto reference =
+      fit_rows<P>(part_of(std::vector<std::int32_t>(gg.cell_volume.size(), 0), 1, 0, stencil),
+                  false, ymin_only);
   REQUIRE(std::ssize(reference) == global.n_cells());
   // Cells whose fit reaches a third vertex ring, whose stencil the parts must hold whole too.
   const auto vertex = autan::kernels::cell_stencil(
@@ -1226,12 +1234,12 @@ TEMPLATE_TEST_CASE(
     three_rings += beyond ? 1 : 0;
   }
   INFO("cells fitted over three rings: " << three_rings);
-  if (std::string(file).starts_with("hex/")) CHECK(three_rings > 0);
+  if (ymin_only) CHECK(three_rings > 0);
   std::size_t compared = 0;
   for (const std::int32_t n : {2, 3, 4}) {
     const auto parts = blocks(gg, n);
     for (std::int32_t r = 0; r < n; ++r) {
-      for (const auto& [id, row] : fit_rows<P>(part_of(parts, n, r, stencil), true)) {
+      for (const auto& [id, row] : fit_rows<P>(part_of(parts, n, r, stencil), true, ymin_only)) {
         INFO("cell " << id << " on part " << r << " of " << n);
         CHECK(row == reference.at(id));
         compared += row.first ? 1 : 0;
