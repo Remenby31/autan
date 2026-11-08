@@ -98,6 +98,13 @@ def test_richardson_gives_any_positive_order_on_a_constant_ratio() -> None:
     d = 2.0**-10
     res = richardson([0.1, 0.2, 0.4], [0.0, d, d + d * (1.0 + 2.0**-30)])
     assert res.order == pytest.approx(math.log2(1.0 + 2.0**-30), rel=1e-9)
+    # 2^p - 1 = 2^-30: f1 - d / 2^-30 and 1.25 d / 2^-30.
+    assert res.extrapolated == pytest.approx(-(2.0**20), rel=1e-6)
+    assert res.gci_fine == pytest.approx(1.25 * 2.0**20, rel=1e-6)
+    # A ratio above 2^64 by less than one rounding of its logarithm is still above.
+    with pytest.raises(VVError) as err:
+        richardson([0.1, 0.2, 0.4], [0.0, 2.0**-54, 2.0**-54 + 2.0**10 + 2.0**-42])
+    assert err.value.code == "V0109"
 
 
 def test_two_grid_gci_uses_safety_factor_three() -> None:

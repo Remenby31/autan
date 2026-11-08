@@ -4,6 +4,7 @@ against the paper's own grid sequences (J. Aircraft 47(4):1152-1166, doi:10.2514
 import hashlib
 import math
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import autan
@@ -252,7 +253,6 @@ def test_lift_interval_on_flo82s_triplet() -> None:
 def test_lift_interval_caps_the_order_at_two_and_widens_outside_its_range(
     order: float, safety: float
 ) -> None:
-    assert cases.interval_safety(0.5) == cases.interval_safety(2.5) == 1.25  # bounds inclusive
     h, values = _triplet(0.352, -1e-4, order)
     p_eff = min(order, 2.0)
     verdict = cases.lift_interval(LIFT, h, values)
@@ -266,7 +266,7 @@ def test_lift_interval_caps_the_order_at_two_and_widens_outside_its_range(
 def test_lift_interval_fails_an_uncertainty_above_half_the_four_code_range() -> None:
     # ADR 0004, Consequences: at p = 0.3, Fs = 3.0 makes U about 13 |eps21|. Centred in the range,
     # the interval overlaps it whatever U, so only the ceiling fails it.
-    centre = (LIFT.lower + LIFT.upper) / 2.0
+    centre = (0.348226045 + 0.356208937) / 2.0
     for eps21, passes in ((-0.003991446 / 13.1, True), (-0.003991446 / 12.9, False)):
         h, values = _triplet(centre + eps21 / (2.0**0.3 - 1.0), eps21, 0.3)
         verdict = cases.lift_interval(LIFT, h, values)
@@ -279,7 +279,7 @@ def test_lift_interval_passes_an_overlap_at_either_edge_of_the_range(edge: str) 
     # Order 2: Fs = 1.25, CL∞ = f1 - eps21/3 and U = 1.25 |eps21| / 3 = 1.25e-3.
     eps21, u = -3e-3, 1.25e-3
     for offset, passes in ((-1e-9, True), (1e-9, False)):
-        value = LIFT.upper + u + offset if edge == "upper" else LIFT.lower - u - offset
+        value = 0.356208937 + u + offset if edge == "upper" else 0.348226045 - u - offset
         h, values = _triplet(value + eps21 / 3.0, eps21, 2.0)
         verdict = cases.lift_interval(LIFT, h, values)
         assert verdict["uncertainty"] == pytest.approx(u, rel=1e-9)
@@ -303,17 +303,32 @@ def test_lift_interval_fails_a_triplet_with_no_continuum(values: list[float], co
 def test_lift_gate_needs_the_four_levels_and_reports_the_gap_to_flo82() -> None:
     cl = [0.3602690, 0.3582398, 0.3577427, 0.3581995]
     verdict = cases.check(LIFT, _levels([256, 512, 1024, 2048], {"cl": cl}), {})
+    assert verdict["pass"] is False
     assert "V0107" in verdict["reason"]  # the four levels are there; the triplet is not monotone
-    assert verdict["gap_to_flo82"] == pytest.approx(
-        {"1024": 0.3577427 - 0.360812844, "2048": 0.3581995 - 0.358281928}
+    # Rule 5, beside the other codes' gaps of the ADR's table (Tables 9, 8, 5).
+    assert verdict["gap_to_flo82"]["1024"] == pytest.approx(
+        {
+            "autan": 0.3577427 - 0.360812844,
+            "cfl3d-vortex": -0.001640376,
+            "cfl3d": -0.004869133,
+            "overflow": -0.007571132,
+        }
     )
-    _, values = _triplet(0.354, -1e-4, 1.0)
+    assert verdict["gap_to_flo82"]["2048"]["autan"] == pytest.approx(0.3581995 - 0.358281928)
+    # Order 3 on 512²-2048²: the cap and Fs = 3.0 give CL∞ = f1 - eps21/3 and U = |eps21|.
+    _, values = _triplet(0.354, -1e-4, 3.0)
     family = _levels([256, 512, 1024, 2048], {"cl": [values[2] + 2e-4, *values[::-1]]})
-    assert cases.check(LIFT, family, {})["pass"]
+    verdict = cases.check(LIFT, family, {})
+    assert verdict["value"] == pytest.approx(0.354 + 1e-4 / 3.0, rel=1e-12)
+    assert verdict["uncertainty"] == pytest.approx(1e-4, rel=1e-9)
+    assert verdict["pass"]
     for nc in ([128, 256, 512, 1024], [512, 1024, 2048], [256, 512, 1024, 2048, 2048]):
         verdict = cases.check(LIFT, _levels(nc, {"cl": [0.35] * len(nc)}), {})
         assert not verdict["pass"]
         assert "levels" in verdict["reason"]
+    # A count of 256² + 1 cells is not the level NC = 256.
+    off = [replace(lv, n_cells=lv.n_cells + 1) if lv.n_cells == 256 * 256 else lv for lv in family]
+    assert "levels" in cases.check(LIFT, off, {})["reason"]
 
 
 def test_every_gate_is_stated_in_acceptance_md() -> None:

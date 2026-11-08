@@ -11,6 +11,7 @@ from __future__ import annotations
 import itertools
 import math
 from dataclasses import asdict, dataclass
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any, Literal
 
 import autan
@@ -94,8 +95,14 @@ INTERVAL_MAX_ORDER = 2.0
 INTERVAL_FS = 1.25
 INTERVAL_FS_OUTSIDE = 3.0
 INTERVAL_ORDER_RANGE = (0.5, 2.5)
-# Vassberg and Jameson (2010), Table 3 (p. 1159): FLO82's CL at M 0.8, alpha 1.25 deg, per NC.
+# Vassberg and Jameson (2010), M 0.8, alpha 1.25 deg, CL per NC: FLO82 (Table 3, p. 1159), and the
+# other codes' gaps to it (Tables 9, 8 and 5, pp. 1164 and 1161), reported beside ours (rule 5).
 FLO82_CL = {1024: 0.360812844, 2048: 0.358281928}
+OTHER_CODES_GAP_TO_FLO82 = {
+    "cfl3d-vortex": {1024: -0.001640376, 2048: -0.000482980},
+    "cfl3d": {1024: -0.004869133, 2048: -0.003688742},
+    "overflow": {1024: -0.007571132, 2048: -0.005454021},
+}
 
 
 def case(
@@ -253,28 +260,33 @@ def _order_if_zero(values: Sequence[float], finest: Sequence[LevelForces]) -> fl
     return math.log(medium / fine) / math.log(finest[1].h / finest[0].h)
 
 
-def interval_safety(order: float) -> float:
-    """ADR 0004 rule 2: Celik et al.'s 1.25 for an observed order in [0.5, 2.5], else 3.0."""
-    lo, hi = INTERVAL_ORDER_RANGE
-    return INTERVAL_FS if lo <= order <= hi else INTERVAL_FS_OUTSIDE
-
-
 def lift_interval(gate: ForceGate, h: Sequence[float], values: Sequence[float]) -> dict[str, Any]:
-    """ADR 0004 rules 1-3 on one triplet: CL∞ and U from the observed order capped at 2 and the
-    safety factor of rule 2; PASS when U <= the gate's tolerance and CL∞ ± U overlaps [lower,
-    upper], bounds inclusive. A triplet with no continuum fails with richardson's code."""
+    """ADR 0004 rules 1-3 on one triplet of constant refinement ratio r: CL∞ and U from the observed
+    order capped at 2, with Fs = 1.25 when 0.5 <= p_obs <= 2.5, that is r <= ((f3 - f2)/(f2 -
+    f1))^2 <= r^5 in exact arithmetic, else 3.0; PASS when U <= the gate's tolerance and CL∞ ± U
+    overlaps [lower, upper], bounds inclusive. A triplet with no continuum fails with richardson's
+    code."""
     try:
-        r = richardson(h, values, safety=interval_safety, max_order=INTERVAL_MAX_ORDER)
+        observed = richardson(h, values)
     except VVError as err:
         return {"gate": gate.id, "pass": False, "reason": f"no continuum estimate ({err.code})"}
-    value, u = r.extrapolated, r.gci_fine
+    (h1, f1), (h2, f2), (h3, f3) = sorted(zip(h, values, strict=True), key=lambda hv: hv[0])
+    r = Fraction(h2) / Fraction(h1)
+    if Fraction(h3) / Fraction(h2) != r:
+        return {"gate": gate.id, "pass": False, "reason": "ADR 0004 needs a constant ratio"}
+    ratio = (Fraction(f3) - Fraction(f2)) / (Fraction(f2) - Fraction(f1))
+    lo, hi = INTERVAL_ORDER_RANGE
+    inside = r ** round(2 * lo) <= ratio**2 <= r ** round(2 * hi)
+    fs = INTERVAL_FS if inside else INTERVAL_FS_OUTSIDE
+    res = richardson(h, values, safety=fs, max_order=INTERVAL_MAX_ORDER)
+    value, u = res.extrapolated, res.gci_fine
     return {
         "gate": gate.id,
         "value": value,
         "uncertainty": u,
-        "order": r.order,
-        "effective_order": r.effective_order,
-        "safety_factor": interval_safety(r.order),
+        "order": observed.order,
+        "effective_order": res.effective_order,
+        "safety_factor": fs,
         "interval": (value - u, value + u),
         "bounds": (gate.lower, gate.upper),
         "uncertainty_ceiling": gate.tolerance,
@@ -286,8 +298,13 @@ def _interval_check(gate: ForceGate, levels: Sequence[LevelForces]) -> dict[str,
     """ADR 0004 rules 4-5: the levels 256² to 2048², the verdict on the three finest, and the gap
     to FLO82 at each level Table 3 gives, as a diagnostic."""
     nc = {round(math.sqrt(lv.n_cells)): lv for lv in levels}
-    gaps = {
-        f"{n}": getattr(nc[n], gate.coefficient) - flo82 for n, flo82 in FLO82_CL.items() if n in nc
+    gaps: dict[str, dict[str, float]] = {
+        f"{n}": {
+            "autan": getattr(nc[n], gate.coefficient) - flo82,
+            **{code: g[n] for code, g in OTHER_CODES_GAP_TO_FLO82.items()},
+        }
+        for n, flo82 in FLO82_CL.items()
+        if n in nc
     }
     if (
         len(levels) != len(INTERVAL_LEVELS)
