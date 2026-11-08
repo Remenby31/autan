@@ -163,6 +163,33 @@ if(AUTAN_ENABLE_CGNS)
       autan_euler_step_bench
       PRIVATE autan::physics_runtime autan::physics autan::io autan_compile_options
     )
+    # The Navier-Stokes and Spalart-Allmaras loops on the GPU, through the device classes above,
+    # timed by autan-bench (docs/infra/bench.md).
+    add_executable(
+      autan_navier_stokes_bench
+      bench/navier_stokes_bench.cu
+      $<TARGET_OBJECTS:autan_physics_device>
+    )
+    add_dependencies(autan_navier_stokes_bench autan_codegen_revision)
+    target_include_directories(
+      autan_navier_stokes_bench
+      PRIVATE
+        ${AUTAN_PHYSICS_GENERATED}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${PROJECT_BINARY_DIR}/codegen/revision
+    )
+    target_link_libraries(
+      autan_navier_stokes_bench
+      PRIVATE autan::physics autan::runtime autan::io CUDA::cudart
+    )
+    set_target_properties(
+      autan_navier_stokes_bench
+      PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON
+    )
+    target_compile_options(
+      autan_navier_stokes_bench
+      PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr -lineinfo -Xptxas=-warn-spills>
+    )
   endif()
 endif()
 

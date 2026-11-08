@@ -124,4 +124,17 @@ if(AUTAN_ENABLE_CUDA AND AUTAN_ENABLE_CGNS)
     PRIVATE AUTAN_TEST_MESH_DIR="${PROJECT_SOURCE_DIR}/tests/data/mesh"
   )
   catch_discover_tests(autan_euler_device_tests PROPERTIES LABELS gpu)
+  # The NS/SA kernel bench's check against the host residuals, on a small mesh with every
+  # boundary condition.
+  foreach(policy fp64 fp32+acc64)
+    foreach(fit linear quadratic)
+      add_test(
+        NAME autan_navier_stokes_bench_${policy}_${fit}
+        COMMAND
+          autan_navier_stokes_bench ${PROJECT_SOURCE_DIR}/tests/data/mesh/hybrid/hybrid.ascii.msh
+          --policy ${policy} --fit ${fit} --warmup 0 --reps 1 --batch 1
+      )
+      set_tests_properties(autan_navier_stokes_bench_${policy}_${fit} PROPERTIES LABELS gpu)
+    endforeach()
+  endforeach()
 endif()
