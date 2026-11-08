@@ -525,7 +525,10 @@ def test_study_reproduces_the_papers_extrapolation(tmp_path: Path) -> None:
     assert all(lv["converged"] and lv["iterations"] == 37 for lv in report["levels"])
     assert report["continuum"]["cl"]["estimate"] == pytest.approx(0.356208937, abs=2e-9)
     assert report["continuum"]["cd"]["estimate"] == pytest.approx(0.022684938, abs=2e-9)
-    assert all(v["pass"] for v in report["verdicts"])
+    verdicts = {v["gate"]: v for v in report["verdicts"]}
+    assert verdicts["naca0012-m080-a125-cd"]["pass"]
+    # ADR 0004: the CL gate takes the levels 256² to 2048² only.
+    assert "levels" in verdicts["naca0012-m080-a125-cl"]["reason"]
     assert main(["su2", "study", *map(str, runs), "--out", str(tmp_path / "s.json")]) == 0
     # A level that did not reach the criterion leaves too few levels for an estimate.
     _write_run(runs[0], FLO82_CL[0], FLO82_CD[0], converged=False)
