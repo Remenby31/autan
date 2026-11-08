@@ -788,6 +788,18 @@ TEMPLATE_TEST_CASE("under global keys, renumbered cells have the residual and Ja
         !same(viscous_b.lower(f), reversed[f] != 0 ? viscous_a.upper(fa) : viscous_a.lower(fa));
   }
   CHECK(viscous_blocks_differ == 0);
+  // Keys with no reversal map mean that no face is reversed: the same blocks as the zero map's.
+  const autan::kernels::GlobalKeys unreversed{
+      .cell = keys_a.cell, .face = keys_a.face, .reversed = {}, .shift = keys_a.shift};
+  NavierStokes<P> flow_c(a, ga, {1.4, 287.0}, s, viscous, &unreversed);
+  flow_c.set_boundary(no_fit(kind_a), data_a);
+  std::vector<typename P::residual> vc(5 * nc);
+  flow_c.residual_and_jacobian(sa, vc);
+  BlockMatrix viscous_c(a);
+  flow_c.assemble(shift_a, viscous_c);
+  CHECK(std::ranges::equal(viscous_c.diagonals(), viscous_a.diagonals()));
+  CHECK(std::ranges::equal(viscous_c.uppers(), viscous_a.uppers()));
+  CHECK(std::ranges::equal(viscous_c.lowers(), viscous_a.lowers()));
   sa_a.residual_and_jacobian(nt_a, sa_ra);
   sa_b.residual_and_jacobian(nt_b, sa_rb);
   std::vector<double> diag_a(nc), upper_a(ni), lower_a(ni), diag_b(nc), upper_b(ni), lower_b(ni);

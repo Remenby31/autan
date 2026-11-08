@@ -963,7 +963,8 @@ void NavierStokes<P>::assemble(std::span<const double> shift, BlockMatrix& a) co
     // off-diagonal blocks are placed in BlockMatrix's local orientation.
     const auto& t = m.d.topo;
     auto left = [&](std::size_t f) {
-      return static_cast<std::size_t>(t.face_reversed[f] != 0 ? t.neighbour[f] : t.owner[f]);
+      const bool rev = t.face_reversed != nullptr && t.face_reversed[f] != 0;
+      return static_cast<std::size_t>(rev ? t.neighbour[f] : t.owner[f]);
     };
     for (std::size_t c = 0; c < nc; ++c) {
       for (auto k = t.cell_face_offsets[c]; k < t.cell_face_offsets[c + 1]; ++k) {
