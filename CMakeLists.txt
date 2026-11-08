@@ -44,9 +44,15 @@ if(AUTAN_ENABLE_CUDA)
   enable_language(CUDA)
   # No FMA contraction in device code, as -ffp-contract=off on the host: both sides run the same
   # arithmetic, so a device result can equal the host's bit for bit (#571). Explicit fma() calls
-  # and the CUDA math library's own implementations are not affected.
-  string(APPEND CMAKE_CUDA_FLAGS " --fmad=false")
+  # and the CUDA math library's own implementations are not affected. The host code of .cu files
+  # goes to the host compiler, which contracts from -O2 on aarch64 unless told not to.
+  string(APPEND CMAKE_CUDA_FLAGS " --fmad=false -Xcompiler=-ffp-contract=off")
 endif()
+
+# No FMA contraction in any C++ translation unit, whatever the build type and whether or not the
+# target links autan_compile_options (the spike drivers' capi.cpp, the test framework): GCC
+# contracts from -O2 on aarch64, which changes the last bits of host references.
+add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-ffp-contract=off>")
 
 add_library(autan_compile_options INTERFACE)
 target_compile_options(
