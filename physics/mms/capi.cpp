@@ -128,6 +128,9 @@ extern "C" {
 /// Git commit the library was built from.
 const char* autan_mms_commit() { return AUTAN_BUILD_COMMIT; }
 
+/// 1 when the library's tracked source files differed from that commit (results.md, solver.dirty).
+int autan_mms_dirty() { return AUTAN_BUILD_DIRTY ? 1 : 0; }
+
 int autan_mms_mesh_read(const char* path, void** out, char* err, std::size_t err_len) {
   return guarded(err, err_len, [&] {
     auto m = std::make_unique<MeshHandle>(MeshHandle{autan::io::read_mesh(path), {}});

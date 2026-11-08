@@ -161,22 +161,26 @@ def test_an_fp32_run_may_converge_on_a_round_off_plateau_within_ten_floors(
 ) -> None:
     floors = dict.fromkeys(EQUATIONS, 1e-8)
 
-    def run(stop: int, value: float, plateau: list[str]) -> Path:
+    def run(stop: int, value: float, plateau: list[str], provisional: int = 0) -> Path:
         # 1.0, then the same value: the level (median of the last 100 counted residuals) is that
-        # value from iteration 100, its first and so its reference; on a plateau from 200.
+        # value from the 100th counted iteration, its first and so its reference; on a plateau
+        # 100 counted iterations later.
         return freestream_run(
             precision="fp32+acc64",
             residuals=lines(1.0, *[value] * (stop - 1)),
             convergence=Convergence(floor=floors, plateau=plateau),
+            provisional=provisional,
         )
 
     verify([run(200, 5e-8, EQUATIONS)], "freestream")
-    # Later: a first-order start of 49 iterations puts it at 249, and one of 201, the longest
-    # (euler.md#time-stepping), at 401 but no later: no prefix fits 402, and the refusal
-    # reports where the run stops without one, 200.
-    verify([run(249, 5e-8, EQUATIONS)], "freestream")
-    verify([run(401, 5e-8, EQUATIONS)], "freestream")
-    assert refused(run(402, 5e-8, EQUATIONS)) == {"iteration": 200, "equation": None}
+    # 49 provisional lines: counting starts at iteration 50, the first level is at 149 and the
+    # plateau holds at 249, not before; unmarked, at 200.
+    verify([run(249, 5e-8, EQUATIONS, provisional=49)], "freestream")
+    assert refused(run(248, 5e-8, EQUATIONS, provisional=49)) == {
+        "iteration": 248,
+        "equation": "density",
+    }
+    assert refused(run(249, 5e-8, EQUATIONS)) == {"iteration": 200, "equation": None}
     assert refused(run(200, 5e-8, [])) == {"iteration": 200, "equation": None}
     # Above ten floors, or before 100 counted iterations without a new reference of the level.
     assert refused(run(200, 2e-7, EQUATIONS)) == {"iteration": 200, "equation": "density"}

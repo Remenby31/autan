@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -118,9 +118,11 @@ dev = [
 name = "autan-vv"
 version = "0.1.0"
 source = { editable = "." }
+default-groups = ["dev", "mesh"]
 dependencies = [
     { name = "autan" },
     { name = "matplotlib" },
+    { name = "mpmath" },
     { name = "numpy" },
     { name = "scipy" },
     { name = "sympy" },
@@ -141,6 +143,7 @@ mesh = [
 requires-dist = [
     { name = "autan", editable = "../" },
     { name = "matplotlib", specifier = ">=3.11" },
+    { name = "mpmath", specifier = ">=1.3" },
     { name = "numpy", specifier = ">=2.5" },
     { name = "scipy", specifier = ">=1.18" },
     { name = "sympy", specifier = ">=1.14" },
