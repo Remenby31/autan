@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -713,6 +713,8 @@ class D1:
     issues: list[str]
     max_centre_ratio: Fraction
     max_use: Fraction  # largest |g_hat - g_int| / R_D1
+    bounds: dict[tuple[int, int], tuple[Fraction, Fraction]] = field(default_factory=dict)
+    # (cell, component) -> (g_int, R_D1), for the record of an instance
 
 
 def check_d1(
@@ -750,6 +752,7 @@ def check_d1(
         intended = gg_intended(read, exact_geometry, q, q_b, grad)
     issues: list[str] = []
     ratio, use = F(0), F(0)
+    d1_bounds: dict[tuple[int, int], tuple[Fraction, Fraction]] = {}
     for cell in range(read.n_cells):
         for u in range(3):
             g_hat = F(float(kernel[cell][u]))
@@ -773,12 +776,13 @@ def check_d1(
             if r > 0:
                 ratio = max(ratio, d / r)
             bound = r + d
+            d1_bounds[(cell, u)] = (g_int, bound)
             err = abs(g_hat - g_int)
             if err > bound:
                 issues.append(f"fail: {where}: |g_hat - g_int| exceeds R_D1")
             elif bound > 0:
                 use = max(use, err / bound)
-    return D1(issues, ratio, use)
+    return D1(issues, ratio, use, d1_bounds)
 
 
 # ---------------------------------------------------------------- check 4 (the bound)

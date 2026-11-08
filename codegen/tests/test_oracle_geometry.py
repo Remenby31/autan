@@ -102,3 +102,22 @@ def test_the_stored_geometry_is_within_its_certified_radius_of_the_exact_geometr
     m = s.mesh(meshes.build(kind, 4, perturbation, seed=3))
     read = t.read_mesh(m)
     assert q.check_geometry(read, q.stored_geometry(m)) == []
+
+
+@pytest.mark.parametrize("drop", ["all", "one", "row"])
+def test_partial_precomputed_geometry_is_reported_not_skipped(drop: str) -> None:
+    # Check 2 with geometry built once for the instance: an empty or partial set of certificates
+    # or exact values must be reported invalid, never check less silently.
+    from oracle import topology as t  # noqa: PLC0415
+
+    m = s.mesh(meshes.build("hex", 2, 0.15, seed=3))
+    read = t.read_mesh(m)
+    certs, exact = q.geometry_certified(read), q.geometry_exact(read)
+    if drop == "all":
+        certs = {}
+    elif drop == "one":
+        certs.pop("lsq_weight")
+    else:
+        exact["cell_volume"] = exact["cell_volume"][:-1]
+    issues = q.check_geometry(read, q.stored_geometry(m), certs, exact)
+    assert any(i.startswith("invalid:") for i in issues)

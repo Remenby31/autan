@@ -506,12 +506,34 @@ def stored_geometry(m: s.Mesh) -> dict[str, list[list[float]]]:
     }
 
 
-def check_geometry(read: ReadMesh, stored: dict[str, Any]) -> list[str]:
+def check_geometry(
+    read: ReadMesh,
+    stored: dict[str, Any],
+    certs: dict[str, list[list[c.Cert]]] | None = None,
+    exact: dict[str, list[list[Fraction]]] | None = None,
+) -> list[str]:
     """Check 2: for every value, the exact (intended) value and the stored value both lie in the
     certified interval [value - R, value + R] of the declared construction. The first is the
-    per-instance correspondence; the second bounds the stored value's distance to the intended."""
-    certs, exact = geometry_certified(read), geometry_exact(read)
+    per-instance correspondence; the second bounds the stored value's distance to the intended.
+    `certs` and `exact` may be given, as built once for the instance; else they are built here."""
+    if certs is None:
+        certs = geometry_certified(read)
+    if exact is None:
+        exact = geometry_exact(read)
     issues: list[str] = []
+    # Given or built, the certificates and the exact geometry must cover exactly the stored arrays,
+    # with the same shapes: an empty or partial set would check less, silently.
+    for label, given in (("certified", certs), ("exact", exact)):
+        if set(given) != set(stored):
+            issues.append(
+                f"invalid: the {label} geometry covers {sorted(given)}, the stored arrays are {sorted(stored)}"
+            )
+            return issues
+        for name, stored_rows in stored.items():
+            shape = [len(row) for row in given[name]]
+            if shape != [len(row) for row in stored_rows]:
+                issues.append(f"invalid: the {label} {name} does not have the stored shape")
+                return issues
     for name, rows in certs.items():
         if len(stored[name]) != len(rows):
             issues.append(f"{name}: {len(stored[name])} rows stored, {len(rows)} certified")
