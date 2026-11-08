@@ -324,6 +324,7 @@ class SteadyInput(_Strict):
     linear_solver: Literal["multigrid", "gauss-seidel", "lines"]
     coupled_turbulence: Annotated[bool, Field(strict=True)]
     matrix_free: Annotated[bool, Field(strict=True)]
+    start_order: Literal["first", "second"]
     checkpoint: CheckpointInput
 
 
@@ -830,6 +831,7 @@ def build(
             linear_solver=spec.time.linear_solver,
             coupled_turbulence=spec.time.coupled_turbulence,
             matrix_free=spec.time.matrix_free,
+            start_order=spec.time.start_order,
             checkpoint=_checkpoint(spec.time.checkpoint),
         )
         if isinstance(spec.time, Steady)
