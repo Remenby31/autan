@@ -767,10 +767,51 @@ TEMPLATE_TEST_CASE("under global keys, renumbered cells have the residual and Ja
   std::size_t sa_differs = 0;
   for (std::size_t c = 0; c < nc; ++c) sa_differs += bits_differ(sa_rb[c], sa_ra[cell(c)]);
   CHECK(sa_differs == 0);
-  // Under keys that reverse faces their viscous and SA blocks are in global orientation: the
-  // assembly, written for the mesh's own, refuses them.
-  BlockMatrix viscous_b(b);
-  CHECK_THROWS_AS(flow_b.assemble(shift_b, viscous_b), std::logic_error);
-  std::vector<double> sa_diag(nc), sa_upper(ni), sa_lower(ni);
-  CHECK_THROWS_AS(sa_b.assemble(shift_b, sa_diag, sa_upper, sa_lower), std::logic_error);
+  // Under keys the viscous and SA blocks are assembled in global order and placed by global
+  // orientation: the renumbered mesh's blocks are the original's, an off-diagonal pair swapped
+  // where `b` reverses the face.
+  flow_a.residual_and_jacobian(sa, va);
+  flow_b.residual_and_jacobian(sb, vb);
+  BlockMatrix viscous_a(a), viscous_b(b);
+  flow_a.assemble(shift_a, viscous_a);
+  flow_b.assemble(shift_b, viscous_b);
+  REQUIRE(std::ranges::all_of(viscous_a.diagonals(), [](double x) { return std::isfinite(x); }));
+  std::size_t viscous_blocks_differ = 0;
+  for (std::size_t c = 0; c < nc; ++c) {
+    viscous_blocks_differ += !same(viscous_b.diagonal(c), viscous_a.diagonal(cell(c)));
+  }
+  for (std::size_t f = 0; f < ni; ++f) {
+    const auto fa = static_cast<std::size_t>(face_a[f]);
+    viscous_blocks_differ +=
+        !same(viscous_b.upper(f), reversed[f] != 0 ? viscous_a.lower(fa) : viscous_a.upper(fa));
+    viscous_blocks_differ +=
+        !same(viscous_b.lower(f), reversed[f] != 0 ? viscous_a.upper(fa) : viscous_a.lower(fa));
+  }
+  CHECK(viscous_blocks_differ == 0);
+  // Keys with no reversal map mean that no face is reversed: the same blocks as the zero map's.
+  const autan::kernels::GlobalKeys unreversed{
+      .cell = keys_a.cell, .face = keys_a.face, .reversed = {}, .shift = keys_a.shift};
+  NavierStokes<P> flow_c(a, ga, {1.4, 287.0}, s, viscous, &unreversed);
+  flow_c.set_boundary(no_fit(kind_a), data_a);
+  std::vector<typename P::residual> vc(5 * nc);
+  flow_c.residual_and_jacobian(sa, vc);
+  BlockMatrix viscous_c(a);
+  flow_c.assemble(shift_a, viscous_c);
+  CHECK(std::ranges::equal(viscous_c.diagonals(), viscous_a.diagonals()));
+  CHECK(std::ranges::equal(viscous_c.uppers(), viscous_a.uppers()));
+  CHECK(std::ranges::equal(viscous_c.lowers(), viscous_a.lowers()));
+  sa_a.residual_and_jacobian(nt_a, sa_ra);
+  sa_b.residual_and_jacobian(nt_b, sa_rb);
+  std::vector<double> diag_a(nc), upper_a(ni), lower_a(ni), diag_b(nc), upper_b(ni), lower_b(ni);
+  sa_a.assemble(shift_a, diag_a, upper_a, lower_a);
+  sa_b.assemble(shift_b, diag_b, upper_b, lower_b);
+  REQUIRE(std::ranges::all_of(diag_a, [](double x) { return std::isfinite(x); }));
+  std::size_t sa_blocks_differ = 0;
+  for (std::size_t c = 0; c < nc; ++c) sa_blocks_differ += bits_differ(diag_b[c], diag_a[cell(c)]);
+  for (std::size_t f = 0; f < ni; ++f) {
+    const auto fa = static_cast<std::size_t>(face_a[f]);
+    sa_blocks_differ += bits_differ(upper_b[f], reversed[f] != 0 ? lower_a[fa] : upper_a[fa]);
+    sa_blocks_differ += bits_differ(lower_b[f], reversed[f] != 0 ? upper_a[fa] : lower_a[fa]);
+  }
+  CHECK(sa_blocks_differ == 0);
 }
