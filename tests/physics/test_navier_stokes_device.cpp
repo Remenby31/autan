@@ -451,19 +451,18 @@ TEMPLATE_TEST_CASE("the device's residual with farfield and inlet faces stays wi
   const Source source = GENERATE(from_range(sources));
   const auto flux = GENERATE(Flux::roe, Flux::hllc, Flux::ausm_up);
   const auto fit = GENERATE(GradientFit::linear, GradientFit::quadratic);
-  // The known failure (#586, run gpunssa-d3-2b32; #608): with zmax a given state, poly under the
-  // quadratic fit has G = 4.79, beyond the covered 4.37, and in fp32+acc64 the tightness test
-  // fails (9.43x Roe, 9.46x HLLC). It is kept as such: should it ever pass, it is reviewed.
-  const bool known_failure = GENERATE(false, true);
-  if (known_failure && !(std::holds_alternative<const char*>(source) &&
-                         std::string(std::get<const char*>(source)) == "poly/polyMesh" &&
-                         fit == GradientFit::quadratic && flux != Flux::ausm_up &&
-                         std::is_same_v<P, autan::kernels::fp32_acc64>)) {
+  // The first runs' layout as well (zmax a given state), on the mesh and fit where it gives the
+  // largest gain measured, G = 4.79 (poly, quadratic): the coverage of W0717 reaches it (#586,
+  // run gpunssa-d7-2b32).
+  const bool zmax_state = GENERATE(false, true);
+  if (zmax_state && !(std::holds_alternative<const char*>(source) &&
+                      std::string(std::get<const char*>(source)) == "poly/polyMesh" &&
+                      fit == GradientFit::quadratic)) {
     return;
   }
-  CAPTURE(name_of(source), static_cast<int>(flux), static_cast<int>(fit), known_failure);
+  CAPTURE(name_of(source), static_cast<int>(flux), static_cast<int>(fit), zmax_state);
   Problem pb(source, flux, true, fit, 300.0);
-  pb.farfield_and_inlet(!known_failure);
+  pb.farfield_and_inlet(!zmax_state);
   const auto n = pb.n;
   const auto& g = pb.g;
   const auto& mesh = pb.mesh;
@@ -633,22 +632,24 @@ TEMPLATE_TEST_CASE("the device's residual with farfield and inlet faces stays wi
     const double row_sum = scaled(rows, zero, 1.0);
     INFO("row sums " << row_sum << " A_i [f_k max(1, G) + f^v_k G_v]");
     REQUIRE(row_sum <= 2.0);
-    // Tight: the interior's entropy in place of the freestream's (the farfield data set to the
-    // state of the face's cell) moves the residual by more than ten times the tolerance.
+    // Tight (#586): the interior's entropy in place of the freestream's on every farfield face,
+    // and nothing else: density and pressure at the freestream's p / rho (so its speed of sound,
+    // velocity and outgoing invariant are kept), with p / rho^gamma the face cell's.
     auto interior = pb.data;
     for (std::size_t b = 0; b < pb.nb; ++b) {
       if (pb.kind[b] != BoundaryKind::farfield) continue;
       const auto c = static_cast<std::size_t>(mesh.owner()[pb.ni + b]);
       const auto w = flow(g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]);
-      for (std::size_t k = 0; k < 5; ++k) interior[k * pb.nb + b] = w[k];
+      const double entropy = w[4] / std::pow(w[0], air.gamma);
+      const double rho_f = pb.data[b], p_f = pb.data[4 * pb.nb + b];
+      const double rt = p_f / rho_f;
+      const double rho = std::pow(entropy / rt, 1.0 / (1.0 - air.gamma));
+      interior[b] = rho;
+      interior[4 * pb.nb + b] = rho * rt;
     }
     const double tightness = scaled(host_residual(interior), r_host, tolerance);
     INFO("tightness " << tightness);
-    if (known_failure) {
-      CHECK(tightness < 10.0);
-    } else {
-      CHECK(tightness > 10.0);
-    }
+    CHECK(tightness > 10.0);
   }
 
   autan::runtime::OneRank rank;

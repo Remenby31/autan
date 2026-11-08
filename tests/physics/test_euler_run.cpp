@@ -2230,22 +2230,22 @@ TEST_CASE("on a device, a verification case converges to the host's discrete sol
   }
 }
 
-TEST_CASE("on a device, an unsteady laminar run stays within #586's bound of the host's",
+TEST_CASE("on a device, an unsteady laminar run is reported against the host's default run",
           "[navier-stokes][gpu]") {
-  // #586, criterion 4b, declared before any measurement: autan-run on the device against
-  // autan-run on the host (which sums its faces in another order), the same unsteady laminar case
-  // of N = 20 SSP-RK3 steps at CFL 0.5. Per stage the residuals differ by at most 500 eps f_k A_i;
-  // with dt <= CFL V_i / lambda_i and lambda_i >= (|v| + c) A_i a stage moves the state by at most
-  // 500 eps CFL U_k, U = f / q = (rho, rho q, rho q, rho q, rho H), q = |v| + c: 1500 eps CFL per
-  // step. The run amplifies a state difference by at most 2 over the N steps (checked below on the
-  // host), hence |u_device - u_host| <= 2 N 1500 eps CFL U_k. Every face is a symmetry plane: no
-  // exp or log in any boundary state. The viscous fluxes of air at this scale are below 1e-4 of
-  // the convective ones and left out of U, which makes the bound stricter.
+  // #586, criterion 4b: NOT DEMONSTRATED. The bound once declared for autan-run on the device
+  // against autan-run on the host (which sums its faces in another order) does not hold as
+  // derived (#586, Codex review 6719128609); a bound by recurrence is the beta's (#619). The run
+  // and its comparison stay, reported for information with no verdict: both runs complete their
+  // N = 20 SSP-RK3 steps at CFL 0.5, and the test prints the largest state difference in units of
+  // eps U_k (U = f / c_floor, c_floor the least sound speed of both runs' step-start states), the
+  // time-step differences and the history norms' relative differences. Every face is a symmetry
+  // plane: no exp or log in any boundary state. Device and host agree bit for bit at every step
+  // under identity keys (criterion 4a, test_navier_stokes_device.cpp).
   const std::string precision = GENERATE("fp64", "fp32+acc64");
   INFO(precision);
   constexpr int steps = 20;
   constexpr double cfl = 0.5;
-  auto doc = [&](bool device, double lower_density) {
+  auto doc = [&](bool device, double nudge, int n_steps) {
     return input("hybrid.solver-input.json", [&](Json& d) {
       laminar_along_x(d, precision.c_str());
       if (device) on_device(d);
@@ -2257,32 +2257,29 @@ TEST_CASE("on a device, an unsteady laminar run stays within #586's bound of the
       }
       for (auto& z : d["cell_zones"]) {
         auto& init = z["initial"];
-        if (z["zone"] == "upper") {
-          init["density"] = 1.2 * init["density"].get<double>();
-          init["pressure"] = 1.3 * init["pressure"].get<double>();
-        } else {
-          init["density"] = lower_density * init["density"].get<double>();
-        }
+        const bool upper = z["zone"] == "upper";
+        init["density"] = (upper ? 1.2 : 1.0) * (1.0 + nudge) * init["density"].get<double>();
+        init["pressure"] = (upper ? 1.3 : 1.0) * (1.0 + nudge) * init["pressure"].get<double>();
       }
-      d["time"] = {{"kind", "unsteady"},      {"steps", steps},
+      d["time"] = {{"kind", "unsteady"},      {"steps", n_steps},
                    {"dt", nullptr},           {"cfl", cfl},
                    {"average_from", nullptr}, {"checkpoint", {{"seconds", 1800.0}}}};
     });
   };
-  const auto host = run(doc(false, 1.0));
+  const auto host = run(doc(false, 0.0, steps));
   INFO(host.err);
   REQUIRE(host.status == ExitStatus::finished);
-  const auto dev = run(doc(true, 1.0));
+  const auto dev = run(doc(true, 0.0, steps));
   INFO(dev.err);
   REQUIRE(dev.status == ExitStatus::finished);
   // A nudge above the storage precision's round-off, so that the stored state sees it.
   const double nudge = precision == "fp64" ? 1e-12 : 1e-5;
-  const auto nudged = run(doc(false, 1.0 + nudge));
+  const auto nudged = run(doc(false, nudge, steps));
   REQUIRE(nudged.status == ExitStatus::finished);
 
   const double gamma = 1.4;
-  const Json d0 = doc(false, 1.0);
-  double rho = 0.0, q = 0.0, big_h = 0.0;
+  const Json d0 = doc(false, 0.0, steps);
+  double rho = 0.0, q = 0.0, big_h = 0.0, c_min = std::numeric_limits<double>::infinity();
   for (const auto& z : d0["cell_zones"]) {
     const auto& init = z["initial"];
     const double r = init["density"].get<double>(), p = init["pressure"].get<double>();
@@ -2291,9 +2288,32 @@ TEST_CASE("on a device, an unsteady laminar run stays within #586's bound of the
     const double c = std::sqrt(gamma * p / r);
     rho = std::max(rho, r);
     q = std::max(q, speed + c);
+    c_min = std::min(c_min, c);
     big_h = std::max(big_h, c * c / (gamma - 1.0) + 0.5 * speed * speed);
   }
-  const std::array<double, 5> scale{rho, rho * q, rho * q, rho * q, rho * big_h};
+  // The step-start states of both runs: runs of k < N steps (k = 0 is the initial state).
+  auto min_sound = [&](const fs::path& r) {
+    const auto density = field(r, "Density"), p = field(r, "Pressure");
+    double least = std::numeric_limits<double>::infinity();
+    for (std::size_t c = 0; c < density.size(); ++c) {
+      least = std::min(least, std::sqrt(gamma * p[c] / density[c]));
+    }
+    return least;
+  };
+  double c_floor = c_min;
+  std::vector<fs::path> host_states;  // host_states[k]: the run of k + 1 steps
+  for (int k = 1; k < steps; ++k) {
+    const auto h = run(doc(false, 0.0, k)), dv = run(doc(true, 0.0, k));
+    REQUIRE(h.status == ExitStatus::finished);
+    REQUIRE(dv.status == ExitStatus::finished);
+    c_floor = std::min({c_floor, min_sound(h.run), min_sound(dv.run)});
+    host_states.push_back(h.run);
+  }
+  host_states.push_back(host.run);
+  INFO("c_floor " << c_floor << ", initial least " << c_min);
+  // U = f / c_floor: the reference flux magnitudes over the least speed of sound.
+  const std::array<double, 5> scale{rho * q / c_floor, rho * q * q / c_floor, rho * q * q / c_floor,
+                                    rho * q * q / c_floor, rho * big_h * q / c_floor};
   auto conserved_of = [&](const fs::path& r) {
     const auto density = field(r, "Density"), vx = field(r, "VelocityX"),
                vy = field(r, "VelocityY"), vz = field(r, "VelocityZ"), p = field(r, "Pressure");
@@ -2322,44 +2342,141 @@ TEST_CASE("on a device, an unsteady laminar run stays within #586's bound of the
   };
   const auto u_host = conserved_of(host.run);
   const auto u_dev = conserved_of(dev.run);
-  // The amplification: the lower zone's density nudged at the start.
+  // The amplification: density and pressure scaled by 1 + nudge everywhere at the start, the
+  // velocity kept, normalised by that initial difference of the conserved state.
   {
+    auto initial_of = [&](const Json& d) {
+      std::vector<double> u;
+      for (const auto& z : d["cell_zones"]) {
+        const auto& init = z["initial"];
+        const double r = init["density"].get<double>(), p = init["pressure"].get<double>();
+        const auto v = init["velocity"];
+        const double vx = v[0].get<double>(), vy = v[1].get<double>(), vz = v[2].get<double>();
+        u.insert(u.end(), {r, r * vx, r * vy, r * vz,
+                           p / (gamma - 1.0) + 0.5 * r * (vx * vx + vy * vy + vz * vz)});
+      }
+      return u;
+    };
+    const auto a0 = initial_of(d0), b0 = initial_of(doc(false, nudge, steps));
     double initial = 0.0;
-    for (const auto& z : d0["cell_zones"]) {
-      if (z["zone"] == "upper") continue;
-      const auto& init = z["initial"];
-      const double r = init["density"].get<double>();
-      const auto v = init["velocity"];
-      const double v2 = std::pow(v[0].get<double>(), 2) + std::pow(v[1].get<double>(), 2) +
-                        std::pow(v[2].get<double>(), 2);
-      initial = std::max({nudge * r / scale[0], nudge * r * std::sqrt(v2) / scale[1],
-                          nudge * 0.5 * r * v2 / scale[4]});
+    for (std::size_t i = 0; i < a0.size(); ++i) {
+      initial = std::max(initial, std::abs(a0[i] - b0[i]) / scale[i % 5]);
     }
     const double amplification = distance(conserved_of(nudged.run), u_host) / initial;
-    INFO("amplification " << amplification);
-    REQUIRE(amplification <= 2.0);
+    WARN("amplification of a density and pressure nudge over the run: " << amplification);
   }
   const double eps = precision == "fp64" ? std::numeric_limits<double>::epsilon()
                                          : std::numeric_limits<float>::epsilon();
-  const double bound = 2.0 * steps * 1500.0 * eps * cfl;
-  const double d = distance(u_dev, u_host);
-  INFO("difference " << d / eps << " eps of U_k; bound " << bound / eps << " eps");
-  CHECK(d <= bound);
+  // The time steps of the two runs, from their histories' times, and the host's increments.
+  const auto h_host = history(host.run), h_dev = history(dev.run);
+  REQUIRE(h_host.size() == static_cast<std::size_t>(steps));
+  REQUIRE(h_dev.size() == h_host.size());
+  auto times = [](const std::vector<Json>& h) {
+    std::vector<double> t{0.0};
+    for (const auto& line : h) t.push_back(line["time"].get<double>());
+    return t;
+  };
+  const auto t_host = times(h_host), t_dev = times(h_dev);
+  std::vector<double> previous;
+  {
+    // u^0, the initial state, cell by cell from the zones.
+    const auto mesh = autan::io::read_mesh(mesh_path);
+    const auto n = static_cast<std::size_t>(mesh.n_cells());
+    std::vector<double> u0(5 * n);
+    for (std::size_t c = 0; c < n; ++c) {
+      const auto& zone = mesh.cell_zones()[static_cast<std::size_t>(mesh.cell_zone()[c])].name;
+      for (const auto& z : d0["cell_zones"]) {
+        if (z["zone"] != zone) continue;
+        const auto& init = z["initial"];
+        const double r = init["density"].get<double>(), p = init["pressure"].get<double>();
+        const auto v = init["velocity"];
+        const double vx = v[0].get<double>(), vy = v[1].get<double>(), vz = v[2].get<double>();
+        const std::array<double, 5> w{r, r * vx, r * vy, r * vz,
+                                      p / (gamma - 1.0) + 0.5 * r * (vx * vx + vy * vy + vz * vz)};
+        for (std::size_t k = 0; k < 5; ++k) u0[k * n + c] = w[k];
+      }
+    }
+    previous = u0;
+  }
+  std::vector<double> allowed(u_host.size(), 0.0);
+  double dt_differs = 0.0;
+  for (int k = 0; k < steps; ++k) {
+    const auto next = conserved_of(host_states[static_cast<std::size_t>(k)]);
+    const auto ks = static_cast<std::size_t>(k);
+    const double dt = t_host[ks + 1] - t_host[ks];
+    const double ddt = std::abs((t_dev[ks + 1] - t_dev[ks]) - dt);
+    dt_differs = std::max(dt_differs, ddt / dt);
+    const auto n = next.size() / 5;
+    for (std::size_t i = 0; i < next.size(); ++i) {
+      allowed[i] +=
+          2.0 * (1500.0 * eps * cfl * scale[i / n] + ddt / dt * std::abs(next[i] - previous[i]));
+    }
+    previous = next;
+  }
+  double worst_ratio = 0.0;
+  for (std::size_t i = 0; i < u_host.size(); ++i) {
+    worst_ratio = std::max(worst_ratio, std::abs(u_dev[i] - u_host[i]) / allowed[i]);
+  }
+  double largest = 0.0;
+  for (std::size_t i = 0; i < u_host.size(); ++i) {
+    largest =
+        std::max(largest, std::abs(u_dev[i] - u_host[i]) / (eps * scale[i / (u_host.size() / 5)]));
+  }
+  REQUIRE(std::isfinite(largest));
+  WARN(precision << ": largest |u_device - u_host| " << largest
+                 << " eps U_k; largest |dt_device - "
+                    "dt_host| / dt "
+                 << dt_differs << "; " << worst_ratio << " of the withdrawn bound; c_floor "
+                 << c_floor);
+  // Every step ran, and each residual norm of the history within the same relative bound.
+  for (const auto* r : {&host, &dev}) {
+    const Json info = Json::parse(read(r->run / "run.json"));
+    CHECK(info["status"] == "completed");
+  }
+  double worst = 0.0;
+  for (std::size_t i = 0; i < h_host.size(); ++i) {
+    for (const auto& [name, value] : h_host[i]["residuals"].items()) {
+      const double a = value.get<double>(), b = h_dev[i]["residuals"][name].get<double>();
+      worst = std::max(worst, std::abs(a - b) / std::abs(a));
+    }
+  }
+  REQUIRE(std::isfinite(worst));
+  WARN(precision << ": history norms differ by at most " << worst / eps << " eps, relative");
 }
 
-TEST_CASE("a laminar device run beyond the covered stencil gain warns W0717",
+TEST_CASE("an SA case on a device is refused before any directory exists", "[navier-stokes][gpu]") {
+  // ADR 0005: RANS runs stay on the host for the alpha; the laminar physics alone has a device
+  // entry, so SA there is E0706, in either precision.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  INFO(precision);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    d["precision"] = precision;
+    on_device(d);
+  });
+  REQUIRE(doc["physics"]["turbulence"]["model"] == "sa");
+  const auto out = run(doc);
+  INFO(out.err);
+  CHECK(out.status == ExitStatus::invalid_input);
+  CHECK(!fs::exists(out.runs));
+  const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
+  CHECK(diagnostic["code"] == "E0706");
+}
+
+TEST_CASE("a laminar device run within the covered stencil gain does not warn W0717",
           "[navier-stokes][gpu]") {
-  // #586, criterion 2(b): on a device in fp32+acc64, with farfield or inlet faces, a mesh whose
-  // gradient stencils amplify a boundary value beyond the largest gain shown tight is W0717, in
-  // run.json and log.jsonl; not in fp64, not without such faces, not below that gain (the hybrid
-  // mesh, G = 3.81 under the quadratic fit the laminar physics takes).
+  // #586, criterion 2(b): no repo mesh exceeds G_covered, the largest gain measured, by
+  // construction, so W0717 guards meshes beyond the measured coverage (its decision:
+  // device_gain_warns, tested apart; its path to run.json and log.jsonl: test_runtime.cpp). Here,
+  // in run.json and log.jsonl: no W0717 in fp64, without farfield or inlet faces, below G_covered
+  // (hybrid, G = 3.81) or at it (poly with walls, G = 4.37 under the fit the laminar physics
+  // takes).
   struct Variant {
     const char* mesh;
     const char* precision;
     bool farfield;
     bool warns;
   };
-  const auto v = GENERATE(Variant{"poly/polyMesh", "fp32+acc64", true, true},
+  const auto v = GENERATE(Variant{"poly/polyMesh", "fp32+acc64", true, false},
                           Variant{"poly/polyMesh", "fp64", true, false},
                           Variant{"poly/polyMesh", "fp32+acc64", false, false},
                           Variant{"hybrid/hybrid.ascii.msh", "fp32+acc64", true, false});
@@ -2382,11 +2499,9 @@ TEST_CASE("a laminar device run beyond the covered stencil gain warns W0717",
       for (auto& [key, value] : b.items()) {
         if (key != "zone" && key != "rule") value = nullptr;
       }
-      // A no-slip wall on zmax: its faces give the state, so the quadratic stencils of the cells
-      // beside it reach them and poly's gain exceeds the covered one (#586: 4.79 against 4.37).
       if (v.farfield && b["zone"] == "xmin") {
         b["kind"] = "farfield";
-      } else if (b["zone"] == "zmax") {
+      } else if (b["zone"] == "zmax" || b["zone"] == "zmin") {
         b["kind"] = "wall";
       } else {
         b["kind"] = "symmetry";
@@ -2406,7 +2521,7 @@ TEST_CASE("a laminar device run beyond the covered stencil gain warns W0717",
   for (std::size_t b = 0; b < nb; ++b) {
     const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[ni + b])].name;
     if (v.farfield && zone == "xmin") kinds[b] = autan::physics::BoundaryKind::farfield;
-    if (zone == "zmax") kinds[b] = autan::physics::BoundaryKind::wall;
+    if (zone == "zmax" || zone == "zmin") kinds[b] = autan::physics::BoundaryKind::wall;
   }
   autan::physics::Scheme scheme;
   scheme.gradient_fit = autan::physics::GradientFit::quadratic;
@@ -2415,10 +2530,8 @@ TEST_CASE("a laminar device run beyond the covered stencil gain warns W0717",
   host.set_boundary(kinds, data);
   const double gain = autan::physics::device_stencil_gain(host.euler(), mesh, g);
   INFO("G = " << gain);
-  const bool warns = std::string(v.precision) == "fp32+acc64" && v.farfield &&
-                     gain > autan::physics::device_covered_gain;
-  if (std::string(v.mesh) == "poly/polyMesh" && v.farfield)
-    REQUIRE(gain > autan::physics::device_covered_gain);
+  const bool warns =
+      autan::physics::device_gain_warns(std::string(v.precision) == "fp32+acc64", v.farfield, gain);
   const auto out = run(doc);
   INFO(out.err);
   REQUIRE(out.status == ExitStatus::finished);
@@ -2433,6 +2546,18 @@ TEST_CASE("a laminar device run beyond the covered stencil gain warns W0717",
   CHECK(warns == v.warns);
   CHECK(in_run == (warns ? 1 : 0));
   CHECK(in_log == (warns ? 1 : 0));
+}
+
+TEST_CASE("W0717 is decided on the precision, the faces and the stencil gain", "[navier-stokes]") {
+  // #586: fp32+acc64, a farfield or inlet face and a gain strictly above G_covered; anything else
+  // does not warn.
+  using autan::physics::device_covered_gain;
+  using autan::physics::device_gain_warns;
+  const double above = std::nextafter(device_covered_gain, std::numeric_limits<double>::infinity());
+  CHECK(device_gain_warns(true, true, above));
+  CHECK_FALSE(device_gain_warns(true, true, device_covered_gain));
+  CHECK_FALSE(device_gain_warns(false, true, above));
+  CHECK_FALSE(device_gain_warns(true, false, above));
 }
 
 TEST_CASE("on a device, a run repeats bit for bit and continues bit for bit", "[euler][gpu]") {

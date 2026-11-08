@@ -2062,10 +2062,22 @@ class Run final : public Log {
     if (!code.starts_with('W')) {
       throw std::logic_error("Log::warn takes a warning code, not " + std::string(code));
     }
-    add_diagnostic(Diagnostic{.code = std::string(code),
-                              .message = std::string(message),
-                              .path = {},
-                              .data_json = data_json.empty() ? "{}" : std::string(data_json)});
+    // Time spent here is the log's, not the solve's (timing.solve_seconds).
+    const auto start = std::chrono::steady_clock::now();
+    const Diagnostic d{.code = std::string(code),
+                       .message = std::string(message),
+                       .path = {},
+                       .data_json = data_json.empty() ? "{}" : std::string(data_json)};
+    if (comm_.rank() == 0) {
+      add_diagnostic(d);
+    } else {
+      // Every rank raises it alike (runtime.md); the others log theirs with their rank.
+      const Json entry = Json::parse(d.json());
+      Json data = entry["data"];
+      data["rank"] = comm_.rank();
+      dir_->append_log(log_line("warning", "solver", d.message, d.code, data.dump()));
+    }
+    log_seconds_ += seconds_since(start);
   }
 
   void add_diagnostic(const Diagnostic& d) {

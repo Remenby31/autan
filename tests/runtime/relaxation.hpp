@@ -88,6 +88,8 @@ struct RelaxationOptions {
   /// Checks PhysicsContext's face keys against the mesh file: each local face's global face has
   /// the local face's cells (by global id), swapped when it is marked reversed.
   bool check_keys = false;
+  /// Raises W0717 through Log::warn once constructed, on every rank.
+  bool warn = false;
   std::string refuse_code{};  ///< its scope refuses every input with this code; empty: none
   int expect_ranks = 0;       ///< its scope refuses a run on another number of ranks; 0: any
   /// Symmetric sweeps per step of a smoother in the global colours (PhysicsContext::cell_colours):
@@ -138,6 +140,7 @@ struct RelaxationOptions {
     read("AUTAN_TEST_VARY", o.vary);
     read("AUTAN_TEST_ONE_RANK", o.one_rank);
     read("AUTAN_TEST_CHECK_KEYS", o.check_keys);
+    read("AUTAN_TEST_WARN", o.warn);
     read("AUTAN_TEST_COLOUR_SWEEPS", o.colour_sweeps);
     read("AUTAN_TEST_HOLD_BYTES", o.hold_bytes);
     read("AUTAN_TEST_HOLD_RANK", o.hold_rank);
@@ -172,6 +175,9 @@ class Relaxation final : public autan::runtime::Physics {
  public:
   Relaxation(const autan::runtime::PhysicsContext& context, RelaxationOptions options)
       : context_(context), options_(options) {
+    if (options.warn) {
+      context.log.warn("W0717", "relaxation physics warning", R"({"source":"relaxation"})");
+    }
     if (options.hold_rank < 0 || options.hold_rank == context.ranks.rank())
       held_.assign(static_cast<std::size_t>(options.hold_bytes), 1);
 #ifdef AUTAN_HAVE_CUDA

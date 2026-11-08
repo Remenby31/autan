@@ -27,8 +27,14 @@ template <class P>
 double device_stencil_gain(const Euler<P>& flow, const Mesh& mesh, const Geometry& geometry);
 
 /// The largest G at which a laminar device run's agreement with the host on farfield and inlet
-/// faces was shown tight in fp32+acc64 (#586, run gpunssa-d4-2b32); a laminar device run in that
+/// faces was shown tight in fp32+acc64 (#586, run gpunssa-d7-2b32); a laminar device run in that
 /// precision with such faces and a larger G warns W0717.
-inline constexpr double device_covered_gain = 4.37325;
+inline constexpr double device_covered_gain = 4.79443;
+
+/// Whether a laminar device run warns W0717: in fp32+acc64, with a farfield or inlet face, at a
+/// stencil gain above device_covered_gain.
+[[nodiscard]] constexpr bool device_gain_warns(bool fp32, bool farfield_or_inlet, double gain) {
+  return fp32 && farfield_or_inlet && gain > device_covered_gain;
+}
 
 }  // namespace autan::physics

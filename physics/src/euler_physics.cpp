@@ -266,10 +266,11 @@ class EulerPhysics final : public runtime::Physics {
           });
           if (in.precision == "fp32+acc64" && exp_log) {
             const double gain = device_stencil_gain(euler_.euler(), mesh, ctx.geometry);
-            if (gain > device_covered_gain) {
+            if (device_gain_warns(true, exp_log, gain)) {
               ctx.log.warn("W0717",
                            "the device comparison on this combination is not covered by a tight "
-                           "bound (#586 2(b), 9.4×)",
+                           "bound (#586 2(b): G beyond 4.79, the largest G at which tightness was "
+                           "measured)",
                            nlohmann::json{{"G", gain},
                                           { "G_covered",
                                             device_covered_gain }}
