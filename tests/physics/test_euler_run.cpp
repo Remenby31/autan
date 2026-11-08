@@ -1392,13 +1392,35 @@ TEST_CASE("Navier-Stokes on several ranks gives the one-rank solution bit for bi
                            [](double x) { return std::bit_cast<std::uint64_t>(x); });
     return out;
   };
-  const auto a = data_arrays(one.run), b = data_arrays(many);
-  REQUIRE(a.contains("WallSolution/WallShearStressX"));
-  CHECK(a.size() == b.size());
-  for (const auto& [name, values] : a) {
-    INFO(name);
-    REQUIRE(b.contains(name));
-    CHECK(bits(values) == bits(b.at(name)));
+  const auto same_arrays = [&](const fs::path& other) {
+    const auto a = data_arrays(one.run), b = data_arrays(other);
+    REQUIRE(a.contains("WallSolution/WallShearStressX"));
+    CHECK(a.size() == b.size());
+    for (const auto& [name, values] : a) {
+      INFO(name);
+      REQUIRE(b.contains(name));
+      CHECK(bits(values) == bits(b.at(name)));
+    }
+  };
+  same_arrays(many);
+  if (steady && ranks == 4 && std::string(model) == "sa" && std::string(linear) == "gauss-seidel") {
+    // Written on 2 ranks after the switch to second order, continued on 4: the restart state
+    // carries SA's variable and the switch, so the two runs are the uninterrupted one.
+    const auto steps = history(one.run).size();
+    REQUIRE(steps > 300);
+    Json first_doc = doc;
+    first_doc["time"]["max_iterations"] = 300;
+    const fs::path first = run_on_ranks(first_doc, 2);
+    REQUIRE(!first.empty());
+    REQUIRE(field(first, "SolverSecondOrder", "RestartState").front() == 1.0);
+    Json next = doc;
+    next["start"] = continue_from(first);
+    const fs::path rest = run_on_ranks(next, 4, 0, &err);
+    INFO(err);
+    REQUIRE(!rest.empty());
+    CHECK(read(first / "history.jsonl") + read(rest / "history.jsonl") ==
+          read(one.run / "history.jsonl"));
+    same_arrays(rest);
   }
 }
 
