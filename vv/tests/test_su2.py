@@ -1057,3 +1057,152 @@ def test_absolute_criterion_does_not_depend_on_the_initial_state() -> None:
     assert fs["pressure"] == 0.7142857
     assert "viscosity" not in fs
     assert "nu-tilde" not in history.flux_scales(fs, 1.0)
+
+
+def _bump_wall(x: np.ndarray) -> np.ndarray:
+    """TMR bump.html: y = 0.05 sin^4(pi x / 0.9 - pi / 3) for 0.3 <= x <= 1.2, else 0."""
+    inside = (x >= 0.3) & (x <= 1.2)
+    return np.where(inside, 0.05 * np.sin(np.pi * x / 0.9 - np.pi / 3.0) ** 4, 0.0)
+
+
+def _assert_closed(elements: np.ndarray, markers: dict[str, np.ndarray]) -> None:
+    """Every cell edge occurs once (a boundary edge, then in exactly one marker, in the cell's
+    direction) or twice in opposite directions (an interior edge)."""
+    from collections import Counter  # noqa: PLC0415
+
+    incidences = Counter(
+        (int(q[k]), int(q[(k + 1) % 4])) for q in elements[:, 1:5] for k in range(4)
+    )
+    assert max(incidences.values()) == 1
+    undirected = Counter(frozenset(e) for e in incidences)
+    assert max(undirected.values()) <= 2
+    for edge, n in undirected.items():
+        if n == 2:
+            a, b = tuple(edge)
+            assert (a, b) in incidences
+            assert (b, a) in incidences
+    boundary = {e for e, n in undirected.items() if n == 1}
+    marked = [frozenset((int(a), int(b))) for m in markers.values() for _, a, b in m]
+    assert len(marked) == len(set(marked))
+    assert set(marked) == boundary
+    for m in markers.values():
+        assert all((int(a), int(b)) in incidences for _, a, b in m)
+
+
+def test_bump_grid_converts_with_su2s_markers(tmp_path: Path) -> None:
+    from autan_vv.su2 import tmr2d  # noqa: PLC0415
+
+    xs = np.array([-25.0, -1.0, 0.0, 0.3, 0.75, 1.2, 1.5, 3.0, 26.5])
+    s = np.array([0.0, 0.01, 0.2, 1.0])
+    wall = _bump_wall(xs)
+    x = np.tile(xs, (len(s), 1))
+    y = wall[None, :] + (5.0 - wall[None, :]) * s[:, None]
+    grid = tmp_path / "bump.p2dfmt"
+    _plot3d_2d(grid, x, y)
+    record = tmr2d.convert("tmr-2dbc-bump", grid, tmp_path / "bump.su2")
+    dim, elements, points, markers = _read_su2_mesh(tmp_path / "bump.su2")
+    assert (dim, record.cells, record.points) == (2, 8 * 3, 9 * 4)
+    areas = np.array([_shoelace(points[q, :2]) for q in elements[:, 1:5]])
+    assert np.all(areas > 0.0)
+    ring = np.vstack([np.column_stack([xs, wall]), np.column_stack([xs[::-1], np.full(9, 5.0)])])
+    assert areas.sum() == pytest.approx(_shoelace(ring), rel=1e-13)
+    assert {k: len(v) for k, v in markers.items()} == {
+        "inlet": 3, "outlet": 3, "upper": 8, "lower_upstream": 2, "bump": 4, "lower_downstream": 2
+    }  # fmt: skip
+
+    def at(name: str) -> np.ndarray:
+        return points[np.unique(markers[name][:, 1:]), :2]
+
+    on_bump = at("bump")
+    assert (on_bump[:, 0].min(), on_bump[:, 0].max()) == (0.0, 1.5)
+    assert on_bump[:, 1] == pytest.approx(_bump_wall(on_bump[:, 0]), abs=1e-15)
+    assert np.all(at("inlet")[:, 0] == -25.0)
+    assert np.all(at("outlet")[:, 0] == 26.5)
+    assert np.all(at("upper")[:, 1] == 5.0)
+    assert np.all(at("lower_upstream")[:, 0] <= 0.0)
+    assert np.all(at("lower_upstream")[:, 1] == 0.0)
+    assert np.all(at("lower_downstream")[:, 0] >= 1.5)
+    assert np.all(at("lower_downstream")[:, 1] == 0.0)
+    _assert_closed(elements, markers)
+    # TMR's own grids start the wall at x = 2.78063975925e-16, which is the wall's start.
+    xs_tmr = np.where(xs == 0.0, 2.78063975925e-16, xs)
+    _plot3d_2d(grid, np.tile(xs_tmr, (len(s), 1)), y)
+    assert tmr2d.convert("tmr-2dbc-bump", grid, tmp_path / "tmr.su2").markers["bump"] == 4
+    # A wall that stops short of x = 1.5 is not the 2DBC grid.
+    _plot3d_2d(grid, x * (1.4 / 1.5) * (x > 0) + x * (x <= 0), y)
+    with pytest.raises(VVError) as err:
+        tmr2d.convert("tmr-2dbc-bump", grid, tmp_path / "bad.su2")
+    assert err.value.code == "V0902"
+
+
+def test_naca_c_grid_closes_its_wake_cut(tmp_path: Path) -> None:
+    from autan_vv.su2 import tmr2d  # noqa: PLC0415
+
+    # A C-grid around a diamond (TE at x = 1, LE at x = 0): the first j line runs from the wake's
+    # end along its lower side, round the diamond and back along the wake's upper side.
+    j0 = np.array([[3, 0], [2, 0], [1, 0], [0.5, -0.1], [0, 0], [0.5, 0.1], [1, 0], [2, 0], [3, 0]])
+    j2 = np.array([[3, -2], [2, -2], [1, -2], [0.5, -2], [-2, 0], [0.5, 2], [1, 2], [2, 2], [3, 2]])
+    lines = np.stack([j0, 0.5 * (j0 + j2), j2]).astype(float)
+    grid = tmp_path / "c.p2dfmt"
+    _plot3d_2d(grid, lines[:, :, 0], lines[:, :, 1])
+    record = tmr2d.convert("tmr-2dn00-naca0012", grid, tmp_path / "c.su2")
+    _, elements, points, markers = _read_su2_mesh(tmp_path / "c.su2")
+    # The three coincident pairs (x = 3, 2, 1 on the wake line) become single points.
+    assert (record.cells, record.points) == (8 * 2, 9 * 3 - 3)
+    assert len(np.unique(points[:, :2], axis=0)) == len(points)
+    assert set(np.unique(elements[:, 1:5])) == set(range(len(points)))
+    areas = np.array([_shoelace(points[q, :2]) for q in elements[:, 1:5]])
+    assert np.all(areas > 0.0)
+    diamond = np.array([[1, 0], [0.5, 0.1], [0, 0], [0.5, -0.1]], dtype=float)
+    # Outer ring (clockwise as listed) less the diamond: 15.0 - 0.1.
+    outer = abs(_shoelace(j2.astype(float)))
+    assert areas.sum() == pytest.approx(outer - abs(_shoelace(diamond)), rel=1e-13)
+    assert {k: len(v) for k, v in markers.items()} == {"airfoil": 4, "farfield": 12}
+    on_airfoil = {tuple(p) for p in points[np.unique(markers["airfoil"][:, 1:]), :2]}
+    assert on_airfoil == {tuple(p) for p in diamond}
+    # The wake cut is interior: its edges are shared, in opposite directions, by the cells on
+    # either side; every other edge is in exactly one marker.
+    _assert_closed(elements, markers)
+    far = points[np.unique(markers["farfield"][:, 1:]), :2]
+    assert all(p[0] == 3.0 or abs(p[1]) == 2.0 or tuple(p) == (-2.0, 0.0) for p in far)
+    # The same grid numbered the other way round (i reversed: clockwise) gives the same mesh.
+    _plot3d_2d(grid, lines[:, ::-1, 0], lines[:, ::-1, 1])
+    tmr2d.convert("tmr-2dn00-naca0012", grid, tmp_path / "r.su2")
+    _, elements_r, points_r, markers_r = _read_su2_mesh(tmp_path / "r.su2")
+    assert np.all(np.array([_shoelace(points_r[q, :2]) for q in elements_r[:, 1:5]]) > 0.0)
+    _assert_closed(elements_r, markers_r)
+    for name in markers:
+        ours = {tuple(p) for p in points[np.unique(markers[name][:, 1:]), :2]}
+        assert {tuple(p) for p in points_r[np.unique(markers_r[name][:, 1:]), :2]} == ours
+    # Wake nodes that coincide only to round-off are still one node.
+    nudged = lines.copy()
+    nudged[0, -2] += [3e-16, 0.0]
+    _plot3d_2d(grid, nudged[:, :, 0], nudged[:, :, 1])
+    assert tmr2d.convert("tmr-2dn00-naca0012", grid, tmp_path / "n.su2").points == 9 * 3 - 3
+    # A blunt trailing edge (the TE pair apart) moves the cut's end to x = 2: the airfoil found
+    # would span 0 to 2, which TMR's sharp-edged chord excludes.
+    blunt = lines.copy()
+    blunt[0, 2] = [1.0, -0.001]
+    blunt[0, 6] = [1.0, 0.001]
+    _plot3d_2d(grid, blunt[:, :, 0], blunt[:, :, 1])
+    with pytest.raises(VVError) as err:
+        tmr2d.convert("tmr-2dn00-naca0012", grid, tmp_path / "blunt.su2")
+    assert err.value.code == "V0902"
+    # A grid whose first j line has no coincident nodes is not a C-grid.
+    lines[0, -1] = [3.0, 0.5]
+    lines[0, 0] = [3.0, -0.5]
+    _plot3d_2d(grid, lines[:, :, 0], lines[:, :, 1])
+    with pytest.raises(VVError) as err:
+        tmr2d.convert("tmr-2dn00-naca0012", grid, tmp_path / "bad.su2")
+    assert err.value.code == "V0902"
+
+
+def test_block_refuses_a_self_intersecting_quadrangle() -> None:
+    from autan_vv.su2 import tmr2d  # noqa: PLC0415
+
+    # Corners (0,0), (2,2), (0,1), (1,0): positive diagonal cross product, but a bow-tie.
+    x = np.array([[0.0, 2.0], [1.0, 0.0]])
+    y = np.array([[0.0, 2.0], [0.0, 1.0]])
+    with pytest.raises(VVError) as err:
+        tmr2d.block(x, y)
+    assert err.value.code == "V0902"
