@@ -1092,6 +1092,10 @@ def test_bump_grid_converts_with_su2s_markers(tmp_path: Path) -> None:
     on_bump = points[np.unique(markers["bump"][:, 1:]), :2]
     assert (on_bump[:, 0].min(), on_bump[:, 0].max()) == (0.0, 1.5)
     assert on_bump[:, 1] == pytest.approx(_bump_wall(on_bump[:, 0]), abs=1e-15)
+    # TMR's own grids start the wall at x = 2.78063975925e-16, which is the wall's start.
+    xs_tmr = np.where(xs == 0.0, 2.78063975925e-16, xs)
+    _plot3d_2d(grid, np.tile(xs_tmr, (len(s), 1)), y)
+    assert tmr2d.convert("tmr-2dbc-bump", grid, tmp_path / "tmr.su2").markers["bump"] == 4
     directed = _directed(elements)
     for marker in markers.values():
         assert all((int(a), int(b)) in directed for _, a, b in marker)

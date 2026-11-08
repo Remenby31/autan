@@ -93,16 +93,18 @@ def _area2(points: FloatArray, quads: IntArray) -> FloatArray:
 
 def bump(x: FloatArray, y: FloatArray) -> tuple[FloatArray, IntArray, dict[str, IntArray]]:
     """The 2DBC block with SU2's bump markers. V0902 if the first j line's wall nodes do not span
-    exactly 0 <= x <= 1.5 or its symmetry parts are not y = 0."""
+    0 <= x <= 1.5 or its symmetry parts are not y = 0, both to 1e-12."""
     points, quads, sides = block(x, y)
     bottom = sides["j0"]
     mid = 0.5 * (points[bottom[:, 0], 0] + points[bottom[:, 1], 0])
     wall = (mid > BUMP_WALL[0]) & (mid < BUMP_WALL[1])
     wall_x = points[bottom[wall].ravel(), 0]
-    if not (wall_x.min() == BUMP_WALL[0] and np.isclose(wall_x.max(), BUMP_WALL[1], atol=1e-12)):
-        msg = f"the wall runs from x = {wall_x.min()} to {wall_x.max()}, not {BUMP_WALL}"
+    # TMR's grids place the wall's ends within round-off of 0 and 1.5 (x = 2.78e-16 on L0-L4).
+    ends = (wall_x.min(), wall_x.max())
+    if not np.allclose(ends, BUMP_WALL, rtol=0.0, atol=1e-12):
+        msg = f"the wall runs from x = {ends[0]} to {ends[1]}, not {BUMP_WALL}"
         raise VVError(msg, code="V0902")
-    if not np.all(points[bottom[~wall].ravel(), 1] == 0.0):
+    if not np.allclose(points[bottom[~wall].ravel(), 1], 0.0, rtol=0.0, atol=1e-12):
         msg = "the symmetry parts of the first j line are not y = 0"
         raise VVError(msg, code="V0902")
     markers = {
