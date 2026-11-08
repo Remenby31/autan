@@ -22,6 +22,11 @@ if(AUTAN_ENABLE_CUDA)
     autan_solvers_gpu_tests
     PRIVATE autan::solvers autan::io CUDA::cudart Catch2::Catch2WithMain autan_compile_options
   )
+  # The GCR test takes the host's exact sums from runtime/, built with CGNS only.
+  if(TARGET autan::runtime)
+    target_sources(autan_solvers_gpu_tests PRIVATE test_gcr_gpu.cpp)
+    target_link_libraries(autan_solvers_gpu_tests PRIVATE autan::runtime)
+  endif()
   target_compile_definitions(
     autan_solvers_gpu_tests
     PRIVATE AUTAN_TEST_MESH_DIR="${PROJECT_SOURCE_DIR}/tests/data/mesh"

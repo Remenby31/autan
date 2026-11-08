@@ -28,9 +28,14 @@ if(AUTAN_ENABLE_CUDA)
     src/coarse_gpu.cu
     src/line_smoother_gpu.cu
     src/line_sweep_gpu.cu
+    src/gcr_gpu.cu
   )
   target_link_libraries(autan_solvers_cuda PRIVATE autan::kernels CUDA::cudart)
-  target_include_directories(autan_solvers_cuda PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  # The device exact sums of runtime/ (header-only on the device).
+  target_include_directories(
+    autan_solvers_cuda
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/runtime/include
+  )
   set_target_properties(autan_solvers_cuda PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON)
   target_sources(autan_solvers PRIVATE $<TARGET_OBJECTS:autan_solvers_cuda>)
   target_link_libraries(autan_solvers PUBLIC CUDA::cudart)

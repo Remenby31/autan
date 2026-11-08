@@ -39,9 +39,9 @@ __global__ void __launch_bounds__(block) solve_units(Lines l, std::int64_t count
                                                      const index_t* units, const Off* off,
                                                      const double* dinv, const double* lower,
                                                      const double* gain, const double* b, double* x,
-                                                     double* work) {
+                                                     double* work, const int* active) {
   const std::int64_t t = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (t >= count) return;
+  if (t >= count || (active != nullptr && *active == 0)) return;
   const std::int64_t unit = units[t];
   const offset_t first = l.line_offsets[unit], last = l.line_offsets[unit + 1];
   const std::int64_t n = l.n_nodes, ne = l.n_line_nodes;
@@ -82,9 +82,10 @@ __global__ void __launch_bounds__(block) solve_units(Lines l, std::int64_t count
 template <class Off>
 __global__ void __launch_bounds__(block) multiply_kernel(
     std::int64_t n, std::int64_t n_slots, const offset_t* row_offsets, const offset_t* row_slots,
-    const index_t* row_cells, const double* diag, const Off* off, const double* x, double* y) {
+    const index_t* row_cells, const double* diag, const Off* off, const double* x, double* y,
+    const int* active) {
   const std::int64_t c = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (c >= n) return;
+  if (c >= n || (active != nullptr && *active == 0)) return;
   double s[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
   for (int q = 0; q < 5; ++q) {
     for (int j = 0; j < 5; ++j)
@@ -154,29 +155,30 @@ struct LineSweep::Impl {
   }
 
   template <class Off>
-  void multiply(const double* x, double* y, void* stream) const {
+  void multiply(const double* x, double* y, void* stream, const int* active) const {
     multiply_kernel<Off><<<grid(n_cells), block, 0, as_stream(stream)>>>(
         n_cells, n_slots, row_offsets.get(), row_slots.get(), row_cells.get(), diag,
-        static_cast<const Off*>(off), x, y);
+        static_cast<const Off*>(off), x, y, active);
     kg::check(kg::last_error(), "line sweep product");
   }
 
   template <class Off>
-  void relax(std::size_t colour, const double* b, double* x, void* stream) const {
+  void relax(std::size_t colour, const double* b, double* x, void* stream,
+             const int* active) const {
     const std::int64_t first = colour_offsets[colour], count = colour_offsets[colour + 1] - first;
     if (count == 0) return;
     solve_units<Off><<<grid(count), block, 0, as_stream(stream)>>>(
         view(), count, colour_units.get() + first, static_cast<const Off*>(off), dinv.get(),
-        lower.get(), gain.get(), b, x, work.get());
+        lower.get(), gain.get(), b, x, work.get(), active);
     kg::check(kg::last_error(), "line sweep");
   }
 
   template <class Off>
-  void sweep(const double* b, double* x, int sweeps, void* stream) const {
+  void sweep(const double* b, double* x, int sweeps, void* stream, const int* active) const {
     const std::size_t colours = colour_offsets.size() - 1;
     for (int s = 0; s < sweeps; ++s) {
-      for (std::size_t c = 0; c < colours; ++c) relax<Off>(c, b, x, stream);
-      for (std::size_t c = colours; c-- > 0;) relax<Off>(c, b, x, stream);
+      for (std::size_t c = 0; c < colours; ++c) relax<Off>(c, b, x, stream, active);
+      for (std::size_t c = colours; c-- > 0;) relax<Off>(c, b, x, stream, active);
     }
   }
 };
@@ -287,21 +289,22 @@ void LineSweep::set_operator(const double* diag, const float* off, void* stream)
   impl_->set_operator(diag, off, stream);
 }
 
-void LineSweep::multiply(const double* x, double* y, void* stream) const {
+void LineSweep::multiply(const double* x, double* y, void* stream, const int* active) const {
   if (impl_->diag == nullptr) throw std::logic_error("LineSweep: set_operator first");
   if (impl_->single) {
-    impl_->multiply<float>(x, y, stream);
+    impl_->multiply<float>(x, y, stream, active);
   } else {
-    impl_->multiply<double>(x, y, stream);
+    impl_->multiply<double>(x, y, stream, active);
   }
 }
 
-void LineSweep::sweep(const double* b, double* x, int sweeps, void* stream) const {
+void LineSweep::sweep(const double* b, double* x, int sweeps, void* stream,
+                      const int* active) const {
   if (impl_->diag == nullptr) throw std::logic_error("LineSweep: set_operator first");
   if (impl_->single) {
-    impl_->sweep<float>(b, x, sweeps, stream);
+    impl_->sweep<float>(b, x, sweeps, stream, active);
   } else {
-    impl_->sweep<double>(b, x, sweeps, stream);
+    impl_->sweep<double>(b, x, sweeps, stream, active);
   }
 }
 
