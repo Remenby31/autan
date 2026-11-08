@@ -7,6 +7,11 @@
 #include "autan/core/mesh.hpp"
 #include "autan/physics/navier_stokes.hpp"
 
+namespace autan::kernels::spalart_allmaras {
+template <class P>
+struct Data;
+}  // namespace autan::kernels::spalart_allmaras
+
 namespace autan::physics {
 
 /// Spalart-Allmaras, negative variant (SA-neg), loosely coupled to a NavierStokes<P> residual
@@ -44,6 +49,7 @@ class SpalartAllmaras {
   /// negative part of each cell's source derivative dropped (production does not lower the
   /// diagonal): `diag` per cell, `upper` (row owner, column neighbour) and `lower` (row
   /// neighbour, column owner) per interior face, in mesh face order, as BlockMatrix.
+  /// Refused (std::logic_error) under flow keys that reverse a face.
   void assemble(std::span<const double> shift, std::span<double> diag, std::span<double> upper,
                 std::span<double> lower) const;
   /// Solves the assembled system A dx = b with `sweeps` symmetric Gauss-Seidel sweeps in cell
@@ -53,6 +59,9 @@ class SpalartAllmaras {
              int sweeps) const;
   /// Writes the eddy viscosity of s to the flow, per cell and per boundary face.
   void eddy_viscosity(std::span<const State> s);
+  /// For a device copy: the generated loops' data in host memory (geometry, wall distance,
+  /// boundary values, source, parameters). Under the flow's global keys the face loops gather.
+  [[nodiscard]] const kernels::spalart_allmaras::Data<P>& data() const;
 
  private:
   struct Impl;
