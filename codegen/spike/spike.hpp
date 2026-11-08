@@ -39,11 +39,14 @@ struct SpikeMesh {
   }
 };
 
-/// A vertex stencil (kind 0) on a partition whose ghosts hold less is E0148.
+/// A cell stencil of `kind` (0 vertex, 1 face2, -1 none) on a partition whose ghosts hold less
+/// is E0148.
 inline void require_held(const SpikeMesh& m, int kind) {
-  if (kind == 0 && m.ghosts && *m.ghosts < autan::GhostStencil::vertex) {
+  if (kind < 0 || !m.ghosts) return;
+  const auto needed = kind == 0 ? autan::GhostStencil::vertex : autan::GhostStencil::face2;
+  if (*m.ghosts < needed) {
     throw autan::Error(autan::ErrorCode::partition_stencil_not_local,
-                       "a vertex stencil on a partition without vertex ghosts");
+                       "a cell stencil wider than the partition's ghost stencil");
   }
 }
 

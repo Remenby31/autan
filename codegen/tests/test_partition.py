@@ -136,17 +136,15 @@ def test_orders_that_follow_the_numbering_are_refused_when_rank_independent(
     assert err.value.code == "E1109"
 
 
-def test_a_vertex_stencil_on_a_partition_without_vertex_ghosts_is_refused() -> None:
-    # A face2 partition does not hold the vertex stencil (autan::GhostStencil): building one
-    # there would truncate it, E0148. A vertex partition holds it.
+def test_a_stencil_wider_than_the_partition_ghosts_is_refused() -> None:
+    # A partition holds its ghost stencil (autan::GhostStencil) and nothing wider: a vertex
+    # stencil on face2 ghosts, or a face2 stencil on face ghosts, would be truncated, E0148.
     full = s.mesh(meshes.build("tet", 4))
     parts = (full.cell_centroid[:, 0] > np.median(full.cell_centroid[:, 0])).astype(np.int32)
-    face2 = s.partition(full, parts, 2, 0, ghosts="face2")
-    for build in (
-        lambda: s.set_stencil(face2, "vertex"),
-        lambda: s.set_global_order(face2, "vertex"),
-    ):
-        with pytest.raises(s.SpikeError) as err:
-            build()
-        assert err.value.code == "E0148"
+    for ghosts, stencil in (("face2", "vertex"), ("face", "face2")):
+        part = s.partition(full, parts, 2, 0, ghosts=ghosts)
+        for build in (s.set_stencil, s.set_global_order):
+            with pytest.raises(s.SpikeError) as err:
+                build(part, stencil)
+            assert err.value.code == "E0148"
     assert s.set_stencil(s.partition(full, parts, 2, 0, ghosts="vertex"), "vertex") > 0
