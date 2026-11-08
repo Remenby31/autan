@@ -439,6 +439,38 @@ TEST_CASE("a continued steady run ends its first-order start where the uninterru
   }
 }
 
+TEST_CASE("the history marks provisional exactly the steps of the first-order start", "[euler]") {
+  // results.md#history: a steady line carries `provisional`, true for the first-order start's
+  // steps (euler.md#time-stepping). A uniform flow's start ends on its stall, before the cap, and
+  // the stalling step is not counted by FirstOrderStart: n < 201 marked lines, a prefix, and
+  // n - 1 counted steps in the restart state, second order on.
+  const auto out = run(input("hybrid.solver-input.json", [](Json& d) {
+    inviscid_along_x(d, "fp64");
+    d["time"]["max_iterations"] = 250;
+  }));
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  const auto lines = history(out.run);
+  std::size_t marked = 0;
+  while (marked < lines.size() && lines[marked]["provisional"] == true) ++marked;
+  for (std::size_t i = marked; i < lines.size(); ++i) CHECK(lines[i]["provisional"] == false);
+  REQUIRE(marked >= 1);
+  REQUIRE(marked < lines.size());
+  CHECK(field(out.run, "SolverSecondOrder", "RestartState").front() == 1.0);
+  const double counted = field(out.run, "SolverFirstOrderSteps", "RestartState").front();
+  CHECK(marked < 201);
+  CHECK(counted == static_cast<double>(marked - 1));
+  // Unsteady lines leave it out.
+  const auto steps = run(input("hybrid.solver-input.json", [](Json& d) {
+    inviscid_along_x(d, "fp64");
+    d["time"] = {{"kind", "unsteady"},      {"steps", 3},
+                 {"dt", nullptr},           {"cfl", 0.8},
+                 {"average_from", nullptr}, {"checkpoint", {{"seconds", 1800.0}}}};
+  }));
+  REQUIRE(steps.status == ExitStatus::finished);
+  for (const auto& line : history(steps.run)) CHECK_FALSE(line.contains("provisional"));
+}
+
 TEST_CASE("checkpoints change no Euler result", "[euler]") {
   const char* precision = GENERATE("fp64", "fp32+acc64");
   const bool steady = GENERATE(true, false);
@@ -731,6 +763,46 @@ void unsteady_through_pairs(Json& d, int steps) {
 }
 
 }  // namespace
+
+TEST_CASE("a case runs the convective flux its physics names", "[euler]") {
+  // case-schema.md#physics: `flux` picks Roe, HLLC or AUSM+-up. The fluxes differ wherever the
+  // flow is not uniform, so each gives its own residuals from the second step on.
+  const auto residuals = [](const std::string& flux) {
+    const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+      inviscid_along_x(d, "fp64");
+      d["physics"]["flux"] = flux;
+      d["time"]["max_iterations"] = 3;
+      // One zone at 1.3 times the freestream's pressure and density: not a uniform flow.
+      for (const char* key : {"pressure", "density"}) {
+        auto& v = d["cell_zones"][1]["initial"][key];
+        v = 1.3 * v.get<double>();
+      }
+    });
+    const auto out = run(doc);
+    INFO(flux << " " << out.err);
+    REQUIRE(out.status == ExitStatus::finished);
+    std::vector<Json> steps;
+    for (const auto& line : history(out.run)) steps.push_back(line["residuals"]);
+    return steps;
+  };
+  const auto roe = residuals("roe");
+  const auto hllc = residuals("hllc");
+  const auto ausm = residuals("ausm+up");
+  REQUIRE(roe.size() == 3);
+  CHECK(roe.back() != hllc.back());
+  CHECK(roe.back() != ausm.back());
+  CHECK(hllc.back() != ausm.back());
+  CHECK(residuals("hllc") == hllc);
+  // Any other value is an invalid document at `physics.flux`.
+  const auto out = run(input("hybrid.solver-input.json", [](Json& d) {
+    inviscid_along_x(d, "fp64");
+    d["physics"]["flux"] = "jst";
+  }));
+  CHECK(out.status == ExitStatus::invalid_input);
+  const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
+  CHECK(diagnostic["code"] == "E0705");
+  CHECK(diagnostic["location"]["path"] == "physics.flux");
+}
 
 TEST_CASE("steady cases the steady solver cannot run are refused before any directory exists",
           "[euler]") {
