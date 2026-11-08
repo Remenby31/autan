@@ -1,5 +1,5 @@
 ---
-source_hash: "2b81ee92c5ac"
+source_hash: "3e721af682eb"
 ---
 
 # Compiler Autan depuis les sources
@@ -32,6 +32,8 @@ cmake --build build
 ```
 
 La compilation génère d'abord les kernels d'écoulement depuis `kernels/` avec Python, puis les compile. Elle produit `build/runtime/autan-run` et `build/io/autan-mesh-info`.
+
+La configuration télécharge nlohmann/json et PicoSHA2, ainsi que Catch2 pour les tests, depuis GitHub, et vérifie le SHA-256 de chacun. Si la variable d'environnement `AUTAN_GITHUB_TOKEN` est définie, sa valeur est envoyée comme jeton de ces téléchargements, que GitHub sert en priorité en cas de charge. La CI y place le `GITHUB_TOKEN` en lecture seule du workflow.
 
 ## Lancer un cas sur CPU
 

@@ -29,6 +29,8 @@ cmake --build build
 
 The build generates the flow kernels from `kernels/` with Python, then compiles them. It writes `build/runtime/autan-run` and `build/io/autan-mesh-info`.
 
+The configuration downloads nlohmann/json and PicoSHA2, and Catch2 for the tests, from GitHub, and checks each against its SHA-256. If the environment variable `AUTAN_GITHUB_TOKEN` is set, its value is sent as the downloads' token, which GitHub serves first under load. CI sets it to the workflow's read-only `GITHUB_TOKEN`.
+
 ## Run a case on the CPU
 
 Write a case for the 27-cell hexahedral test mesh of the repository, in a directory of its own: flow at Mach 0.3 over a slip wall, with farfield conditions on the open sides.
