@@ -179,7 +179,7 @@ The gate is "MMS Euler, Ringleb, NACA0012 and ONERA M6 inviscid; 10 orders of re
 - **Farfield matters.** The CL band in the table mixes runs with and without a point-vortex farfield correction. We use the point-vortex farfield at about 150 c on the paper's own geometry and grids, so the farfield error is the same as the reference's; a domain at 300 c is run once to report the remaining farfield sensitivity. The two point-vortex references then give **CL 0.35160–0.35621, CD 0.022675–0.022685** (FLO82, CFL3D with vortex).
 - **Acceptance (gate, on our continuum estimate from at least three levels):**
   - M 0.8, α 0°: CD within 1 count of 0.008342.
-  - M 0.8, α 1.25°: CL inside 0.3516–0.3562 widened by our own grid-convergence index; CD within 1 count of 0.02268.
+  - M 0.8, α 1.25°: CL by [ADR 0004](../adr/0004-naca0012-transonic-lift-gate.md), an interval CL∞ ± U overlapping the four-code range 0.348226045–0.356208937 with U at most half its width; CD within 1 count of 0.02268.
   - M 0.5 (subcritical): CD decreases monotonically under refinement and the extrapolated |CD| is below 0.5 count. Report the observed order instead of gating on it: the paper shows sub-second-order force convergence for some codes, attributed to the trailing-edge singularity.
 - **Why:** the published spread between codes defines what "converged" means for this case.
 
