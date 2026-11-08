@@ -21,6 +21,22 @@ option(AUTAN_ENABLE_SCOTCH "Partition with Scotch" OFF)
 option(AUTAN_ENABLE_MPI "Build the MPI halo exchange" OFF)
 option(AUTAN_ENABLE_CUDA "Build the CUDA paths" OFF)
 
+# FetchContent's GitHub downloads (Catch2, nlohmann/json, PicoSHA2) with a token when the
+# environment holds one: GitHub slows unauthenticated downloads under load. CI sets it to the
+# workflow's read-only GITHUB_TOKEN; the archives are checked against their SHA-256 either way.
+# CMake before 3.31 does not verify TLS certificates by default: a token is sent only with it.
+if(DEFINED ENV{AUTAN_GITHUB_TOKEN} AND NOT "$ENV{AUTAN_GITHUB_TOKEN}" STREQUAL "")
+  set(
+    AUTAN_GITHUB_DOWNLOAD
+    TLS_VERIFY
+    ON
+    HTTP_HEADER
+    "Authorization: Bearer $ENV{AUTAN_GITHUB_TOKEN}"
+  )
+else()
+  set(AUTAN_GITHUB_DOWNLOAD "")
+endif()
+
 if(AUTAN_ENABLE_CUDA)
   if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES native)
@@ -67,6 +83,7 @@ if(AUTAN_BUILD_TESTS)
     Catch2
     URL https://github.com/catchorg/Catch2/archive/refs/tags/v3.16.1.tar.gz
     URL_HASH SHA256=d16bd1b8b2364918bd472cb216394acb93bde6784890df0d91bccfb3f28d777d
+    ${AUTAN_GITHUB_DOWNLOAD}
   )
   FetchContent_MakeAvailable(Catch2)
   list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
