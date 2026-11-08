@@ -900,6 +900,14 @@ This `continue` run's `autan-run` executable is not the one that wrote the state
 
 Fix: Continue with the binary of the original run, or start the chain again with this one.
 
+## W0717
+
+**Device result not covered by a tight bound** (warning)
+
+The device comparison on this combination is not covered by a tight bound (#586 2(b), 9.4×): a laminar run on a CUDA device in fp32+acc64 with farfield or inlet faces, on a mesh whose gradient stencils amplify a boundary value by more than any mesh on which the device's agreement with the host was shown to be tight. `data` gives that amplification `G` and the largest covered one, `G_covered`.
+
+Fix: Use fp64.
+
 ## W0801
 
 **No NVIDIA GPU found** (warning)

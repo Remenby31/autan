@@ -13,6 +13,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -139,9 +140,9 @@ struct Problem {
 
   // Farfield on xmin (the flow's state as the freestream) and a subsonic inlet on zmin (total
   // pressure and temperature of the flow's state there): the conditions whose boundary states
-  // call exp and log. ymin becomes slip: a wall beside them can leave the viscous boundary fit
-  // undetermined, and walls are criterion 1's.
-  void farfield_and_inlet() {
+  // call exp and log. ymin becomes slip and zmax an outlet: a wall or a given state beside them
+  // can leave the viscous boundary fit undetermined, and those conditions are criterion 1's.
+  void farfield_and_inlet(bool zmax_outlet = true) {
     const double cp = air.gamma * air.gas_constant / (air.gamma - 1.0);
     for (std::size_t b = 0; b < nb; ++b) {
       const auto f = ni + b;
@@ -150,6 +151,10 @@ struct Problem {
       std::array<double, 5> d = w;
       if (zone == "ymin") {
         kind[b] = BoundaryKind::slip;
+        continue;
+      }
+      if (zone == "zmax" && zmax_outlet) {
+        kind[b] = BoundaryKind::outlet;
         continue;
       }
       if (zone == "xmin") {
@@ -446,9 +451,19 @@ TEMPLATE_TEST_CASE("the device's residual with farfield and inlet faces stays wi
   const Source source = GENERATE(from_range(sources));
   const auto flux = GENERATE(Flux::roe, Flux::hllc, Flux::ausm_up);
   const auto fit = GENERATE(GradientFit::linear, GradientFit::quadratic);
-  CAPTURE(name_of(source), static_cast<int>(flux), static_cast<int>(fit));
+  // The known failure (#586, run gpunssa-d3-2b32; #608): with zmax a given state, poly under the
+  // quadratic fit has G = 4.79, beyond the covered 4.37, and in fp32+acc64 the tightness test
+  // fails (9.43x Roe, 9.46x HLLC). It is kept as such: should it ever pass, it is reviewed.
+  const bool known_failure = GENERATE(false, true);
+  if (known_failure && !(std::holds_alternative<const char*>(source) &&
+                         std::string(std::get<const char*>(source)) == "poly/polyMesh" &&
+                         fit == GradientFit::quadratic && flux != Flux::ausm_up &&
+                         std::is_same_v<P, autan::kernels::fp32_acc64>)) {
+    return;
+  }
+  CAPTURE(name_of(source), static_cast<int>(flux), static_cast<int>(fit), known_failure);
   Problem pb(source, flux, true, fit, 300.0);
-  pb.farfield_and_inlet();
+  pb.farfield_and_inlet(!known_failure);
   const auto n = pb.n;
   const auto& g = pb.g;
   const auto& mesh = pb.mesh;
@@ -627,7 +642,13 @@ TEMPLATE_TEST_CASE("the device's residual with farfield and inlet faces stays wi
       const auto w = flow(g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]);
       for (std::size_t k = 0; k < 5; ++k) interior[k * pb.nb + b] = w[k];
     }
-    CHECK(scaled(host_residual(interior), r_host, tolerance) > 10.0);
+    const double tightness = scaled(host_residual(interior), r_host, tolerance);
+    INFO("tightness " << tightness);
+    if (known_failure) {
+      CHECK(tightness < 10.0);
+    } else {
+      CHECK(tightness > 10.0);
+    }
   }
 
   autan::runtime::OneRank rank;

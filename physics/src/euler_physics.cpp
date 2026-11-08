@@ -260,6 +260,23 @@ class EulerPhysics final : public runtime::Physics {
         device_ = make_device_stepper<P>(mesh, ctx.geometry, euler_, gas_.gamma, second_order_,
                                          ctx.ranks, ctx.ghosts, ctx.stream);
         device_->upload(u_);
+        if constexpr (is_viscous) {
+          const bool exp_log = std::ranges::any_of(in.boundaries, [](const auto& b) {
+            return b.kind == "farfield" || b.kind == "inlet";
+          });
+          if (in.precision == "fp32+acc64" && exp_log) {
+            const double gain = device_stencil_gain(euler_.euler(), mesh, ctx.geometry);
+            if (gain > device_covered_gain) {
+              ctx.log.warn("W0717",
+                           "the device comparison on this combination is not covered by a tight "
+                           "bound (#586 2(b), 9.4×)",
+                           nlohmann::json{{"G", gain},
+                                          { "G_covered",
+                                            device_covered_gain }}
+                               .dump());
+            }
+          }
+        }
         if (in.time.kind == "steady") {
           ctx.log.write("warning", "solver",
                         "steady case on the device: explicit SSP-RK3 with local time steps, not "
@@ -1811,6 +1828,47 @@ std::vector<std::string> euler_restart_names(const runtime::SolverInput& in, boo
 }
 
 }  // namespace
+
+template <class P>
+double device_stencil_gain(const Euler<P>& flow, const Mesh& mesh, const Geometry& g) {
+  const auto nc = static_cast<std::size_t>(mesh.n_cells());
+  std::vector<double> reach(nc, 0.0);
+  for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
+    auto at = [&](std::size_t c) {
+      const double d = std::hypot(g.face_centroid_x[f] - g.cell_centroid_x[c],
+                                  g.face_centroid_y[f] - g.cell_centroid_y[c],
+                                  g.face_centroid_z[f] - g.cell_centroid_z[c]);
+      reach[c] = std::max(reach[c], d);
+    };
+    at(static_cast<std::size_t>(mesh.owner()[f]));
+    if (f < static_cast<std::size_t>(mesh.n_interior_faces())) {
+      at(static_cast<std::size_t>(mesh.neighbour()[f]));
+    }
+  }
+  auto gain = [&](auto offsets, std::size_t entries, const std::vector<double>& w) {
+    double worst = 0.0;
+    for (std::size_t c = 0; c < nc; ++c) {
+      double sum = 0.0;
+      for (auto e = static_cast<std::size_t>(offsets[c]);
+           e < static_cast<std::size_t>(offsets[c + 1]); ++e) {
+        sum += std::hypot(w[e], w[entries + e], w[2 * entries + e]);
+      }
+      worst = std::max(worst, sum * reach[c]);
+    }
+    return worst;
+  };
+  const auto& st = flow.stencil();
+  double worst = gain(st.offsets, st.entries.size(), flow.gradient_weights());
+  if (flow.scheme().gradient_fit == GradientFit::quadratic) {
+    const auto q = flow.quadratic_gradient();
+    worst = std::max(worst, gain(q.offsets, q.entries.size(), q.weights));
+  }
+  return worst;
+}
+
+template double device_stencil_gain(const Euler<kernels::fp64>&, const Mesh&, const Geometry&);
+template double device_stencil_gain(const Euler<kernels::fp32_acc64>&, const Mesh&,
+                                    const Geometry&);
 
 // linear_solver = "lines": the multigrid's fine lines, computed on the global mesh, which the
 // partition keeps whole.

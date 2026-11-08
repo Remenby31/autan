@@ -47,6 +47,7 @@ Conventions for every gate (a gate identifier in a row means `autan-vv verify <r
 | TMR NACA 0012, α 10°, family II (`tmr-2dn00-naca0012-numerics`) | \|ΔCL\| ≤ 0.002 from 1.0912–1.0913; \|ΔCD\| ≤ 1 count from 0.01221–0.01222 | Diskin et al. 2015 continuum range; *ours*: tighter than the code-to-code SA-neg spread of HLPW-5 test case 1 (ΔCL ≈ 0.005, ΔCD ≈ 5 counts, datasets §M7) because this 2D case is better defined |
 | NACA 0012 validation, α 0/10/15° (`tmr-2dn00-naca0012`) | report CL, CD, Cp, cf against CFL3D and Ladson, Gregory and O'Reilly; no gate on experiment | TMR 2DN00 page |
 | Degraded meshes | residual drop ≥ 8 orders on the perturbed families (`--perturbation 0.3`) | PLAN M3 ("convergence on degraded meshes"); *ours*: 8 orders leaves forces converged to < 0.01 % |
+| Navier-Stokes and SA operators on a CUDA device, laminar runs end to end (ADR 0005, #586) | Residual, SA terms, eddy viscosity and wall distance bit for bit with the host under identity keys where no `exp` or `log` is evaluated. SA source, farfield and inlet faces: within the tolerances #586 declares, which must be tight (> 10× a defect of the tested size). Covered in `fp32+acc64` up to stencil gain G = 4.37, assuming tightness is monotone in G. Beyond it: W0717, fix `fp64`; poly with the quadratic fit at G = 4.79 fails the tightness test (9.4×), #608 (beta). Unsteady laminar runs bit for bit at every step (identity keys), and within the declared bound of the host's default run | #586, run `gpunssa-d4-2b32` |
 
 ## M5 — multi-GPU and precision
 

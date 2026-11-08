@@ -2058,6 +2058,16 @@ class Run final : public Log {
 
   // A run diagnostic goes to run.json and, with the same code and data, to
   // log.jsonl (results.md). Every rank records it; rank 0 logs it.
+  void warn(std::string_view code, std::string_view message, std::string_view data_json) override {
+    if (!code.starts_with('W')) {
+      throw std::logic_error("Log::warn takes a warning code, not " + std::string(code));
+    }
+    add_diagnostic(Diagnostic{.code = std::string(code),
+                              .message = std::string(message),
+                              .path = {},
+                              .data_json = data_json.empty() ? "{}" : std::string(data_json)});
+  }
+
   void add_diagnostic(const Diagnostic& d) {
     const Json entry = Json::parse(d.json());
     info_["diagnostics"].push_back(entry);

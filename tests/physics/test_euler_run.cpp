@@ -45,6 +45,7 @@ extern char** environ;
 #include "autan/physics/euler_physics.hpp"
 #include "autan/physics/first_order_start.hpp"
 #include "autan/physics/manufactured.hpp"
+#include "autan/physics/navier_stokes.hpp"
 #include "autan/runtime/physics.hpp"
 #include "autan/runtime/run.hpp"
 #include "fixtures.hpp"
@@ -2344,6 +2345,94 @@ TEST_CASE("on a device, an unsteady laminar run stays within #586's bound of the
   const double d = distance(u_dev, u_host);
   INFO("difference " << d / eps << " eps of U_k; bound " << bound / eps << " eps");
   CHECK(d <= bound);
+}
+
+TEST_CASE("a laminar device run beyond the covered stencil gain warns W0717",
+          "[navier-stokes][gpu]") {
+  // #586, criterion 2(b): on a device in fp32+acc64, with farfield or inlet faces, a mesh whose
+  // gradient stencils amplify a boundary value beyond the largest gain shown tight is W0717, in
+  // run.json and log.jsonl; not in fp64, not without such faces, not below that gain (the hybrid
+  // mesh, G = 3.81 under the quadratic fit the laminar physics takes).
+  struct Variant {
+    const char* mesh;
+    const char* precision;
+    bool farfield;
+    bool warns;
+  };
+  const auto v = GENERATE(Variant{"poly/polyMesh", "fp32+acc64", true, true},
+                          Variant{"poly/polyMesh", "fp64", true, false},
+                          Variant{"poly/polyMesh", "fp32+acc64", false, false},
+                          Variant{"hybrid/hybrid.ascii.msh", "fp32+acc64", true, false});
+  INFO(v.mesh << " " << v.precision << (v.farfield ? " farfield" : " symmetry"));
+  const fs::path file = data_dir / "mesh" / v.mesh;
+  const auto mesh = autan::io::read_mesh(file);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    laminar_along_x(d, v.precision);
+    on_device(d);
+    d["mesh"]["path"] = fs::absolute(file).string();
+    d["mesh"]["sha256"] = autan::io::mesh_hash(file);
+    Json zone = d["cell_zones"][0];
+    Json zones = Json::array();
+    for (const auto& z : mesh.cell_zones()) {
+      zone["zone"] = z.name;
+      zones.push_back(zone);
+    }
+    d["cell_zones"] = zones;
+    for (auto& b : d["boundaries"]) {
+      for (auto& [key, value] : b.items()) {
+        if (key != "zone" && key != "rule") value = nullptr;
+      }
+      // A no-slip wall on zmax: its faces give the state, so the quadratic stencils of the cells
+      // beside it reach them and poly's gain exceeds the covered one (#586: 4.79 against 4.37).
+      if (v.farfield && b["zone"] == "xmin") {
+        b["kind"] = "farfield";
+      } else if (b["zone"] == "zmax") {
+        b["kind"] = "wall";
+      } else {
+        b["kind"] = "symmetry";
+      }
+    }
+    d["time"] = {{"kind", "unsteady"},      {"steps", 1},
+                 {"dt", nullptr},           {"cfl", 0.5},
+                 {"average_from", nullptr}, {"checkpoint", {{"seconds", 1800.0}}}};
+  });
+  // The gain the physics computes, from the host's weights for these conditions (the quadratic fit
+  // the laminar physics takes); the poly mesh with a farfield face must lie beyond the covered one
+  // for the test to show the warning at all.
+  const auto g = autan::compute_geometry(mesh);
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+  std::vector<autan::physics::BoundaryKind> kinds(nb, autan::physics::BoundaryKind::slip);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[ni + b])].name;
+    if (v.farfield && zone == "xmin") kinds[b] = autan::physics::BoundaryKind::farfield;
+    if (zone == "zmax") kinds[b] = autan::physics::BoundaryKind::wall;
+  }
+  autan::physics::Scheme scheme;
+  scheme.gradient_fit = autan::physics::GradientFit::quadratic;
+  autan::physics::NavierStokes<autan::kernels::fp64> host(mesh, g, {1.4, 287.0}, scheme, {});
+  std::vector<double> data(5 * nb, 1.0);
+  host.set_boundary(kinds, data);
+  const double gain = autan::physics::device_stencil_gain(host.euler(), mesh, g);
+  INFO("G = " << gain);
+  const bool warns = std::string(v.precision) == "fp32+acc64" && v.farfield &&
+                     gain > autan::physics::device_covered_gain;
+  if (std::string(v.mesh) == "poly/polyMesh" && v.farfield)
+    REQUIRE(gain > autan::physics::device_covered_gain);
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  const Json info = Json::parse(read(out.run / "run.json"));
+  const auto in_run = std::ranges::count_if(info["diagnostics"],
+                                            [](const Json& d) { return d["code"] == "W0717"; });
+  int in_log = 0;
+  std::istringstream log(read(out.run / "log.jsonl"));
+  for (std::string line; std::getline(log, line);) {
+    if (!line.empty() && Json::parse(line)["code"] == "W0717") ++in_log;
+  }
+  CHECK(warns == v.warns);
+  CHECK(in_run == (warns ? 1 : 0));
+  CHECK(in_log == (warns ? 1 : 0));
 }
 
 TEST_CASE("on a device, a run repeats bit for bit and continues bit for bit", "[euler][gpu]") {
