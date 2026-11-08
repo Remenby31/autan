@@ -24,6 +24,8 @@
 #include "autan/partition/partition.hpp"
 #include "autan/physics/block_matrix.hpp"
 #include "autan/physics/euler.hpp"
+#include "autan/physics/navier_stokes.hpp"
+#include "navier_stokes.hpp"
 #include "stretched_slab.hpp"
 
 namespace {
@@ -33,6 +35,8 @@ using autan::physics::BlockMatrix;
 using autan::physics::BoundaryKind;
 using autan::physics::Euler;
 using autan::physics::Flux;
+using autan::physics::NavierStokes;
+using autan::physics::Transport;
 
 const fs::path mesh_dir{AUTAN_TEST_MESH_DIR};
 const std::array<const char*, 4> meshes = {"tet-gmsh/tet-gmsh.ascii.msh", "hex/hex.ascii.msh",
@@ -513,7 +517,7 @@ TEMPLATE_TEST_CASE("under global keys, renumbered cells have the residual and Ja
   // solver-input.md, reproducibility "ranks": what a cell sums must not depend on how the mesh is
   // numbered. Renumbering the cells (reverse Cuthill-McKee) re-sorts the faces and flips some,
   // as a partition does; with the global keys of the original mesh the second-order residual,
-  // limiter on, and every block of the Jacobian must keep their bits.
+  // limiter on, every block of the Jacobian and the Navier-Stokes residual must keep their bits.
   using P = TestType;
   const char* file = GENERATE(from_range(meshes));
   INFO(file);
@@ -689,4 +693,40 @@ TEMPLATE_TEST_CASE("under global keys, renumbered cells have the residual and Ja
     }
   }
   CHECK(product_differs == 0);
+
+  // The Navier-Stokes residual under the same keys: its viscous face loops gather too. Without a
+  // state or wall face there is no boundary fit, whose stencil keeps the mesh's order.
+  auto no_fit = [](std::vector<BoundaryKind> k) {
+    std::ranges::replace(k, BoundaryKind::state, BoundaryKind::outlet);
+    return k;
+  };
+  Transport viscous;
+  viscous.mu_ref = 0.5;
+  NavierStokes<P> flow_a(a, ga, {1.4, 287.0}, s, viscous, &keys_a);
+  NavierStokes<P> flow_b(b, gb, {1.4, 287.0}, s, viscous, &keys_b);
+  flow_a.set_boundary(no_fit(kind_a), data_a);
+  flow_b.set_boundary(no_fit(kind_b), data_b);
+  REQUIRE(flow_a.data().topo.n_stencil == 0);
+  // The same problem without viscosity: the viscous terms change nearly every momentum and energy
+  // residual, so the comparison below covers them.
+  Euler<P> inviscid_a(a, ga, {1.4, 287.0}, s, &keys_a);
+  inviscid_a.set_boundary(no_fit(kind_a), data_a);
+  std::vector<typename P::residual> va(5 * nc), vb(5 * nc), inviscid(5 * nc);
+  flow_a.residual(sa, va);
+  flow_b.residual(sb, vb);
+  inviscid_a.residual(sa, inviscid);
+  auto finite = [](const auto& r) {
+    return std::ranges::all_of(r, [](auto x) { return std::isfinite(static_cast<double>(x)); });
+  };
+  REQUIRE(finite(va));
+  REQUIRE(finite(inviscid));
+  std::size_t viscous_differs = 0, viscous_terms = 0;
+  for (std::size_t c = 0; c < nc; ++c) {
+    for (std::size_t k = 0; k < 5; ++k) {
+      viscous_differs += bits_differ(vb[k * nc + c], va[k * nc + cell(c)]);
+      if (k > 0) viscous_terms += bits_differ(va[k * nc + c], inviscid[k * nc + c]);
+    }
+  }
+  REQUIRE(viscous_terms >= 4 * nc * 9 / 10);
+  CHECK(viscous_differs == 0);
 }
