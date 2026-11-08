@@ -793,6 +793,10 @@ struct NavierStokes<P>::Impl {
       cell_key.assign(keys->cell.begin(), keys->cell.end());
       face_key.assign(keys->face.begin(), keys->face.end());
     }
+    if (keys != nullptr) {
+      cell_key.assign(keys->cell.begin(), keys->cell.end());
+      face_key.assign(keys->face.begin(), keys->face.end());
+    }
     if (quadratic)
       grad_v.assign(15 * static_cast<std::size_t>(mesh.n_cells()), typename P::grad(0));
     if (!(t.mu_ref > 0.0) || !(t.prandtl > 0.0) || !(t.prandtl_turbulent > 0.0) ||

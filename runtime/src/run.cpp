@@ -1507,8 +1507,9 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
   }
   if (entry != nullptr && entry->ghosts) {
     const std::optional<GhostStencil> ghosts = entry->ghosts(p.input);
-    const bool partitioned =
-        ranks > 1 || !p.input.periodic.empty() || p.input.reproducibility == "ranks";
+    // A part with ghosts: on several ranks or with periodic pairs. Under reproducibility "ranks" on
+    // one rank without pairs, the one part has none, and every stencil is the mesh's.
+    const bool partitioned = ranks > 1 || !p.input.periodic.empty();
     if (!ghosts && partitioned) {
       throw InputError(Diagnostic{
           .code = "E0148",
