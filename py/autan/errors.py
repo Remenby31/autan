@@ -415,7 +415,7 @@ _CODES = [
         "such one-part partition. The message names the difference.",
         "Run `autan-mesh-info --json --scale <metres per mesh unit>` again, with "
         "`--ranks N` (and `--groups lines` for a steady CPU run with the lines solver) for a run "
-        "on N ranks, and `--ghosts vertex` for a physics that reads the vertex stencil.",
+        "on N ranks, and `--ghosts vertex4` for a Navier-Stokes case (laminar or SA).",
     ),
     Code(
         "W0204",

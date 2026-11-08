@@ -1,7 +1,8 @@
 // autan-partition-report: reads a mesh, partitions it and prints the time of
 // each step and the partition quality as one JSON object per part count;
-// `--ghosts K` extracts with the ghost stencil K (default face2); `--every-rank` extracts every
-// rank, not only rank 0, and adds each rank's extraction time and ghost count.
+// parts are METIS's or Scotch's with cell_cost_weights, as a run's. `--ghosts K` extracts with
+// the ghost stencil K (default face2); `--every-rank` extracts every rank, one at a time, each
+// freed before the next, and adds each rank's extraction time and ghost count.
 // `write-box DIR n` writes an n^3 hex box as a binary polyMesh to read back.
 #include <chrono>
 #include <cstdint>
@@ -202,6 +203,7 @@ int main(int argc, char** argv) {
 
   auto start = std::chrono::steady_clock::now();
   const autan::Mesh mesh = autan::io::read_mesh(argv[1]);
+  options.cell_weights = autan::cell_cost_weights(mesh);
   const double t_read = seconds_since(start);
   start = std::chrono::steady_clock::now();
   const autan::Geometry geometry = autan::compute_geometry(mesh);
@@ -212,27 +214,27 @@ int main(int argc, char** argv) {
     start = std::chrono::steady_clock::now();
     const auto parts = autan::partition_cells(mesh, n_parts, options);
     const double t_partition = seconds_since(start);
-    const auto q = autan::partition_quality(mesh, parts, n_parts);
-    start = std::chrono::steady_clock::now();
-    const auto local = autan::extract_partition(mesh, geometry, parts, n_parts, 0, ghosts);
-    const double t_extract = seconds_since(start);
-    // With --every-rank: each rank's extraction time (rank 0's again, in a warm process) and
-    // ghost count.
-    std::string by_rank;
-    if (every_rank) {
-      std::string times, counts;
-      for (std::int32_t r = 0; r < n_parts; ++r) {
-        start = std::chrono::steady_clock::now();
-        const auto part = autan::extract_partition(mesh, geometry, parts, n_parts, r, ghosts);
-        const double t = seconds_since(start);
-        char buffer[32];
-        std::snprintf(buffer, sizeof buffer, "%s%.2f", r == 0 ? "" : ", ", t);
-        times += buffer;
-        counts +=
-            (r == 0 ? "" : ", ") + std::to_string(part.mesh.n_cells() - part.mesh.n_owned_cells());
+    const auto q = autan::partition_quality(mesh, parts, n_parts, options.cell_weights);
+    double t_extract = 0.0;
+    index_t rank0_cells = 0;
+    std::string times, counts;
+    for (std::int32_t r = 0; r < (every_rank ? n_parts : 1); ++r) {
+      start = std::chrono::steady_clock::now();
+      const auto part = autan::extract_partition(mesh, geometry, parts, n_parts, r, ghosts);
+      const double t = seconds_since(start);
+      if (r == 0) {
+        t_extract = t;
+        rank0_cells = part.mesh.n_cells();
       }
-      by_rank = ", \"extract_s_by_rank\": [" + times + "], \"ghosts_by_rank\": [" + counts + "]";
+      char buffer[32];
+      std::snprintf(buffer, sizeof buffer, "%s%.2f", r == 0 ? "" : ", ", t);
+      times += buffer;
+      counts +=
+          (r == 0 ? "" : ", ") + std::to_string(part.mesh.n_cells() - part.mesh.n_owned_cells());
     }
+    const std::string by_rank = every_rank ? ", \"extract_s_by_rank\": [" + times +
+                                                 "], \"ghosts_by_rank\": [" + counts + "]"
+                                           : std::string();
     std::printf(
         "{\"cells\": %d, \"method\": \"%s\", \"parts\": %d, \"cut_faces\": %lld, "
         "\"cut_fraction\": %.4f, \"imbalance\": %.4f, \"ghost_ratio\": %.4f, "
@@ -242,7 +244,7 @@ int main(int argc, char** argv) {
         mesh.n_cells(), method_name.c_str(), n_parts, static_cast<long long>(q.cut_faces),
         static_cast<double>(q.cut_faces) / mesh.n_interior_faces(), q.imbalance, q.ghost_ratio,
         q.max_ghost_ratio, q.max_neighbours, t_read, t_geometry, t_partition, t_extract,
-        local.mesh.n_cells(),
+        rank0_cells,
         (ghosts == autan::GhostStencil::face2
              ? std::string()
              : ", \"ghosts\": \"" + std::string(autan::name(ghosts)) + "\"")

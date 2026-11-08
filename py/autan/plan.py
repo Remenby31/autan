@@ -311,9 +311,15 @@ def partition_groups(spec: CaseSpec, device_kind: DeviceKind) -> str:
     return "lines" if lines and device_kind == "cpu" else "none"
 
 
-# The ghost stencil a run's partition holds: the one its physics declares, face2 for every scheme
-# a case selects (docs/contracts/mesh-info.md).
-PARTITION_GHOST_STENCIL = "face2"
+# The ghost stencil a run's partition holds: the one its physics declares (runtime.md,
+# Registration). Compressible Navier-Stokes and Spalart-Allmaras read the quadratic gradient and
+# the viscous boundary fits, four vertex rings with their Jacobian; the Euler physics, and the
+# incompressible cases no viscous physics serves, read face2.
+def partition_ghost_stencil(spec: CaseSpec) -> str:
+    viscous = isinstance(spec.physics, Compressible) and not isinstance(
+        spec.physics.turbulence, Inviscid
+    )
+    return "vertex4" if viscous else "face2"
 
 
 def _check_prepared(
@@ -334,7 +340,7 @@ def _check_prepared(
             f"the case's mesh_unit is {scale:g} m"
         )
     partition = mesh.partition
-    ghost_stencil = PARTITION_GHOST_STENCIL
+    ghost_stencil = partition_ghost_stencil(spec)
     if gpus == 1 and extracts(spec, mesh, 1):
         if partition is None or partition.ranks != 1:
             problems.append(
