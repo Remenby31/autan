@@ -835,8 +835,94 @@ int autan_spike_gradients(const void* mesh, const char* policy, const char* meth
                           const double* q_b, int iterations, double* grad, double* qmin,
                           double* qmax, char* err, std::size_t err_len) {
   const auto* m = static_cast<const SpikeMesh*>(mesh);
+  if (std::string_view(policy) == "fp32+acc32-test-only") {  // ADR 0003, control 11 only
+    return guarded(err, err_len, [&] {
+      autan::spike::gradients<autan::spike::Fp32Acc32TestOnly>(*m, method, q, q_b, iterations, grad,
+                                                               qmin, qmax);
+    });
+  }
   return dispatch(policy, err, err_len, [&](auto p) {
     autan::spike::gradients<decltype(p)>(*m, method, q, q_b, iterations, grad, qmin, qmax);
+  });
+}
+
+// TEST ONLY: the defect controls of ADR 0003 (#43) corrupt what the kernels read. Never called by a
+// product target; test_spike_isolation fails if a file outside codegen/spike and codegen/tests
+// names them.
+
+/// Control 1 and 2: overwrite the stored LSQ weight of incidence k (binary64; the kernels read it
+/// converted to their storage type, as every weight).
+int autan_spike_test_only_set_lsq_weight(void* mesh, std::int64_t k, const double* w,
+                                         std::int64_t n_w, char* err, std::size_t err_len) {
+  return guarded(err, err_len, [&] {
+    auto* m = static_cast<SpikeMesh*>(mesh);
+    if (w == nullptr || n_w != 3) {
+      throw std::invalid_argument("E1100: set_lsq_weight needs exactly three components");
+    }
+    const auto n = static_cast<std::size_t>(m->topo.n_incidences);
+    if (k < 0 || static_cast<std::size_t>(k) >= n || m->packed.lsq_weight.size() != 3 * n) {
+      throw std::invalid_argument("E1100: incidence out of range");
+    }
+    for (std::size_t c = 0; c < 3; ++c) {
+      m->packed.lsq_weight[c * n + static_cast<std::size_t>(k)] = w[c];
+    }
+  });
+}
+
+/// Control 3: drop incidence k from its cell's list (a CSR, serial mesh, once per mesh). Every
+/// shape is checked first and the replacements are built aside, then committed together: an error
+/// leaves the mesh unchanged. The offsets and the per-incidence geometry follow; twins are dropped.
+int autan_spike_test_only_drop_incidence(void* mesh, std::int64_t k, char* err,
+                                         std::size_t err_len) {
+  return guarded(err, err_len, [&] {
+    auto* m = static_cast<SpikeMesh*>(mesh);
+    auto& t = m->topo;
+    const auto n = static_cast<std::size_t>(t.n_incidences);
+    const auto nc = static_cast<std::size_t>(t.n_cells);
+    if (!m->test_only_cell_faces.empty()) {
+      throw std::invalid_argument("E1100: drop_incidence was already applied to this mesh");
+    }
+    if (t.incidence_stride != 1 || t.incidence_cell != nullptr || m->global || k < 0 ||
+        static_cast<std::size_t>(k) >= n) {
+      throw std::invalid_argument("E1100: drop_incidence needs a serial CSR mesh and k in range");
+    }
+    if (m->packed.lsq_weight.size() != 3 * n || m->packed.incidence_side.size() != n ||
+        static_cast<std::size_t>(t.cell_face_offsets[nc]) != n) {
+      throw std::invalid_argument("E1100: drop_incidence: per-incidence arrays of unexpected size");
+    }
+    const auto kk = static_cast<std::size_t>(k);
+    std::vector<autan::kernels::offset_t> offsets(t.cell_face_offsets,
+                                                  t.cell_face_offsets + nc + 1);
+    std::vector<autan::kernels::index_t> faces(t.cell_faces, t.cell_faces + n);
+    faces.erase(faces.begin() + static_cast<std::ptrdiff_t>(kk));
+    for (auto& o : offsets) {
+      if (static_cast<std::size_t>(o) > kk) {
+        --o;
+      }
+    }
+    const auto without = [&](const std::vector<double>& soa, std::size_t comps) {
+      std::vector<double> out;
+      out.reserve(comps * (n - 1));
+      for (std::size_t c = 0; c < comps; ++c) {
+        for (std::size_t i = 0; i < n; ++i) {
+          if (i != kk) {
+            out.push_back(soa[c * n + i]);
+          }
+        }
+      }
+      return out;
+    };
+    auto weights = without(m->packed.lsq_weight, 3);
+    auto sides = without(m->packed.incidence_side, 1);
+    // Commit: nothing below allocates or throws.
+    m->test_only_offsets.swap(offsets);
+    m->test_only_cell_faces.swap(faces);
+    m->packed.lsq_weight.swap(weights);
+    m->packed.incidence_side.swap(sides);
+    t.cell_face_offsets = m->test_only_offsets.data();
+    t.cell_faces = m->test_only_cell_faces.data();
+    t.n_incidences = static_cast<autan::kernels::offset_t>(n - 1);
+    t.incidence_twin = nullptr;
   });
 }
 

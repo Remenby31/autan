@@ -58,7 +58,7 @@ def test_the_replay_is_the_kernel_bit_for_bit(
     m, read, geometry, _ = _case(kind, perturbation)
     inp, qv, qb, g0 = _inputs(m, geometry)
     g = _kernel(m, policy, method, qv, qb, g0)
-    data = kr.load_inputs(kr.module(), inp, policy)
+    data = kr.load_inputs(inp, policy)
     run = kr.lsq if method == "lsq" else kr.green_gauss
     replay = run(read, data, policy, kr.Rounded())
     for cell in range(m.n_cells):
@@ -113,3 +113,78 @@ def test_the_bound_holds_on_the_b_cases(
                 "max_centre_ratio": float(result.max_centre_ratio), "max_use": float(result.max_use),
             }) + "\n")  # fmt: skip
     assert result.issues == [], result.issues[:5]
+
+
+def test_the_generator_follows_the_declared_precision_contract() -> None:
+    assert kr.check_contract(kr.module()) == []
+
+
+def test_a_generator_storing_an_output_otherwise_is_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A generator-side departure on an output-only dataset: qmin stored in P::residual, which keeps
+    # every selected binary32 minimum's value. The output comparison cannot see it; the contract does.
+    real = kr.emit_cpp.storage_type
+
+    def wrong(d: object, rel_read: set[int]) -> str:
+        return "typename P::residual" if getattr(d, "name", "") == "qmin" else real(d, rel_read)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(kr.emit_cpp, "storage_type", wrong)
+    assert any(i.startswith("qmin: stored in residual") for i in kr.check_contract(kr.module()))
+
+
+def test_a_missing_finalise_is_reported() -> None:
+    m = kr.module()
+    lm = next(x for x in m.loops if x.name == "lsq_gradient_bounds")
+    lm.fin_fn, lm.fin_sig = None, None
+    assert any("include_own_value" in i for i in kr.check_contract(m))
+
+
+def test_the_compiled_generated_code_is_the_frozen_text() -> None:
+    assert kr.check_frozen() == []
+
+
+def test_a_change_to_the_frozen_code_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(kr.FROZEN_SHA256, "codegen/generated/gradients_cpu.hpp", "0" * 64)
+    assert any("gradients_cpu.hpp" in i for i in kr.check_frozen())
+
+
+def test_a_missing_finalise_makes_both_checks_invalid_without_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Structural validity is checked before any replay: the public checks report it as invalid.
+    m0 = kr.module()
+    lm = next(x for x in m0.loops if x.name == "lsq_gradient_bounds")
+    lm.fin_fn, lm.fin_sig = None, None
+    monkeypatch.setattr(kr, "module", lambda: m0)
+    m, read, geometry, exact = _case("hex", 0.0)
+    inp, qv, qb, _ = _inputs(m, geometry)
+    g = s.gradients(m, "fp64", "lsq", qv, qb)[0].tolist()
+    d1 = kr.check_d1(read, inp, exact, g, "fp64", "lsq")
+    assert any(i.startswith("invalid: precision contract") for i in d1.issues)
+    a, gb = 1.0, (0.3, -1.2, 0.7)
+    b4 = kr.check_bound(read, geometry, exact, a, gb, g, "fp64", "lsq")
+    assert any(i.startswith("invalid: precision contract") for i in b4.issues)
+
+
+def test_the_loaded_library_is_identified_by_its_digest() -> None:
+    digest = kr.library_sha256()
+    assert digest is not None
+    assert kr.check_library(digest) == []
+
+
+def test_a_stale_library_beside_matching_headers_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The headers next to it would pass check_frozen; the library itself is not the frozen one.
+    frozen = kr.library_sha256()
+    assert frozen is not None
+    lib = Path(os.environ["AUTAN_SPIKE_LIB"])
+    (tmp_path / "generated").mkdir()
+    for name in ("gradients.hpp", "gradients_cpu.hpp"):
+        (tmp_path / "generated" / name).write_bytes((lib.parent / "generated" / name).read_bytes())
+    stale = tmp_path / lib.name
+    stale.write_bytes(lib.read_bytes() + b"\0")
+    monkeypatch.setenv("AUTAN_SPIKE_LIB", str(stale))
+    assert kr.check_frozen() == []  # the headers match
+    assert kr.check_library(frozen)  # the library does not

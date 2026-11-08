@@ -256,6 +256,29 @@ def gradients(
     return grad.reshape(3, -1).T, qmin, qmax
 
 
+def test_only_set_lsq_weight(m: Mesh, k: int, w: tuple[float, float, float]) -> None:
+    """TEST ONLY (ADR 0003, controls 1 and 2): overwrite the stored LSQ weight of incidence k."""
+    v = np.ascontiguousarray(w, dtype=np.float64)
+    if v.shape != (3,):
+        msg = f"a weight has three components, got shape {v.shape}"
+        raise ValueError(msg)
+    err = ctypes.create_string_buffer(512)
+    rc = lib().autan_spike_test_only_set_lsq_weight(
+        m.handle, ctypes.c_int64(k), _p(v), ctypes.c_int64(3), err, ctypes.c_size_t(len(err))
+    )
+    _check(rc, err)
+
+
+def test_only_drop_incidence(m: Mesh, k: int) -> None:
+    """TEST ONLY (ADR 0003, control 3): drop incidence k from its cell's list in the kernels'
+    topology (the Python arrays of `m` are not updated)."""
+    err = ctypes.create_string_buffer(512)
+    rc = lib().autan_spike_test_only_drop_incidence(
+        m.handle, ctypes.c_int64(k), err, ctypes.c_size_t(len(err))
+    )
+    _check(rc, err)
+
+
 def advection(
     m: Mesh,
     policy: str,

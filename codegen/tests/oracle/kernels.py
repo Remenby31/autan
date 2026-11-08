@@ -4,7 +4,8 @@ driven by the generator's own IR instruction list for each body.
 Every value is a `Pair`: the value the build executes (exact emulation of IEEE 754
 round-to-nearest-even in the format the emitted C++ uses) and its certificate. The formats follow
 the precision policies of `runtime.hpp`; the conversions follow `emit_cpp.py`:
-- a dataset is loaded in its storage type (`emit_cpp.storage_type`: built-in geometry no body
+- a dataset is loaded in its storage type (DECLARED_STORAGE below, written from the spec and
+  checked against `emit_cpp.storage_type`: built-in geometry no body
   reads through `rel` is stored in `geom_value`), converted to the parameter's role type, then to
   the body's compute type `C` on first use;
 - `rel(x, y)` subtracts the two raw Geom parameters in their role type, then converts to `C`;
@@ -21,6 +22,8 @@ The topology must have no reversed face and no `incidence_cell` (a serial mesh);
 
 from __future__ import annotations
 
+import hashlib
+import os
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -59,6 +62,166 @@ POLICIES: dict[str, dict[str, c.Format]] = {
         ("state", "grad", "residual", "geom", "geom_value", "param", "compute", "accum"), B32
     ),
 }
+
+# TEST ONLY (control 11): spike/spike.hpp's Fp32Acc32TestOnly, fp32+acc64 with its accumulation
+# narrowed to binary32. Never a gate policy.
+POLICIES["fp32+acc32-test-only"] = {**POLICIES["fp32+acc64"], "residual": B32, "accum": B32}
+
+# The declared precision contract of the gradient loops, written BY HAND from the specification:
+# runtime.hpp's policies, ADR 0003 ("Roles and casts per policy": geometry read through rel in
+# P::geom, other geometry in P::geom_value), and the roles declared in kernels/gradients.py's
+# signatures. It is never derived from the generator: the replay uses only this table, and
+# `check_contract` makes the instance invalid where the generator disagrees with it (ADR 0003,
+# amendment 2026-11-08; the common mode found in review).
+DECLARED_STORAGE = {  # dataset -> policy type it is stored in
+    "q": "state", "q_b": "state", "grad": "grad", "qmin": "state", "qmax": "state",
+    "gg_sum": "residual",
+    "lsq_weight": "geom_value", "face_area": "geom_value", "face_moment": "geom_value",
+    "cell_volume": "geom_value",
+    "cell_centroid": "geom", "face_centroid": "geom",  # read through rel()
+}  # fmt: skip
+DECLARED_COMPUTE = {  # body -> the policy type it computes in
+    "lsq_bounds_term": "compute", "include_own_value": "compute", "gg_interior": "compute",
+    "gg_boundary": "compute", "gg_divide": "compute",
+}  # fmt: skip
+DECLARED_ROLES = {  # body -> argument -> role type
+    "lsq_bounds_term": {"qc": "state", "qn": "state", "w": "geom"},
+    "include_own_value": {"g": "residual", "lo": "residual", "hi": "residual", "qc": "state"},
+    "gg_interior": {
+        "ql": "state", "gl": "grad", "xl": "geom", "qr": "state", "gr": "grad", "xr": "geom",
+        "xf": "geom", "s": "geom", "m": "geom",
+    },
+    "gg_boundary": {"qb": "state", "gl": "grad", "s": "geom", "m": "geom"},
+    "gg_divide": {"total": "residual", "vol": "geom"},
+}  # fmt: skip
+GRADIENT_LOOPS = (
+    "lsq_gradient_bounds", "green_gauss_interior", "green_gauss_boundary", "green_gauss_finalise",
+)  # fmt: skip
+
+
+DECLARED_LOOPS = {  # loop -> (body, finalise body or None)
+    "lsq_gradient_bounds": ("lsq_bounds_term", "include_own_value"),
+    "green_gauss_interior": ("gg_interior", None),
+    "green_gauss_boundary": ("gg_boundary", None),
+    "green_gauss_finalise": ("gg_divide", None),
+}
+
+
+def check_contract(m: Module) -> list[str]:
+    """Where the generator departs from the declared precision contract (empty if it agrees). The
+    inventory is exhaustive: every declared loop, body, finalise and argument must exist with its
+    declared role and compute type, and every dataset the loops read, write or reduce into
+    (outputs included, e.g. qmin and qmax) must be stored as declared."""
+    issues = []
+    rel_read = emit_cpp.rel_datasets(m)
+    loops = {lm.name: lm for lm in m.loops}
+    seen: set[str] = set()
+    for name, (body, fin) in DECLARED_LOOPS.items():
+        lm = loops.get(name)
+        if lm is None:
+            issues.append(f"loop {name} is missing")
+            continue
+        declared = [(body, lm.fn, lm.sig)]
+        if fin is not None or lm.fin_fn is not None:
+            declared.append((fin, lm.fin_fn, lm.fin_sig))
+        for want, fn, sig in declared:
+            if fn is None or sig is None or fn.name != want:
+                issues.append(f"{name}: body {getattr(fn, 'name', None)}, declared {want}")
+                continue
+            if fn.compute != DECLARED_COMPUTE.get(fn.name):
+                issues.append(
+                    f"{fn.name}: computes in {fn.compute}, declared {DECLARED_COMPUTE.get(fn.name)}"
+                )
+            roles = DECLARED_ROLES[fn.name]
+            if list(sig.names) != list(roles):
+                issues.append(f"{fn.name}: arguments {list(sig.names)}, declared {list(roles)}")
+            for arg, t in zip(sig.names, sig.types, strict=True):
+                if ROLE_TYPE[t.role] != roles.get(arg):
+                    issues.append(
+                        f"{fn.name}({arg}): role {ROLE_TYPE[t.role]}, declared {roles.get(arg)}"
+                    )
+        datasets = [b.dataset for b in lm.loop.bindings.values()]
+        datasets += [
+            b.boundary
+            for b in lm.loop.bindings.values()
+            if getattr(b, "boundary", None) is not None
+        ]
+        datasets += [b.dataset for b in lm.loop.finalise_bindings.values()]
+        datasets += [o.dataset for o in [*lm.loop.outputs, *lm.loop.entries]]
+        for d in datasets:
+            if not isinstance(d, dsl.Dataset):
+                continue
+            seen.add(d.name)
+            got = emit_cpp.storage_type(d, rel_read).split("::")[-1]
+            if got != DECLARED_STORAGE.get(d.name):
+                issues.append(f"{d.name}: stored in {got}, declared {DECLARED_STORAGE.get(d.name)}")
+    issues.extend(
+        f"dataset {name} is declared but no gradient loop uses it"
+        for name in sorted(set(DECLARED_STORAGE) - seen)
+    )
+    return sorted(set(issues))
+
+
+# The generated gradient code and runtime.hpp's policies, frozen as reviewed (ADR 0003, amendment
+# 2026-11-08): the structural check above compares the generator's decisions with the declared
+# table; these digests pin what the build compiles (accumulator declarations, conversions and their
+# placement, loop order, policy aliases). A departure makes every instance invalid. Digests of the
+# text without its #line directives, which carry absolute paths.
+FROZEN_SHA256 = {
+    "codegen/generated/gradients.hpp": "54252a30ead82da4399226cbc725d17570421c19b53cd649119b20f8b285efbb",
+    "codegen/generated/gradients_cpu.hpp": "e17ff4c58b5b9babd9f98522f4b8fbec7067081c2836bd41253113345179a03b",
+    "codegen/include/autan/kernels/runtime.hpp": "06cc008f37b0c6fa6cf179c21fd43e2e39000868ec4946515628eb33097cdb3f",
+}
+
+
+def _digest(path: Path) -> str:
+    lines = [ln for ln in path.read_text().splitlines(keepends=True) if not ln.startswith("#line")]
+    return hashlib.sha256("".join(lines).encode()).hexdigest()
+
+
+def library_sha256() -> str | None:
+    """SHA-256 of the spike library the oracle loads (AUTAN_SPIKE_LIB), or None if unset."""
+    lib = os.environ.get("AUTAN_SPIKE_LIB")
+    return (
+        hashlib.sha256(Path(lib).read_bytes()).hexdigest() if lib and Path(lib).is_file() else None
+    )
+
+
+def check_library(expected: str) -> list[str]:
+    """Where the loaded library is not the frozen one. The header digests pin reviewed source; this
+    pins the executable: the library built from the freeze commit, whose SHA-256 the freeze manifest
+    records (ADR 0003, amendment 2026-11-08). It covers what the header digests cannot: a library
+    built from other source with the headers restored afterwards, and the spike's policy dispatch."""
+    got = library_sha256()
+    if got is None:
+        return ["the spike library is not found (AUTAN_SPIKE_LIB)"]
+    return (
+        []
+        if got == expected
+        else [f"the loaded library {got[:12]} is not the frozen one {expected[:12]}"]
+    )
+
+
+def check_frozen() -> list[str]:
+    """Where the compiled generated headers or runtime.hpp differ from their frozen digests."""
+    lib = os.environ.get("AUTAN_SPIKE_LIB")
+    generated = Path(lib).resolve().parent / "generated" if lib else None
+    source = Path(__file__).resolve().parents[2]  # codegen/
+    issues = []
+    for key, want in FROZEN_SHA256.items():
+        if key.startswith("codegen/generated/"):
+            if generated is None:
+                issues.append(f"{key}: no build to read (AUTAN_SPIKE_LIB unset)")
+                continue
+            path = generated / Path(key).name
+        else:
+            path = source / Path(key).relative_to("codegen")
+        if not path.is_file():
+            issues.append(f"{key}: missing")
+        elif _digest(path) != want:
+            issues.append(f"{key}: differs from the frozen, reviewed text")
+    return issues
+
 
 KERNEL_SOURCE = Path(__file__).resolve().parents[3] / "kernels" / "gradients.py"
 SOURCES = (
@@ -144,9 +307,14 @@ def run_body(
 ) -> list[Pair]:
     """Evaluate `fn`'s IR on arguments already converted to their role types; only the
     instructions the requested outputs (default: all) depend on are evaluated."""
-    C = POLICIES[pol][fn.compute]
+    C = POLICIES[pol][DECLARED_COMPUTE[fn.name]]
     wanted = list(range(len(fn.outputs))) if outputs is None else outputs
     cone = _cone(fn, wanted)
+    # emit_cpp.body_lines converts an input to C only if some non-rel instruction or an output uses it.
+    used = {fn.outputs[o] for o in wanted}
+    for v in cone:
+        if fn.instrs[v].op != "rel":
+            used.update(fn.instrs[v].args)
     vals: list[Pair | bool | None] = []
     for v, ins in enumerate(fn.instrs):
         op = ins.op
@@ -155,7 +323,7 @@ def run_body(
             continue
         if op == "input":
             k, comp = ins.attr  # type: ignore[misc]
-            vals.append(convert(args[k][comp], C))
+            vals.append(convert(args[k][comp], C) if v in used else None)
         elif op == "const":
             vals.append(convert(given(float(ins.attr), B64), C))  # type: ignore[arg-type]
         elif op == "rel":
@@ -190,8 +358,9 @@ def run_body(
     return out  # type: ignore[return-value]
 
 
-def _role(t: dsl.Type, pol: str) -> c.Format:
-    return POLICIES[pol][ROLE_TYPE[t.role]]
+def _roles(fn: Function, names: list[str], pol: str) -> list[c.Format]:
+    """The declared role formats of a body's arguments (DECLARED_ROLES, not the generator's)."""
+    return [POLICIES[pol][DECLARED_ROLES[fn.name][n]] for n in names]
 
 
 @dataclass
@@ -289,9 +458,9 @@ class Exact:
         return [vals[fn.outputs[o]] for o in wanted]  # type: ignore[misc]
 
 
-def _storage(m: Module, d: dsl.Dataset, pol: str) -> c.Format:
-    name = emit_cpp.storage_type(d, emit_cpp.rel_datasets(m)).split("::")[-1]
-    return POLICIES[pol][name]
+def _storage(name: str, pol: str) -> c.Format:
+    """The declared storage format of a dataset (DECLARED_STORAGE, not the generator's)."""
+    return POLICIES[pol][DECLARED_STORAGE[name]]
 
 
 def _check_serial(read: ReadMesh) -> None:
@@ -314,14 +483,10 @@ class Read:
     grad: list[list[object]] | None
 
 
-def load_inputs(m: Module, inp: Inputs, pol: str) -> Read:
+def load_inputs(inp: Inputs, pol: str) -> Read:
     """Every dataset the gradient loops read, stored as the build stores it (Rounded)."""
-    P = POLICIES[pol]
     geo = {
-        name: [
-            [stored(v, _storage(m, getattr(dsl.geometry, name), pol)) for v in row]
-            for row in inp.geometry[name]
-        ]
+        name: [[stored(v, _storage(name, pol)) for v in row] for row in inp.geometry[name]]
         for name in (
             "lsq_weight",
             "cell_centroid",
@@ -331,12 +496,15 @@ def load_inputs(m: Module, inp: Inputs, pol: str) -> Read:
             "cell_volume",
         )
     }
-    q = [field_value(v, P["state"], inp.field_exact) for v in inp.q]
-    q_b = [field_value(v, P["state"], inp.field_exact) for v in inp.q_b]
+    q = [field_value(v, _storage("q", pol), inp.field_exact) for v in inp.q]
+    q_b = [field_value(v, _storage("q_b", pol), inp.field_exact) for v in inp.q_b]
     grad = (
         None
         if inp.grad is None
-        else [[field_value(v, P["grad"], inp.field_exact) for v in row] for row in inp.grad]
+        else [
+            [field_value(v, _storage("grad", pol), inp.field_exact) for v in row]
+            for row in inp.grad
+        ]
     )
     return Read(geo, q, q_b, grad)  # type: ignore[arg-type]
 
@@ -349,8 +517,8 @@ def lsq(read: ReadMesh, data: Read, pol: str, ar: Rounded | Exact) -> list[list[
     assert lm.fin_fn is not None
     assert lm.fin_sig is not None
     P = POLICIES[pol]
-    roles = [_role(t, pol) for t in lm.sig.types]
-    fin_roles = [_role(t, pol) for t in lm.fin_sig.types]
+    roles = _roles(lm.fn, lm.sig.names, pol)
+    fin_roles = _roles(lm.fin_fn, lm.fin_sig.names, pol)
     n_int = len(read.neighbour)
     out: list[list[object]] = []
     for cell in range(read.n_cells):
@@ -378,7 +546,7 @@ def lsq(read: ReadMesh, data: Read, pol: str, ar: Rounded | Exact) -> list[list[
             [ar.conv(qc, fin_roles[i])] for i in (1, 2, 3)
         ]
         fin = ar.body(lm.fin_fn, fin_args, fin_roles, pol, outputs=[0, 1, 2])
-        out.append([ar.conv(fin[u], P["grad"]) for u in range(3)])
+        out.append([ar.conv(fin[u], _storage("grad", pol)) for u in range(3)])
     return out
 
 
@@ -407,12 +575,12 @@ def green_gauss(
     if P["residual"] != P["accum"]:
         msg = "gg_sum += A(out) assumes P::residual == P::accum"
         raise c.Invalid(msg)
-    S = P["residual"]
+    S = _storage("gg_sum", pol)
     grad = data.grad
     n_int, n_faces = len(read.neighbour), len(read.owner)
 
     def args_of(lm: LoopModel, f: int, l: int, r: int) -> tuple[list[list[object]], list[c.Format]]:
-        roles = [_role(t, pol) for t in lm.sig.types]
+        roles = _roles(lm.fn, lm.sig.names, pol)
         out = []
         for i, nm in enumerate(lm.sig.names):
             if nm in GEOMETRY_ARGS:
@@ -448,7 +616,7 @@ def green_gauss(
             for u in range(3):
                 total[l][u] = ar.op("add", total[l][u], ar.conv(res[u], P["accum"]), S)
         lm = lms["green_gauss_finalise"]
-        roles = [_role(t, pol) for t in lm.sig.types]
+        roles = _roles(lm.fn, lm.sig.names, pol)
         new = []
         for cell in range(read.n_cells):
             a = [
@@ -456,7 +624,7 @@ def green_gauss(
                 [ar.conv(data.geo["cell_volume"][cell][0], roles[1])],
             ]
             res = ar.body(lm.fn, a, roles, pol)
-            new.append([ar.conv(res[u], P["grad"]) for u in range(3)])
+            new.append([ar.conv(res[u], _storage("grad", pol)) for u in range(3)])
         grad = new
     return grad
 
@@ -526,6 +694,17 @@ def gg_intended(
     ]
 
 
+def _structural(m: Module, library: str | None) -> list[str]:
+    """The structural validity of an instance, checked before any replay: the declared precision
+    contract, the frozen generated code and runtime.hpp, and (held-out runs, given the frozen
+    library digest) the loaded library. Any issue makes the instance invalid at once."""
+    out = [f"invalid: precision contract: {x}" for x in check_contract(m)]
+    out += [f"invalid: frozen code: {x}" for x in check_frozen()]
+    if library is not None:
+        out += [f"invalid: frozen library: {x}" for x in check_library(library)]
+    return out
+
+
 @dataclass
 class D1:
     """Check 3 on one instance: issues ("invalid: ..." blocks PASS like a failure, "fail: ...")
@@ -544,13 +723,17 @@ def check_d1(
     pol: str,
     method: str,
     iterations: int = 1,
+    library: str | None = None,
 ) -> D1:
     """|g_hat - g_int| <= R_D1 = R + |v - g_int|, centred on the intended g_int; invalid if
-    g_int lies outside [v - R, v + R] (correspondence), if the declared sequence with every rounding
+    g_int lies outside [v - R, v + R] (interval consistency), if the declared sequence with every rounding
     removed is not the intended operator, or if the build does not execute the declared sequence
     (the replay differs from the kernel's output)."""
     m = module()
-    data = load_inputs(m, inp, pol)
+    structural = _structural(m, library)
+    if structural:
+        return D1(structural, F(0), F(0))
+    data = load_inputs(inp, pol)
     q = [v.e for v in data.q]  # type: ignore[attr-defined]
     q_b = [v.e for v in data.q_b]  # type: ignore[attr-defined]
     grad = None if data.grad is None else [[v.e for v in row] for row in data.grad]  # type: ignore[attr-defined]
@@ -632,6 +815,7 @@ def check_bound(
     kernel: list[list[float]],
     pol: str,
     method: str,
+    library: str | None = None,
 ) -> Bound:
     """|g_hat - G| <= R4 = R + |v - G|, R propagated from the exact data (nodes, a, G): the field's
     evaluation and storage, the geometry, the weights, the injected gradient (GG), the casts and the
@@ -640,6 +824,9 @@ def check_bound(
     the exact geometry, per cell (a failure is reported as a property of the operator)."""
     n_int = len(read.neighbour)
     G = [F(v) for v in g]
+    structural = _structural(module(), library)
+    if structural:
+        return Bound(structural, F(0), F(0), {})
     issues: list[str] = []
     # Premise: the intended operator on exact data.
     xc = exact_geometry["cell_centroid"]
@@ -650,14 +837,30 @@ def check_bound(
         premise = lsq_intended(read, exact_geometry, q_ex, qb_ex)
     else:
         premise = gg_intended(read, exact_geometry, q_ex, qb_ex, [G] * read.n_cells)
-    for cell, row in enumerate(premise):
-        if row != G:
-            issues.append(f"operator: {method} cell {cell} does not reproduce G on exact data")
+    issues.extend(
+        f"operator: {method} cell {cell} does not reproduce G on exact data"
+        for cell, row in enumerate(premise)
+        if row != G
+    )
+    # Correspondence on the exact fixture: the declared sequence with every rounding removed, on the
+    # exact field, geometry and injected gradient, is the intended operator, per cell.
+    qb_full = [F(0)] * n_int + qb_ex[n_int:]
+    exact_read = Read(exact_geometry, q_ex, qb_full, [list(G)] * read.n_cells)  # type: ignore[arg-type]
+    if method == "lsq":
+        removed = lsq(read, exact_read, pol, Exact())
+    else:
+        removed = green_gauss(read, exact_read, pol, Exact())
+    issues.extend(
+        f"invalid: {method} cell {cell}: the declared sequence without rounding is not the "
+        "intended operator on the exact fixture"
+        for cell in range(read.n_cells)
+        if [F(v) for v in removed[cell]] != premise[cell]  # type: ignore[arg-type]
+    )
     # The replay from the exact data.
     q = linear_field(geometry["cell_centroid"], a, g)
     q_b = [given(0.0, B64)] * n_int + linear_field(geometry["face_centroid"][n_int:], a, g)
     inp = Inputs(geometry, q, q_b, [[given(v, B64) for v in g]] * read.n_cells, field_exact=False)
-    data = load_inputs(module(), inp, pol)
+    data = load_inputs(inp, pol)
     replay = (
         lsq(read, data, pol, Rounded())
         if method == "lsq"

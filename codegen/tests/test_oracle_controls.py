@@ -9,6 +9,7 @@ import autan_spike as s
 import meshes
 import numpy as np
 import pytest
+from oracle import certified as c
 from oracle import kernels as kr
 from oracle import sequences as q
 from oracle import topology as t
@@ -129,3 +130,198 @@ def test_the_kernel_output_offset_beyond_the_bound_fails_check_4() -> None:
     out[0][0] = float(y)
     bad = kr.check_bound(read, geometry, exact, a, g, out, "fp32", "lsq")
     assert any(i.startswith("fail: lsq cell 0 component 0") for i in bad.issues)
+
+
+# ------------------------------------------------ controls run on the kernels (test-only entry points)
+
+
+def _lsq_instance(m: s.Mesh, read: t.ReadMesh) -> tuple[kr.Inputs, dict, np.ndarray, np.ndarray]:
+    """A field whose every neighbour difference is nonzero (checked exactly), on the kernels."""
+    geometry = q.construct(read)
+    rng = np.random.default_rng(11)
+    qv = rng.standard_normal(m.n_cells)
+    qb = rng.standard_normal(m.n_faces)
+    n_int = len(read.neighbour)
+    for cell in range(m.n_cells):
+        for k in range(int(read.cell_face_offsets[cell]), int(read.cell_face_offsets[cell + 1])):
+            f = int(read.cell_faces[k])
+            other = (
+                (qv[read.neighbour[f]] if read.owner[f] == cell else qv[read.owner[f]])
+                if f < n_int
+                else qb[f]
+            )
+            assert np.float32(other) != np.float32(qv[cell])  # nonzero in every policy's storage
+    inp = kr.Inputs(
+        geometry,
+        [kr.given(float(v), c.BINARY64) for v in qv],
+        [kr.given(float(v), c.BINARY64) for v in qb],
+    )
+    return inp, geometry, qv, qb
+
+
+def _proof_d1(
+    read: t.ReadMesh,
+    clean: kr.Inputs,
+    corrupt_read: t.ReadMesh,
+    corrupt: kr.Inputs,
+    exact: dict,
+    policy: str,
+    cell: int,
+) -> tuple[list[int], list[list[Fr]]]:
+    """Components u of `cell` whose corrupted output interval [y_c - r_c, y_c + r_c] lies wholly
+    outside the clean acceptance interval [g_int - R_D1, g_int + R_D1] (ADR 0003, controls)."""
+    data = kr.load_inputs(clean, policy)
+    q_hat = [v.e for v in data.q]  # type: ignore[attr-defined]
+    qb_hat = [v.e for v in data.q_b]  # type: ignore[attr-defined]
+    g_int = kr.lsq_intended(read, exact, q_hat, qb_hat)[cell]
+    accepted = kr.lsq(read, data, policy, kr.Rounded())[cell]
+    bad_all = kr.lsq(corrupt_read, kr.load_inputs(corrupt, policy), policy, kr.Rounded())
+    bad = bad_all[cell]
+    out = []
+    for u in range(3):
+        v, r = accepted[u].c.value, accepted[u].c.radius  # type: ignore[attr-defined]
+        r_d1 = r + abs(v - g_int[u])
+        y, rc = bad[u].c.value, bad[u].c.radius  # type: ignore[attr-defined]
+        if abs(y - g_int[u]) > r_d1 + rc:
+            out.append(u)
+    return out, [[v.e for v in row] for row in bad_all]  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(("control", "factor"), [(1, 2.0), (2, -1.0)])
+def test_a_corrupted_weight_fails_checks_2_and_3(control: int, factor: float) -> None:
+    # Controls 1 (one weight component doubled) and 2 (one weight's sign flipped).
+    policy = "fp64"
+    m, read = _mesh()
+    inp, geometry, qv, qb = _lsq_instance(m, read)
+    exact = q.geometry_exact(read)
+    certs = q.geometry_certified(read)["lsq_weight"]
+    for k in range(len(read.cell_faces)):
+        cell = int(np.searchsorted(read.cell_face_offsets, k, side="right")) - 1
+        w = [float(p.e) for p in geometry["lsq_weight"][k]]
+        u0 = max(range(3), key=lambda u: abs(w[u]))
+        new = list(w) if control == 1 else [-x for x in w]
+        if control == 1:
+            new[u0] = factor * w[u0]
+        # Check 2: the stored weight leaves its certified interval.
+        stored = q.stored_geometry(m)
+        stored["lsq_weight"][k] = new
+        moved = [j for j in range(3) if abs(Fr(new[j]) - certs[k][j].value) > certs[k][j].radius]
+        assert moved, "the corrupted weight stays in its interval"
+        assert any(
+            i.startswith(f"lsq_weight[{k}][{moved[0]}]: the stored value")
+            for i in q.check_geometry(read, stored)
+        )
+        # Check 3, where the output proof holds.
+        bad_geo = dict(geometry)
+        bad_geo["lsq_weight"] = list(geometry["lsq_weight"])
+        bad_geo["lsq_weight"][k] = [kr.given(x, c.BINARY64) for x in new]
+        proven, expected = _proof_d1(
+            read, inp, read, kr.Inputs(bad_geo, inp.q, inp.q_b), exact, policy, cell
+        )
+        if not proven:
+            continue
+        clean = s.gradients(m, policy, "lsq", qv, qb)[0]
+        assert kr.check_d1(read, inp, exact, clean.tolist(), policy, "lsq").issues == []
+        s.test_only_set_lsq_weight(m, k, tuple(new))
+        g = s.gradients(m, policy, "lsq", qv, qb)[0]
+        # The run executed exactly the modelled corruption, then it fails at the proven entry.
+        assert all(Fr(float(g[i, u])) == expected[i][u] for i in range(m.n_cells) for u in range(3))
+        issues = kr.check_d1(read, inp, exact, g.tolist(), policy, "lsq").issues
+        assert any(i.startswith(f"fail: lsq cell {cell} component {proven[0]}") for i in issues)
+        return
+    pytest.fail(f"control {control}: no incidence where the output proof holds (not demonstrated)")
+
+
+def test_an_incidence_dropped_from_a_cell_fails_check_3() -> None:
+    # Control 3, its check 3 half: the kernels run without one incidence.
+    policy = "fp64"
+    m, read = _mesh()
+    inp, geometry, qv, qb = _lsq_instance(m, read)
+    exact = q.geometry_exact(read)
+    o = read.cell_face_offsets
+    for k in range(len(read.cell_faces)):
+        cell = int(np.searchsorted(o, k, side="right")) - 1
+        corrupt = read.copy()
+        corrupt.cell_faces = np.delete(read.cell_faces, k)
+        corrupt.incidence_side = np.delete(read.incidence_side, k)
+        corrupt.cell_face_offsets = np.where(o > k, o - 1, o)
+        bad_geo = dict(geometry)
+        bad_geo["lsq_weight"] = [row for i, row in enumerate(geometry["lsq_weight"]) if i != k]
+        proven, expected = _proof_d1(
+            read, inp, corrupt, kr.Inputs(bad_geo, inp.q, inp.q_b), exact, policy, cell
+        )
+        if not proven:
+            continue
+        clean = s.gradients(m, policy, "lsq", qv, qb)[0]
+        assert kr.check_d1(read, inp, exact, clean.tolist(), policy, "lsq").issues == []
+        s.test_only_drop_incidence(m, k)
+        g = s.gradients(m, policy, "lsq", qv, qb)[0]
+        assert all(Fr(float(g[i, u])) == expected[i][u] for i in range(m.n_cells) for u in range(3))
+        issues = kr.check_d1(read, inp, exact, g.tolist(), policy, "lsq").issues
+        assert any(i.startswith(f"fail: lsq cell {cell} component {proven[0]}") for i in issues)
+        return
+    pytest.fail("control 3: no incidence where the output proof holds (not demonstrated)")
+
+
+# Control 11 (ADR 0003, as amended on #43): demonstrated through the validity condition of checks 3
+# and 4, "the replay's executed value equals the kernel's output, value for value" (+-0 identified).
+# On the measured fixtures, the envelopes R_D1 and R4 alone did not separate binary32 from binary64
+# accumulation; no claim is made beyond them.
+CONTROL_11_CASE = ("hex", 4, 0.15, 3, 1.0)  # kind, N, perturbation, seed, a: a B fixture
+G_B = (0.3, -1.2, 0.7)
+
+
+@pytest.mark.parametrize("method", ["lsq", "gg"])
+def test_a_narrowed_accumulation_makes_checks_3_and_4_invalid(method: str) -> None:
+    # Exact emulation first: the narrowed sequence (accumulation in binary32 under fp32+acc64)
+    # differs from the declared one on at least one entry. Then the run with the test-only policy
+    # (the generator's loops, accumulation narrowed) must give exactly the narrowed emulation, and
+    # checks 3 and 4 must report that entry invalid: the build does not execute the declared sequence.
+    good, test = "fp32+acc64", "fp32+acc32-test-only"
+    kind, n, p, seed, a = CONTROL_11_CASE
+    m = s.mesh(meshes.build(kind, n, p, seed=seed))
+    read = t.read_mesh(m)
+    geometry, exact = q.construct(read), q.geometry_exact(read)
+    n_int = len(read.neighbour)
+    qv, qb = kr.field_floats(geometry, n_int, a, G_B)
+    grad0 = [[kr.given(v, c.BINARY64) for v in G_B]] * read.n_cells
+    field = kr.linear_field(geometry["cell_centroid"], a, G_B)
+    field_b = [kr.given(0.0, c.BINARY64)] * n_int + kr.linear_field(
+        geometry["face_centroid"][n_int:], a, G_B
+    )
+    inp = kr.Inputs(geometry, field, field_b, grad0 if method == "gg" else None)
+    run = kr.lsq if method == "lsq" else kr.green_gauss
+    narrowed = run(read, kr.load_inputs(inp, test), test, kr.Rounded())
+    declared = run(read, kr.load_inputs(inp, good), good, kr.Rounded())
+    differ = [
+        (cell, u)
+        for cell in range(read.n_cells)
+        for u in range(3)
+        if narrowed[cell][u].e != declared[cell][u].e  # type: ignore[attr-defined]
+    ]
+    assert differ, "control 11 not demonstrated: the narrowed sequence equals the declared one"
+    g0 = np.tile(np.array(G_B), (m.n_cells, 1))
+    # The nominal kernel on the same fixture passes both checks first.
+    nominal = (
+        s.gradients(m, good, "lsq", np.array(qv), np.array(qb))[0]
+        if method == "lsq"
+        else s.gradients(m, good, "gg", np.array(qv), np.array(qb), 1, g0)[0]
+    )
+    assert kr.check_d1(read, inp, exact, nominal.tolist(), good, method).issues == []
+    assert (
+        kr.check_bound(read, geometry, exact, a, G_B, nominal.tolist(), good, method).issues == []
+    )
+    out = (
+        s.gradients(m, test, "lsq", np.array(qv), np.array(qb))[0]
+        if method == "lsq"
+        else s.gradients(m, test, "gg", np.array(qv), np.array(qb), 1, g0)[0]
+    )
+    for cell in range(read.n_cells):
+        for u in range(3):
+            assert Fr(float(out[cell, u])) == narrowed[cell][u].e, (cell, u)  # type: ignore[attr-defined]
+    cell, u = differ[0]
+    where = f"invalid: {method} cell {cell} component {u}: the build does not execute"
+    d1 = kr.check_d1(read, inp, exact, out.tolist(), good, method)
+    b4 = kr.check_bound(read, geometry, exact, a, G_B, out.tolist(), good, method)
+    assert any(i.startswith(where) for i in d1.issues)
+    assert any(i.startswith(where) for i in b4.issues)
