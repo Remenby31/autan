@@ -127,8 +127,8 @@ struct SpalartAllmaras<P>::Impl {
     d.gas_constant[0] = typename P::param(a.gas_constant);
   }
 
-  // A face or boundary loop: its gather under global keys (the flow's topology, which share()
-  // takes), else its scatter.
+  // A face or boundary loop: its gather on the flow's rank-independent topology (global keys),
+  // else its scatter.
   template <class Loop>
   void run(Loop loop) const {
     if (d.topo.rank_independent) {
@@ -304,6 +304,11 @@ void SpalartAllmaras<P>::eddy_viscosity(std::span<const State> s) {
   sk::cpu::boundary_values(m.d);
   sk::cpu::eddy_viscosities(m.d);
   sk::cpu::boundary_eddy_viscosities(m.d);
+}
+
+template <class P>
+const kernels::spalart_allmaras::Data<P>& SpalartAllmaras<P>::data() const {
+  return impl_->d;
 }
 
 template class SpalartAllmaras<kernels::fp64>;

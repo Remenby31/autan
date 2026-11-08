@@ -14,6 +14,8 @@
 #   AUTAN_OFFLINE          set to 1 to install from the wheelhouse in AUTAN_FIND_LINKS only:
 #                          uv-<target>.tar.gz, python/ (a uv Python mirror) and every wheel
 #   AUTAN_NO_MODIFY_PATH   set to 1 to leave shell startup files untouched
+#   AUTAN_GITHUB_TOKEN     a GitHub token sent with the uv download (curl only), which GitHub
+#                          serves first under load; CI sets the workflow's read-only token
 #
 # The whole script is one function called on the last line, so a truncated download runs
 # nothing.
@@ -86,6 +88,16 @@ gpu_report() {
 
 fetch() {
   if command -v curl >/dev/null 2>&1; then
+    case $1 in
+      https://github.com/*)
+        if [ -n "${AUTAN_GITHUB_TOKEN:-}" ]; then
+          # The header from stdin keeps the token out of the process list.
+          printf 'Authorization: Bearer %s\n' "$AUTAN_GITHUB_TOKEN" |
+            curl --proto '=https' --tlsv1.2 -fsSL -H @- "$1" -o "$2"
+          return
+        fi
+        ;;
+    esac
     curl --proto '=https' --tlsv1.2 -fsSL "$1" -o "$2"
   elif command -v wget >/dev/null 2>&1; then
     wget --https-only --secure-protocol=TLSv1_2 -q "$1" -O "$2"
