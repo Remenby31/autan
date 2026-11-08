@@ -1,5 +1,6 @@
 // The implicit step's matrix assembled on a CUDA device (DeviceStepper::assemble) against the
 // host's (Euler<P>::assemble into a BlockMatrix), block by block.
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -27,6 +28,7 @@
 #include "autan/physics/euler_device.hpp"
 #include "autan/runtime/ranks.hpp"
 #include "fixtures.hpp"
+#include "stretched_slab.hpp"
 
 namespace {
 
@@ -224,4 +226,106 @@ TEST_CASE("the device Jacobian needs the face moments a planar stepper omits",
                                                        ghosts, nullptr);
   const std::vector<double> shift(static_cast<std::size_t>(mesh.n_cells()), 1.0);
   CHECK_THROWS_AS(device->assemble(shift), std::logic_error);
+}
+
+TEMPLATE_TEST_CASE("the device boundary gradient tangent has the host's bits",
+                   "[euler][jacobian][gpu]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // Euler<P>::gradient_tangent over the boundary faces (the term the steady
+  // operator adds to the assembled matrix), the tangent of the kept cells' boundary values
+  // (#581) included, against the host under the mesh's own numbering as global keys. The
+  // one-layer slab has kept cells; the test meshes have none.
+  using P = TestType;
+  using autan::physics::GradientFit;
+  const std::array<Source, 6> sources = {
+      Source{"tet-gmsh/tet-gmsh.ascii.msh"}, Source{"hex/hex.ascii.msh"}, Source{"poly/polyMesh"},
+      Source{"hybrid/hybrid.ascii.msh"},     Source{BoxFill::prism},      Source{BoxFill::hexa}};
+  const auto which = static_cast<std::size_t>(GENERATE(0, 1, 2, 3, 4, 5));
+  const bool slab = which == 5;  // the stretched one-layer slab in place of the hexahedra box
+  const Source source = sources[which];
+  const auto flux = GENERATE(Flux::roe, Flux::hllc, Flux::ausm_up);
+  const bool limiter = GENERATE(false, true);
+  const auto fit = GENERATE(GradientFit::linear, GradientFit::quadratic);
+  CAPTURE(slab, name_of(source), static_cast<int>(flux), limiter, static_cast<int>(fit));
+  const auto mesh = slab ? autan::test::stretched_slab({.first = 0.02}) : mesh_of(source);
+  const auto g = autan::compute_geometry(mesh);
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  std::vector<std::int64_t> face_id(ni + nb);
+  std::iota(face_id.begin(), face_id.end(), std::int64_t{0});
+  const std::vector<std::uint8_t> not_reversed(ni + nb, 0);
+  const autan::kernels::GlobalKeys keys{
+      .cell = mesh.cell_global_id(), .face = face_id, .reversed = not_reversed, .shift = {}};
+
+  const auto ref = flow(0.5, 0.5, 0.5);
+  Scheme s;
+  s.flux = flux;
+  s.limiter = limiter;
+  s.gradient_fit = fit;
+  const double c_ref = std::sqrt(air.gamma * ref[4] / ref[0]);
+  s.mach_ref = std::hypot(ref[1], ref[2], ref[3]) / c_ref;
+  s.scale = {ref[0], 100.0, 100.0, 100.0, ref[4]};
+  s.reference = conserved(ref);
+  s.venkat_k = 0.1;
+  Euler<P> host(mesh, g, air, s, &keys);
+  // Outlet on x, an adiabatic wall on ymin (the slab) or zmax, slip on y and on the slab's sides,
+  // the flow's state elsewhere.
+  std::vector<BoundaryKind> kind(nb);
+  std::vector<double> data(5 * nb, 0.0);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const auto f = ni + b;
+    const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[f])].name;
+    std::array<double, 5> w = ref;
+    if (zone[0] == 'x') {
+      kind[b] = BoundaryKind::outlet;
+    } else if ((slab && zone == "ymin") || (!slab && zone == "zmax")) {
+      kind[b] = BoundaryKind::wall;
+      w = {0.0, 0.0, 0.0, 0.0, 0.0};
+    } else if (zone[0] == 'y' || zone == "sides") {
+      kind[b] = BoundaryKind::slip;
+    } else {
+      kind[b] = BoundaryKind::state;
+      w = flow(g.face_centroid_x[f], g.face_centroid_y[f], g.face_centroid_z[f]);
+    }
+    for (std::size_t k = 0; k < 5; ++k) data[k * nb + b] = w[k];
+  }
+  host.set_boundary(kind, data);
+  host.set_second_order(true);
+  if (slab) REQUIRE(!host.kept_cells().empty());
+  std::vector<double> u(5 * n), shift(n, 1.0), du(5 * n);
+  for (std::size_t c = 0; c < n; ++c) {
+    const auto w =
+        conserved(flow(g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]));
+    for (std::size_t k = 0; k < 5; ++k) {
+      u[k * n + c] = w[k];
+      du[k * n + c] = 1e-3 * w[k] * std::sin(static_cast<double>(7 * c + k));
+    }
+  }
+  std::vector<typename P::state> stored(5 * n), dv(5 * n);
+  host.state(u, stored);
+  for (std::size_t i = 0; i < 5 * n; ++i) dv[i] = static_cast<typename P::state>(du[i]);
+  std::vector<typename P::residual> r(5 * n), dres_host(5 * n, typename P::residual(0));
+  host.residual_and_jacobian(stored, r);
+  host.gradient_tangent(stored, dv, dres_host, Euler<P>::Faces::boundary);
+
+  autan::runtime::OneRank rank;
+  NoGhosts ghosts;
+  auto device = autan::physics::make_device_stepper<P>(mesh, g, host, air.gamma, true, rank, ghosts,
+                                                       nullptr, &keys);
+  device->upload(u);
+  device->assemble(shift);
+  std::vector<double> dres_device(5 * n);
+  device->boundary_gradient_tangent(du, dres_device);
+  // Another state evaluated after the assembly: the tangent is refused, not taken there.
+  std::vector<double> r_other(5 * n);
+  device->residual(u, r_other);
+  CHECK_THROWS_AS(device->boundary_gradient_tangent(du, dres_device), std::logic_error);
+
+  REQUIRE(std::ranges::any_of(dres_host, [](auto v) { return v != 0; }));
+  std::size_t differ = 0;
+  for (std::size_t i = 0; i < 5 * n; ++i) {
+    REQUIRE(std::isfinite(static_cast<double>(dres_host[i])));
+    if (bits(dres_device[i]) != bits(static_cast<double>(dres_host[i]))) ++differ;
+  }
+  CHECK(differ == 0);
 }

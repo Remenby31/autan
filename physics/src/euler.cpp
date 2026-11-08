@@ -219,6 +219,29 @@ struct Euler<P>::Impl {
     }
   }
 
+  // The kept cells are those with a weight on a face that is not a `state` face: the fit
+  // weighs those faces only when it keeps every boundary face.
+  const std::vector<std::size_t>& list_kept_cells() {
+    if (kept_boundaries == 0 || !kept_cells.empty()) return kept_cells;
+    const auto nst = stencil.entries.size();
+    for (std::size_t c = 0; c + 1 < stencil.offsets.size(); ++c) {
+      for (auto k = static_cast<std::size_t>(stencil.offsets[c]);
+           k < static_cast<std::size_t>(stencil.offsets[c + 1]); ++k) {
+        const index_t e = stencil.entries[k];
+        if (e >= 0 ||
+            bc_kind[static_cast<std::size_t>(-e - 1)] == static_cast<double>(BoundaryKind::state)) {
+          continue;
+        }
+        if (stencil_lsq_weight[k] != 0 || stencil_lsq_weight[nst + k] != 0 ||
+            stencil_lsq_weight[2 * nst + k] != 0) {
+          kept_cells.push_back(c);
+          break;
+        }
+      }
+    }
+    return kept_cells;
+  }
+
   // The linear gradients' tangent through the boundary values of the cells whose fit keeps every
   // boundary face: sum over those entries of dprim_b (x) w, dprim_b = d(prim_b)/d(prim) dW of the
   // face's owner. A quadratic band cell (band = 1) reads no such value.
@@ -232,25 +255,7 @@ struct Euler<P>::Impl {
       prim_b_tan.assign(5 * (nf - ni), 0.0);
       discarded.assign(5 * nc, Res(0));
     }
-    // The kept cells are those with a weight on a face that is not a `state` face: the fit
-    // weighs those faces only when it keeps every boundary face.
-    if (kept_cells.empty()) {
-      for (std::size_t c = 0; c + 1 < stencil.offsets.size(); ++c) {
-        for (auto k = static_cast<std::size_t>(stencil.offsets[c]);
-             k < static_cast<std::size_t>(stencil.offsets[c + 1]); ++k) {
-          const index_t e = stencil.entries[k];
-          if (e >= 0 || bc_kind[static_cast<std::size_t>(-e - 1)] ==
-                            static_cast<double>(BoundaryKind::state)) {
-            continue;
-          }
-          if (stencil_lsq_weight[k] != 0 || stencil_lsq_weight[nst + k] != 0 ||
-              stencil_lsq_weight[2 * nst + k] != 0) {
-            kept_cells.push_back(c);
-            break;
-          }
-        }
-      }
-    }
+    list_kept_cells();
     data.bnd_state_jac = bnd_state_jac.data();
     std::fill(discarded.begin(), discarded.end(), Res(0));
     data.res = discarded.data();
@@ -980,6 +985,11 @@ void Euler<P>::gradient_tangent(std::span<const State> s, std::span<const State>
   m.d = d;
   m.faces_tangent(faces == Faces::interior, faces == Faces::boundary);
   m.d = saved;
+}
+
+template <class P>
+std::span<const std::size_t> Euler<P>::kept_cells() const {
+  return impl_->list_kept_cells();
 }
 
 template <class P>

@@ -80,6 +80,13 @@ __global__ void store_state(index_t n, const double* u, Five r, S* s) {
   }
 }
 
+// EulerPhysics::add_boundary_gradient_term: dv = State(v).
+template <class S>
+__global__ void to_state(std::int64_t n, const double* v, S* s) {
+  const std::int64_t i = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i < n) s[i] = static_cast<S>(v[i]);
+}
+
 // EulerPhysics::unsteady_step: dt_c = CFL V / lambda.
 template <class S>
 __global__ void local_time_step(index_t n, double cfl, const double* volume, const S* lambda,
@@ -310,6 +317,7 @@ class CudaStepper : public DeviceStepper<P> {
       band_topo_.stencil_twin = nullptr;
       band_topo_.stencil_stride = 1;
     }
+    kept_boundaries(mesh, host);
   }
 
   Result step(double cfl, std::optional<double> dt, bool local) override {
@@ -373,6 +381,7 @@ class CudaStepper : public DeviceStepper<P> {
   }
 
   void assemble(std::span<const double> shift) override {
+    if (shift.size() != n_) throw std::invalid_argument("assemble: a shift per cell");
     if (!moments_) {
       throw std::logic_error(
           "the device Jacobian reads face moments, which a planar stepper omits");
@@ -401,6 +410,23 @@ class CudaStepper : public DeviceStepper<P> {
     check(cudaGetLastError(), "assemble_blocks");
   }
 
+  void boundary_gradient_tangent(std::span<const double> du, std::span<double> dres) override {
+    if (!jacobian_current_) {
+      throw std::logic_error("the device gradient tangent needs the state of the last assemble");
+    }
+    if (du.size() != 5 * n_ || dres.size() != 5 * n_) {
+      throw std::invalid_argument("boundary_gradient_tangent: 5 values per cell");
+    }
+    if (tangent_du_.size() == 0) {
+      tangent_du_ = gpu::DeviceArray<double>(5 * n_, stream_);
+      tangent_dres_ = gpu::DeviceArray<R>(5 * n_, stream_);
+    }
+    tangent_du_.upload(du, stream_);
+    boundary_gradient_tangent(tangent_du_.get(), tangent_dres_.get());
+    const auto r = tangent_dres_.download(stream_);
+    for (std::size_t i = 0; i < r.size(); ++i) dres[i] = static_cast<double>(r[i]);
+  }
+
   DeviceStepperBlocks jacobian_blocks() override {
     return download_blocks(mesh_.topology(), jac_, stream_);
   }
@@ -418,6 +444,7 @@ class CudaStepper : public DeviceStepper<P> {
   // Euler<P>::residual_and_jacobian: dW/dU and the face blocks too, from the loops that are not
   // planar.
   void residual(const double* u, bool jacobian = false) {
+    jacobian_current_ = jacobian;
     store_state<<<blocks(n_), block, 0, stream_>>>(index(n_), u, ref_, state_.get());
     check(cudaGetLastError(), "store_state");
     const auto& sched = mesh_.schedule();
@@ -498,6 +525,123 @@ class CudaStepper : public DeviceStepper<P> {
         break;
     }
     add_terms();
+  }
+
+  // Euler<P>::gradient_tangent(s, State(du), dres, Faces::boundary) at the state of the last
+  // assemble, dres zeroed first, as EulerPhysics::add_boundary_gradient_term calls it.
+  void boundary_gradient_tangent(const double* du, R* dres) {
+    check(cudaMemsetAsync(dres, 0, 5 * n_ * sizeof(R), stream_), "dres");
+    if (!second_order_) return;
+    using Gr = element<decltype(D::grad_tan)>;
+    if (prim_tan_.size() == 0) {
+      dv_ = gpu::DeviceArray<S>(5 * n_, stream_);
+      prim_tan_ = gpu::DeviceArray<S>(5 * n_, stream_);
+      zero_state_ = gpu::DeviceArray<S>(5 * n_, stream_);
+      wmin_tan_ = gpu::DeviceArray<S>(5 * n_, stream_);
+      wmax_tan_ = gpu::DeviceArray<S>(5 * n_, stream_);
+      grad_tan_ = gpu::DeviceArray<Gr>(15 * n_, stream_);
+      if (scheme_.gradient_fit == GradientFit::quadratic) {
+        grad_band_tan_ = gpu::DeviceArray<element<decltype(D::grad_band_tan)>>(15 * n_, stream_);
+        band_tan_ = gpu::DeviceArray<element<decltype(D::band_tan)>>(n_, stream_);
+      }
+      if (n_kept_ > 0) {
+        bnd_state_jac_ = gpu::DeviceArray<J>(25 * nf_, stream_);
+        prim_b_tan_ = gpu::DeviceArray<double>(5 * (nf_ - ni_), stream_);
+        discarded_ = gpu::DeviceArray<R>(5 * n_, stream_);
+      }
+    }
+    to_state<<<blocks(5 * n_), block, 0, stream_>>>(static_cast<std::int64_t>(5 * n_), du,
+                                                    dv_.get());
+    check(cudaGetLastError(), "to_state");
+    const auto& sched = mesh_.schedule();
+    auto d = d_;
+    d.u_tan = dv_.get();
+    d.prim_tan = prim_tan_.get();
+    d.source_tan = zero_state_.get();
+    ek::gpu_loops::primitives_tangent(d, sched);
+    fill_ghosts(prim_tan_.get(), 5);
+    d.grad_tan = grad_tan_.get();
+    d.wmin_tan = wmin_tan_.get();
+    d.wmax_tan = wmax_tan_.get();
+    if (scheme_.gradient_fit == GradientFit::quadratic) {
+      d.grad_band_tan = grad_band_tan_.get();
+      d.band_tan = band_tan_.get();
+      auto b = d;
+      b.topo = band_topo_;
+      ek::gpu_loops::band_gradients_tangent(b, sched);
+      ek::gpu_loops::quadratic_gradients_tangent(d, sched);
+    } else {
+      ek::gpu_loops::gradients_tangent(d, sched);
+    }
+    if (n_kept_ > 0) {
+      // Euler<P>::Impl::kept_boundaries_tangent: every boundary face's state Jacobian, its
+      // increment discarded, then the kept cells' boundary values' tangent.
+      auto k = d;
+      k.bnd_state_jac = bnd_state_jac_.get();
+      check(cudaMemsetAsync(discarded_.get(), 0, 5 * n_ * sizeof(R), stream_), "discarded");
+      k.res = discarded_.get();
+      k.topo.n_owned_faces = k.topo.n_faces;
+      ek::gpu_loops::boundary_states_jacobian(k, gpu::Strategy::store_gather, sched);
+      boundary_state_tangent<J, S><<<blocks(nf_ - ni_), block, 0, stream_>>>(
+          index(ni_), index(nf_), index(n_), bnd_owner_.get(), bnd_state_jac_.get(),
+          prim_tan_.get(), prim_b_tan_.get());
+      kept_gradient_tangent<Gr, W><<<blocks(n_kept_), block, 0, stream_>>>(
+          static_cast<std::int64_t>(n_kept_), kept_cells_.get(), kept_offsets_.get(),
+          kept_boundary_.get(), kept_weight_.get(), index(n_), index(nf_ - ni_), prim_b_tan_.get(),
+          grad_tan_.get());
+      check(cudaGetLastError(), "kept boundaries tangent");
+    }
+    fill_ghosts(grad_tan_.get(), 15);
+    // The fluxes with only the gradients moving: dW and the limiter held.
+    d.prim_tan = zero_state_.get();
+    d.phi_tan = zero_state_.get();
+    d.res_tan = dres;
+    constexpr auto deterministic = gpu::Strategy::store_gather;
+    switch (scheme_.flux) {
+      case Flux::roe:
+        ek::gpu_loops::roe_boundaries_tangent(d, deterministic, sched);
+        break;
+      case Flux::hllc:
+        ek::gpu_loops::hllc_boundaries_tangent(d, deterministic, sched);
+        break;
+      case Flux::ausm_up:
+        ek::gpu_loops::ausm_boundaries_tangent(d, deterministic, sched);
+        break;
+    }
+  }
+
+  // The kept cells of the host's gradient fit and, per cell, its boundary entries in stencil
+  // order with their weights, as Euler<P>::Impl::kept_boundaries_tangent reads them.
+  void kept_boundaries(const Mesh& mesh, const Euler<P>& host) {
+    ni_ = static_cast<std::size_t>(mesh.n_interior_faces());
+    const auto& stencil = host.stencil();
+    const auto nst = stencil.entries.size();
+    const auto* w = host.data().stencil_lsq_weight;
+    std::vector<double> fitted;
+    if (scheme_.gradient_fit == GradientFit::quadratic) fitted = host.quadratic_gradient().fitted;
+    std::vector<index_t> cells, boundary;
+    std::vector<kernels::offset_t> offsets{0};
+    std::vector<W> weights;
+    for (const std::size_t c : host.kept_cells()) {
+      if (!fitted.empty() && fitted[c] > 0.5) continue;
+      for (auto k = static_cast<std::size_t>(stencil.offsets[c]);
+           k < static_cast<std::size_t>(stencil.offsets[c + 1]); ++k) {
+        const index_t e = stencil.entries[k];
+        if (e >= 0) continue;
+        boundary.push_back(static_cast<index_t>(static_cast<std::size_t>(-e - 1) - ni_));
+        for (std::size_t u = 0; u < 3; ++u) weights.push_back(w[u * nst + k]);
+      }
+      cells.push_back(static_cast<index_t>(c));
+      offsets.push_back(static_cast<kernels::offset_t>(boundary.size()));
+    }
+    n_kept_ = cells.size();
+    if (n_kept_ == 0) return;
+    kept_cells_ = gpu::DeviceArray<index_t>(std::span<const index_t>(cells), stream_);
+    kept_offsets_ =
+        gpu::DeviceArray<kernels::offset_t>(std::span<const kernels::offset_t>(offsets), stream_);
+    kept_boundary_ = gpu::DeviceArray<index_t>(std::span<const index_t>(boundary), stream_);
+    kept_weight_ = gpu::DeviceArray<W>(std::span<const W>(weights), stream_);
+    bnd_owner_ = gpu::DeviceArray<index_t>(mesh.owner(), stream_);
   }
 
   template <class T>
@@ -583,8 +727,21 @@ class CudaStepper : public DeviceStepper<P> {
   gpu::DeviceArray<element<decltype(D::band_weight)>> band_weight_;
   gpu::DeviceArray<element<decltype(D::grad_band)>> grad_band_;
   kernels::Topology band_topo_{};
-  // The implicit step's (assemble only).
+  // The implicit step's (assemble and the boundary gradient tangent only).
   using J = element<decltype(D::face_jac)>;
+  using W = element<decltype(D::stencil_lsq_weight)>;
+  std::size_t ni_ = 0, n_kept_ = 0;
+  bool jacobian_current_ = false;  // the evaluated arrays are those of the last assemble
+  gpu::DeviceArray<double> tangent_du_, prim_b_tan_;
+  gpu::DeviceArray<R> tangent_dres_, discarded_;
+  gpu::DeviceArray<S> dv_, prim_tan_, zero_state_, wmin_tan_, wmax_tan_;
+  gpu::DeviceArray<element<decltype(D::grad_tan)>> grad_tan_;
+  gpu::DeviceArray<element<decltype(D::grad_band_tan)>> grad_band_tan_;
+  gpu::DeviceArray<element<decltype(D::band_tan)>> band_tan_;
+  gpu::DeviceArray<J> bnd_state_jac_;
+  gpu::DeviceArray<index_t> kept_cells_, kept_boundary_, bnd_owner_;
+  gpu::DeviceArray<kernels::offset_t> kept_offsets_;
+  gpu::DeviceArray<W> kept_weight_;
   gpu::DeviceArray<J> face_jac_, bnd_jac_, dwdu_;
   gpu::DeviceArray<double> shift_;
   JacobianBlocks<J> jac_;

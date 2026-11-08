@@ -173,6 +173,10 @@ class Euler {
   /// stepping). Nothing for a first-order scheme.
   void gradient_tangent(std::span<const State> s, std::span<const State> du, std::span<Res> dres,
                         Faces faces);
+  /// The cells whose linear gradient fit keeps every boundary face, in increasing order:
+  /// gradient_tangent adds the tangent of their boundary values (#581). Listed on the first call
+  /// after set_boundary, then kept.
+  [[nodiscard]] std::span<const std::size_t> kept_cells() const;
 
   /// After residual(u): sum over each cell's faces of (|v . n| + c) A (n_cells), so that
   /// CFL V / lambda is the cell's convective time step.
