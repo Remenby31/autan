@@ -21,7 +21,7 @@
 namespace autan::physics {
 
 std::optional<GhostStencil> ghost_stencil(const Scheme& scheme) {
-  if (scheme.gradient_fit == GradientFit::quadratic) return std::nullopt;
+  if (scheme.gradient_fit == GradientFit::quadratic) return GhostStencil::vertex2;
   return scheme.gradient == GradientStencil::vertex ? GhostStencil::vertex : GhostStencil::face2;
 }
 
@@ -32,10 +32,9 @@ namespace {
 const Mesh& holding(const Mesh& mesh, const Scheme& scheme, std::optional<GhostStencil> ghosts) {
   if (!ghosts && mesh.n_cells() == mesh.n_owned_cells()) return mesh;
   const auto needed = ghost_stencil(scheme);
-  if (!needed || *needed > ghosts.value_or(GhostStencil::face2)) {
+  if (*needed > ghosts.value_or(GhostStencil::face2)) {
     throw Error(ErrorCode::partition_stencil_not_local,
-                needed ? "the gradient stencil reaches beyond the partition's ghost stencil"
-                       : "the quadratic gradient's two vertex rings are not local on a partition");
+                "the gradient stencil reaches beyond the partition's ghost stencil");
   }
   return mesh;
 }
@@ -119,7 +118,16 @@ struct Euler<P>::Impl {
       ek::cpu::primitives(d);
     }
     fill_ghosts(prim, 5);
-    ek::cpu::boundary_states(d);
+    {
+      // Every local boundary face, ghosts' included: the boundary values a stencil of an owned
+      // cell or of its face neighbour samples may lie on a ghost's face (the quadratic band, the
+      // viscous boundary fits), and each is its owner's, computed from filled primitives.
+      auto all = d;
+      all.topo.n_owned_cells = all.topo.n_cells;
+      all.topo.n_owned_interior_faces = all.topo.n_interior_faces;
+      all.topo.n_owned_faces = all.topo.n_faces;
+      ek::cpu::boundary_states(all);
+    }
     if (scheme.second_order) {
       if (scheme.gradient_fit == GradientFit::quadratic) {
         band_gradients();

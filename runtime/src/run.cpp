@@ -38,6 +38,7 @@
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/core/renumber.hpp"
+#include "autan/core/wall_distance.hpp"
 #include "autan/io/cgns.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
@@ -359,6 +360,7 @@ struct Prepared {
   std::string cell_order;                     // "rcm" (default) or "input", from AUTAN_CELL_ORDER
   const PartitionGroups* groups = nullptr;    // the physics' groups; null or empty: none
   GhostStencil ghosts = GhostStencil::face2;  // the stencil the physics declares
+  bool wall_distance = false;                 // the physics reads PhysicsContext::wall_distance
   std::vector<Diagnostic> memory_warnings = {};  // W0712, W0713: the memory check's warnings
   std::optional<StartState> start;               // input.start, read and checked
   Json start_averaging;                          // `continue`: the previous run's averaging
@@ -1517,6 +1519,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
     }
     if (ghosts) p.ghosts = *ghosts;
   }
+  if (entry != nullptr) p.wall_distance = entry->wall_distance;
   if (entry != nullptr && ranks > 1 && !entry->several_ranks) {
     throw InputError(Diagnostic{
         .code = "E0706",
@@ -1787,6 +1790,7 @@ class Run final : public Log {
   void stop_on(fs::path file) { stop_file_ = std::move(file); }
 
   ExitStatus execute() {
+    if (p_.wall_distance) wall_distance_ = compute_wall_distance();
     const StartState* start = local_start_ ? &*local_start_ : p_.start ? &*p_.start : nullptr;
     const std::vector<io::Field>* initial = local_initial_ ? &*local_initial_
                                             : p_.initial   ? &*p_.initial
@@ -1810,7 +1814,8 @@ class Run final : public Log {
                                  .group_cells = group_cells_,
                                  .cell_group_colours = group_colours_,
                                  .n_group_colours = n_group_colours_,
-                                 .ghost_stencil = local_ ? std::optional(p_.ghosts) : std::nullopt};
+                                 .ghost_stencil = local_ ? std::optional(p_.ghosts) : std::nullopt,
+                                 .wall_distance = wall_distance_};
     std::string status = "running";
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
@@ -2050,6 +2055,30 @@ class Run final : public Log {
   }
 
   [[nodiscard]] const Mesh& physics_mesh() const { return local_ ? local_->mesh : compute_mesh(); }
+
+  // PhysicsContext::wall_distance: the walls of the whole mesh (the input's no-slip wall zones),
+  // queried at each centroid of the physics' mesh, owned and ghosts; empty without a wall. The
+  // surface is freed once queried.
+  [[nodiscard]] std::vector<double> compute_wall_distance() const {
+    const Mesh& global = compute_mesh();
+    std::vector<index_t> walls;
+    for (const auto& b : p_.input.boundaries) {
+      if (b.kind != "wall") continue;
+      for (std::size_t z = 0; z < global.face_zones().size(); ++z) {
+        if (global.face_zones()[z].name == b.zone) walls.push_back(static_cast<index_t>(z));
+      }
+    }
+    if (walls.empty()) return {};
+    std::sort(walls.begin(), walls.end());
+    walls.erase(std::unique(walls.begin(), walls.end()), walls.end());
+    const WallSurface surface(global, walls);
+    const Geometry& g = physics_geometry();
+    std::vector<double> d(at(physics_mesh().n_cells()));
+    for (std::size_t c = 0; c < d.size(); ++c) {
+      d[c] = surface.distance({g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]});
+    }
+    return d;
+  }
   [[nodiscard]] const Geometry& physics_geometry() const {
     return local_ ? local_->geometry : geometry_;
   }
@@ -2703,6 +2732,7 @@ class Run final : public Log {
   std::optional<Ordered> ordered_;
   CellGroups groups_;  // the physics' groups, over p_.mesh's cells
   Geometry geometry_;
+  std::vector<double> wall_distance_;  // PhysicsContext::wall_distance
   std::optional<LocalPartition> local_;
   std::map<index_t, std::vector<double>> local_states_;  // boundary_states, physics order
   // PhysicsContext's global keys of the physics' faces: through the partition
@@ -2735,10 +2765,10 @@ class Run final : public Log {
 
 void PhysicsRegistry::add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope,
                           bool several_ranks, PartitionGroups groups, RestartNames restart,
-                          GhostStencils ghosts) {
+                          GhostStencils ghosts, bool wall_distance) {
   entries_.emplace_back(
       std::move(key), Entry{std::move(factory), std::move(scope), several_ranks, std::move(groups),
-                            std::move(restart), std::move(ghosts)});
+                            std::move(restart), std::move(ghosts), wall_distance});
 }
 
 const PhysicsRegistry::Entry* PhysicsRegistry::find(const SolverInput& in) const {

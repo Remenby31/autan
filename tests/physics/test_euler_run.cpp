@@ -1345,6 +1345,63 @@ TEST_CASE("several ranks give the one-rank solution to round-off", "[euler][mpi]
   }
 }
 
+TEST_CASE("Navier-Stokes on several ranks gives the one-rank solution bit for bit",
+          "[navier-stokes][mpi]") {
+  // runtime.md, Ranks: under reproducibility "ranks" the Navier-Stokes physics writes on N ranks
+  // the history and every array of solution.cgns of a run on one (#587). The hybrid case keeps its
+  // no-slip wall, so that the boundary fits are built across parts; steady runs go past the
+  // second-order switch (Jacobian, SA's assembly and sweeps), laminar flow also runs unsteady.
+  const auto [model, linear, steady] =
+      GENERATE(std::tuple{"laminar", "gauss-seidel", true}, std::tuple{"laminar", "lines", true},
+               std::tuple{"sa", "gauss-seidel", true}, std::tuple{"sa", "lines", true},
+               std::tuple{"laminar", "", false});
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  const int ranks = GENERATE(2, 4);
+  INFO(model << " " << linear << (steady ? " steady " : " unsteady ") << precision << " on "
+             << ranks << " ranks");
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    d["precision"] = precision;
+    if (std::string(model) == "laminar") {
+      d["physics"]["turbulence"]["model"] = "laminar";
+      d["physics"]["turbulence"]["nu_tilde_ratio"] = nullptr;
+      d["freestream"]["nu_tilde"] = nullptr;
+      for (auto& z : d["cell_zones"]) z["initial"]["nu_tilde"] = nullptr;
+    }
+    d["reproducibility"] = "ranks";
+    if (steady) {
+      d["time"]["linear_solver"] = linear;
+      d["time"]["max_iterations"] = 400;
+    } else {
+      d["time"] = {{"kind", "unsteady"}, {"steps", 20},
+                   {"dt", nullptr},      {"cfl", 0.8},
+                   {"average_from", 10}, {"checkpoint", {{"seconds", 1800.0}}}};
+    }
+  });
+  const auto one = run(doc);
+  INFO(one.err);
+  REQUIRE(one.status == ExitStatus::finished);
+  if (steady) REQUIRE(field(one.run, "SolverSecondOrder", "RestartState").front() == 1.0);
+  std::string err;
+  const fs::path many = run_on_ranks(doc, ranks, 0, &err);
+  INFO(err);
+  REQUIRE(!many.empty());
+  CHECK(read(many / "history.jsonl") == read(one.run / "history.jsonl"));
+  auto bits = [](const std::vector<double>& v) {
+    std::vector<std::uint64_t> out(v.size());
+    std::ranges::transform(v, out.begin(),
+                           [](double x) { return std::bit_cast<std::uint64_t>(x); });
+    return out;
+  };
+  const auto a = data_arrays(one.run), b = data_arrays(many);
+  REQUIRE(a.contains("WallSolution/WallShearStressX"));
+  CHECK(a.size() == b.size());
+  for (const auto& [name, values] : a) {
+    INFO(name);
+    REQUIRE(b.contains(name));
+    CHECK(bits(values) == bits(b.at(name)));
+  }
+}
+
 TEST_CASE("ranks that disagree on planar faces all run the full loops", "[euler][mpi]") {
   // A box of hexahedra with one interior node moved along z, in the part that autan-run's
   // partition gives rank 1 and away from rank 0's ghost layers: rank 0's faces are all planar,

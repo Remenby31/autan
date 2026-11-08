@@ -125,6 +125,11 @@ struct PhysicsContext {
   /// physics declared (PhysicsRegistry::Entry::ghosts). Empty on the whole mesh, which holds
   /// every stencil.
   std::optional<GhostStencil> ghost_stencil;
+  /// For a physics whose registry entry asks for it (PhysicsRegistry::Entry::wall_distance) and a
+  /// case with no-slip wall zones: the distance from each cell centroid of `mesh` (owned and
+  /// ghosts) to the walls of the whole mesh read (WallSurface, exact point-triangle projections),
+  /// the same bits on any number of ranks. Empty otherwise.
+  std::span<const double> wall_distance;
 };
 
 // case-schema.md#time: the round-off floor is C * eps32 times an equation's flux scale, C = 0.5.
@@ -232,10 +237,12 @@ class PhysicsRegistry {
     PartitionGroups groups;  ///< empty: no group
     RestartNames restart;    ///< empty: no RestartState
     GhostStencils ghosts;    ///< empty: face2
+    /// Whether it reads PhysicsContext::wall_distance.
+    bool wall_distance = false;
   };
   void add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope = {},
            bool several_ranks = false, PartitionGroups groups = {}, RestartNames restart = {},
-           GhostStencils ghosts = {});
+           GhostStencils ghosts = {}, bool wall_distance = false);
   /// The entry for `input`, or null when this build has none (E0706).
   [[nodiscard]] const Entry* find(const SolverInput& input) const;
 
