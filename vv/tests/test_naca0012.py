@@ -1,7 +1,9 @@
 """NACA 0012 of Vassberg and Jameson (2010): geometry and O-meshes against the paper, force gates
 against the paper's own grid sequences (J. Aircraft 47(4):1152-1166, doi:10.2514/1.46737)."""
 
+import hashlib
 import math
+import time
 from pathlib import Path
 
 import autan
@@ -292,6 +294,27 @@ def test_lifting_cases_carry_the_point_vortex_of_the_flo82_references() -> None:
             assert [float(v.to("m").magnitude) for v in vortex.center] == [0.25, 0.0, 0.0]
 
 
+def test_a_returned_map_is_the_callers_own() -> None:
+    # The construction common to every level is computed once (#536); a caller changing the map it
+    # gets back must not change the next grid.
+    z, kt = naca0012.plane_grid(8)
+    kt.power = 3.0
+    again, _ = naca0012.plane_grid(8)
+    np.testing.assert_array_equal(again, z)
+
+
+def test_level_32_has_the_same_bytes_on_every_cpu(tmp_path: Path) -> None:
+    # #536: the generator's bytes depend on its inputs only, not on the CPU or its C library. These
+    # sha256 were measured identical on x86-64 and aarch64 Linux and on macOS arm64.
+    points, _, _ = naca0012.grid(32)
+    path = tmp_path / "naca0012-n0032.msh"
+    naca0012.generate_level(32, path)
+    sha_points = hashlib.sha256(points.astype("<f8").tobytes()).hexdigest()
+    assert sha_points == "4e28523064d606127db1d4aaeab13114c40ce60cc46adb5a57baf38c2da30520"
+    sha_file = hashlib.sha256(path.read_bytes()).hexdigest()
+    assert sha_file == "3b7ab3cd0e7226becb202b2f324c5adc30d75f15a2ed4cfc5e0350fa13f3fee3"
+
+
 @pytest.mark.parametrize("nc", [8, 64])
 def test_python_writer_writes_the_file_gmsh_writes(nc: int, tmp_path: Path) -> None:
     # The NACA 0012 levels are written without Gmsh (no linux-aarch64 build): the file must be the
@@ -310,7 +333,73 @@ def test_python_writer_writes_the_file_gmsh_writes(nc: int, tmp_path: Path) -> N
         families._write_msh(gmsh, points, cells, boundary, theirs)
     finally:
         gmsh.finalize()
-    assert ours.read_bytes() == theirs.read_bytes()
+    assert_same_file(ours, theirs)
+
+
+def assert_same_file(ours: Path, theirs: Path, shown: int = 3) -> None:
+    """Fail unless the two files hold the same bytes, naming their sha256 and first differing lines.
+
+    The bytes are never compared in an assert: pytest would explain the mismatch with difflib,
+    which takes minutes on files of this size when CI=true turns its truncation off.
+    """
+    a, b = ours.read_bytes(), theirs.read_bytes()
+    if a == b:
+        return
+    lines_a, lines_b = a.splitlines(keepends=True), b.splitlines(keepends=True)
+    differ = [
+        k
+        for k in range(max(len(lines_a), len(lines_b)))
+        if k >= len(lines_a) or k >= len(lines_b) or lines_a[k] != lines_b[k]
+    ]
+    first = [
+        f"  line {k + 1}: {lines_a[k] if k < len(lines_a) else b'<none>'!r}"
+        f" != {lines_b[k] if k < len(lines_b) else b'<none>'!r}"
+        for k in differ[:shown]
+    ]
+    msg = (
+        f"{ours.name} (sha256 {hashlib.sha256(a).hexdigest()}, {len(lines_a)} lines) and "
+        f"{theirs.name} (sha256 {hashlib.sha256(b).hexdigest()}, {len(lines_b)} lines) "
+        f"differ on {len(differ)} lines, first:\n" + "\n".join(first)
+    )
+    raise AssertionError(msg)
+
+
+def test_a_different_file_is_reported_in_seconds(tmp_path: Path) -> None:
+    # Level 32 against a copy whose coordinates differ in their last digit, as another platform's
+    # would (#532): the failure names both sha256 and the first differing lines, in seconds. A
+    # plain == of the bytes would have pytest diff 183 KB with difflib, past the job's timeout,
+    # whenever CI=true turns its truncation off.
+    ours = tmp_path / "ours.msh"
+    naca0012.generate_level(32, ours)
+    lines = ours.read_text().splitlines(keepends=True)
+    start = lines.index("$Nodes\n")
+    for k in range(start + 1, lines.index("$EndNodes\n")):
+        if lines[k].count(" ") == 2:  # a node's coordinates
+            last = lines[k].rstrip("\n")[-1]
+            lines[k] = lines[k].rstrip("\n")[:-1] + ("1" if last != "1" else "2") + "\n"
+    theirs = tmp_path / "theirs.msh"
+    theirs.write_text("".join(lines))
+    original = ours.read_text().splitlines(keepends=True)
+    first = next(k for k, (a, b) in enumerate(zip(original, lines, strict=True)) if a != b)
+    begin = time.perf_counter()
+    with pytest.raises(AssertionError) as err:
+        assert_same_file(ours, theirs)
+    seconds = time.perf_counter() - begin
+    message = str(err.value)
+    assert seconds < 5.0, seconds
+    assert hashlib.sha256(ours.read_bytes()).hexdigest() in message
+    assert hashlib.sha256(theirs.read_bytes()).hexdigest() in message
+    assert f"line {first + 1}:" in message
+
+
+def test_a_difference_in_line_endings_only_is_shown(tmp_path: Path) -> None:
+    ours, theirs = tmp_path / "ours.msh", tmp_path / "theirs.msh"
+    ours.write_bytes(b"$MeshFormat\n4.1 0 8\n")
+    theirs.write_bytes(b"$MeshFormat\r\n4.1 0 8\n")
+    with pytest.raises(AssertionError) as err:
+        assert_same_file(ours, theirs)
+    assert "differ on 1 lines" in str(err.value)
+    assert "line 1:" in str(err.value)
 
 
 def test_python_writer_refuses_what_it_does_not_reproduce(tmp_path: Path) -> None:
