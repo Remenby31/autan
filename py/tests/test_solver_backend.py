@@ -512,6 +512,8 @@ def _box(
                 "--json",
                 "--scale",
                 str(metres_per(ureg.Unit(mesh_unit))),
+                # The ghost stencil the plan expects of the case's physics (vertex4 when viscous).
+                *(() if turbulence == "Inviscid" else ("--ghosts", "vertex4")),
                 str(PERIODIC_BOX),
             ],
             capture_output=True,

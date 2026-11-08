@@ -44,22 +44,23 @@ def mesh_document(name: str) -> dict[str, Any]:
     return document
 
 
-def ghosts_of(document: dict[str, Any]) -> str:
-    """The ghost stencil of ``document``'s partition, ``"face2"`` without one."""
+def stencil_of(document: dict[str, Any]) -> str:
+    """The ghost stencil of ``document``'s partition (the one its fixture's case declares: CRM's
+    SA reads vertex4), face2 without a partition."""
     return str((document.get("partition") or {}).get("ghost_stencil", "face2"))
 
 
 def one_part(document: dict[str, Any]) -> dict[str, Any]:
     """The one-part partition autan-mesh-info writes without --ranks (mesh-info.md): the mesh
-    itself, its periodic ghosts the part's ghosts and the cells its self-exchange sends, with
-    the ghost stencil of ``document``'s partition."""
+    itself, its periodic ghosts the part's ghosts and the cells its self-exchange sends, holding
+    the document's ghost stencil."""
     counts = document["counts"]
     interior = counts["faces"] - sum(z["faces"] for z in document["boundary_zones"])
     ghosts = counts["periodic_ghosts"]
     return {
         "ranks": 1,
         "groups": "none",
-        "ghost_stencil": ghosts_of(document),
+        "ghost_stencil": stencil_of(document),
         "cells_by_rank": [counts["cells"]],
         "ghosts_by_rank": [ghosts],
         "faces_by_rank": [counts["faces"]],
@@ -75,17 +76,17 @@ def one_part(document: dict[str, Any]) -> dict[str, Any]:
 
 
 def prepared(
-    document: dict[str, Any], *, scale: float = 1.0, ranks: int = 1, ghost_stencil: str = ""
+    document: dict[str, Any],
+    *,
+    scale: float = 1.0,
+    ranks: int = 1,
+    ghost_stencil: str | None = None,
 ) -> dict[str, Any]:
     """``document`` as autan-mesh-info writes it for a run at ``scale`` metres per mesh unit on
-    ``ranks`` ranks (mesh-info.md): its lines' scale and, on several ranks, a partition. The
-    partition holds ``ghost_stencil`` ghosts, by default those of ``document``'s partition; on
-    several ranks it is an even split without ghosts or groups: these tests plan something
-    else."""
+    ``ranks`` ranks (mesh-info.md): its lines' scale and, on several ranks, a partition holding
+    ``ghost_stencil``, by default the document's (the one its case's physics declares). The
+    partition is an even split without ghosts or groups: these tests plan something else."""
     document = copy.deepcopy(document)
-    ghost_stencil = ghost_stencil or ghosts_of(document)
-    if document.get("partition"):
-        document["partition"]["ghost_stencil"] = ghost_stencil
     document["quality"]["lines"]["scale"] = scale
     if ranks == 1:
         document["partition"] = one_part(document)
@@ -99,7 +100,7 @@ def prepared(
         document["partition"] = {
             "ranks": ranks,
             "groups": "none",
-            "ghost_stencil": ghost_stencil,
+            "ghost_stencil": ghost_stencil or stencil_of(document),
             "cells_by_rank": split(counts["cells"]),
             "ghosts_by_rank": [0] * ranks,
             "faces_by_rank": split(counts["faces"]),

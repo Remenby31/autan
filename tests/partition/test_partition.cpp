@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <limits>
 #include <map>
@@ -1104,8 +1105,9 @@ TEST_CASE("The vertex ghost stencils hold every cell and boundary face around th
   // diagonal neighbour lies three face steps away, and on 7^3 an interior cell alone.
   const auto [n, periodic] = GENERATE(std::pair{7, false}, std::pair{2, true}, std::pair{3, true},
                                       std::pair{4, true}, std::pair{5, true});
-  const auto kind = GENERATE(autan::GhostStencil::vertex, autan::GhostStencil::vertex2,
-                             autan::GhostStencil::vertex3, autan::GhostStencil::vertex4);
+  const auto [kind, depth] = GENERATE(
+      std::pair{autan::GhostStencil::vertex, 1}, std::pair{autan::GhostStencil::vertex2, 2},
+      std::pair{autan::GhostStencil::vertex3, 3}, std::pair{autan::GhostStencil::vertex4, 4});
   CAPTURE(n, periodic, autan::name(kind));
   autan::CellwiseMesh cells = autan::test::box(n, autan::test::BoxFill::hexa);
   if (periodic) {
@@ -1208,7 +1210,42 @@ TEST_CASE("The vertex ghost stencils hold every cell and boundary face around th
     }
     return out;
   };
-  const int depth = autan::vertex_rings(kind);
+  // The copies (id, translation) of the cells around copy (id, t): the 26 of the 3 x 3 x 3 block
+  // (vertex) or the 6 across faces, wrapped and clipped as above.
+  using Copy = std::pair<std::int64_t, std::array<double, 3>>;
+  const auto around = [&](const Copy& u, bool faces_only) {
+    std::vector<Copy> out;
+    const auto x = ijk(at(u.first));
+    for (int a = -1; a <= 1; ++a) {
+      for (int b = -1; b <= 1; ++b) {
+        for (int d = -1; d <= 1; ++d) {
+          const int steps = std::abs(a) + std::abs(b) + std::abs(d);
+          if (steps == 0 || (faces_only && steps != 1)) continue;
+          if (const auto v = wrap(x, {a, b, d})) {
+            auto t = v->second;
+            for (std::size_t k = 0; k < 3; ++k) t[k] += u.second[k];
+            out.push_back({v->first, t});
+          }
+        }
+      }
+    }
+    return out;
+  };
+  // The cell copies within `steps` of `start` through `around`.
+  const auto reach = [&](const std::set<Copy>& start, int steps, bool faces_only) {
+    std::set<Copy> seen = start;
+    std::vector<Copy> frontier(start.begin(), start.end());
+    for (int step = 0; step < steps; ++step) {
+      std::vector<Copy> next;
+      for (const Copy& u : frontier) {
+        for (const Copy& v : around(u, faces_only)) {
+          if (seen.insert(v).second) next.push_back(v);
+        }
+      }
+      frontier = std::move(next);
+    }
+    return seen;
+  };
   for (const auto& parts : partitions) {
     const auto n_parts = *std::max_element(parts.begin(), parts.end()) + 1;
     const auto locals = check_split(global, parts, n_parts, kind);
@@ -1222,6 +1259,26 @@ TEST_CASE("The vertex ghost stencils hold every cell and boundary face around th
       std::map<std::pair<std::int64_t, std::array<double, 3>>, index_t> local;
       for (index_t c = 0; c < m.n_cells(); ++c)
         local[{m.cell_global_id()[at(c)], translation(c)}] = c;
+      // Exactly the cells within `depth` vertex rings or 2 face steps of the owned cells.
+      std::set<Copy> owned;
+      for (index_t c = 0; c < m.n_owned_cells(); ++c) owned.insert({m.cell_global_id()[at(c)], {}});
+      std::set<Copy> halo = reach(owned, depth, false);
+      for (const Copy& u : reach(owned, 2, true)) halo.insert(u);
+      std::set<Copy> held;
+      for (const auto& entry : local) held.insert(entry.first);
+      CHECK(held == halo);
+      // Every cell within the vertex rings carries its own boundary faces, the outermost ring's
+      // included (a second-layer face2 ghost beyond them need not).
+      std::set<VertexKey> boundary;
+      for (index_t f = m.n_interior_faces(); f < m.n_faces(); ++f)
+        boundary.insert({1, lp.face_global_id[at(f)], translation(m.owner()[at(f)])});
+      for (const Copy& u : reach(owned, depth, false)) {
+        const auto x = ijk(at(u.first));
+        for (const auto& [where, face] : face_at) {
+          const bool own = where[2] == x[0] && where[3] == x[1] && where[4] == x[2];
+          if (own && !(periodic && where[0] < 2)) CHECK(boundary.contains({1, face, u.second}));
+        }
+      }
       // The cells within depth - 1 rings of the owned cells, through their own (checked) stencils.
       std::set<index_t> within;
       std::vector<index_t> frontier;
