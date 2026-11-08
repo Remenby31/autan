@@ -46,6 +46,11 @@ struct NavierStokes<P>::Impl {
   std::vector<offset_t> fit_offsets;
   std::vector<index_t> fit_entries;
   bool bounded = false;  // set_boundary called: the fit is built
+  // Under global keys the face loops gather (Euler<P>'s topology, which share() takes).
+  bool keyed;
+  // A key reverses a face: the face Jacobians are then in global orientation, which assemble()
+  // does not place.
+  bool reversed;
   kernels::CellStencil vertex;
   std::array<std::vector<typename P::grad>, 7> fits;
   const Geometry& geo;  // FP64 geometry of the boundary fit
@@ -592,15 +597,29 @@ struct NavierStokes<P>::Impl {
     return {std::sqrt(placed), std::sqrt(outside)};
   }
 
+  // A face or boundary loop: its gather under global keys, else its scatter.
+  template <class Loop>
+  void run(Loop loop) const {
+    if (keyed) {
+      loop(kernels::Strategy::store_gather);
+    } else {
+      loop();
+    }
+  }
+
   void fit() {
     nk::cpu::temperatures_velocities(d);
     nk::cpu::boundary_temperatures_velocities(d);
     nk::cpu::cubic_fits(d);
   }
 
-  Impl(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme, Transport t)
-      : euler(mesh, geometry, gas, scheme),
+  Impl(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme, Transport t,
+       const kernels::GlobalKeys* keys)
+      : euler(mesh, geometry, gas, scheme, keys),
         quadratic(scheme.gradient_fit == GradientFit::quadratic),
+        keyed(keys != nullptr),
+        reversed(keys != nullptr &&
+                 std::ranges::any_of(keys->reversed, [](auto r) { return r != 0; })),
         geo(geometry) {
     if (quadratic)
       grad_v.assign(15 * static_cast<std::size_t>(mesh.n_cells()), typename P::grad(0));
@@ -608,7 +627,7 @@ struct NavierStokes<P>::Impl {
         (t.sutherland && (!(t.t_ref > 0.0) || !(t.s >= 0.0)))) {
       throw std::invalid_argument("transport properties must be positive");
     }
-    const auto packed = kernels::pack_geometry(mesh, geometry);
+    const auto packed = kernels::pack_geometry(mesh, geometry, keys);
     topo = kernels::topology(mesh.view());
     vertex = kernels::cell_stencil(mesh, packed, kernels::StencilKind::vertex);
     adjacent.assign(static_cast<std::size_t>(mesh.n_cells()), {});
@@ -687,8 +706,8 @@ struct NavierStokes<P>::Impl {
 
 template <class P>
 NavierStokes<P>::NavierStokes(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme,
-                              Transport transport)
-    : impl_(std::make_unique<Impl>(mesh, geometry, gas, scheme, transport)) {}
+                              Transport transport, const kernels::GlobalKeys* keys)
+    : impl_(std::make_unique<Impl>(mesh, geometry, gas, scheme, transport, keys)) {}
 
 template <class P>
 NavierStokes<P>::~NavierStokes() = default;
@@ -769,8 +788,8 @@ void NavierStokes<P>::residual(std::span<const State> s, std::span<Res> res) {
   m.share();
   m.fit();
   m.d.res = res.data();
-  nk::cpu::viscous_faces(m.d);
-  nk::cpu::viscous_boundaries(m.d);
+  m.run([&](auto... strategy) { nk::cpu::viscous_faces(m.d, strategy...); });
+  m.run([&](auto... strategy) { nk::cpu::viscous_boundaries(m.d, strategy...); });
 }
 
 template <class P>
@@ -782,13 +801,14 @@ void NavierStokes<P>::residual_and_jacobian(std::span<const State> s, std::span<
   m.share();
   m.fit();
   m.d.res = res.data();
-  nk::cpu::viscous_faces_jacobian(m.d);
-  nk::cpu::viscous_boundaries_jacobian(m.d);
+  m.run([&](auto... strategy) { nk::cpu::viscous_faces_jacobian(m.d, strategy...); });
+  m.run([&](auto... strategy) { nk::cpu::viscous_boundaries_jacobian(m.d, strategy...); });
 }
 
 template <class P>
 void NavierStokes<P>::assemble(std::span<const double> shift, BlockMatrix& a) const {
   const auto& m = *impl_;
+  if (m.reversed) throw std::logic_error("NavierStokes: assemble under keys that reverse a face");
   m.euler.assemble(shift, a);
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   const auto nf = static_cast<std::size_t>(m.topo.n_faces);
@@ -865,6 +885,17 @@ typename Euler<P>::QuadraticGradient NavierStokes<P>::quadratic_gradient() const
 template <class P>
 typename Euler<P>::LinearCells NavierStokes<P>::linear_cells() const noexcept {
   return impl_->euler.linear_cells();
+}
+
+template <class P>
+const Euler<P>& NavierStokes<P>::euler() const noexcept {
+  return impl_->euler;
+}
+
+template <class P>
+const kernels::navier_stokes::Data<P>& NavierStokes<P>::data() const {
+  if (!impl_->bounded) throw std::logic_error("NavierStokes: set_boundary before data()");
+  return impl_->d;
 }
 
 template class NavierStokes<kernels::fp64>;
