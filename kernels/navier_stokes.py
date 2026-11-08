@@ -57,6 +57,7 @@ from euler import (
     BC_WALL,
     bc,
     bc_kind,
+    boundary_value,
     gamma,
     gas_constant,
     grad,
@@ -748,13 +749,83 @@ viscous_boundaries = boundary_loop(viscous_boundary, **BOUNDARY_ARGS, out=Inc(re
 # quotients of the face gradients give the compact part of the viscous Jacobian.
 visc_jac = faces.field("visc_jac", Jac.shape(2, 5, 5))
 visc_bnd_jac = faces.field("visc_bnd_jac", Jac.shape(5, 5))
+
+
+@pointwise
+def viscous_boundary_of_cell(
+    wl: State.Vec5,
+    gl: Grad.Mat53,
+    xl: Geom.Vec3,
+    f0: Grad.Mat53,
+    f1: Grad.Mat53,
+    f2: Grad.Mat53,
+    f3: Grad.Mat53,
+    f4: Grad.Mat53,
+    f5: Grad.Mat53,
+    f6: Grad.Mat53,
+    q: Geom,
+    mb: State,
+    kind: Geom,
+    data: State.Vec5,
+    xf: Geom.Vec3,
+    n: Geom.Vec3,
+    area: Geom,
+    m: Geom.Mat3,
+    g: Param,
+    rgas: Param,
+    pref: Param,
+    mref: Param,
+    tref: Param,
+    s: Param,
+    law: Param,
+    prl: Param,
+    prt: Param,
+) -> Residual.Vec5:
+    # viscous_boundary with the boundary state it reads (boundary_states' prim_b, the same values)
+    # written as a function of the cell's: its Jacobian then holds dF/dW_b dW_b/dW_l, which the
+    # frozen boundary_states loop hides.
+    wb = boundary_value(wl, kind, data, n, g, rgas, pref)
+    return viscous_boundary(
+        wl,
+        gl,
+        xl,
+        f0,
+        f1,
+        f2,
+        f3,
+        f4,
+        f5,
+        f6,
+        q,
+        wb,
+        mb,
+        kind,
+        data,
+        xf,
+        n,
+        area,
+        m,
+        g,
+        rgas,
+        pref,
+        mref,
+        tref,
+        s,
+        law,
+        prl,
+        prt,
+    )
+
+
 viscous_faces_jacobian = face_loop(
     viscous_face,
     **FACE_ARGS,
     out=[Inc(res, left=+1, right=-1), Jacobian(visc_jac, wrt=("wl", "wr"))],
 )
 viscous_boundaries_jacobian = boundary_loop(
-    viscous_boundary, **BOUNDARY_ARGS, out=[Inc(res, left=+1), Jacobian(visc_bnd_jac, wrt="wl")]
+    viscous_boundary_of_cell,
+    **{k: v for k, v in BOUNDARY_ARGS.items() if k != "wb"},
+    out=[Inc(res, left=+1), Jacobian(visc_bnd_jac, wrt="wl")],
 )
 
 
