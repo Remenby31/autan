@@ -37,10 +37,15 @@ class LineSweep {
   /// the device. Throws std::domain_error on a singular block, as the host does.
   void set_operator(const double* diag, const double* off, void* stream = nullptr);
   void set_operator(const double* diag, const float* off, void* stream = nullptr);
-  /// y = A x on every cell. Throws std::logic_error before set_operator.
-  void multiply(const double* x, double* y, void* stream = nullptr) const;
+  /// y = A x on every cell. Throws std::logic_error before set_operator. With `active` (device
+  /// memory), the kernels do nothing while *active is 0, so that a branch decided on the device
+  /// needs no host read.
+  void multiply(const double* x, double* y, void* stream = nullptr,
+                const int* active = nullptr) const;
   /// `sweeps` symmetric sweeps on A x = b from x. Throws std::logic_error before set_operator.
-  void sweep(const double* b, double* x, int sweeps, void* stream = nullptr) const;
+  /// `active` as for multiply.
+  void sweep(const double* b, double* x, int sweeps, void* stream = nullptr,
+             const int* active = nullptr) const;
 
  private:
   struct Impl;

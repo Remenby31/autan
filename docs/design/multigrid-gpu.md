@@ -95,11 +95,11 @@ Its cost, one serial back substitution per visit of the coarsest level, is measu
 
 V, W and K cycles and the outer GCR follow the host's algorithm line for line (`Multigrid::cycle_level`, `coarse_solve`, and `solvers::Gcr` once #282 extracts it): pre- and post-sweeps, the correction factor α of `MultigridOptions::scaling` and its `den > 0` test, the scaling of the outer residual by its largest entry (an exact device maximum), the K-cycle's α₁, β, α₂ and its test |r₁|² ≤ |b|²/16, GCR's coefficients and stopping test. Every application of a level's operator (the residual b − A x, the correction's image A e, GCR's images A z) is a generated reduction whose diagonal product and sums run in the accumulation type; J4's `multiply` rounds them to the compute type, which can turn a small residual or image into zero and break GCR's `ww > 0` test. The scalars stay on the device:
 
-- dot products are `gpu::exact_sums` (#227): they depend only on the two vectors, not on the launch. The host's are sequential sums until CFD - Multigrille routes them through `ExactSum` (D2, also on one rank); from then on equal vectors give equal dots;
+- dot products are `gpu::exact_sums` (#227): they depend only on the two vectors, not on the launch, and equal the host's `ExactSum` dots;
 - each scalar is formed by a one-thread kernel from the rounded sums; the branches of the K-cycle and GCR's stopping test become flags on the device, read by the kernels that follow, which return at once when the flag says so, the exact sums included;
 - the host reads one value per solve: the residual drop and the cycle count of the `Report`.
 
-This needs two additions to `runtime/include/autan/runtime/exact_sum.cuh`, requested from CFD - Noyau maillage: the rounding of `ExactWords` to a double on the device (`exact_value`, the bits of `ExactSum::value()`), and an `exact_sums` that reads a device flag and does nothing when it is clear (today it always clears its output and traverses). Capturing a whole solve in one CUDA Graph per hierarchy comes after the gates, as a performance step.
+The outer GCR is `gpu::Gcr` (`solvers/include/autan/solvers/gcr_gpu.hpp`, #163 PR 3b). Its dots are `gpu::exact_sums` rounded once by `exact_value`, the bits of the physics' `owned_dot` (`ExactSum`); its largest |entry| a fixed-tree maximum with NaN as +inf, as `owned_max_abs`; its operators take the device flag and the solve's stream. Given operators with the host's bits, it gives the host GCR's x, r and report bit for bit. The cycles come with PR 4. Capturing a whole solve in one CUDA Graph per hierarchy comes after the gates, as a performance step.
 
 ## Determinism
 
