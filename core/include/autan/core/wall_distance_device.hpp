@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include "autan/core/wall_distance.hpp"
@@ -24,7 +25,8 @@ class DeviceWallSurface {
                 void* stream) const;
 
  private:
-  wall::View view_{};  // device pointers
+  wall::View view_{};      // device pointers
+  std::size_t bytes_ = 0;  // their bytes, recorded in device_memory
 };
 
 }  // namespace autan

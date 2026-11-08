@@ -19,6 +19,8 @@
 #include "fixtures.hpp"
 
 #ifdef AUTAN_HAVE_CUDA
+#include "autan/core/device_memory.hpp"
+#include "autan/core/wall_distance_device.hpp"
 #include "wall_distance_device_test.hpp"
 #endif
 
@@ -356,6 +358,13 @@ TEST_CASE("The device computes the host's wall distances bit for bit", "[wall][g
   // contraction off on both sides: every distance has the host's bits, on
   // surfaces that exercise each path of the query.
   const auto same = [](const autan::WallSurface& surface, const std::vector<Vec>& points) {
+    // The surface's device memory is recorded while it lives (#411), and released after.
+    const auto before = autan::device_memory::current();
+    {
+      const autan::DeviceWallSurface held(surface);
+      if (surface.triangles() > 0) CHECK(autan::device_memory::current() > before);
+    }
+    CHECK(autan::device_memory::current() == before);
     const auto device = autan::test::device_distances(surface, points);
     REQUIRE(device.size() == points.size());
     std::size_t differ = 0;
