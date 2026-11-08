@@ -275,13 +275,20 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
 
     cpu = memory(device_kind="cpu")
     assert names(cpu) >= {"mesh", "physics", "jacobian", "multigrid", "solution output"}
+    # The inviscid Krylov operator's derivative of the boundary values the fit keeps: neither a
+    # viscous run's (above) nor a Gauss-Seidel run's.
+    inviscid = CRM_HL.replace("autan.SA()", "autan.Inviscid()").replace(".wall()", ".slip()")
+    assert "boundary state tangent" in names(memory(inviscid, device_kind="cpu"))
+    assert "boundary state tangent" not in names(cpu)
+    gs_inviscid = inviscid + "case.time = autan.Steady(linear_solver='gauss-seidel')\n"
+    assert "boundary state tangent" not in names(memory(gs_inviscid, device_kind="cpu"))
     assert cpu.bytes_device == 0
     # The peak: every persistent component and the largest transient one.
     persistent = sum(c.bytes_host for c in cpu.components if not c.transient)
     assert cpu.bytes_host == persistent + max(c.bytes_host for c in cpu.components if c.transient)
     # A device run solves explicitly: no Jacobian or linear solver, the state on the device.
     cuda = memory(device_kind="cuda")
-    assert not names(cuda) & {"jacobian", "multigrid"}
+    assert not names(cuda) & {"jacobian", "multigrid", "boundary state tangent"}
     assert cuda.bytes_device > 0
     # The device frees nothing before the iterations: its components add up, all of them.
     on_device = [c.bytes_device for c in cuda.components if c.bytes_device]
@@ -293,7 +300,7 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     )
     assert gs.bytes_host < cpu.bytes_host
     unsteady = memory(CRM_HL + "case.time = autan.Unsteady(steps=10, cfl=1.0)\n", device_kind="cpu")
-    assert not names(unsteady) & {"jacobian", "multigrid"}
+    assert not names(unsteady) & {"jacobian", "multigrid", "boundary state tangent"}
     # Every rank keeps the global mesh; its share of the rest shrinks with the ranks, from the
     # partition the MeshInfo gives for them (mesh-info.md), without which the plan is refused.
     assert "E0212" in diagnostic_codes(autan.load(write_case(CRM_HL)).plan(crm_mesh, gpus=4))

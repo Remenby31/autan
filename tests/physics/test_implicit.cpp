@@ -24,6 +24,7 @@
 #include "autan/partition/partition.hpp"
 #include "autan/physics/block_matrix.hpp"
 #include "autan/physics/euler.hpp"
+#include "stretched_slab.hpp"
 
 namespace {
 
@@ -36,6 +37,24 @@ using autan::physics::Flux;
 const fs::path mesh_dir{AUTAN_TEST_MESH_DIR};
 const std::array<const char*, 4> meshes = {"tet-gmsh/tet-gmsh.ascii.msh", "hex/hex.ascii.msh",
                                            "poly/polyMesh", "hybrid/hybrid.ascii.msh"};
+
+// One part's periodic images, filled from the owned cells they copy (partitioning.md).
+struct Images final : autan::physics::GhostFill {
+  const autan::LocalPartition& part;
+  explicit Images(const autan::LocalPartition& p) : part(p) {}
+  void forward(std::span<float* const> c) override {
+    autan::forward_self(part.halo, part.mesh.n_owned_cells(), c);
+  }
+  void forward(std::span<double* const> c) override {
+    autan::forward_self(part.halo, part.mesh.n_owned_cells(), c);
+  }
+  void fill(std::vector<double>& x) {
+    const auto nc = static_cast<std::size_t>(part.mesh.n_cells());
+    std::array<double*, 5> c{};
+    for (std::size_t k = 0; k < 5; ++k) c[k] = x.data() + k * nc;
+    forward(std::span<double* const>(c));
+  }
+};
 
 std::array<double, 5> conserved(double rho, std::array<double, 3> v, double p) {
   const double q2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
@@ -144,6 +163,139 @@ TEST_CASE("the assembled Jacobian of the first-order residual matches its centra
   CHECK(diff32 <= 1024 * std::numeric_limits<float>::epsilon() * norm);
 }
 
+TEST_CASE(
+    "the assembled Jacobian and its gradient tangents match the second-order residual's "
+    "central differences",
+    "[implicit]") {
+  // The assembled blocks hold the reconstruction's gradients fixed; the gradient tangents of the
+  // interior and boundary faces add the rest, so without a limiter (phi = 1, a differentiable
+  // residual) A v + T_interior v + T_boundary v = dR/dU v (docs/design/euler.md, Time stepping).
+  // A v alone misses the gradient term, by far more than the differences' error. The boundary
+  // faces' tangent changes only the rows of cells with a boundary face. Across the one-cell-thick
+  // slab of the 2D cases, only boundary values determine a cell's gradient.
+  using P = autan::kernels::fp64;
+  const std::size_t which = GENERATE(range(std::size_t{0}, meshes.size() + 1));
+  const Flux flux = GENERATE(Flux::roe, Flux::hllc, Flux::ausm_up);
+  const auto fit =
+      GENERATE(autan::physics::GradientFit::linear, autan::physics::GradientFit::quadratic);
+  const char* file = which < meshes.size() ? meshes[which] : "one-cell-thick slab";
+  INFO(file << " flux " << static_cast<int>(flux) << " fit " << static_cast<int>(fit));
+  const auto mesh = which < meshes.size() ? autan::io::read_mesh(mesh_dir / file)
+                                          : autan::test::stretched_slab({.first = 0.02});
+  const auto geometry = autan::compute_geometry(mesh);
+  const auto nc = static_cast<std::size_t>(mesh.n_cells());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+  const double a = std::sqrt(1.4 * 1e5 / 1.2);
+  const std::array<double, 5> w = {1.2, 0.6 * a, 0.2 * a, -0.1 * a, 1e5};
+  // The conditions whose fluxes read the reconstructed face state, the inlet only where the flow
+  // enters (where it leaves, its clamped normal velocity is a kink central differences straddle).
+  std::vector<BoundaryKind> kind(nb);
+  std::vector<double> data(5 * nb);
+  const std::array<BoundaryKind, 5> kinds = {BoundaryKind::farfield, BoundaryKind::slip,
+                                             BoundaryKind::outlet, BoundaryKind::state,
+                                             BoundaryKind::inlet};
+  for (std::size_t b = 0; b < nb; ++b) {
+    kind[b] = kinds[b % kinds.size()];
+    const auto f = ni + b;
+    const double vn = w[1] * geometry.face_area_x[f] + w[2] * geometry.face_area_y[f] +
+                      w[3] * geometry.face_area_z[f];
+    if (kind[b] == BoundaryKind::inlet && vn >= 0.0) kind[b] = BoundaryKind::farfield;
+    // The slab's faces across the layer are symmetry planes, as in the 2D cases: no cell there
+    // has a boundary value that the fit could take without its condition's state.
+    if (which == meshes.size() &&
+        std::abs(geometry.face_area_z[f]) >
+            std::abs(geometry.face_area_x[f]) + std::abs(geometry.face_area_y[f])) {
+      kind[b] = BoundaryKind::slip;
+    }
+    const std::array<double, 5> v =
+        kind[b] == BoundaryKind::inlet ? std::array<double, 5>{1.3e5, 320.0, 0.0, 0.0, 0.0} : w;
+    for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = v[j];
+  }
+  autan::physics::Scheme s;
+  s.flux = flux;
+  s.second_order = true;
+  s.limiter = false;
+  s.gradient_fit = fit;
+  s.mach_ref = 1.0;
+  s.reference = conserved(1.1, {10.0, 5.0, 0.0}, 0.95e5);
+  Euler<P> e(mesh, geometry, {1.4, 287.0}, s);
+  e.set_boundary(kind, data);
+  std::vector<double> u(5 * nc), v(5 * nc);
+  const auto uc = conserved(w[0], {w[1], w[2], w[3]}, w[4]);
+  for (std::size_t k = 0; k < 5; ++k) {
+    for (std::size_t c = 0; c < nc; ++c) {
+      const double x = geometry.cell_centroid_x[c], y = geometry.cell_centroid_y[c];
+      u[k * nc + c] =
+          uc[k] * (1.0 + 0.1 * std::sin(3.0 * x + static_cast<double>(k)) * std::cos(2.0 * y));
+      v[k * nc + c] = uc[k] * std::cos(5.0 * x + 2.0 * y + static_cast<double>(k));
+    }
+  }
+  std::vector<double> state(5 * nc), res(5 * nc), av(5 * nc), tan(5 * nc, 0.0), rp(5 * nc),
+      rm(5 * nc);
+  e.state(u, state);
+  e.residual_and_jacobian(state, res);
+  BlockMatrix m(mesh);
+  e.assemble(std::vector<double>(nc, 0.0), m);
+  m.multiply(v, av);
+  // The stored state is u minus a constant reference: its tangent is v.
+  std::vector<double> boundary(5 * nc, 0.0);
+  e.gradient_tangent(state, v, boundary, Euler<P>::Faces::boundary);
+  e.gradient_tangent(state, v, tan, Euler<P>::Faces::interior);
+  std::vector<bool> on_boundary(nc, false);
+  for (std::size_t b = 0; b < nb; ++b) {
+    on_boundary[static_cast<std::size_t>(mesh.owner()[ni + b])] = true;
+  }
+  for (std::size_t k = 0; k < 5; ++k) {
+    for (std::size_t c = 0; c < nc; ++c) {
+      if (!on_boundary[c]) REQUIRE(boundary[k * nc + c] == 0.0);
+    }
+  }
+  for (std::size_t i = 0; i < tan.size(); ++i) tan[i] += boundary[i];
+  // The boundary tangent in fp32+acc64, at the same state: FP32 tangents, so it agrees with
+  // FP64's to FP32 rounding of the largest term.
+  using Q = autan::kernels::fp32_acc64;
+  Euler<Q> e32(mesh, geometry, {1.4, 287.0}, s);
+  e32.set_boundary(kind, data);
+  std::vector<float> state32(5 * nc), v32(v.begin(), v.end());
+  std::vector<double> res32(5 * nc), boundary32(5 * nc, 0.0);
+  e32.state(u, state32);
+  e32.residual_and_jacobian(state32, res32);
+  e32.gradient_tangent(state32, v32, boundary32, Euler<Q>::Faces::boundary);
+  double scale = 0.0, diff32 = 0.0;
+  for (std::size_t i = 0; i < boundary.size(); ++i) {
+    REQUIRE(std::isfinite(boundary32[i]));
+    scale = std::max(scale, std::abs(boundary[i]));
+    diff32 = std::max(diff32, std::abs(boundary32[i] - boundary[i]));
+  }
+  REQUIRE(scale > 0.0);
+  CHECK(diff32 <= 1024 * std::numeric_limits<float>::epsilon() * scale);
+  const double h = 1e-6;
+  std::vector<double> up(u), um(u);
+  for (std::size_t i = 0; i < u.size(); ++i) {
+    up[i] += h * v[i];
+    um[i] -= h * v[i];
+  }
+  e.state(up, state);
+  e.residual(state, rp);
+  e.state(um, state);
+  e.residual(state, rm);
+  double diff = 0.0, without = 0.0, norm = 0.0;
+  for (std::size_t i = 0; i < u.size(); ++i) {
+    const double fd = (rp[i] - rm[i]) / (2.0 * h);
+    REQUIRE(std::isfinite(fd));
+    REQUIRE(std::isfinite(av[i]));
+    REQUIRE(std::isfinite(tan[i]));
+    diff = std::max(diff, std::abs(fd - av[i] - tan[i]));
+    without = std::max(without, std::abs(fd - av[i]));
+    norm = std::max(norm, std::abs(fd));
+  }
+  INFO("diff " << diff / norm << " without the gradient tangents " << without / norm);
+  // Central differences: O(h^2) truncation and O(eps / h) round-off, relative.
+  CHECK(diff <= 1e-6 * norm);
+  CHECK(without >= 1e3 * diff);
+}
+
 TEST_CASE("the assembled Jacobian matches its central differences across periodic image ghosts",
           "[implicit]") {
   // The periodic box as one part: each periodic face is an interior face to an image ghost
@@ -161,21 +313,8 @@ TEST_CASE("the assembled Jacobian matches its central differences across periodi
   const auto nc = static_cast<std::size_t>(mesh.n_cells());
   const auto owned = static_cast<std::size_t>(mesh.n_owned_cells());
   REQUIRE(owned < nc);
-  struct Images final : autan::physics::GhostFill {
-    const autan::LocalPartition& part;
-    explicit Images(const autan::LocalPartition& p) : part(p) {}
-    void forward(std::span<float* const> c) override {
-      autan::forward_self(part.halo, part.mesh.n_owned_cells(), c);
-    }
-    void forward(std::span<double* const> c) override {
-      autan::forward_self(part.halo, part.mesh.n_owned_cells(), c);
-    }
-  } images(part);
-  auto fill = [&](std::vector<double>& x) {
-    std::array<double*, 5> c{};
-    for (std::size_t k = 0; k < 5; ++k) c[k] = x.data() + k * nc;
-    images.forward(std::span<double* const>(c));
-  };
+  Images images(part);
+  auto fill = [&](std::vector<double>& x) { images.fill(x); };
   const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
   const double a = std::sqrt(1.4 * 1e5 / 1.2);
   const std::array<double, 5> w = {1.2, 0.6 * a, 0.2 * a, -0.1 * a, 1e5};
@@ -232,6 +371,101 @@ TEST_CASE("the assembled Jacobian matches its central differences across periodi
     }
   }
   CHECK(diff <= 1e-6 * norm);
+}
+
+TEST_CASE(
+    "the gradient tangents of a one-cell-thick slab match central differences across periodic "
+    "image ghosts, under global keys",
+    "[implicit]") {
+  // Periodic in x, the cells next to the pair reach image ghosts, whose boundary faces their fits
+  // keep: faces of a ghost, which no rank owns. Under the global keys of reproducibility "ranks",
+  // as a run sets them, A v + T_interior v + T_boundary v = dR/dU v on every owned row.
+  using P = autan::kernels::fp64;
+  const auto global = autan::test::stretched_slab({.first = 0.02, .periodic = true});
+  const auto global_geometry = autan::compute_geometry(global);
+  const std::vector<std::int32_t> parts(static_cast<std::size_t>(global.n_cells()), 0);
+  auto part = autan::extract_partition(global, global_geometry, parts, 1, 0);
+  autan::fill_ghost_geometry(part);
+  const auto& mesh = part.mesh;
+  const auto& geometry = part.geometry;
+  const auto nc = static_cast<std::size_t>(mesh.n_cells());
+  const auto owned = static_cast<std::size_t>(mesh.n_owned_cells());
+  const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  REQUIRE(owned < nc);
+  const autan::kernels::GlobalKeys keys{.cell = mesh.cell_global_id(),
+                                        .face = part.face_global_id,
+                                        .reversed = part.face_reversed,
+                                        .shift = mesh.ghost_translation()};
+  Images images(part);
+  const double a = std::sqrt(1.4 * 1e5 / 1.2);
+  const std::array<double, 5> w = {1.2, 0.6 * a, 0.2 * a, 0.0, 1e5};
+  // Symmetry planes across the layer, farfield elsewhere.
+  std::vector<BoundaryKind> kind(nb, BoundaryKind::farfield);
+  std::vector<double> data(5 * nb);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const auto f = ni + b;
+    if (std::abs(geometry.face_area_z[f]) >
+        std::abs(geometry.face_area_x[f]) + std::abs(geometry.face_area_y[f])) {
+      kind[b] = BoundaryKind::slip;
+    }
+    for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = w[j];
+  }
+  autan::physics::Scheme s;
+  s.second_order = true;
+  s.limiter = false;
+  s.mach_ref = 1.0;
+  s.reference = conserved(1.1, {10.0, 5.0, 0.0}, 0.95e5);
+  Euler<P> e(mesh, geometry, {1.4, 287.0}, s, &keys);
+  e.set_ghosts(&images);
+  e.set_boundary(kind, data);
+  std::vector<double> u(5 * nc), v(5 * nc);
+  const auto uc = conserved(w[0], {w[1], w[2], w[3]}, w[4]);
+  constexpr double two_pi = 6.283185307179586;
+  for (std::size_t k = 0; k < 5; ++k) {
+    for (std::size_t c = 0; c < owned; ++c) {
+      const double x = geometry.cell_centroid_x[c], y = geometry.cell_centroid_y[c];
+      u[k * nc + c] =
+          uc[k] * (1.0 + 0.1 * std::sin(two_pi * x + static_cast<double>(k)) * std::cos(2.0 * y));
+      v[k * nc + c] = uc[k] * std::cos(two_pi * x + 2.0 * y + static_cast<double>(k));
+    }
+  }
+  images.fill(u);
+  images.fill(v);
+  std::vector<double> state(5 * nc), res(5 * nc), av(5 * nc), tan(5 * nc, 0.0),
+      boundary(5 * nc, 0.0), rp(5 * nc), rm(5 * nc);
+  e.state(u, state);
+  e.residual_and_jacobian(state, res);
+  BlockMatrix m(mesh);
+  e.assemble(std::vector<double>(nc, 0.0), m);
+  m.multiply(v, av);
+  e.gradient_tangent(state, v, tan, Euler<P>::Faces::interior);
+  e.gradient_tangent(state, v, boundary, Euler<P>::Faces::boundary);
+  const double h = 1e-6;
+  std::vector<double> up(u), um(u);
+  for (std::size_t i = 0; i < u.size(); ++i) {
+    up[i] += h * v[i];
+    um[i] -= h * v[i];
+  }
+  e.state(up, state);
+  e.residual(state, rp);
+  e.state(um, state);
+  e.residual(state, rm);
+  double diff = 0.0, without = 0.0, norm = 0.0;
+  for (std::size_t k = 0; k < 5; ++k) {
+    for (std::size_t c = 0; c < owned; ++c) {
+      const auto i = k * nc + c;
+      const double fd = (rp[i] - rm[i]) / (2.0 * h);
+      REQUIRE(std::isfinite(fd));
+      REQUIRE(std::isfinite(av[i] + tan[i] + boundary[i]));
+      diff = std::max(diff, std::abs(fd - av[i] - tan[i] - boundary[i]));
+      without = std::max(without, std::abs(fd - av[i]));
+      norm = std::max(norm, std::abs(fd));
+    }
+  }
+  INFO("diff " << diff / norm << " without the gradient tangents " << without / norm);
+  CHECK(diff <= 1e-6 * norm);
+  CHECK(without >= 1e3 * diff);
 }
 
 TEST_CASE("multicolour block Gauss-Seidel solves a block diagonally dominant system",
