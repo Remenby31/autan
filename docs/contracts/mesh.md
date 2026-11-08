@@ -211,4 +211,5 @@ Every failure throws `autan::Error`; callers branch on `code()`, never on the me
 | E0144 | `halo_inconsistent` | The communicator size differs from the partition count, or two ranks disagree on what they exchange. |
 | E0145 | `halo_device_unsupported` | A halo exchange on device memory without CUDA support in the build or in MPI. |
 | E0146 | `mpi_unavailable` | A launcher started several ranks of a build without MPI. |
+| E0147 | `io_not_a_solution` | `autan-vtu` was given a CGNS file without a `FlowSolution`: a mesh, not a run's `solution.cgns` (vtu.md). |
 | E0148 | `partition_stencil_not_local` | A stencil reaches a cell or face that the partition does not hold: the physics' stencil is wider than the partition's ghost stencil, or the cells around a node of an owned cell do not all meet through faces around it. |

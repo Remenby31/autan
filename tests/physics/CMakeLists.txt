@@ -103,9 +103,15 @@ if(AUTAN_ENABLE_CGNS)
   endif()
 endif()
 
-# The Euler residual on a CUDA device against the host's.
+# The Euler and Navier-Stokes residuals on a CUDA device against the host's.
 if(AUTAN_ENABLE_CUDA AND AUTAN_ENABLE_CGNS)
-  add_executable(autan_euler_device_tests test_euler_device.cpp)
+  add_executable(
+    autan_euler_device_tests
+    test_euler_device.cpp
+    test_navier_stokes_device.cpp
+    ${PROJECT_SOURCE_DIR}/tests/core/fixtures.cpp
+  )
+  target_include_directories(autan_euler_device_tests PRIVATE ${PROJECT_SOURCE_DIR}/tests/core)
   target_link_libraries(
     autan_euler_device_tests
     PRIVATE

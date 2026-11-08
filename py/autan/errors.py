@@ -304,6 +304,13 @@ _CODES = [
         "Run this build on one rank, or use a build with MPI, such as the dev image.",
     ),
     Code(
+        "E0147",
+        "Not a run's solution",
+        "`autan-vtu` was given a CGNS file without a `FlowSolution`: a mesh, not a run's "
+        "`solution.cgns` (vtu.md).",
+        "Give it the `solution.cgns` of a run directory.",
+    ),
+    Code(
         "E0148",
         "Stencil not local to the partition",
         "A stencil reaches a cell or face that the partition does not hold: the physics' stencil "

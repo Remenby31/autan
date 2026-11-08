@@ -429,6 +429,8 @@ def test_every_gate_is_stated_in_acceptance_md() -> None:
                 round((gate.upper - gate.lower) / 2, 9),
             }
             assert {gate.lower, gate.upper} <= numbers or centred <= numbers, gate.id
+        elif gate.measure == "residual-drop":
+            assert gate.lower in numbers, gate.id
         else:
             assert gate.upper in numbers, gate.id
 

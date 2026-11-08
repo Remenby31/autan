@@ -1007,20 +1007,16 @@ class EulerPhysics final : public runtime::Physics {
     try {
       if (multigrid_) {
         multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
-        if constexpr (is_viscous) {
-          linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
-        } else {
-          // As Multigrid::solve, GCR preconditioned by one cycle, on the operator with the
-          // boundary faces' gradient term.
-          krylov_residual_ = rhs_;
-          linear = gcr_.solve(
-              [&](std::span<const double> v, std::span<double> y) {
-                matrix_->multiply(v, y);
-                add_boundary_gradient_term(v, y);
-              },
-              [&](std::span<const double> r, std::span<double> z) { multigrid_->cycle(r, z); },
-              krylov_residual_, du_, linear_max_cycles, linear_tolerance);
-        }
+        // As Multigrid::solve, GCR preconditioned by one cycle, on the operator with the
+        // boundary faces' gradient term.
+        krylov_residual_ = rhs_;
+        linear = gcr_.solve(
+            [&](std::span<const double> v, std::span<double> y) {
+              matrix_->multiply(v, y);
+              add_boundary_gradient_term(v, y);
+            },
+            [&](std::span<const double> r, std::span<double> z) { multigrid_->cycle(r, z); },
+            krylov_residual_, du_, linear_max_cycles, linear_tolerance);
       } else if (lines_) {
         // GCR preconditioned by the line sweeps, as the multigrid's outer iteration; its inner
         // products are exact sums over the owned cells of every rank.
@@ -1058,10 +1054,27 @@ class EulerPhysics final : public runtime::Physics {
         if (ctx_.ranks.max(singular ? 1.0 : 0.0) > 0.0) {
           throw std::domain_error("singular diagonal block");
         }
-        matrix_->gauss_seidel(rhs_, du_, gauss_seidel_sweeps, colours_,
-                              [this](std::span<double> x) { fill_ghosts(x); });
-        // A fixed number of sweeps: no residual is measured, only a singular block fails.
-        linear.residual_drop = 0.0;
+        // GCR preconditioned by the symmetric sweeps, as the line smoother's outer iteration, on
+        // the operator with the boundary faces' gradient term; its inner products are exact sums
+        // over the owned cells of every rank.
+        auto exchange = [this](std::span<double> x) { fill_ghosts(x); };
+        if (krylov_v_.size() != rhs_.size()) krylov_v_.assign(rhs_.size(), 0.0);
+        krylov_residual_ = rhs_;
+        linear = gcr_.solve(
+            [&](std::span<const double> v, std::span<double> y) {
+              std::copy(v.begin(), v.end(), krylov_v_.begin());
+              fill_ghosts(krylov_v_);
+              matrix_->multiply(krylov_v_, y);
+              add_boundary_gradient_term(krylov_v_, y);
+            },
+            [&](std::span<const double> r, std::span<double> z) {
+              std::fill(z.begin(), z.end(), 0.0);
+              matrix_->gauss_seidel(r, z, gauss_seidel_sweeps, colours_, exchange);
+            },
+            krylov_residual_, du_, linear_max_cycles, linear_tolerance,
+            {.dot = [this](std::span<const double> u,
+                           std::span<const double> v) { return owned_dot(u, v); },
+             .max_abs = [this](std::span<const double> u) { return owned_max_abs(u); }});
       }
     } catch (const std::domain_error&) {
       linear = {};  // a singular block: the solve failed
@@ -1163,20 +1176,18 @@ class EulerPhysics final : public runtime::Physics {
   // Sum of u v over the owned cells of every rank, exact: the same bits on any partition.
   // y += the boundary faces' derivative through the reconstruction's gradients, which the
   // assembled blocks drop: in large far-field cells the step without it is unstable at the CFL
-  // numbers the SER reaches (ONERA M6, #244). The inviscid flow only.
+  // numbers the SER reaches (ONERA M6, #244).
   void add_boundary_gradient_term(std::span<const double> v, std::span<double> y) {
-    if constexpr (!is_viscous) {
-      // The step that switches to second order solves the first-order system it assembled.
-      if (!jacobian_second_order_) return;
-      if (dv_.size() != 5 * n_) {
-        dv_.assign(5 * n_, State(0));
-        dres_.assign(5 * n_, Res(0));
-      }
-      for (std::size_t i = 0; i < 5 * n_; ++i) dv_[i] = State(v[i]);
-      std::fill(dres_.begin(), dres_.end(), Res(0));
-      euler_.gradient_tangent(state_, dv_, dres_, Flow::Faces::boundary);
-      for (std::size_t i = 0; i < 5 * n_; ++i) y[i] += static_cast<double>(dres_[i]);
+    // The step that switches to second order solves the first-order system it assembled.
+    if (!jacobian_second_order_) return;
+    if (dv_.size() != 5 * n_) {
+      dv_.assign(5 * n_, State(0));
+      dres_.assign(5 * n_, Res(0));
     }
+    for (std::size_t i = 0; i < 5 * n_; ++i) dv_[i] = State(v[i]);
+    std::fill(dres_.begin(), dres_.end(), Res(0));
+    euler_.gradient_tangent(state_, dv_, dres_, Flow::Faces::boundary);
+    for (std::size_t i = 0; i < 5 * n_; ++i) y[i] += static_cast<double>(dres_[i]);
   }
 
   double owned_dot(std::span<const double> u, std::span<const double> v) {
@@ -1487,12 +1498,12 @@ class EulerPhysics final : public runtime::Physics {
   std::array<double, 5> reference_;  // the state the cells store differences from
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
   FirstOrderStart first_order_;
-  std::optional<BlockMatrix> matrix_;            // steady runs only
-  std::optional<solvers::Multigrid> multigrid_;  // linear_solver = "multigrid"
-  std::optional<solvers::LineSmoother> lines_;   // linear_solver = "lines"
-  solvers::Gcr gcr_;                             // and its outer iteration
-  std::vector<double> krylov_residual_;
-  std::vector<std::vector<std::size_t>> colours_;  // linear_solver = "gauss-seidel": owned cells
+  std::optional<BlockMatrix> matrix_;               // steady runs only
+  std::optional<solvers::Multigrid> multigrid_;     // linear_solver = "multigrid"
+  std::optional<solvers::LineSmoother> lines_;      // linear_solver = "lines"
+  solvers::Gcr gcr_;                                // and its outer iteration
+  std::vector<double> krylov_residual_, krylov_v_;  // the GCR's residual; a vector with ghosts
+  std::vector<std::vector<std::size_t>> colours_;   // linear_solver = "gauss-seidel": owned cells
   double cfl_cap_ = cfl_max;  // after a shortened or rejected step: half its CFL number
   double cfl_ = cfl_start;
   double penalty_ = 1.0;

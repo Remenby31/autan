@@ -244,9 +244,10 @@ struct Euler<P>::Impl {
   }
 
   // The linear gradients' tangent through the boundary values of the cells whose fit keeps every
-  // boundary face: sum over those entries of dprim_b (x) w, dprim_b = d(prim_b)/d(prim) dW of the
-  // face's owner. A quadratic band cell (band = 1) reads no such value.
-  void kept_boundaries_tangent(ek::Data<P> data) {
+  // boundary face, added to `out`: sum over those entries of dprim_b (x) w, dprim_b =
+  // d(prim_b)/d(prim) dW of the face's owner. Unless `linear`, a quadratic band cell (band = 1)
+  // reads no such value.
+  void kept_boundaries_tangent(ek::Data<P> data, Gr* out, bool linear) {
     const auto nc = static_cast<std::size_t>(topo.n_cells);
     const auto nf = static_cast<std::size_t>(topo.n_faces);
     const auto ni = static_cast<std::size_t>(topo.n_interior_faces);
@@ -296,7 +297,7 @@ struct Euler<P>::Impl {
     }
     const bool quadratic = scheme.gradient_fit == GradientFit::quadratic;
     for (const std::size_t c : kept_cells) {
-      if (quadratic && band[c] > 0.5) continue;
+      if (!linear && quadratic && band[c] > 0.5) continue;
       for (auto k = static_cast<std::size_t>(stencil.offsets[c]);
            k < static_cast<std::size_t>(stencil.offsets[c + 1]); ++k) {
         const index_t e = stencil.entries[k];
@@ -304,7 +305,7 @@ struct Euler<P>::Impl {
         const auto b = static_cast<std::size_t>(-e - 1) - ni;
         for (std::size_t i = 0; i < 5; ++i) {
           for (std::size_t u = 0; u < 3; ++u) {
-            auto& g = grad_tan[(3 * i + u) * nc + c];
+            auto& g = out[(3 * i + u) * nc + c];
             g = static_cast<Gr>(static_cast<double>(g) +
                                 static_cast<double>(stencil_lsq_weight[u * nst + k]) *
                                     prim_b_tan[i * (nf - ni) + b]);
@@ -312,6 +313,21 @@ struct Euler<P>::Impl {
         }
       }
     }
+  }
+
+  // The tangents' arrays, allocated together on the first tangent call: the residual does not
+  // use them.
+  void tangent_scratch() {
+    const auto nc = static_cast<std::size_t>(topo.n_cells);
+    if (!prim_tan.empty()) return;
+    prim_tan.assign(5 * nc, State(0));
+    zero_state.assign(5 * nc, State(0));
+    zero_grad.assign(15 * nc, Gr(0));
+    grad_tan.assign(15 * nc, Gr(0));
+    grad_band_tan.assign(15 * nc, Gr(0));
+    wmin_tan.assign(5 * nc, State(0));
+    wmax_tan.assign(5 * nc, State(0));
+    band_tan.assign(nc, typename decltype(band_tan)::value_type(0));
   }
 
   // Least-squares weights over the stencil, 1/|d|^2 weighting as kernels::cell_stencil, but
@@ -770,6 +786,41 @@ void Euler<P>::linear_gradient(std::span<typename P::grad> out) {
 }
 
 template <class P>
+void Euler<P>::linear_gradient_tangent(std::span<const State> s, std::span<const State> du,
+                                       std::span<typename P::grad> out) {
+  auto& m = *impl_;
+  if (out.size() != m.grad.size()) throw std::invalid_argument("gradient array size");
+  m.tangent_scratch();
+  auto d = m.d;
+  d.u = const_cast<State*>(s.data());
+  d.u_tan = const_cast<State*>(du.data());
+  d.prim_tan = m.prim_tan.data();
+  d.source_tan = m.zero_state.data();
+  ek::cpu::primitives_tangent(d);
+  m.fill_ghosts(m.prim_tan, 5);
+  d.grad_tan = out.data();
+  d.wmin_tan = m.wmin_tan.data();
+  d.wmax_tan = m.wmax_tan.data();
+  ek::cpu::gradients_tangent(d);
+  if (m.kept_boundaries > 0) m.kept_boundaries_tangent(d, out.data(), true);
+}
+
+template <class P>
+void Euler<P>::primitive_tangent(std::span<const State> s, std::span<const State> du,
+                                 std::span<State> out) {
+  auto& m = *impl_;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  if (out.size() != 5 * nc) throw std::invalid_argument("primitive array size");
+  m.tangent_scratch();
+  auto d = m.d;
+  d.u = const_cast<State*>(s.data());
+  d.u_tan = const_cast<State*>(du.data());
+  d.prim_tan = out.data();
+  d.source_tan = m.zero_state.data();
+  ek::cpu::primitives_tangent(d);
+}
+
+template <class P>
 typename Euler<P>::QuadraticGradient Euler<P>::quadratic_gradient() const {
   const auto& m = *impl_;
   return {{m.band.begin(), m.band.end()},
@@ -928,13 +979,7 @@ template <class P>
 void Euler<P>::first_order_tangent(std::span<const State> u, std::span<const State> du,
                                    std::span<Res> dres) {
   auto& m = *impl_;
-  // The tangent's own arrays, allocated on its first call: the residual does not use them.
-  if (m.prim_tan.empty()) {
-    const auto nc = static_cast<std::size_t>(m.topo.n_cells);
-    m.prim_tan.assign(5 * nc, State(0));
-    m.zero_state.assign(5 * nc, State(0));
-    m.zero_grad.assign(15 * nc, typename P::grad(0));
-  }
+  m.tangent_scratch();
   auto d = m.d;
   d.u = const_cast<State*>(u.data());
   d.grad = m.zero_grad.data();
@@ -960,17 +1005,7 @@ void Euler<P>::gradient_tangent(std::span<const State> s, std::span<const State>
                                 std::span<Res> dres, Faces faces) {
   auto& m = *impl_;
   if (!m.scheme.second_order) return;
-  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
-  if (m.grad_tan.empty()) {
-    m.prim_tan.assign(5 * nc, State(0));
-    m.zero_state.assign(5 * nc, State(0));
-    m.zero_grad.assign(15 * nc, typename P::grad(0));
-    m.grad_tan.assign(15 * nc, typename P::grad(0));
-    m.grad_band_tan.assign(15 * nc, typename P::grad(0));
-    m.wmin_tan.assign(5 * nc, State(0));
-    m.wmax_tan.assign(5 * nc, State(0));
-    m.band_tan.assign(nc, typename decltype(m.band_tan)::value_type(0));
-  }
+  m.tangent_scratch();
   // dW = dW/dU du, then the gradients' tangent: a weighted sum of dW over each stencil, whose
   // boundary values the generated loops hold (boundary_states is frozen); the cells whose linear
   // fit keeps every boundary face add those values' tangent.
@@ -994,7 +1029,7 @@ void Euler<P>::gradient_tangent(std::span<const State> s, std::span<const State>
   } else {
     ek::cpu::gradients_tangent(d);
   }
-  if (m.kept_boundaries > 0) m.kept_boundaries_tangent(d);
+  if (m.kept_boundaries > 0) m.kept_boundaries_tangent(d, m.grad_tan.data(), false);
   m.fill_ghosts(m.grad_tan, 15);
   // The fluxes with only the gradients moving: dW and the limiter held.
   d.prim_tan = m.zero_state.data();

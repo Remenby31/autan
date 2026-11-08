@@ -26,7 +26,7 @@ target_compile_definitions(
 )
 if(AUTAN_ENABLE_CGNS)
   find_program(AUTAN_CGNSCHECK cgnscheck REQUIRED)
-  target_sources(autan_io_tests PRIVATE test_cgns.cpp)
+  target_sources(autan_io_tests PRIVATE test_cgns.cpp test_vtu.cpp)
   target_link_libraries(autan_io_tests PRIVATE autan_cgns)
   target_compile_definitions(
     autan_io_tests
@@ -110,4 +110,25 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     reader_memory_probe
     PRIVATE autan::io nlohmann_json::nlohmann_json autan_compile_options
   )
+endif()
+
+# autan-vtu through its exit status and output.
+if(AUTAN_ENABLE_CGNS)
+  foreach(case usage missing)
+    if(case STREQUAL usage)
+      set(args --help)
+      set(code 2)
+      set(expect "usage: autan-vtu")
+    else()
+      set(args ${mesh_dir}/missing.cgns ${CMAKE_CURRENT_BINARY_DIR}/missing.vtu)
+      set(code 1)
+      set(expect "E0130")
+    endif()
+    add_test(
+      NAME autan-vtu.${case}
+      COMMAND
+        ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:autan-vtu> "-DARGS=${args}" -DEXPECT_CODE=${code}
+        "-DEXPECT=${expect}" -P ${CMAKE_CURRENT_SOURCE_DIR}/run_cli.cmake
+    )
+  endforeach()
 endif()
