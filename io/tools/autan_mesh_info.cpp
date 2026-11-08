@@ -26,7 +26,7 @@ namespace {
 
 constexpr const char* usage =
     "usage: autan-mesh-info [--json] [--scale S] [--cell-order rcm|input]\n"
-    "                       [--ranks N [--groups lines]] [--ghosts face2|vertex] MESH\n"
+    "                       [--ranks N [--groups lines]] [--ghosts K] MESH\n"
     "       autan-mesh-info --surface OUT MESH\n"
     "\n"
     "Reads MESH (Gmsh .msh 4.1, Fluent .msh, CGNS, or an OpenFOAM polyMesh or\n"
@@ -36,8 +36,8 @@ constexpr const char* usage =
     "lines in the cell order of --cell-order (default rcm, the run's),\n"
     "and the partition of a run on one rank, or with --ranks N on N ranks,\n"
     "keeping the smoother's lines whole with --groups lines (N >= 2), each\n"
-    "part holding the ghosts of --ghosts (default face2, the stencil the\n"
-    "run's physics declares). With\n"
+    "part holding the ghosts of --ghosts K (face2, the default, vertex,\n"
+    "vertex2, vertex3 or vertex4: the stencil the run's physics declares). With\n"
     "--surface OUT, writes its boundary faces by zone to OUT (schema\n"
     "autan.surface/1) and prints nothing.\n"
     "Exits 1 with a coded error (E01xx) if the mesh cannot be read or cannot\n"
@@ -135,8 +135,11 @@ int main(int argc, char* const* argv) {
     } else if (arg == "--groups" && !groups && next == "lines") {
       groups = true;
       ++i;
-    } else if (arg == "--ghosts" && !ghosts && (next == "face2" || next == "vertex")) {
-      ghosts = next == "vertex" ? autan::GhostStencil::vertex : autan::GhostStencil::face2;
+    } else if (const auto kind = arg == "--ghosts" && !ghosts && next != "face"
+                                     ? autan::ghost_stencil_named(next)
+                                     : std::nullopt;
+               kind) {
+      ghosts = kind;
       ++i;
     } else if (arg == "-h" || arg == "--help") {
       std::fputs(usage, stdout);

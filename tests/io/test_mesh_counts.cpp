@@ -280,16 +280,16 @@ TEST_CASE("MeshInfo counts a single-rank run's stencil entries and periodic ghos
 TEST_CASE("MeshInfo counts each rank of a partitioned run", "[mesh-info]") {
   const int n = 4;
   const auto groups = GENERATE(autan::io::RankGroups::none, autan::io::RankGroups::lines);
-  const auto ghost_stencil = GENERATE(autan::GhostStencil::face2, autan::GhostStencil::vertex);
-  const bool vertex = ghost_stencil == autan::GhostStencil::vertex;
-  CAPTURE(groups == autan::io::RankGroups::lines, vertex);
+  const auto ghost_stencil = GENERATE(autan::GhostStencil::face2, autan::GhostStencil::vertex,
+                                      autan::GhostStencil::vertex4);
+  CAPTURE(groups == autan::io::RankGroups::lines, autan::name(ghost_stencil));
   const auto c = counts(box(n, 10.0), CellOrder::rcm,
                         autan::io::RanksRequest{.ranks = 3, .groups = groups}, ghost_stencil);
   REQUIRE(c.partition);
   const auto& p = *c.partition;
   CHECK(p.ranks == 3);
   CHECK(p.groups == (groups == autan::io::RankGroups::lines ? "lines" : "none"));
-  CHECK(p.ghost_stencil == (vertex ? "vertex" : "face2"));
+  CHECK(p.ghost_stencil == autan::name(ghost_stencil));
   REQUIRE(p.cells.size() == 3);
   std::int64_t owned = 0, ghosts = 0, sent = 0;
   for (std::size_t r = 0; r < 3; ++r) {

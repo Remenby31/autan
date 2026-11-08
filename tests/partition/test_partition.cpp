@@ -1093,14 +1093,20 @@ std::set<VertexKey> vertex_stencil(const autan::LocalPartition& lp, index_t c) {
 
 }  // namespace
 
-TEST_CASE("The vertex ghost stencil holds every cell and boundary face around the owned nodes",
+TEST_CASE("The vertex ghost stencils hold every cell and boundary face around their rings",
           "[partition]") {
-  // The n^3 hexahedra of the unit box, plain or periodic in x and y (two and three cells wide):
+  // The n^3 hexahedra of the unit box, plain or periodic in x and y (two to five cells wide):
   // cell (i, j, k) has the cells (i + a, j + b, k + c), a, b, c in {-1, 0, 1}, and on each side
   // it touches the 3 x 3 boundary faces around it, wrapped with their translation across the
-  // periodic directions and clipped elsewhere. Parts: blocks meeting at corners, and one cell
-  // alone, whose diagonal neighbour lies three face steps away.
-  const auto [n, periodic] = GENERATE(std::pair{4, false}, std::pair{2, true}, std::pair{3, true});
+  // periodic directions and clipped elsewhere. With d vertex rings (vertex, vertex2 to vertex4),
+  // every cell within d - 1 rings of an owned cell, a ghost at its translation too, has that
+  // whole stencil on the part. Parts: blocks meeting at corners, a corner cell alone, whose
+  // diagonal neighbour lies three face steps away, and on 7^3 an interior cell alone.
+  const auto [n, periodic] = GENERATE(std::pair{7, false}, std::pair{2, true}, std::pair{3, true},
+                                      std::pair{4, true}, std::pair{5, true});
+  const auto kind = GENERATE(autan::GhostStencil::vertex, autan::GhostStencil::vertex2,
+                             autan::GhostStencil::vertex3, autan::GhostStencil::vertex4);
+  CAPTURE(n, periodic, autan::name(kind));
   autan::CellwiseMesh cells = autan::test::box(n, autan::test::BoxFill::hexa);
   if (periodic) {
     for (int k = 0; k < 2; ++k) {
@@ -1187,22 +1193,62 @@ TEST_CASE("The vertex ghost stencil holds every cell and boundary face around th
     }
     partitions.push_back(std::move(p));
   }
-  std::vector<std::int32_t> alone(gg.cell_volume.size(), 1);
-  alone[at(cell_at.at({0, 0, 0}))] = 0;
-  partitions.push_back(alone);
+  for (const std::array<int, 3> lone : {std::array{0, 0, 0}, std::array{n / 2, n / 2, n / 2}}) {
+    if (lone != std::array{0, 0, 0} && periodic) continue;
+    std::vector<std::int32_t> alone(gg.cell_volume.size(), 1);
+    alone[at(cell_at.at(lone))] = 0;
+    partitions.push_back(alone);
+  }
+  // A cell's expected stencil seen from its copy at translation t: every key moved by t.
+  const auto expected_at = [&](std::int64_t id, const std::array<double, 3>& t) {
+    std::set<VertexKey> out;
+    for (auto [type, key, shift] : expected(at(id))) {
+      for (std::size_t a = 0; a < 3; ++a) shift[a] += t[a];
+      out.insert({type, key, shift});
+    }
+    return out;
+  };
+  const int depth = autan::vertex_rings(kind);
   for (const auto& parts : partitions) {
     const auto n_parts = *std::max_element(parts.begin(), parts.end()) + 1;
-    const auto locals = check_split(global, parts, n_parts, autan::GhostStencil::vertex);
+    const auto locals = check_split(global, parts, n_parts, kind);
     for (const auto& lp : locals) {
-      CHECK(lp.ghosts == autan::GhostStencil::vertex);
-      for (index_t c = 0; c < lp.mesh.n_owned_cells(); ++c) {
-        CHECK(vertex_stencil(lp, c) == expected(at(lp.mesh.cell_global_id()[at(c)])));
+      CHECK(lp.ghosts == kind);
+      const auto& m = lp.mesh;
+      const auto translation = [&](index_t c) {
+        return c < m.n_owned_cells() ? std::array<double, 3>{}
+                                     : m.ghost_translation()[at(c - m.n_owned_cells())];
+      };
+      std::map<std::pair<std::int64_t, std::array<double, 3>>, index_t> local;
+      for (index_t c = 0; c < m.n_cells(); ++c)
+        local[{m.cell_global_id()[at(c)], translation(c)}] = c;
+      // The cells within depth - 1 rings of the owned cells, through their own (checked) stencils.
+      std::set<index_t> within;
+      std::vector<index_t> frontier;
+      for (index_t c = 0; c < m.n_owned_cells(); ++c) {
+        within.insert(c);
+        frontier.push_back(c);
+      }
+      for (int ring = 1; ring < depth; ++ring) {
+        std::vector<index_t> next;
+        for (const index_t u : frontier) {
+          for (const auto& [type, key, shift] : vertex_stencil(lp, u)) {
+            if (type != 0) continue;
+            const auto it = local.find({key, shift});
+            REQUIRE(it != local.end());
+            if (within.insert(it->second).second) next.push_back(it->second);
+          }
+        }
+        frontier = std::move(next);
+      }
+      for (const index_t c : within) {
+        CHECK(vertex_stencil(lp, c) == expected_at(m.cell_global_id()[at(c)], translation(c)));
       }
     }
   }
 }
 
-TEST_CASE("A node whose cells meet only there refuses the vertex ghost stencil", "[partition]") {
+TEST_CASE("A node whose cells meet only there refuses the vertex ghost stencils", "[partition]") {
   // Two hexahedra sharing one corner node: no face holds it for both, so no walk around the
   // node reaches the other part's cell, and its vertex stencil would be truncated (E0148).
   autan::test::ReferenceCell first = autan::test::affine_cell(
@@ -1231,10 +1277,12 @@ TEST_CASE("A node whose cells meet only there refuses the vertex ghost stencil",
   const autan::Geometry gg = autan::compute_geometry(global);
   const std::vector<std::int32_t> parts{0, 1};
   CHECK(autan::extract_partition(global, gg, parts, 2, 0).mesh.n_cells() == 1);
-  require_error(autan::ErrorCode::partition_stencil_not_local, [&] {
-    autan::extract_partition(global, gg, parts, 2, 0, autan::GhostStencil::vertex);
-  });
-  CHECK(autan::extract_partition(global, gg, std::vector<std::int32_t>{0, 0}, 1, 0,
-                                 autan::GhostStencil::vertex)
-            .mesh.n_cells() == 2);
+  for (const auto kind : {autan::GhostStencil::vertex, autan::GhostStencil::vertex2,
+                          autan::GhostStencil::vertex3, autan::GhostStencil::vertex4}) {
+    CAPTURE(autan::name(kind));
+    require_error(autan::ErrorCode::partition_stencil_not_local,
+                  [&] { autan::extract_partition(global, gg, parts, 2, 0, kind); });
+    CHECK(autan::extract_partition(global, gg, std::vector<std::int32_t>{0, 0}, 1, 0, kind)
+              .mesh.n_cells() == 2);
+  }
 }

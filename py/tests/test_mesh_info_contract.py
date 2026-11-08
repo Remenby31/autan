@@ -79,11 +79,17 @@ def test_producer_records_the_ghost_stencil_of_its_partition() -> None:
     # on the pairs, the vertex stencil's rings hold faces between image ghosts that face2's
     # first layer does not.
     source = MESHES / "periodic-box" / "periodic-box.ascii.msh"
-    face2, vertex = mesh_info(source), mesh_info(source, "--ghosts", "vertex")
+    face2, vertex, vertex4 = (
+        mesh_info(source, *options)
+        for options in ((), ("--ghosts", "vertex"), ("--ghosts", "vertex4"))
+    )
     assert face2.partition is not None
     assert vertex.partition is not None
-    assert (face2.partition.ghost_stencil, vertex.partition.ghost_stencil) == ("face2", "vertex")
+    assert vertex4.partition is not None
+    stencils = (p.ghost_stencil for p in (face2.partition, vertex.partition, vertex4.partition))
+    assert tuple(stencils) == ("face2", "vertex", "vertex4")
     assert vertex.partition.faces_by_rank[0] > face2.partition.faces_by_rank[0]
+    assert vertex4.partition.ghosts_by_rank[0] >= vertex.partition.ghosts_by_rank[0]
 
 
 def test_plan_checks_the_hash_of_a_real_mesh(tmp_path: Path) -> None:

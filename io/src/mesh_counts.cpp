@@ -224,7 +224,7 @@ MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
   // The stencil and ghosts are sets, the same in any cell order. On one rank, the run's partition
   // is its one part (Run::make_part): the mesh itself without periodic pairs, else the part
   // whose image ghosts make each periodic face interior.
-  const char* ghost_stencil = ghosts == GhostStencil::vertex ? "vertex" : "face2";
+  const std::string ghost_stencil(name(ghosts));
   MeshInfoRun::Partition one_part{.ranks = 1,
                                   .groups = "none",
                                   .ghost_stencil = ghost_stencil,
