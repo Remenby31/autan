@@ -72,13 +72,13 @@ def test_face_writes_store_each_face_once_in_its_global_orientation(
     check(full)
     # Ordered by the global numbering, a partition evaluates each face in its global orientation:
     # 2 ranks write the bits 1 rank writes.
-    one = s.partition(full, np.zeros(full.n_cells, np.int32), 1, 0, layers=2)
+    one = s.partition(full, np.zeros(full.n_cells, np.int32), 1, 0, ghosts="face2")
     s.set_global_order(one, None)
     reference = check(one)
     x = full.cell_centroid[:, 0]
     parts = (x > np.median(x)).astype(np.int32)
     for rank in (0, 1):
-        two = s.partition(full, parts, 2, rank, layers=2)
+        two = s.partition(full, parts, 2, rank, ghosts="face2")
         s.set_global_order(two, None)
         got = check(two)
         assert got.keys() <= reference.keys()

@@ -4,7 +4,9 @@ add_executable(
   test_implicit.cpp
   test_manufactured.cpp
   test_navier_stokes.cpp
+  ${PROJECT_SOURCE_DIR}/tests/core/fixtures.cpp
 )
+target_include_directories(autan_physics_tests PRIVATE ${PROJECT_SOURCE_DIR}/tests/core)
 target_link_libraries(
   autan_physics_tests
   PRIVATE autan::physics autan::io autan::partition Catch2::Catch2WithMain autan_compile_options

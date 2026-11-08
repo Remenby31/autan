@@ -132,6 +132,7 @@
   "partition": {
     "ranks": 1,
     "groups": "none",
+    "ghost_stencil": "face2",
     "cells_by_rank": [
       48200000
     ],

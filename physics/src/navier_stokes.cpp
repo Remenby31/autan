@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "autan/core/error.hpp"
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "navier_stokes_cpu.hpp"
@@ -602,6 +603,11 @@ struct NavierStokes<P>::Impl {
       : euler(mesh, geometry, gas, scheme),
         quadratic(scheme.gradient_fit == GradientFit::quadratic),
         geo(geometry) {
+    // The boundary fits gather up to three vertex rings, which no partition holds.
+    if (mesh.n_cells() != mesh.n_owned_cells()) {
+      throw Error(ErrorCode::partition_stencil_not_local,
+                  "the viscous boundary fits' vertex rings are not local on a partition");
+    }
     if (quadratic)
       grad_v.assign(15 * static_cast<std::size_t>(mesh.n_cells()), typename P::grad(0));
     if (!(t.mu_ref > 0.0) || !(t.prandtl > 0.0) || !(t.prandtl_turbulent > 0.0) ||
