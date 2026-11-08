@@ -82,7 +82,25 @@ def block(x: FloatArray, y: FloatArray) -> tuple[FloatArray, IntArray, dict[str,
     elif not np.all(area2 > 0.0):
         msg = "the PLOT3D block has degenerate cells or cells of both orientations"
         raise VVError(msg, code="V0902")
+    if not np.all(_simple(points, quads)):
+        msg = "the PLOT3D block has self-intersecting or collapsed quadrangles"
+        raise VVError(msg, code="V0902")
     return points, quads, sides
+
+
+def _cross(o: FloatArray, a: FloatArray, b: FloatArray) -> FloatArray:
+    return np.asarray(
+        (a[:, 0] - o[:, 0]) * (b[:, 1] - o[:, 1]) - (a[:, 1] - o[:, 1]) * (b[:, 0] - o[:, 0])
+    )
+
+
+def _simple(points: FloatArray, quads: IntArray) -> FloatArray:
+    """Whether each counterclockwise quadrangle splits along a diagonal into two counterclockwise
+    triangles of positive area: false for a bow-tie and for a collapsed corner."""
+    a, b, c, d = (points[quads[:, k]] for k in range(4))
+    one = (_cross(a, b, c) > 0.0) & (_cross(a, c, d) > 0.0)
+    other = (_cross(b, c, d) > 0.0) & (_cross(b, d, a) > 0.0)
+    return np.asarray(one | other)
 
 
 def _area2(points: FloatArray, quads: IntArray) -> FloatArray:
@@ -120,19 +138,30 @@ def bump(x: FloatArray, y: FloatArray) -> tuple[FloatArray, IntArray, dict[str, 
 
 def c_grid(x: FloatArray, y: FloatArray) -> tuple[FloatArray, IntArray, dict[str, IntArray]]:
     """The 2DN00 C-grid with the wake cut closed: on the first j line, node i and node idim-1-i
-    coincide for i up to the trailing edge; they become one node (the lower-index one), the cut's
-    edges vanish and the airfoil is the first j line between the trailing-edge nodes. V0902 if no
-    node pair coincides (not a C-grid)."""
+    coincide (to 1e-12 of the grid's extent) for i up to the trailing edge; they become one node
+    (the lower-index one), the cut's edges vanish and the airfoil is the first j line between the
+    trailing-edge nodes. V0902 if no node pair coincides (not a C-grid) or if the airfoil so found
+    does not span x = 0 to 1, the sharp-trailing-edge NACA 0012 of TMR's grids
+    (naca0012numerics_val.html: "closes at chord=1 with a sharp trailing edge"), as a blunt or
+    open wake cut would give."""
     points, quads, sides = block(x, y)
     id_ = x.shape[1]
     first = np.arange(id_)
+    tol = 1e-12 * float(np.max(np.abs(points)))
     k = 0
-    while k < id_ // 2 and np.array_equal(points[first[k]], points[first[id_ - 1 - k]]):
+    while k < id_ // 2 and np.max(np.abs(points[first[k]] - points[first[id_ - 1 - k]])) <= tol:
         k += 1
     if k == 0:
         msg = "no coincident nodes on the first j line: not a C-grid"
         raise VVError(msg, code="V0902")
     te = k - 1  # the last coincident pair is the trailing edge
+    chord_x = points[first[te : id_ - te], 0]
+    if not np.allclose((chord_x.min(), chord_x.max()), (0.0, 1.0), rtol=0.0, atol=1e-12):
+        msg = (
+            f"the airfoil found between the wake-cut nodes spans x = {chord_x.min()} to "
+            f"{chord_x.max()}, not TMR's sharp-edged chord 0 to 1"
+        )
+        raise VVError(msg, code="V0902")
     remap = np.arange(len(points))
     remap[first[id_ - 1 - np.arange(k)]] = first[np.arange(k)]
     keep = np.setdiff1d(np.arange(len(points)), first[id_ - 1 - np.arange(k)])
