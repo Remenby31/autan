@@ -39,9 +39,9 @@ class NavierStokes {
   using Res = typename P::residual;
   using Faces = typename Euler<P>::Faces;
 
-  /// With `keys`, as Euler<P>'s: its Euler<P> takes them, and the viscous face loops gather each
-  /// cell's faces in global order and orientation. The boundary fit keeps the mesh's order, and
-  /// assemble() refuses keys that reverse a face (std::logic_error).
+  /// With `keys`, as Euler<P>'s: its Euler<P> takes them, the viscous face loops gather each cell's
+  /// faces in global order and orientation, the boundary fit lists its entries in ascending global
+  /// id, and assemble() sums and places its blocks in that order and orientation.
   NavierStokes(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme,
                Transport transport, const kernels::GlobalKeys* keys = nullptr);
   ~NavierStokes();
