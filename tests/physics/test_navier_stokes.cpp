@@ -818,13 +818,14 @@ TEST_CASE(
   }
   REQUIRE(scale > 0.0);
   CHECK(diff32 <= 1024 * std::numeric_limits<float>::epsilon() * scale);
-  // Central differences, O(h^2) truncation and O(eps / h) round-off relative, where the residual is
-  // smooth. A row is differentiable when its differences at h = 1e-6 and 1e-7 agree to the test's
-  // tolerance, a choice made by the residual alone, not by the Jacobian under test. The other rows
-  // straddle a kink of the flux (AUSM+-up's interface sound speed min(al, ar), where the two sides'
-  // total enthalpies meet: one face moves the rows of its two cells) and are left out, counted and
-  // printed. At most 1 % may be: more means the residual is not smooth enough for this check. A
-  // defect confined to the left-out rows is not seen here.
+  // Central differences at h = 1e-6 and 1e-7. A row is kept when the two agree to the test's
+  // tolerance: the choice reads the residual alone, never the Jacobian under test. A row whose two
+  // differences disagree is left out: there a step straddles a kink of the flux (as AUSM+-up's
+  // interface sound speed min(al, ar), where the two sides' total enthalpies meet: one face moves
+  // the rows of its two cells) or meets truncation or round-off. At most 1 % of the rows may be
+  // left out: the bound limits how much of the Jacobian goes unchecked, it says nothing of those
+  // rows; a defect confined to them is not seen here, and the count is reported when the test
+  // fails. The gap is held against the kept rows' own scale.
   std::vector<double> fd[2] = {std::vector<double>(u.size()), std::vector<double>(u.size())};
   const double hs[2] = {1e-6, 1e-7};
   for (std::size_t j = 0; j < 2; ++j) {
@@ -839,27 +840,29 @@ TEST_CASE(
     ns.residual(state, rm);
     for (std::size_t i = 0; i < u.size(); ++i) fd[j][i] = (rp[i] - rm[i]) / (2.0 * hs[j]);
   }
-  double norm = 0.0;
+  double all = 0.0;
   for (std::size_t i = 0; i < u.size(); ++i) {
     REQUIRE(std::isfinite(fd[0][i]));
     REQUIRE(std::isfinite(fd[1][i]));
     REQUIRE(std::isfinite(av[i]));
     REQUIRE(std::isfinite(tan[i]));
-    norm = std::max(norm, std::abs(fd[0][i]));
+    all = std::max(all, std::abs(fd[0][i]));
   }
-  double diff = 0.0, without = 0.0;
-  std::size_t kinked = 0;
+  double diff = 0.0, without = 0.0, norm = 0.0;
+  std::size_t left_out = 0;
   for (std::size_t i = 0; i < u.size(); ++i) {
-    if (std::abs(fd[0][i] - fd[1][i]) > 1e-6 * norm) {
-      ++kinked;
+    if (std::abs(fd[0][i] - fd[1][i]) > 1e-6 * all) {
+      ++left_out;
       continue;
     }
     diff = std::max(diff, std::abs(fd[0][i] - av[i] - tan[i]));
     without = std::max(without, std::abs(fd[0][i] - av[i]));
+    norm = std::max(norm, std::abs(fd[0][i]));
   }
   INFO("diff " << diff / norm << " without the gradient tangents " << without / norm
-               << " rows left out " << kinked << " of " << u.size());
-  CHECK(kinked <= u.size() / 100);
+               << " rows left out " << left_out << " of " << u.size());
+  CHECK(left_out <= u.size() / 100);
+  REQUIRE(norm > 0.0);
   CHECK(diff <= 1e-6 * norm);
   if (gradients) CHECK(without >= 1e3 * diff);
 }
