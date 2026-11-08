@@ -20,11 +20,17 @@ target_include_directories(autan_physics_tests PRIVATE ${PROJECT_BINARY_DIR}/phy
 catch_discover_tests(autan_physics_tests)
 
 # The manufactured-solution study's C ABI, through the shared library euler_mms.py loads.
-add_executable(autan_physics_mms_tests test_block_ilu.cpp)
+add_executable(autan_physics_mms_tests test_block_ilu.cpp test_mms_build_info.cpp)
 target_link_libraries(
   autan_physics_mms_tests
   PRIVATE autan_physics_mms Catch2::Catch2WithMain autan_compile_options
 )
+# The build information the library was compiled with (runtime/cmake/build_info.cmake).
+target_include_directories(
+  autan_physics_mms_tests
+  PRIVATE ${PROJECT_BINARY_DIR}/physics/mms_generated
+)
+add_dependencies(autan_physics_mms_tests autan_physics_mms_build_info)
 catch_discover_tests(autan_physics_mms_tests)
 
 # The Euler residual on the generated Metal loops against the CPU physics (macOS).
@@ -100,6 +106,7 @@ if(AUTAN_ENABLE_CUDA AND AUTAN_ENABLE_CGNS)
   add_executable(
     autan_euler_device_tests
     test_euler_device.cpp
+    test_euler_jacobian_device.cpp
     test_navier_stokes_device.cpp
     ${PROJECT_SOURCE_DIR}/tests/core/fixtures.cpp
   )

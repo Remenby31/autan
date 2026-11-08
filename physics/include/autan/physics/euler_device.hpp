@@ -15,6 +15,17 @@
 
 namespace autan::physics {
 
+// The blocks of the implicit step's matrix as the device assembled them, in the host's terms:
+// `diagonal` 25 per cell, row-major; for cell c, its incidences offsets[c] .. offsets[c + 1] in
+// the device's order, each with its face and the coupling block to the cell across it, row-major,
+// zero on a boundary face (`off_diagonal`, 25 per incidence).
+struct DeviceStepperBlocks {
+  std::vector<double> diagonal;
+  std::vector<kernels::offset_t> offsets;
+  std::vector<index_t> faces;
+  std::vector<double> off_diagonal;
+};
+
 // Explicit SSP-RK3 steps of the Euler residual on a CUDA device. The conserved variables stay on
 // the device between steps, in FP64 like the host's, and every update repeats the host's
 // arithmetic operation for operation; the residual is the generated loops' (kernels/euler.py).
@@ -38,6 +49,13 @@ class DeviceStepper {
   virtual void set_second_order(bool on) = 0;
   virtual void upload(std::span<const double> u) = 0;
   virtual void download(std::span<double> u) = 0;
+  // The implicit step's matrix at the device state, kept on the device: as
+  // Euler<P>::residual_and_jacobian then Euler<P>::assemble(shift), operation for operation.
+  // Needs the face moments (a host that is not planar). Throws std::logic_error for a physics
+  // whose terms have no device Jacobian.
+  virtual void assemble(std::span<const double> shift) = 0;
+  // The blocks of the last assemble.
+  virtual DeviceStepperBlocks jacobian_blocks() = 0;
 };
 
 // The stepper of `host`'s residual (its boundary conditions, source, gradient weights and

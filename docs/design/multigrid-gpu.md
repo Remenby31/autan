@@ -30,6 +30,8 @@ Coarse levels are FP64 under every supported policy, as [PLAN.md](../PLAN.md) de
 
 The device operator is E2's sliced block CSR: per cell, its diagonal block and one block per incidence, column `Topology::incidence_cell`. Boundary incidences carry a zero block and are skipped by every list below. The host operator's `upper` and `lower` of edge e are the `off` blocks at the owner's and the neighbour's incidence of e.
 
+The physics' `DeviceStepper::assemble(shift)` (#218) builds level 0 from the device state: the generated face and boundary blocks dF/dW and dW/dU, combined by one thread per cell in `Euler<P>::assemble`'s operation order, so that with `--fmad=false` and the host under global keys the blocks are the host `BlockMatrix`'s bit for bit (off-diagonal blocks rounded once to `Jac`). Today it writes the stepper's CSR incidence layout and refuses the sliced one, needs the face moments (a stepper with planar loops refuses), and has no Navier-Stokes blocks (refused). Its farfield and inlet blocks call `exp` and `log` and are not yet verified block by block (#218, PR 2b).
+
 ## Transfers
 
 `autan::solvers::gpu::Transfers` (`solvers/include/autan/solvers/multigrid_gpu.hpp`) builds its lists on the host from `Level::coarse_node`, uploads them once, and numbers each coarse level on the device:

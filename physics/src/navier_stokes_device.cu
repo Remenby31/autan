@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <memory>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 #include "autan/physics/navier_stokes_device.hpp"
@@ -110,6 +111,12 @@ class NavierStokesStepper final : public device::CudaStepper<P> {
     v_.sutherland[0] = h.sutherland[0];
     v_.prandtl[0] = h.prandtl[0];
     v_.prandtl_t[0] = h.prandtl_t[0];
+  }
+
+  // The viscous blocks have no device assembly yet (#163, PR 6): refused rather than an
+  // inviscid matrix under a viscous residual.
+  void assemble(std::span<const double> /*shift*/) override {
+    throw std::logic_error("the Navier-Stokes physics has no device Jacobian");
   }
 
  private:
