@@ -6,8 +6,8 @@ FAMILIES holds one directory per mesh family as `autan-vv meshes` writes it. Eve
 the core readers, the steady discrete solution is found by Newton-Krylov on the generated residual
 (boundary faces take the exact state, cells the exact source), and the volume-weighted errors of
 the conserved variables at cell centroids are written per (family, policy, flux) in the input
-format of `autan-vv order`, with mesh hash, solver commit and precision. The library path comes from
-AUTAN_PHYSICS_MMS_LIB.
+format of `autan-vv order`, with mesh hash, solver commit, whether that build was dirty, and
+precision. The library path comes from AUTAN_PHYSICS_MMS_LIB.
 """
 
 from __future__ import annotations
@@ -372,6 +372,8 @@ def main() -> None:
     a.out.mkdir(parents=True, exist_ok=True)
     lib().autan_mms_commit.restype = ctypes.c_char_p
     commit = lib().autan_mms_commit().decode()  # the library's build, not the checkout's
+    lib().autan_mms_dirty.restype = ctypes.c_int
+    dirty = lib().autan_mms_dirty() == 1
     solution = json.dumps(to_json(euler()), sort_keys=True)
     kinds = a.kinds.split(",") if a.kinds else None
     for fam in sorted(d for d in a.families.iterdir() if (d / "manifest.json").exists()):
@@ -399,7 +401,7 @@ def main() -> None:
                     levels.append({
                         "n_cells": m.n_cells, "volume": float(m.cell_volume.sum()),
                         "errors": errors(m, s.u), "mesh_sha256": lv["mesh_sha256"],
-                        "solver_commit": commit, "case_sha256": case_sha,
+                        "solver_commit": commit, "solver_dirty": dirty, "case_sha256": case_sha,
                         "precision": policy, "flux": flux,
                         "limiter": a.limiter, "venkat_k": a.venkat_k, "stencil": a.stencil, "relative_residual": s.relative_residual,
                         "newton": s.newton, "gmres": s.gmres, "preconditioner": "block-ilu0",

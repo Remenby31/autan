@@ -83,6 +83,19 @@ std::optional<std::int64_t> number_in(const fs::path& file) {
   }
 }
 
+// The value of `key` in a memory.stat file ("key bytes" lines); nullopt when the file or the key
+// is absent or cannot be read, so that the caller keeps its conservative bound.
+std::optional<std::int64_t> stat_in(const fs::path& file, const std::string& key) {
+  std::ifstream in(file);
+  for (std::string line; std::getline(in, line);) {
+    std::istringstream fields(line);
+    std::string name;
+    std::int64_t bytes = 0;
+    if (fields >> name >> bytes && name == key) return bytes;
+  }
+  return std::nullopt;
+}
+
 struct Mount {
   fs::path root, point;
 };
@@ -124,12 +137,19 @@ std::vector<Mount> cgroup_mounts(const fs::path& proc, bool v2) {
 }
 
 // The least limit less usage of `group` and of each of its ancestors, each read in the mount
-// that shows it: a parent's limit binds the group even when another mount shows the group.
+// that shows it: a parent's limit binds the group even when another mount shows the group. The
+// usage includes the page cache, whose inactive part reclaim takes first: in the process's own
+// group it counts as available (memory.stat inactive_file; total_inactive_file on v1,
+// hierarchical as its usage is). Only there: an ancestor's cache may belong to a sibling that
+// memory.min or memory.low protects from reclaim, whereas a v2 group holding processes has no
+// memory-controlled children and v1 has no protection. Active file pages may not be
+// reclaimable and do not count.
 std::optional<std::int64_t> cgroup_available(const fs::path& proc, const fs::path& group, bool v2,
                                              std::vector<std::string>& unseen) {
   const auto mounts = cgroup_mounts(proc, v2);
   std::optional<std::int64_t> available;
-  for (fs::path cg = group.lexically_normal();; cg = cg.parent_path()) {
+  const fs::path own = group.lexically_normal();
+  for (fs::path cg = own;; cg = cg.parent_path()) {
     const Mount* shown = nullptr;
     for (const auto& m : mounts) {
       const bool contains = std::ranges::mismatch(m.root, cg).in1 == m.root.end();
@@ -147,7 +167,15 @@ std::optional<std::int64_t> cgroup_available(const fs::path& proc, const fs::pat
       if (limit && (v2 || *limit < (std::int64_t{1} << 62))) {
         const auto used = number_in(dir / (v2 ? "memory.current" : "memory.usage_in_bytes"));
         if (!used) throw std::runtime_error("no memory usage beside the limit in " + dir.string());
-        const std::int64_t left = std::max<std::int64_t>(0, *limit - *used);
+        // Usage less the reclaimable cache, then the limit less that: a group above its limit
+        // keeps its deficit, and the result never exceeds the limit.
+        std::int64_t usage = std::max<std::int64_t>(0, *used);
+        if (cg == own) {
+          const auto cache =
+              stat_in(dir / "memory.stat", v2 ? "inactive_file" : "total_inactive_file");
+          usage = std::max<std::int64_t>(0, usage - std::max<std::int64_t>(0, cache.value_or(0)));
+        }
+        const std::int64_t left = std::max<std::int64_t>(0, *limit - usage);
         available = std::min(available.value_or(left), left);
       }
     }
