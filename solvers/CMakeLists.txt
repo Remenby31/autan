@@ -3,6 +3,7 @@ add_library(
   autan_solvers
   src/agglomeration.cpp
   src/dense.cpp
+  src/distributed_multigrid.cpp
   src/distributed_operator.cpp
   src/gcr.cpp
   src/line_smoother.cpp

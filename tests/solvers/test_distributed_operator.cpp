@@ -28,6 +28,7 @@
 #include "autan/solvers/agglomeration.hpp"
 #include "autan/solvers/distributed_operator.hpp"
 #include "autan/solvers/multigrid.hpp"
+#include "thread_ranks.hpp"
 
 namespace {
 
@@ -36,50 +37,6 @@ using autan::index_t;
 using autan::solvers::Level;
 
 std::size_t at(std::int64_t i) { return static_cast<std::size_t>(i); }
-
-// The exchange of N parts run as N threads of one process: each posts its buffers, then copies
-// what it receives from the other parts' posted buffers, by the patterns.
-// A part that fails drops out of the barrier and raises `failed`, so that the others stop at their
-// next exchange instead of waiting for it.
-struct Hub {
-  explicit Hub(std::int32_t n) : barrier(n), posted(at(n)) {}
-  struct Post {
-    const autan::HaloPattern* pattern = nullptr;
-    std::vector<double*> components;
-  };
-  std::barrier<> barrier;
-  std::vector<Post> posted;
-  std::atomic<bool> failed{false};
-};
-
-class ThreadExchange final : public autan::solvers::LevelExchange {
- public:
-  ThreadExchange(Hub& hub, std::int32_t rank) : hub_(hub), rank_(rank) {}
-  void forward(const autan::HaloPattern& pattern, std::size_t n_owned,
-               std::span<double* const> components) override {
-    // LevelExchange's contract, HaloExchange's limit.
-    if (components.size() > 16) throw std::length_error("more than 16 components in one call");
-    hub_.posted[at(rank_)] = {&pattern, {components.begin(), components.end()}};
-    hub_.barrier.arrive_and_wait();
-    if (hub_.failed) throw std::runtime_error("another part failed");
-    for (std::size_t i = 0; i < pattern.neighbours.size(); ++i) {
-      const std::int32_t q = pattern.neighbours[i];
-      const Hub::Post& theirs = hub_.posted[at(q)];
-      const autan::HaloPattern& hq = *theirs.pattern;
-      const auto j = at(std::ranges::find(hq.neighbours, rank_) - hq.neighbours.begin());
-      auto send = at(hq.send_offsets[j]);
-      for (auto k = at(pattern.recv_offsets[i]); k < at(pattern.recv_offsets[i + 1]); ++k, ++send) {
-        for (std::size_t c = 0; c < components.size(); ++c)
-          components[c][n_owned + k] = theirs.components[c][at(hq.send_cells[send])];
-      }
-    }
-    hub_.barrier.arrive_and_wait();
-  }
-
- private:
-  Hub& hub_;
-  std::int32_t rank_;
-};
 
 // Global blocks of level 0 (one per cell, two per interior face, in the face's orientation) and
 // global vectors per level, non-symmetric and deterministic.
@@ -131,12 +88,12 @@ Result run(const std::vector<Level>& levels, const Data& d, const std::vector<st
     out.coarse.emplace_back(5 * l.n_nodes, std::numeric_limits<double>::quiet_NaN());
     out.e.emplace_back(5 * l.n_nodes, std::numeric_limits<double>::quiet_NaN());
   }
-  Hub hub(n_parts);
+  autan::test::Hub hub(n_parts);
   std::vector<std::exception_ptr> failed(at(n_parts));
   std::vector<std::size_t> reversed(at(n_parts), 0);
   const auto part = [&](std::int32_t rank) {
     try {
-      ThreadExchange ex(hub, rank);
+      autan::test::ThreadRanks ex(hub, rank);
       autan::solvers::DistributedOperator op(levels, parts, n_parts, rank, ex);
       const autan::LocalGraph& g0 = op.graph(0);
       std::vector<double> diag, upper, lower;
