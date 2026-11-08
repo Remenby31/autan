@@ -86,6 +86,33 @@ TEST_CASE("The faces of a periodic pair match one to one", "[periodic]") {
   check_partners(mesh);
   // Partners survive renumbering, which re-sorts every face.
   check_partners(autan::renumber_cells(mesh, autan::rcm_order(mesh)));
+  // n = 2, x-periodic, node 0 swapped with node 14, the centre (1, 1/2, 1/2) of xmax (zone b),
+  // the image of the centre of xmin that several faces of xmin share: each of the 9 nodes of xmin
+  // is listed once, with its translate.
+  const autan::Mesh swapped =
+      autan::assemble(periodic_box(2, fill, {0}, [](autan::CellwiseMesh& m) {
+        constexpr index_t centre = 14;
+        std::swap(m.x[0], m.x[centre]);
+        std::swap(m.y[0], m.y[centre]);
+        std::swap(m.z[0], m.z[centre]);
+        for (auto* list : {&m.face_nodes, &m.labelled_face_nodes}) {
+          for (index_t& p : *list) p = p == 0 ? centre : (p == centre ? 0 : p);
+        }
+      }));
+  REQUIRE((swapped.x()[0] == 1.0 && swapped.y()[0] == 0.5 && swapped.z()[0] == 0.5));
+  const auto match = autan::match_periodic_faces(swapped, swapped.periodic_pairs());
+  REQUIRE(match.nodes.size() == 1);
+  std::vector<index_t> listed;
+  for (const auto& [a, b] : match.nodes[0]) {
+    listed.push_back(a);
+    CHECK(swapped.x()[at(a)] == 0.0);
+    CHECK(swapped.x()[at(b)] == 1.0);
+    CHECK(swapped.y()[at(b)] == swapped.y()[at(a)]);
+    CHECK(swapped.z()[at(b)] == swapped.z()[at(a)]);
+  }
+  std::ranges::sort(listed);
+  CHECK(listed.size() == 9);
+  CHECK(std::ranges::adjacent_find(listed) == listed.end());
 }
 
 TEST_CASE("Periodic nodes match within 1e-4 of the local shortest edge", "[periodic]") {

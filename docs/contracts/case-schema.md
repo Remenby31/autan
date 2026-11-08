@@ -101,6 +101,7 @@ Every text of the case that is not a quantity, a unit or a keyword (the case `na
 | `turbulence` | [Turbulence](#turbulence) | required |
 | `precision` | `"fp32+acc64"` · `"fp64"` | `"fp32+acc64"` |
 | `reproducibility` | `"none"` · `"run"` · `"ranks"` | `"run"` |
+| `flux` | `"roe"` · `"hllc"` · `"ausm+up"` | `"roe"` |
 | `gas` | [IdealGas](#materials) | air |
 
 `kind = "incompressible"`: pressure-based solver.
@@ -115,6 +116,8 @@ Every text of the case that is not a quantity, a unit or a keyword (the case `na
 `precision = "fp32+acc64"` computes in FP32 and accumulates solution updates, norms and geometry in FP64 (see `docs/PLAN.md`). `"fp64"` computes everything in FP64.
 
 `reproducibility` sets which bits a run repeats ([results.md](results.md#runjson)). `"run"` repeats them from run to run on the same number of ranks. `"ranks"` also repeats them on any number of ranks, one included, and in any cell order, at the cost of gathering sums in a fixed order; a physics that cannot honour it refuses the case before any directory exists (`E1109`). `"none"` repeats nothing and allows floating-point atomics.
+
+`flux` is the convective flux of the compressible solver: Roe, HLLC or AUSM+-up ([euler.md](../design/euler.md#residual)), for every physics built on it, viscous included.
 
 `gas` and `fluid` are the default medium of every fluid cell zone.
 
@@ -171,7 +174,7 @@ In `fp32+acc64`, round-off stops the residuals before they can drop 8 orders. So
 
 With `average_from`, an unsteady run also writes the time average of every cell field over steps `average_from + 1` to `steps`, each step weighted by its time step (see [results.md](results.md#solutioncgns)).
 
-Other numerical settings (flux scheme, limiter, CFL ramp) are not part of `autan.case/1`: the solver version fixes them, and the solver commit recorded by every run identifies them.
+Other numerical settings (limiter, CFL ramp) are not part of `autan.case/1`: the solver version fixes them, and the solver commit recorded by every run identifies them.
 
 ### Boundaries
 
