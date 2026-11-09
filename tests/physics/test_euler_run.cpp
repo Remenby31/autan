@@ -496,17 +496,21 @@ std::pair<std::int64_t, std::array<double, 3>> first_interface_face(const Json& 
   return {};
 }
 
-// On 4 ranks, the control's face must be the first interface face of the run's partition.
-void require_interface_point(const Json& doc, int ranks, const std::array<double, 3>& at) {
-  if (ranks == 1) return;
+// The control's face: on one rank the fixed point `at`; on several, the first interior face (by
+// global id) its partition puts on an interface, which depends on the partitioner's build, so it
+// is found here and handed to the mutant through AUTAN_CONSERVATION_FACE.
+std::array<double, 3> control_point(const Json& doc, int ranks,
+                                    const std::optional<std::array<double, 3>>& at) {
+  if (ranks == 1) {
+    REQUIRE(at.has_value());
+    return *at;
+  }
   const auto [id, c] = first_interface_face(doc, ranks);
   std::ostringstream text;
   text << std::setprecision(17) << "first interface face on " << ranks << " ranks: " << id << " at "
        << c[0] << ',' << c[1] << ',' << c[2];
   INFO(text.str());
-  REQUIRE(std::ranges::all_of(std::array{0, 1, 2}, [&](int a) {
-    return std::abs(c[static_cast<std::size_t>(a)] - at[static_cast<std::size_t>(a)]) <= 1e-9;
-  }));
+  return c;
 }
 
 // The run's own word that its selected face lies on a partition interface, on several ranks.
@@ -523,10 +527,9 @@ void require_interface_selected(const fs::path& run_dir, int ranks) {
 // ranks, the start event through tools/gate7.py, then that event's analytic sums. M2 drops the
 // face at `at` from the planar loop.
 void box_gate7(const char* precision, const std::string& name, int ranks,
-               const std::array<double, 3>& at) {
+               const std::optional<std::array<double, 3>>& at) {
   const auto doc = analytic_box(precision, 1, name);
-  require_interface_point(doc, ranks, at);
-  const Gate7Control control(name, at);
+  const Gate7Control control(name, control_point(doc, ranks, at));
   const fs::path dir = on_ranks(ranks)(doc);
   require_interface_selected(dir, ranks);
   const auto gate = control.at_start(dir);
@@ -559,18 +562,18 @@ void box_gate7(const char* precision, const std::string& name, int ranks,
 // directory in AUTAN_GATE7_R1_<suffix>, its solver input in AUTAN_GATE7_SI_<suffix>, on `ranks`
 // ranks. M1 drops the face at `at` from the fused Jacobian loop.
 void hybrid16_gate7(const std::string& suffix, const std::string& name, int ranks,
-                    const std::array<double, 3>& at) {
+                    const std::optional<std::array<double, 3>>& at) {
   const char* r1 = std::getenv(("AUTAN_GATE7_R1_" + suffix).c_str());
   const char* si = std::getenv(("AUTAN_GATE7_SI_" + suffix).c_str());
   INFO("AUTAN_GATE7_R1_" << suffix << " and AUTAN_GATE7_SI_" << suffix << " must be set");
   REQUIRE(r1 != nullptr);
   REQUIRE(si != nullptr);
   Json doc = Json::parse(read(si));
-  require_interface_point(doc, ranks, at);
+  const auto point = control_point(doc, ranks, at);
   doc["start"] = continue_from(r1);
   doc["time"]["max_iterations"] =
       Json::parse(read(fs::path(r1) / "run.json"))["iterations"].get<std::int64_t>() + 1;
-  const Gate7Control control(name, at);
+  const Gate7Control control(name, point);
   const fs::path dir = on_ranks(ranks)(doc);
   require_interface_selected(dir, ranks);
   const auto gate = control.at_start(dir);
@@ -948,8 +951,8 @@ TEST_CASE("gate 7 passes on the fixture hybrid mesh at its steady start on 1 ran
 TEST_CASE("the multigrid builds the levels autan-mesh-info publishes", "[euler]") {
   // mesh-info.md, quality.multigrid: the hierarchy a steady multigrid run builds on one rank, in
   // the cell order it computes in, against the run's own log of it and the MeshInfo it was
-  // planned with. On a partition (here reproducibility "ranks") the run builds it on the mesh as
-  // read: autan-mesh-info --multigrid-order input, whatever order the run computes in.
+  // planned with. On a partition (here reproducibility "ranks") the run builds it on the mesh in
+  // RCM order: autan-mesh-info --multigrid-order rcm, whatever order the run computes in.
   const char* order = GENERATE("rcm", "input");
   const char* reproducibility = GENERATE("run", "ranks");
   CAPTURE(order, reproducibility);
@@ -961,7 +964,7 @@ TEST_CASE("the multigrid builds the levels autan-mesh-info publishes", "[euler]"
     d["time"]["linear_solver"] = "multigrid";
     d["time"]["max_iterations"] = 1;
   });
-  if (partitioned) doc = autan_test::planned(doc, mesh_path, order, "input");
+  if (partitioned) doc = autan_test::planned(doc, mesh_path, order, "rcm");
   const auto out = run(doc);
   unsetenv("AUTAN_CELL_ORDER");
   INFO(out.err);
@@ -976,9 +979,43 @@ TEST_CASE("the multigrid builds the levels autan-mesh-info publishes", "[euler]"
   REQUIRE(built.is_object());
   CHECK(doc["mesh_info"]["quality"]["lines"]["order"] == order);
   const Json& published = doc["mesh_info"]["quality"]["multigrid"];
-  CHECK(published["order"] == (partitioned ? "input" : order));
+  CHECK(published["order"] == (partitioned ? "rcm" : order));
   CHECK(built["nodes"] == published["cells_by_level"]);
   CHECK(built["edges"] == published["edges_by_level"]);
+}
+
+TEST_CASE("a partitioned multigrid builds the one-rank RCM run's hierarchy", "[euler]") {
+  // #259 D2 (gate 4): on a partition, in either cell order, the run builds its hierarchy on the
+  // mesh in RCM order, so it logs the multigrid_sha256 of a one-rank run computing in RCM order.
+  std::vector<std::string> digests;
+  for (const auto& [order, reproducibility] :
+       {std::pair{"rcm", "run"}, std::pair{"rcm", "ranks"}, std::pair{"input", "ranks"}}) {
+    CAPTURE(order, reproducibility);
+    REQUIRE(setenv("AUTAN_CELL_ORDER", order, 1) == 0);
+    const bool partitioned = std::string(reproducibility) == "ranks";
+    Json doc = input("hybrid.solver-input.json", [&](Json& d) {
+      inviscid_along_x(d, "fp64");
+      d["reproducibility"] = reproducibility;
+      d["time"]["linear_solver"] = "multigrid";
+      d["time"]["max_iterations"] = 1;
+    });
+    if (partitioned) doc = autan_test::planned(doc, mesh_path, order, "rcm");
+    const auto out = run(doc);
+    unsetenv("AUTAN_CELL_ORDER");
+    INFO(out.err);
+    REQUIRE(out.status == ExitStatus::finished);
+    std::ifstream log_in(out.run / "log.jsonl");
+    for (std::string line; std::getline(log_in, line);) {
+      const Json event = Json::parse(line);
+      if (event["source"] == "linear" && event["data"].contains("multigrid_sha256")) {
+        digests.push_back(event["data"]["multigrid_sha256"].get<std::string>());
+      }
+    }
+  }
+  REQUIRE(digests.size() == 3);
+  CHECK(digests[0].size() == 64);
+  CHECK(digests[1] == digests[0]);
+  CHECK(digests[2] == digests[0]);
 }
 
 TEST_CASE("the line smoother sweeps the same lines whatever the flow model", "[navier-stokes]") {
@@ -1953,22 +1990,22 @@ TEST_CASE("the conservation check closes on a manufactured solution on several r
 }
 
 TEST_CASE("gate 7 passes on the analytic box at its start on 4 ranks in fp64", "[euler][mpi]") {
-  box_gate7("fp64", "box-4-fp64", 4, {0.25, 0.5, 0.25});
+  box_gate7("fp64", "box-4-fp64", 4, std::nullopt);
 }
 
 TEST_CASE("gate 7 passes on the analytic box at its start on 4 ranks in fp32+acc64",
           "[euler][mpi]") {
-  box_gate7("fp32+acc64", "box-4-fp32", 4, {0.25, 0.5, 0.25});
+  box_gate7("fp32+acc64", "box-4-fp32", 4, std::nullopt);
 }
 
 // Hidden as the 1-rank ones: an [mpi] tag would select them in the MPI jobs.
 TEST_CASE("gate 7 passes on hybrid MMS level 16 at R1's solution on 4 ranks in fp64", "[.gate7]") {
-  hybrid16_gate7("FP64", "hybrid16-4-fp64", 4, {0.041666666666666664, 0.5, 0.33333333333333331});
+  hybrid16_gate7("FP64", "hybrid16-4-fp64", 4, std::nullopt);
 }
 
 TEST_CASE("gate 7 passes on hybrid MMS level 16 at R1's solution on 4 ranks in fp32+acc64",
           "[.gate7]") {
-  hybrid16_gate7("FP32", "hybrid16-4-fp32", 4, {0.041666666666666664, 0.5, 0.33333333333333331});
+  hybrid16_gate7("FP32", "hybrid16-4-fp32", 4, std::nullopt);
 }
 #endif
 

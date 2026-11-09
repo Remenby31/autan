@@ -638,7 +638,7 @@ def test_two_ranks_run_and_stop_through_the_launcher(
                 "--groups",
                 "lines",
                 "--multigrid-order",
-                "input",
+                "rcm",
                 str(MESH),
             ],
             capture_output=True,

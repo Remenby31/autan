@@ -265,8 +265,8 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
 @pytest.mark.parametrize(
     ("gpus", "physics", "builds"),
     [
-        (2, "Inviscid()", "input"),
-        (1, 'Inviscid(), reproducibility="ranks"', "input"),
+        (2, "Inviscid()", "rcm"),
+        (1, 'Inviscid(), reproducibility="ranks"', "rcm"),
         (1, "Inviscid()", "rcm"),
         (1, 'Laminar(), reproducibility="ranks"', "rcm"),
     ],
@@ -275,9 +275,9 @@ def test_the_multigrid_hierarchy_is_for_the_cell_order_the_run_builds_it_in(
     write_case: Callable[[str], Path], gpus: int, physics: str, builds: str
 ) -> None:
     # mesh-info.md, quality.multigrid: a steady CPU multigrid run of inviscid flow on a partition
-    # (several ranks, or reproducibility "ranks") builds its hierarchy on the mesh as read, any
-    # other on one rank in its cell order, quality.lines' ("rcm" here); a hierarchy in another
-    # order is for another run (E0212).
+    # (several ranks, or reproducibility "ranks") builds its hierarchy on the mesh in RCM order,
+    # any other on one rank in its cell order, quality.lines' ("rcm" here); a hierarchy in
+    # another order is for another run (E0212).
     case = autan.load(write_case(TINY.replace("Inviscid())", physics + ")")))
     document = prepared(tiny_mesh(20).document(), ranks=gpus)
     if gpus > 1:
@@ -476,7 +476,7 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     assert "E0212" in diagnostic_codes(ranks)
     whole: dict[str, Any] = tiny_mesh(20).document()
     whole["partition"] = one_part(whole)
-    whole["quality"]["multigrid"]["order"] = "input"
+    whole["quality"]["multigrid"]["order"] = "rcm"
     parted = autan.load(
         write_case(TINY.replace("Inviscid())", 'Inviscid(), reproducibility="ranks")'))
     ).plan(autan.MeshInfo.from_document(whole, autan.Location()), device_kind="cpu")

@@ -197,8 +197,9 @@ class EulerPhysics final : public runtime::Physics {
       // Under reproducibility "ranks", each row sums its neighbours in global face order.
       if (keys_) matrix_->order_rows(*keys_);
       if (in.time.linear_solver == "multigrid") {
-        // On a partition (several ranks, or reproducibility "ranks"), the hierarchy of the mesh
-        // as read, from euler_groups: the same bits on any number of ranks and in either order.
+        // On a partition (several ranks, or reproducibility "ranks"), the hierarchy of the run's
+        // RCM mesh, from euler_groups: the one-rank RCM path's, the same bits on any number of
+        // ranks and in either order.
         if (ctx.setup != nullptr) {
           partitioned_.emplace(ctx);
         } else {
@@ -212,10 +213,18 @@ class EulerPhysics final : public runtime::Physics {
           nodes.push_back(l.n_nodes);
           edges.push_back(l.owner.size());
         }
-        ctx.log.write(
-            "info", "linear", "agglomeration multigrid", {},
-            nlohmann::json{{"nodes", nodes}, {"edges", edges}, {"coarsest", lu ? "lu" : "sweeps"}}
-                .dump());
+        // The hierarchy actually used, the same on every rank (checked collectively).
+        const std::string digest = solvers::multigrid_sha256(levels);
+        const double key = static_cast<double>(std::stoull(digest.substr(0, 12), nullptr, 16));
+        if (ctx.ranks.max(key) != -ctx.ranks.max(-key)) {
+          throw std::logic_error("the ranks' multigrid hierarchies differ");
+        }
+        ctx.log.write("info", "linear", "agglomeration multigrid", {},
+                      nlohmann::json{{"nodes", nodes},
+                                     {"edges", edges},
+                                     {"coarsest", lu ? "lu" : "sweeps"},
+                                     {"multigrid_sha256", digest}}
+                          .dump());
       } else if (in.time.linear_solver == "lines") {
         // The multigrid's fine lines, kept whole by the partition, swept over the runtime's
         // colouring of the lines by global id: the same sweeps on any number of ranks.
@@ -2137,8 +2146,9 @@ std::vector<std::string> euler_restart_names(const runtime::SolverInput& in, boo
 
 }  // namespace
 
-// linear_solver = "lines", and "multigrid" on a partition: the multigrid's fine lines, computed
-// on the global mesh, which the partition keeps whole; for the multigrid, its hierarchy too.
+// Groups the partition keeps whole, computed on the global mesh: for linear_solver = "lines", the
+// smoother's lines; for "multigrid" on a partition, the hierarchy's level-0 lines (line_groups),
+// with the hierarchy itself.
 runtime::CellGroups euler_groups(const runtime::SolverInput& in, const Mesh& mesh,
                                  const Geometry& geometry, int ranks) {
   if (in.time.kind != "steady") return {};
@@ -2146,11 +2156,21 @@ runtime::CellGroups euler_groups(const runtime::SolverInput& in, const Mesh& mes
       in.time.linear_solver == "multigrid" && (ranks > 1 || in.reproducibility == "ranks");
   if (in.time.linear_solver != "lines" && !partitioned) return {};
   runtime::CellGroups groups;
-  if (auto lines = smoother_lines(mesh, geometry); !lines.cells.empty()) {
+  std::shared_ptr<const Hierarchy> hierarchy;
+  Lines lines;
+  if (partitioned) {
+    hierarchy = partition_hierarchy(mesh, geometry);
+    // The RCM hierarchy's level-0 lines, in read cells.
+    lines = solvers::line_groups(hierarchy->levels.front());
+    for (index_t& c : lines.cells) c = hierarchy->new_to_old[static_cast<std::size_t>(c)];
+  } else {
+    lines = smoother_lines(mesh, geometry);
+  }
+  if (!lines.cells.empty()) {
     groups.offsets = std::move(lines.offsets);
     groups.cells = std::move(lines.cells);
   }
-  if (partitioned) groups.setup = partition_hierarchy(mesh, geometry);
+  groups.setup = std::move(hierarchy);
   return groups;
 }
 

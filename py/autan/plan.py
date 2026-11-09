@@ -316,8 +316,8 @@ def _multigrid_order(
     spec: CaseSpec, mesh: MeshInfo, gpus: int, device_kind: DeviceKind
 ) -> str | None:
     """The cell order a run's multigrid builds its hierarchy in: for inviscid flow on a partition
-    (several ranks, or reproducibility "ranks"; the multigrid refuses periodic pairs) the mesh as
-    read, else the run's cell order (viscous flow runs the multigrid on one rank, and refuses
+    (several ranks, or reproducibility "ranks"; the multigrid refuses periodic pairs) RCM, the
+    one-rank path's default order, whatever order the run computes in, else the run's cell order (viscous flow runs the multigrid on one rank, and refuses
     "ranks"); None when the run builds no hierarchy (a steady CPU run with
     ``linear_solver = "multigrid"`` does)."""
     if not (
@@ -328,7 +328,7 @@ def _multigrid_order(
         return None
     partitioned = gpus > 1 or spec.physics.reproducibility == "ranks"
     if partitioned and isinstance(spec.physics.turbulence, Inviscid):
-        return "input"
+        return "rcm"
     return mesh.quality.lines.order
 
 

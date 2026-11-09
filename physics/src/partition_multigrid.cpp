@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <unordered_map>
 
+#include "autan/core/renumber.hpp"
 #include "autan/runtime/exact_sum.hpp"
 #include "autan/solvers/multigrid.hpp"
 
@@ -45,14 +46,39 @@ std::vector<double> RanksCollective::all_gather(std::span<const double> values) 
 }
 
 std::shared_ptr<const Hierarchy> partition_hierarchy(const Mesh& mesh, const Geometry& geometry) {
-  return std::make_shared<const Hierarchy>(
-      solvers::agglomerate(mesh, geometry, solvers::MultigridOptions{}.agglomeration));
+  auto h = std::make_shared<Hierarchy>();
+  h->new_to_old = rcm_order(mesh);
+  h->old_to_new.assign(h->new_to_old.size(), 0);
+  for (std::size_t i = 0; i < h->new_to_old.size(); ++i) {
+    h->old_to_new[at(h->new_to_old[i])] = static_cast<index_t>(i);
+  }
+  AssemblyMap map;
+  {
+    const Mesh rcm = renumber_cells(mesh, h->new_to_old, &map);
+    h->levels = solvers::agglomerate(rcm, renumber_geometry(geometry, h->new_to_old, map),
+                                     solvers::MultigridOptions{}.agglomeration);
+  }
+  h->face_source = std::move(map.face_source);
+  h->face_reversed = std::move(map.face_reversed);
+  return h;
 }
 
+namespace {
+
+// The part of each level-0 node: its read cell's part.
+std::vector<std::int32_t> node_parts(const Hierarchy& h, std::span<const std::int32_t> cell_parts) {
+  std::vector<std::int32_t> out(h.new_to_old.size());
+  for (std::size_t i = 0; i < out.size(); ++i) out[i] = cell_parts[at(h.new_to_old[i])];
+  return out;
+}
+
+}  // namespace
+
 PartitionMultigrid::PartitionMultigrid(const runtime::PhysicsContext& ctx)
-    : levels_(*static_cast<const Hierarchy*>(ctx.setup)),
+    : h_(*static_cast<const Hierarchy*>(ctx.setup)),
+      parts_(node_parts(h_, ctx.cell_parts)),
       collective_(ctx.ranks, ctx.halo_exchange),
-      mg_(levels_, ctx.cell_parts, ctx.ranks.size(), ctx.ranks.rank(), collective_),
+      mg_(h_.levels, parts_, ctx.ranks.size(), ctx.ranks.rank(), collective_),
       n_cells_(at(ctx.mesh.n_cells())) {
   const LocalGraph& g = mg_.op().graph(0);
   n_local_ = g.node_global_id.size();
@@ -61,9 +87,10 @@ PartitionMultigrid::PartitionMultigrid(const runtime::PhysicsContext& ctx)
   if (owned != g.n_owned) {
     throw std::logic_error("the partition's owned cells are not the hierarchy's owned nodes");
   }
-  // Owned nodes come in increasing global id; the physics' owned cells in its own order.
+  // Owned nodes come in increasing node id (RCM position); the physics' owned cells in its own
+  // order, each at the RCM position of its read cell.
   std::vector<std::pair<std::int64_t, std::size_t>> by_id(owned);
-  for (std::size_t c = 0; c < owned; ++c) by_id[c] = {ids[c], c};
+  for (std::size_t c = 0; c < owned; ++c) by_id[c] = {h_.old_to_new[at(ids[c])], c};
   std::ranges::sort(by_id);
   cell_of_node_.resize(owned);
   for (std::size_t i = 0; i < owned; ++i) {
@@ -72,7 +99,9 @@ PartitionMultigrid::PartitionMultigrid(const runtime::PhysicsContext& ctx)
     }
     cell_of_node_[i] = by_id[i].second;
   }
-  // Level 0's edges are the interior faces of the mesh as read, in its order (agglomerate).
+  // Level 0's edges are the interior faces of the RCM mesh; each comes from a read face
+  // (face_source), against it where the renumbering reversed it. A physics face runs against the
+  // edge when exactly one of it and the edge runs against their read face.
   std::unordered_map<std::int64_t, std::size_t> face_of_id;
   const auto interior = at(ctx.mesh.n_interior_faces());
   face_of_id.reserve(interior);
@@ -80,12 +109,14 @@ PartitionMultigrid::PartitionMultigrid(const runtime::PhysicsContext& ctx)
   face_of_edge_.resize(g.n_owned_edges);
   edge_against_.resize(g.n_owned_edges);
   for (std::size_t k = 0; k < g.n_owned_edges; ++k) {
-    const auto it = face_of_id.find(g.edge_global_id[k]);
+    const auto e = at(g.edge_global_id[k]);
+    const auto it = face_of_id.find(h_.face_source[e]);
     if (it == face_of_id.end()) {
       throw std::logic_error("an owned edge of the hierarchy has no face in the partition");
     }
     face_of_edge_[k] = it->second;
-    edge_against_[k] = ctx.face_reversed[it->second];
+    edge_against_[k] =
+        static_cast<std::uint8_t>(ctx.face_reversed[it->second] ^ h_.face_reversed[e]);
   }
   diag_.resize(b2 * owned);
   upper_.resize(b2 * g.n_owned_edges);
