@@ -46,6 +46,7 @@ extern char** environ;
 #include "autan/physics/euler_physics.hpp"
 #include "autan/physics/first_order_start.hpp"
 #include "autan/physics/manufactured.hpp"
+#include "autan/runtime/input.hpp"
 #include "autan/runtime/physics.hpp"
 #include "autan/runtime/run.hpp"
 #include "fixtures.hpp"
@@ -460,12 +461,74 @@ Launch on_ranks(int ranks) {
   return [ranks](const Json& doc) { return run_on_ranks(doc, ranks, -1); };
 }
 
-// Gate 7's control on the analytic box: one explicit step from the uniform state, the start
-// event through tools/gate7.py, then that event's analytic sums. M2 drops the face at
-// (0.5, 0.25, 0.25) from the planar loop.
-void box_gate7(const char* precision, const std::string& name, const Launch& launch) {
-  const Gate7Control control(name, {0.5, 0.25, 0.25});
-  const fs::path dir = launch(analytic_box(precision, 1, name));
+// The first interior face, by its index in the mesh as read (its global id), whose two cells the
+// run's partition on `ranks` ranks puts on different ranks, and its centroid. The partition is
+// recomputed as runtime/src/run.cpp prepare() makes it: the mesh as read, in metres, its
+// face-count cell weights and the groups of the physics the input selects, from the same
+// registration.
+std::pair<std::int64_t, std::array<double, 3>> first_interface_face(const Json& doc, int ranks) {
+  const auto in = autan::runtime::parse_solver_input(doc.dump());
+  // prepare() scales the coordinates to metres before any geometry.
+  const autan::Mesh read = autan::io::read_mesh(in.mesh_path);
+  const autan::Mesh mesh = in.mesh_scale != 1.0 ? autan::scaled(read, in.mesh_scale) : read;
+  const autan::Geometry geometry = autan::compute_geometry(mesh);
+  autan::runtime::PhysicsRegistry registry;
+  autan::physics::register_euler(registry);
+  const auto* entry = registry.find(in);
+  REQUIRE(entry != nullptr);
+  autan::runtime::CellGroups groups;
+  if (entry->groups) groups = entry->groups(in, mesh, geometry, ranks);
+  const auto parts = autan::partition_cells(mesh, ranks,
+                                            {.cell_weights = autan::cell_cost_weights(mesh),
+                                             .group_offsets = groups.offsets,
+                                             .group_cells = groups.cells});
+  const auto owner = mesh.owner();
+  const auto neighbour = mesh.neighbour();
+  for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_interior_faces()); ++f) {
+    const auto left = static_cast<std::size_t>(owner[f]);
+    if (parts[left] != parts[static_cast<std::size_t>(neighbour[f])]) {
+      return {
+          static_cast<std::int64_t>(f),
+          {geometry.face_centroid_x[f], geometry.face_centroid_y[f], geometry.face_centroid_z[f]}};
+    }
+  }
+  FAIL("no interior face joins two ranks");
+  return {};
+}
+
+// On 4 ranks, the control's face must be the first interface face of the run's partition.
+void require_interface_point(const Json& doc, int ranks, const std::array<double, 3>& at) {
+  if (ranks == 1) return;
+  const auto [id, c] = first_interface_face(doc, ranks);
+  std::ostringstream text;
+  text << std::setprecision(17) << "first interface face on " << ranks << " ranks: " << id << " at "
+       << c[0] << ',' << c[1] << ',' << c[2];
+  INFO(text.str());
+  REQUIRE(std::ranges::all_of(std::array{0, 1, 2}, [&](int a) {
+    return std::abs(c[static_cast<std::size_t>(a)] - at[static_cast<std::size_t>(a)]) <= 1e-9;
+  }));
+}
+
+// The run's own word that its selected face lies on a partition interface, on several ranks.
+void require_interface_selected(const fs::path& run_dir, int ranks) {
+  if (ranks == 1) return;
+  const auto events = conservation_events(run_dir);
+  const auto start = std::ranges::find_if(events, [](const Json& e) { return e["at"] == "start"; });
+  REQUIRE(start != events.end());
+  INFO(start->dump());
+  REQUIRE((*start)["selected_face"]["interface"] == true);
+}
+
+// Gate 7's control on the analytic box: one explicit step from the uniform state on `ranks`
+// ranks, the start event through tools/gate7.py, then that event's analytic sums. M2 drops the
+// face at `at` from the planar loop.
+void box_gate7(const char* precision, const std::string& name, int ranks,
+               const std::array<double, 3>& at) {
+  const auto doc = analytic_box(precision, 1, name);
+  require_interface_point(doc, ranks, at);
+  const Gate7Control control(name, at);
+  const fs::path dir = on_ranks(ranks)(doc);
+  require_interface_selected(dir, ranks);
   const auto gate = control.at_start(dir);
   INFO(gate.line);
   REQUIRE(gate.status == 0);
@@ -493,20 +556,24 @@ void box_gate7(const char* precision, const std::string& name, const Launch& lau
 }
 
 // Gate 7's control on hybrid MMS level 16: one steady step continuing the campaign's R1 run, the
-// directory in AUTAN_GATE7_R1_<suffix>, its solver input in AUTAN_GATE7_SI_<suffix>. M1 drops
-// the face between two hexahedra at (0.5, 0.46875, 0.15625) from the fused Jacobian loop.
-void hybrid16_gate7(const std::string& suffix, const std::string& name, const Launch& launch) {
+// directory in AUTAN_GATE7_R1_<suffix>, its solver input in AUTAN_GATE7_SI_<suffix>, on `ranks`
+// ranks. M1 drops the face at `at` from the fused Jacobian loop.
+void hybrid16_gate7(const std::string& suffix, const std::string& name, int ranks,
+                    const std::array<double, 3>& at) {
   const char* r1 = std::getenv(("AUTAN_GATE7_R1_" + suffix).c_str());
   const char* si = std::getenv(("AUTAN_GATE7_SI_" + suffix).c_str());
   INFO("AUTAN_GATE7_R1_" << suffix << " and AUTAN_GATE7_SI_" << suffix << " must be set");
   REQUIRE(r1 != nullptr);
   REQUIRE(si != nullptr);
   Json doc = Json::parse(read(si));
+  require_interface_point(doc, ranks, at);
   doc["start"] = continue_from(r1);
   doc["time"]["max_iterations"] =
       Json::parse(read(fs::path(r1) / "run.json"))["iterations"].get<std::int64_t>() + 1;
-  const Gate7Control control(name, {0.5, 0.46875, 0.15625});
-  const auto gate = control.at_start(launch(doc));
+  const Gate7Control control(name, at);
+  const fs::path dir = on_ranks(ranks)(doc);
+  require_interface_selected(dir, ranks);
+  const auto gate = control.at_start(dir);
   INFO(gate.line);
   REQUIRE(gate.status == 0);
 }
@@ -848,20 +915,20 @@ TEST_CASE("the conservation check closes on a manufactured solution", "[euler]")
 // D2 gate 7's controls, one test per configuration: each one's mutant must fail its gate 7
 // assertion, and nothing before it (tests/physics/gate7_mutants.json).
 TEST_CASE("gate 7 passes on the analytic box at its start on 1 rank in fp64", "[euler]") {
-  box_gate7("fp64", "box-1-fp64", on_ranks(1));
+  box_gate7("fp64", "box-1-fp64", 1, {0.5, 0.25, 0.25});
 }
 
 TEST_CASE("gate 7 passes on the analytic box at its start on 1 rank in fp32+acc64", "[euler]") {
-  box_gate7("fp32+acc64", "box-1-fp32", on_ranks(1));
+  box_gate7("fp32+acc64", "box-1-fp32", 1, {0.5, 0.25, 0.25});
 }
 
 TEST_CASE("gate 7 passes on hybrid MMS level 16 at R1's solution on 1 rank in fp64", "[.gate7]") {
-  hybrid16_gate7("FP64", "hybrid16-1-fp64", on_ranks(1));
+  hybrid16_gate7("FP64", "hybrid16-1-fp64", 1, {0.5, 0.46875, 0.15625});
 }
 
 TEST_CASE("gate 7 passes on hybrid MMS level 16 at R1's solution on 1 rank in fp32+acc64",
           "[.gate7]") {
-  hybrid16_gate7("FP32", "hybrid16-1-fp32", on_ranks(1));
+  hybrid16_gate7("FP32", "hybrid16-1-fp32", 1, {0.5, 0.46875, 0.15625});
 }
 
 TEST_CASE("gate 7 passes on the fixture hybrid mesh at its steady start on 1 rank in fp64",
@@ -1886,22 +1953,22 @@ TEST_CASE("the conservation check closes on a manufactured solution on several r
 }
 
 TEST_CASE("gate 7 passes on the analytic box at its start on 4 ranks in fp64", "[euler][mpi]") {
-  box_gate7("fp64", "box-4-fp64", on_ranks(4));
+  box_gate7("fp64", "box-4-fp64", 4, {0.25, 0.5, 0.25});
 }
 
 TEST_CASE("gate 7 passes on the analytic box at its start on 4 ranks in fp32+acc64",
           "[euler][mpi]") {
-  box_gate7("fp32+acc64", "box-4-fp32", on_ranks(4));
+  box_gate7("fp32+acc64", "box-4-fp32", 4, {0.25, 0.5, 0.25});
 }
 
 // Hidden as the 1-rank ones: an [mpi] tag would select them in the MPI jobs.
 TEST_CASE("gate 7 passes on hybrid MMS level 16 at R1's solution on 4 ranks in fp64", "[.gate7]") {
-  hybrid16_gate7("FP64", "hybrid16-4-fp64", on_ranks(4));
+  hybrid16_gate7("FP64", "hybrid16-4-fp64", 4, {0.041666666666666664, 0.5, 0.33333333333333331});
 }
 
 TEST_CASE("gate 7 passes on hybrid MMS level 16 at R1's solution on 4 ranks in fp32+acc64",
           "[.gate7]") {
-  hybrid16_gate7("FP32", "hybrid16-4-fp32", on_ranks(4));
+  hybrid16_gate7("FP32", "hybrid16-4-fp32", 4, {0.041666666666666664, 0.5, 0.33333333333333331});
 }
 #endif
 
