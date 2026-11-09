@@ -108,6 +108,9 @@ Options parse(int argc, char** argv) {
       fail("unknown flag " + std::string(f));
   }
   if (o.fit != "linear" && o.fit != "quadratic") fail("--fit is linear or quadratic");
+  if (o.flux != "roe" && o.flux != "hllc" && o.flux != "ausm-up") {
+    fail("--flux is roe, hllc or ausm-up");
+  }
   if (o.warmup < 0 || o.reps < 1 || o.batch < 1) fail("--warmup >= 0, --reps >= 1, --batch >= 1");
   return o;
 }
@@ -275,6 +278,8 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& g) {
   // eddy viscosity, which the device's loops below must give too.
   std::vector<S> lambda(n);
   host.spectral_radius(lambda);
+  // NavierStokes<P>::spectral_radius keeps the viscous radius in its own array.
+  const std::vector<S> lam_v_host(host.data().lam_v, host.data().lam_v + n);
   const std::vector<S> mu_t(host.data().mu_t, host.data().mu_t + n);
   const std::vector<S> mu_t_b(host.data().mu_t_b + ni, host.data().mu_t_b + ni + nb);
 
@@ -326,6 +331,8 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& g) {
     gpu::check(cudaMemset(v.lam_v, 0xff, n * sizeof(*v.lam_v)), "poison");
     ek::gpu_loops::spectral_radius(d, sched);
     nk::gpu_loops::viscous_spectral_radius(v, sched);
+    // The total as the stepper forms it (lambda + 4 lambda_v), and the viscous radius on its own
+    // scale: it is a small part of the total, which would hide it.
     const auto lam = download(d.lam, n);
     const auto lam_v = download(v.lam_v, n);
     std::vector<S> total(n);
@@ -339,8 +346,8 @@ Run run(const Options& o, const autan::Mesh& mesh, const autan::Geometry& g) {
     const auto d_mu = download(v.mu_t, n);
     const auto all_b = download(v.mu_t_b, ni + nb);
     const std::vector<S> d_mu_b(all_b.begin() + static_cast<std::ptrdiff_t>(ni), all_b.end());
-    out.other_difference = std::max(
-        {relative_to(total, lambda), relative_to(d_mu, mu_t), relative_to(d_mu_b, mu_t_b)});
+    out.other_difference = std::max({relative_to(total, lambda), relative_to(lam_v, lam_v_host),
+                                     relative_to(d_mu, mu_t), relative_to(d_mu_b, mu_t_b)});
     out.verified = out.verified && out.other_difference <= out.tolerance;
   }
   const bool planar = host.euler().planar();

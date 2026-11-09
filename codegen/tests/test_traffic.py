@@ -123,6 +123,16 @@ def half(a: State, b: State) -> State:
 
 
 halves = cell_reduce(half, a=h.near, b=h.far, acc=Sum(hs))
+
+tot = cells.field("tot", State)
+
+
+@pointwise
+def twice(a: Residual) -> State:
+    return 2.0 * a
+
+
+doubled = cell_reduce(pick, q=sc.other(boundary=ub), acc=Sum(tot), finalise=twice)
 """
 
 # The same face loop reading one more component of the right cell (qr[2]).
@@ -232,16 +242,18 @@ def test_a_boundary_loop_writing_face_data_runs_over_every_boundary_face(
 
 
 @pytest.mark.parametrize("policy", ["fp64", "fp32+acc64"])
-def test_near_and_far_read_both_halves_of_the_interior_faces_of_the_owned_cells(
+def test_near_reads_one_half_per_interior_incidence_of_the_owned_cells(
     tmp_path: Path, policy: str
 ) -> None:
     m = _module(tmp_path, MODULE)
     s = ROLE_BYTES[policy]["state"]
     p = PRIMES
     interior = p["faces"] - p["owned_boundary_faces"]
-    # `a` (near) takes half 0 of a face for its left cell and half 1 for its right one: both
-    # halves of every interior face of the owned cells; `b` (far) reaches no output. hs written.
-    common = interior * 2 * s + p["owned_cells"] * s + p["incidences"] * INDEX["index_t"]
+    # `a` (near) takes half 0 of a face for its left cell and half 1 for its right one: one half
+    # per incidence of an owned cell on an interior face (on a partition, a face whose other cell
+    # is a ghost gives one half only); `b` (far) reaches no output. hs written.
+    halves = p["incidences"] - p["owned_boundary_faces"]
+    common = halves * s + p["owned_cells"] * s + p["incidences"] * INDEX["index_t"]
     csr = common + (p["owned_cells"] + 1) * INDEX["offset_t"] + interior * 2 * INDEX["index_t"]
     assert _bytes(m, "halves", policy) == csr
     # Sliced, with the column index: lengths, the column index, and the owner choosing the half.
@@ -253,6 +265,23 @@ def test_near_and_far_read_both_halves_of_the_interior_faces_of_the_owned_cells(
         + interior * INDEX["index_t"]
     )
     assert _bytes(m, "halves", policy, sliced) == expected
+
+
+def test_a_tangent_reads_no_primal_input_its_finalise_does_not_use(tmp_path: Path) -> None:
+    # doubled's finalise 2 a is linear: its tangent needs the tangent sum only, so the tangent
+    # loop reads sc_tan across the entries and writes tot_tan, and reads neither sc nor ub.
+    m = _module(tmp_path, MODULE)
+    p = PRIMES
+    s = 8
+    maps = (
+        (p["owned_cells"] + 1) * INDEX["offset_t"]
+        + p["incidences"] * INDEX["index_t"]
+        + (p["faces"] - p["owned_boundary_faces"]) * 2 * INDEX["index_t"]
+    )
+    tangent = p["incidence_cells"] * s + p["owned_cells"] * s + maps
+    assert _bytes(m, "doubled_tangent", "fp64") == tangent
+    lm = next(lm for lm in m.loops if lm.name == "doubled_tangent")
+    assert {t.size for t in traffic.traffic(lm)} == {"sc_tan", "tot_tan", "index_t", "offset_t"}
 
 
 TOPOLOGY = """

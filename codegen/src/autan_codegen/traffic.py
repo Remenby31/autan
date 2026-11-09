@@ -63,7 +63,14 @@ COUNTS = (
 FLAGS = ("stencil_sliced", "incidence_sliced", "incidence_cell")
 
 # Element sets that are not fields: their counts as combinations of fields.
-_DERIVED = {"incidence_interior_faces": {"faces": 1, "owned_boundary_faces": -1}}
+# near and far read one half of a (2, ...) face dataset per incidence of an owned cell on an
+# interior face (the cell's side, or the other); both together reach both halves of those faces.
+_DERIVED = {
+    "incidence_interior_faces": {"faces": 1, "owned_boundary_faces": -1},
+    "near_halves": {"incidences": 1, "owned_boundary_faces": -1},
+    "far_halves": {"incidences": 1, "owned_boundary_faces": -1},
+    "both_halves": {"faces": 2, "owned_boundary_faces": -2},
+}
 
 # The set of elements two sets of one dataset reach together (each contains the other or is
 # their union field); a pair absent here is refused rather than double counted.
@@ -89,6 +96,9 @@ _UNION = {
     frozenset({"faces", "owned_interior_faces"}): "faces",
     frozenset({"faces", "owned_boundary_faces"}): "faces",
     frozenset({"faces", "incidence_interior_faces"}): "faces",
+    frozenset({"near_halves", "far_halves"}): "both_halves",
+    frozenset({"both_halves", "near_halves"}): "both_halves",
+    frozenset({"both_halves", "far_halves"}): "both_halves",
     frozenset({"incidence_interior_faces", "owned_boundary_faces"}): "faces",
     frozenset({"owned_boundary_faces", "boundary_faces"}): "boundary_faces",
     frozenset({"stencil_boundary_faces", "boundary_faces"}): "boundary_faces",
@@ -199,21 +209,13 @@ def _where(kind: str, over: str, b: dsl.Binding, finalise: bool = False) -> str:
     if b.via == "on_boundary":
         return "owned_boundary_faces"
     if b.via in ("near", "far"):
-        return "incidence_interior_faces"
+        return f"{b.via}_halves"
     return "faces"
-
-
-def _components(b: dsl.Binding, comps: set[int], size: int) -> set[int]:
-    """The dataset components argument components `comps` load: near and far read either half
-    of a (2, ...) dataset, as the entry's cell is the face's left or right one."""
-    if b.via in ("near", "far"):
-        return comps | {c + size for c in comps}
-    return comps
 
 
 def _bound(
     touched: _Touched, kind: str, over: str, fn: Function, names: list[str],
-    bindings: dict[str, dsl.Binding], sizes: list[int], live: list[int] | None = None,
+    bindings: dict[str, dsl.Binding], live: list[int] | None = None,
     finalise: bool = False,
 ) -> None:  # fmt: skip
     """The components of each bound argument of `fn` that reach its outputs `live`."""
@@ -225,9 +227,7 @@ def _bound(
         comps = {c for (a, c) in use if a == k}
         if not comps:
             continue
-        touched.add(
-            b.dataset.name, _where(kind, over, b, finalise), _components(b, comps, sizes[k]), "r"
-        )
+        touched.add(b.dataset.name, _where(kind, over, b, finalise), comps, "r")
         if b.via == "other" and b.boundary is not None:
             where = "stencil_boundary_faces" if over == dsl.STENCIL else "owned_boundary_faces"
             touched.add(b.boundary.name, where, comps, "r")
@@ -280,23 +280,63 @@ def _write_set(kind: str, o: object = None) -> str:
     return "owned_cells"
 
 
-def _live(lm: LoopModel) -> list[int] | None:
-    """The outputs of a reduction's body that reach what it writes (None: all)."""
+def _live(
+    lm: LoopModel, fin: Function | None = None, order: list[tuple[str, int | str]] | None = None,
+    selections: bool = False,
+) -> list[int] | None:  # fmt: skip
+    """The outputs of a reduction's body that reach what it writes (None: all, other kinds).
+    Without a finalise: the written accumulators. With one (`fin`, its arguments in `order`):
+    the accumulator components the finalise uses. In both, the component a written Follow
+    takes needs its leader's (the selection), and per-entry values are written. `selections`:
+    every Min and Max component too (a reduction adjoint seeds through them)."""
     loop = lm.loop
-    if lm.kind not in ("reduce", "reduce_stencil") or lm.fin_fn is not None:
+    if lm.kind != "reduce":
         return None
     accs = loop.outputs
-    leaders = {o.leader for o in accs if isinstance(o, dsl.Follow) and o.write}
-    live, k = [], 0
+    offs, k = [], 0
+    for o in accs:
+        offs.append(k)
+        k += o.dataset.type.size
+    live: set[int] = set()
+    if fin is None:
+        for i, o in enumerate(accs):
+            if o.write:
+                live.update(range(offs[i], offs[i] + o.dataset.type.size))
+    else:
+        assert order is not None
+        for a, c in used(fin):
+            if a < len(order) and order[a][0] == "acc":
+                live.add(offs[int(order[a][1])] + c)
     for i, o in enumerate(accs):
         size = o.dataset.type.size
-        if o.write or i in leaders:
-            live += range(k, k + size)
-        k += size
+        if selections and isinstance(o, dsl.Min | dsl.Max):
+            live.update(range(offs[i], offs[i] + size))
+        if isinstance(o, dsl.Follow):
+            live.update(offs[o.leader] + c for c in range(size) if offs[i] + c in live)
     for w in loop.entries:
-        live += range(k, k + w.dataset.type.size)
+        live.update(range(k, k + w.dataset.type.size))
         k += w.dataset.type.size
-    return live
+    return sorted(live)
+
+
+def _is_selection(accs: list[object], i: int) -> bool:
+    """Whether body output i feeds a Min or Max accumulator."""
+    k = 0
+    for o in accs:
+        size = o.dataset.type.size  # type: ignore[attr-defined]
+        if k <= i < k + size:
+            return isinstance(o, dsl.Min | dsl.Max)
+        k += size
+    return False
+
+
+def _fin_order(lm: LoopModel, n_acc: int) -> list[tuple[str, int | str]]:
+    """The finalise's arguments in call order (emit_cpu.reduce_body): the accumulators, then the
+    bound arguments, unless the loop gives its own order (tangents)."""
+    if lm.fin_args is not None:
+        return list(lm.fin_args)
+    assert lm.fin_sig is not None
+    return [("acc", k) for k in range(n_acc)] + [("bind", n) for n in lm.fin_sig.names[n_acc:]]
 
 
 def traffic(lm: LoopModel) -> list[Term]:
@@ -307,33 +347,32 @@ def traffic(lm: LoopModel) -> list[Term]:
     kind = "reduce" if lm.kind in ("reduce_adjoint", "reduce_stencil") else lm.kind
     over = loop.over
     t = _Touched()
-    sizes = [ty.size for ty in p.sig.types]
     if ra is None:
-        _bound(t, kind, over, lm.fn, lm.sig.names, loop.bindings, sizes, _live(lm))
+        live = (
+            _live(lm, lm.fin_fn, _fin_order(lm, len(loop.outputs)))
+            if lm.fin_fn is not None
+            else _live(lm)
+        )
+        _bound(t, kind, over, lm.fn, lm.sig.names, loop.bindings, live)
         for _, jfn in lm.jac_fns:
-            _bound(t, kind, over, jfn, lm.sig.names, loop.bindings, sizes)
+            _bound(t, kind, over, jfn, lm.sig.names, loop.bindings)
         if lm.fin_fn is not None and lm.fin_sig is not None:
-            fin_sizes = [ty.size for ty in lm.fin_sig.types]
-            _bound(t, kind, over, lm.fin_fn, lm.fin_sig.names, loop.finalise_bindings, fin_sizes,
+            _bound(t, kind, over, lm.fin_fn, lm.fin_sig.names, loop.finalise_bindings,
                    finalise=True)  # fmt: skip
     else:
         # The adjoint recomputes the primal only where the finalise's adjoint reads its
         # accumulators or a Min or Max selects; the body's adjoint needs every bound input.
         accs = loop.outputs
         if ra.fin_adj is not None:
-            _bound(t, kind, over, p.fn, p.sig.names, loop.bindings, sizes)
+            live = _live(p, ra.fin_adj, _fin_order(p, len(accs)), selections=True)
         else:
-            live, k = [], 0
-            for o in accs:
-                if isinstance(o, dsl.Min | dsl.Max):
-                    live += range(k, k + o.dataset.type.size)
-                k += o.dataset.type.size
-            if live:
-                _bound(t, kind, over, p.fn, p.sig.names, loop.bindings, sizes, live)
-        _bound(t, kind, over, ra.body_adj, p.sig.names, loop.bindings, sizes)
+            live = _live(p, None, None, selections=True)
+            live = [i for i in (live or []) if _is_selection(accs, i)]
+        if live:
+            _bound(t, kind, over, p.fn, p.sig.names, loop.bindings, live)
+        _bound(t, kind, over, ra.body_adj, p.sig.names, loop.bindings)
         if ra.fin_adj is not None and p.fin_sig is not None:
-            fin_sizes = [ty.size for ty in p.fin_sig.types]
-            _bound(t, kind, over, ra.fin_adj, p.fin_sig.names, loop.finalise_bindings, fin_sizes,
+            _bound(t, kind, over, ra.fin_adj, p.fin_sig.names, loop.finalise_bindings,
                    finalise=True)  # fmt: skip
         for o in accs:
             a = adj_ds(o.dataset)
