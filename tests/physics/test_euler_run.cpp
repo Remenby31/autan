@@ -1346,18 +1346,29 @@ TEST_CASE("several ranks give the one-rank solution to round-off", "[euler][mpi]
   }
 }
 
-TEST_CASE("Navier-Stokes on several ranks gives the one-rank solution bit for bit",
-          "[navier-stokes][mpi]") {
-  // runtime.md, Ranks: under reproducibility "ranks" the Navier-Stokes physics writes on N ranks
-  // the history and every array of solution.cgns of a run on one (#587). The hybrid case keeps its
-  // no-slip wall, so that the boundary fits are built across parts; steady runs go past the
-  // second-order switch (Jacobian, SA's assembly and sweeps), laminar flow also runs unsteady.
-  const auto [model, linear, steady] =
-      GENERATE(std::tuple{"laminar", "gauss-seidel", true}, std::tuple{"laminar", "lines", true},
-               std::tuple{"sa", "gauss-seidel", true}, std::tuple{"sa", "lines", true},
-               std::tuple{"laminar", "", false});
-  const char* precision = GENERATE("fp64", "fp32+acc64");
-  const int ranks = GENERATE(2, 4);
+// The steps each steady configuration of hybrid.solver-input.json takes: its last first-order
+// (provisional) step plus 10, so that every run goes past the second-order switch (Jacobian, SA's
+// assembly and sweeps) and stays within CI's per-test timeout unoptimised. Measured at 83b40ec8 in
+// gpu-tests' unoptimised build on 2026-11-09 (t648-o0b): the fp32+acc64 first-order start ends on
+// its round-off plateau, later than fp64's drop.
+static int past_switch(const std::string& model, const std::string& linear,
+                       const std::string& precision) {
+  const bool fp64 = precision == "fp64";
+  int last_first_order = 0;
+  if (model == "laminar") {
+    last_first_order = linear == "gauss-seidel" ? (fp64 ? 53 : 162) : (fp64 ? 44 : 201);
+  } else {
+    last_first_order = linear == "gauss-seidel" ? (fp64 ? 44 : 146) : (fp64 ? 37 : 184);
+  }
+  return last_first_order + 10;
+}
+
+// runtime.md, Ranks: under reproducibility "ranks" the Navier-Stokes physics writes on N ranks the
+// history and every array of solution.cgns of a run on one (#587). The hybrid case keeps its
+// no-slip wall, so that the boundary fits are built across parts; steady runs go past the
+// second-order switch, laminar flow also runs unsteady.
+static void ns_on_ranks(const char* model, const char* linear, bool steady, const char* precision,
+                        int ranks) {
   INFO(model << " " << linear << (steady ? " steady " : " unsteady ") << precision << " on "
              << ranks << " ranks");
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
@@ -1371,7 +1382,7 @@ TEST_CASE("Navier-Stokes on several ranks gives the one-rank solution bit for bi
     d["reproducibility"] = "ranks";
     if (steady) {
       d["time"]["linear_solver"] = linear;
-      d["time"]["max_iterations"] = 400;
+      d["time"]["max_iterations"] = past_switch(model, linear, precision);
     } else {
       d["time"] = {{"kind", "unsteady"}, {"steps", 20},
                    {"dt", nullptr},      {"cfl", 0.8},
@@ -1405,20 +1416,19 @@ TEST_CASE("Navier-Stokes on several ranks gives the one-rank solution bit for bi
   };
   same_arrays(one.run, many);
   if (steady && ranks == 4 && std::string(model) == "sa" && std::string(linear) == "gauss-seidel") {
-    // Written on 2 ranks after the switch to second order, continued on 4: the restart state
-    // carries SA's variable and the switch, so the two runs are the uninterrupted one. 340 steps,
-    // before any stop: the orders are out of reach, and a continued run counts its round-off
-    // plateau from its own first iteration (case-schema.md#time), which ends the uninterrupted
-    // fp32+acc64 run at 379 and not the continued one.
+    // Written on 2 ranks 5 steps after the switch to second order, continued on 4 for the last 5:
+    // the restart state carries SA's variable and the switch, so the two runs are the
+    // uninterrupted one. The orders are out of reach, so neither run stops early.
+    const int steps = past_switch(model, linear, precision);
     Json whole_doc = doc;
     whole_doc["time"]["residual_orders"] = 30.0;
-    whole_doc["time"]["max_iterations"] = 340;
+    whole_doc["time"]["max_iterations"] = steps;
     const auto whole = run(whole_doc);
     INFO(whole.err);
     REQUIRE(whole.status == ExitStatus::finished);
-    REQUIRE(history(whole.run).size() == 340);
+    REQUIRE(history(whole.run).size() == static_cast<std::size_t>(steps));
     Json first_doc = whole_doc;
-    first_doc["time"]["max_iterations"] = 300;
+    first_doc["time"]["max_iterations"] = steps - 5;
     const fs::path first = run_on_ranks(first_doc, 2);
     REQUIRE(!first.empty());
     REQUIRE(field(first, "SolverSecondOrder", "RestartState").front() == 1.0);
@@ -1431,6 +1441,32 @@ TEST_CASE("Navier-Stokes on several ranks gives the one-rank solution bit for bi
           read(whole.run / "history.jsonl"));
     same_arrays(whole.run, rest);
   }
+}
+
+TEST_CASE(
+    "laminar Navier-Stokes on several ranks gives the one-rank solution bit for bit in fp64 and "
+    "unsteady",
+    "[navier-stokes][mpi]") {
+  const auto [linear, steady, precision] =
+      GENERATE(std::tuple{"gauss-seidel", true, "fp64"}, std::tuple{"lines", true, "fp64"},
+               std::tuple{"", false, "fp64"}, std::tuple{"", false, "fp32+acc64"});
+  ns_on_ranks("laminar", linear, steady, precision, GENERATE(2, 4));
+}
+
+TEST_CASE(
+    "laminar Navier-Stokes on several ranks gives the one-rank solution bit for bit in fp32+acc64",
+    "[navier-stokes][mpi]") {
+  ns_on_ranks("laminar", GENERATE("gauss-seidel", "lines"), true, "fp32+acc64", GENERATE(2, 4));
+}
+
+TEST_CASE("Spalart-Allmaras on several ranks gives the one-rank solution bit for bit in fp64",
+          "[navier-stokes][mpi]") {
+  ns_on_ranks("sa", GENERATE("gauss-seidel", "lines"), true, "fp64", GENERATE(2, 4));
+}
+
+TEST_CASE("Spalart-Allmaras on several ranks gives the one-rank solution bit for bit in fp32+acc64",
+          "[navier-stokes][mpi]") {
+  ns_on_ranks("sa", GENERATE("gauss-seidel", "lines"), true, "fp32+acc64", GENERATE(2, 4));
 }
 
 TEST_CASE("Spalart-Allmaras on ranks of which one holds no ghost runs as on one rank",
