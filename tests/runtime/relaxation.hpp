@@ -108,6 +108,11 @@ struct RelaxationOptions {
   std::int64_t wake_at = 0;
   std::int64_t sleep_at = 0;  ///< 0: never; from then on, back at silent_residual
   double awake_value = 1e-3;
+  /// An equation the flow excites weakly: its residual is `weak_scale` times the others' law and
+  /// stops decreasing at `weak_stall`; -1: none.
+  std::int64_t weak_equation = -1;
+  double weak_scale = 1e-5;
+  double weak_stall = 1e-12;
   std::vector<double> scales{};  ///< residual_scales(); empty: none
   /// Equation e's residual stops decreasing at (e + 1) times this value; 0: never.
   double plateau = 0.0;
@@ -301,6 +306,10 @@ class Relaxation final : public autan::runtime::Physics {
                                  std::max(r * rms_ * smoothed, options_.plateau));
     }
     report.provisional = iteration < options_.provisional_until;
+    if (options_.weak_equation >= 0) {
+      auto& weak = report.residuals[static_cast<std::size_t>(options_.weak_equation)];
+      weak = std::max(options_.weak_scale * weak, options_.weak_stall);
+    }
     if (options_.silent_equation >= 0) {
       const bool awake = options_.wake_at > 0 && iteration >= options_.wake_at &&
                          (options_.sleep_at == 0 || iteration < options_.sleep_at);

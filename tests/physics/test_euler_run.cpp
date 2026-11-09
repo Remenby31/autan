@@ -1703,8 +1703,9 @@ TEST_CASE("the steady CFL penalty halves after a rise of the relative residual a
   // and otherwise recovers by half, up to 1 (a shortened step, or a failed linear solve, lowers it
   // too; steps next to one, which log a warning, are not judged). Past the first-order start
   // those residuals are the history's, relative to the first second-order line, whose residuals
-  // the restart state holds as the reference; the z-momentum, below 1e-12 of the largest residual
-  // at iteration 1, is left out (case-schema.md#time). The restart state also holds the penalty
+  // the restart state holds as the reference, a momentum component's being the largest momentum
+  // component's; the z-momentum, below 1e-12 of the largest residual at iteration 1, is left out
+  // (case-schema.md#time). The restart state also holds the penalty
   // after a run's last step, so runs of k - 1 and k steps give step k's change. Steps away from
   // the margin are judged: a rise above 15 % and one below 5 %.
   const std::int64_t steps = 120;
@@ -1733,10 +1734,13 @@ TEST_CASE("the steady CFL penalty halves after a rise of the relative residual a
   REQUIRE(first + 2 < h.size());
   double largest = 0.0;
   for (std::size_t k = 0; k < names.size(); ++k) largest = std::max(largest, at(0, k));
+  // A momentum component drops from the largest momentum component's reference.
+  const double momentum = std::max({reference[1], reference[2], reference[3]});
   auto relative = [&](std::size_t i) {
     double drop = 0.0;
     for (std::size_t k = 0; k < names.size(); ++k) {
-      if (at(0, k) >= 1e-12 * largest) drop = std::max(drop, at(i, k) / reference[k]);
+      const double from = k >= 1 && k <= 3 ? momentum : reference[k];
+      if (at(0, k) >= 1e-12 * largest) drop = std::max(drop, at(i, k) / from);
     }
     return drop;
   };

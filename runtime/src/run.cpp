@@ -2299,8 +2299,10 @@ class Run final : public Log {
           // A provisional step's residuals start every plateau anew.
           if (report.provisional) plateaus[e].reset();
           const bool flat = !report.provisional && plateaus[e].add(r);
-          const bool met = exempt.exempt(e) ||
-                           r <= (exempt.woken(e) ? exempt.woken_reference(e) : first[e]) * drop;
+          const bool met =
+              exempt.exempt(e) ||
+              r <= (exempt.woken(e) ? exempt.woken_reference(e) : exempt.drop_reference(e, first)) *
+                       drop;
           const bool plateau = !floor_.empty() && flat && r <= round_off_band * floor_[e];
           if (!met && plateau) at_plateau.push_back(equations[e]);
           converged = converged && (met || plateau);

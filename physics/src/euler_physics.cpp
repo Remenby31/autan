@@ -1371,9 +1371,11 @@ class EulerPhysics final : public runtime::Physics {
     double drop = 0.0;
     if (first_norms_.empty()) first_norms_ = current;
     for (std::size_t k = 0; k < 5; ++k) {
-      // A woken equation drops from the reference of its kind, as in the convergence rule.
+      // A woken equation drops from the reference of its kind and a momentum component from the
+      // largest momentum component's, as in the convergence rule.
       if (exempt_.exempt(k)) continue;
-      const double from = exempt_.woken(k) ? exempt_.woken_reference(k) : first_norms_[k];
+      const double from =
+          exempt_.woken(k) ? exempt_.woken_reference(k) : exempt_.drop_reference(k, first_norms_);
       if (from > 0.0) drop = std::max(drop, current[k] / from);
     }
     return drop;

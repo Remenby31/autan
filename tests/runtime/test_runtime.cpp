@@ -2893,6 +2893,27 @@ TEST_CASE("An equation at round-off from iteration 1 does not hold back converge
   CHECK(Json::parse(read(above.run / "run.json"))["status"] == "completed");
 }
 
+TEST_CASE("A momentum component drops from the largest momentum residual at iteration 1",
+          "[runtime]") {
+  // case-schema.md#time: residuals (e + 1) 0.5^(k-1) drop 8 orders at k = 28. A weakly excited
+  // equation starts at 1e-5 of that law, above the floor 1e-12 x 6, and stops at 1e-12, 7.5
+  // orders below its own first value. A momentum component drops from the largest momentum
+  // residual at iteration 1, momentum-z's 4: the run converges at k = 28 whether momentum-x or
+  // momentum-y is the weak one, as when the mesh axes are permuted. Energy keeps its own
+  // reference: weak, it holds the run back.
+  for (const auto& [equation, converges] :
+       {std::pair{1, true}, std::pair{2, true}, std::pair{4, false}}) {
+    CAPTURE(equation);
+    autan_test::RelaxationOptions weak;
+    weak.weak_equation = equation;
+    const Outcome o = run(input([](Json& d) { d["time"]["max_iterations"] = 100; }), weak);
+    REQUIRE(o.status == ExitStatus::finished);
+    const Json info = Json::parse(read(o.run / "run.json"));
+    CHECK(info["status"] == (converges ? "converged" : "completed"));
+    CHECK(info["iterations"] == (converges ? 28 : 100));
+  }
+}
+
 TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]") {
   // momentum-x leaves its floor at iterations 10-14, then falls back to round-off or to exactly
   // zero, which its reference then holds (results.md, `start`): woken, it drops from momentum-z's
