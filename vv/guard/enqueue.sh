@@ -18,10 +18,10 @@ job=05-guard-$night.job
 publish() {
   [ -e "$dir/ENQUEUED" ] && return 0
   local q=$HOME/cfd/queue
-  if [ ! -e "$q/pending/$job" ] && [ ! -e "$q/running/$job" ] && [ ! -e "$q/done/$job" ]; then
-    date -u +%FT%TZ > "$dir/PUBLISHED"
-    "$HOME/cfd/bin/cfd-submit" "$dir/$job" > "$dir/submit.log" 2>&1 || return 1
-  fi
+  local d
+  for d in pending running done migrated; do [ -e "$q/$d/$job" ] && { touch "$dir/ENQUEUED"; return 0; }; done
+  "$HOME/cfd/bin/cfd-submit" "$dir/$job" > "$dir/submit.log" 2>&1 || return 1
+  date -u +%FT%TZ > "$dir/PUBLISHED"
   touch "$dir/ENQUEUED"
 }
 refuse() {
