@@ -53,6 +53,6 @@ systemctl --user enable --now autan-guard-enqueue.timer autan-guard-watchdog.tim
 ```
 
 **What runs where:**
-- **The enqueue timer** (23:30 UTC, `Persistent=true`) only prepares the night's directory and writes its job file, `05-guard-<date>.job`, into the legacy queue. PRIO 05 puts the guard ahead of the campaigns (08 and above); only the declared critical path (00–04) goes first. A night is the date of the latest 23:30 UTC slot, so a catch-up after midnight prepares the right night. A lock covers it, and a night prepared but not yet published is published by the next run.
+- **The enqueue timer** (23:30 UTC, `Persistent=true`) only prepares the night's directory and submits its job file, `05-guard-<date>.job`, to the legacy queue through `~/cfd/bin/cfd-submit`, the only way into the queue; its output is in the night's `submit.log`, and a refused submission leaves the night unpublished. PRIO 05 puts the guard ahead of the campaigns (08 and above); only the declared critical path (00–04) goes first. A night is the date of the latest 23:30 UTC slot, so a catch-up after midnight prepares the right night. A lock covers it, and a night prepared but not yet published is published by the next run.
 - **The job,** THREADS 2, CAP 6 GiB, does the build and the two runs.
 - **The watchdog** (07:00 UTC) appends one line per night to `STATUS`, for the night whose deadline the latest 07:00 slot closed, and trims green nights older than 14 days to their verdicts and histories.
