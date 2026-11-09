@@ -610,6 +610,7 @@ TEST_CASE("Every selected ghost receives its owner's row and nothing else travel
     const autan::CellRows nothing = run(none, 0, 0);
     CHECK(full.stride == stride);
     CHECK(some.stride == stride);
+    CHECK(nothing.stride == stride);
     // G667-b, c: the CSR of each output against its independent sizes. A rank whose output is
     // misshapen skips the slices but stays in the collectives.
     std::vector<autan::offset_t> full_offsets{0}, some_offsets{0};
@@ -660,11 +661,16 @@ TEST_CASE("Every selected ghost receives its owner's row and nothing else travel
       seen[4] |= gid(h) == gid(g) && wanted[h] != wanted[g] ? 1 : 0;
     }
   }
+  // The receiving rank of each gathered triple, from the gather's segments.
+  std::vector<int> receiver(every.size() / 3);
+  for (int q = 0; q < n; ++q) {
+    for (int t = displs[at(q)]; t < displs[at(q)] + counts[at(q)]; t += 3) receiver[at(t / 3)] = q;
+  }
   std::int64_t split = 0;
   for (std::size_t t = 0; t < every.size(); t += 3) {
     for (std::size_t u = t + 3; u < every.size() && split == 0; u += 3) {
-      split = every[u + 1] == every[t + 1] && every[u + 2] != every[t + 2] &&
-                      row_length(every[t + 1]) > 0
+      split = receiver[u / 3] != receiver[t / 3] && every[u + 1] == every[t + 1] &&
+                      every[u + 2] != every[t + 2] && row_length(every[t + 1]) > 0
                   ? 1
                   : 0;
     }
