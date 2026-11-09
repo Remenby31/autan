@@ -442,14 +442,12 @@ CellRows forward_rows(const HaloPattern& pattern, const CellRows& owned, MPI_Com
   // Allocations may fail on one rank only; the others must not enter the next collective.
   const auto together = [comm](const auto& step) {
     bool ok = true;
-    std::string failure;
     try {
       step();
-    } catch (const std::exception& e) {
+    } catch (const std::exception&) {
       ok = false;
-      failure = e.what();
     }
-    agree(comm, ok, ErrorCode::partition_invalid_request, "ghost rows do not fit: " + failure);
+    agree(comm, ok, ErrorCode::partition_invalid_request, "ghost rows do not fit in memory");
   };
 
   const std::size_t n_rows = owned.offsets.empty() ? 0 : owned.offsets.size() - 1;

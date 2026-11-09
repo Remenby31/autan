@@ -4,11 +4,11 @@
 #include <cstdint>
 #include <memory>
 #include <span>
-#include <vector>
 
 #include <mpi.h>
 
 #include "autan/core/geometry.hpp"
+#include "autan/partition/cell_rows.hpp"
 #include "autan/partition/partition.hpp"
 
 namespace autan {
@@ -64,15 +64,6 @@ class HaloExchange {
  private:
   struct State;
   std::unique_ptr<State> state_;
-};
-
-/// Variable-length rows of cells as CSR: row c holds the entries offsets[c] .. offsets[c + 1],
-/// each a key and `stride` values (values[stride * e ..]); a row may be empty.
-struct CellRows {
-  std::vector<offset_t> offsets{0};
-  std::vector<std::int64_t> keys;
-  std::vector<double> values;
-  int stride = 0;
 };
 
 /// The row of every ghost of `pattern`, in ghost order (row g for cell n_owned + g): the row its

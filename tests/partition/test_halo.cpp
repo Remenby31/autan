@@ -487,9 +487,12 @@ TEST_CASE("Every ghost receives its owner's row", "[halo][rows]") {
     for (std::size_t g = 0; g < n_ghosts; ++g) {
       want_offsets.push_back(want_offsets.back() + m.cell_global_id()[at(n_owned) + g] % 4);
     }
-    REQUIRE(ghosts.offsets == want_offsets);
-    REQUIRE(ghosts.keys.size() == at(want_offsets.back()));
-    REQUIRE(ghosts.values.size() == at(want_offsets.back()) * at(stride));
+    // A failed rank must still reach the next stride's collective with the others.
+    const bool shaped = ghosts.offsets == want_offsets &&
+                        ghosts.keys.size() == at(want_offsets.back()) &&
+                        ghosts.values.size() == at(want_offsets.back()) * at(stride);
+    CHECK(shaped);
+    if (!shaped) continue;
     for (std::size_t g = 0; g < n_ghosts; ++g) {
       const autan::CellRows want = row_of(m.cell_global_id()[at(n_owned) + g], stride);
       const auto first = at(ghosts.offsets[g]), last = at(ghosts.offsets[g + 1]);
@@ -502,13 +505,16 @@ TEST_CASE("Every ghost receives its owner's row", "[halo][rows]") {
             want.values);
     }
   }
-  // Every rank refuses together: a stride that differs on one rank (E0144), rows whose sizes do
-  // not match (E0140). On one rank: halo offsets that leave their list (E0144), and 2048 slots
-  // of one entry at 2^20 values, 2^31 values in one message (E0140).
+  // Every rank refuses when only rank 0's input is wrong.
   if (world_size() > 1) {
     require_everywhere(autan::ErrorCode::halo_inconsistent, [&] {
       (void)autan::forward_rows(s.local.halo, rows_of(m, n_owned, world_rank() == 0 ? 2 : 3),
                                 MPI_COMM_WORLD);
+    });
+    require_everywhere(autan::ErrorCode::halo_inconsistent, [&] {
+      autan::HaloPattern bent = s.local.halo;
+      if (world_rank() == 0) bent.send_offsets.front() = 1;
+      (void)autan::forward_rows(bent, rows_of(m, n_owned, 3), MPI_COMM_WORLD);
     });
   }
   require_everywhere(autan::ErrorCode::partition_invalid_request, [&] {
