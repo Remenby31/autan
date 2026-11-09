@@ -42,7 +42,8 @@ if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
   file(
     CONFIGURE
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/generated/mpiexec_preflags.hpp
-    CONTENT "#define AUTAN_MPIEXEC_PREFLAGS ${autan_mpiexec_preflags}\n"
+    CONTENT "#define AUTAN_MPIEXEC_PREFLAGS @autan_mpiexec_preflags@\n"
+    @ONLY
   )
   target_include_directories(autan_runtime_tests PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
   target_compile_definitions(
