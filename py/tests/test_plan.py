@@ -82,7 +82,13 @@ def test_heat_exchanger_example_plans_two_gases_and_a_solid(
         (
             "crm-hl",
             lambda d: d["boundary_zones"].append(
-                {"name": "ghost", "type": None, "native_type": None, "faces": 0}
+                {
+                    "name": "ghost",
+                    "type": None,
+                    "native_type": None,
+                    "faces": 0,
+                    "first_cell_height": None,
+                }
             ),
             CRM_HL,
             [],
@@ -246,6 +252,7 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
                     "type": "farfield",
                     "native_type": None,
                     "faces": boundary_faces,
+                    "first_cell_height": {"min": 0.01, "median": 0.02, "max": 0.05},
                 }
             ],
             "cell_zones": [{"name": "fluid", "type": None, "native_type": None, "cells": 10}],
