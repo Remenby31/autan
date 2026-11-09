@@ -662,6 +662,8 @@ TEST_CASE("layers coarsen in the plane whichever way their lines run", "[multigr
   CHECK(alone <= 2 * long_lines);
 }
 
+namespace {
+
 // Two disjoint copies of `m` on the same nodes' coordinates: every cell has a twin with the same
 // centroid, so the canonical order breaks every centroid tie by global id.
 Mesh twins(const Mesh& m) {
@@ -704,6 +706,7 @@ struct NumberingCase {
 // hierarchy (empty coarse maps).
 std::vector<NumberingCase> numbering_cases() {
   std::vector<NumberingCase> cases;
+  cases.reserve(meshes.size() + 3);
   for (const char* file : meshes)
     cases.push_back({file, autan::io::read_mesh(mesh_dir / file), 30});
   cases.push_back({"wall layers", layered_box(8, 1e-4, Fill::prism, true), 30});
@@ -723,6 +726,8 @@ std::vector<std::vector<index_t>> numberings(const Mesh& mesh) {
   }
   return orders;
 }
+
+}  // namespace
 
 TEST_CASE("the hierarchy does not depend on the cell numbering", "[multigrid]") {
   // #365: a permutation of the cells, the geometry carried by renumber_geometry as the run
@@ -823,14 +828,13 @@ TEST_CASE("the hierarchy digest is the same in every cell numbering and reads ev
     // Moving one fine node to another agglomerate, or flipping one retained edge, changes it.
     auto moved = ref;
     auto& node = moved[0].coarse_node;
-    const auto other =
-        std::find_if(node.begin(), node.end(), [&](index_t x) { return x != node.front(); });
+    const auto other = std::ranges::find_if(node, [&](index_t x) { return x != node.front(); });
     REQUIRE(other != node.end());
     node.front() = *other;
     CHECK(autan::solvers::hierarchy_sha256(moved, c.mesh, g) != digest);
     auto flipped = ref;
-    const auto kept = std::find_if(flipped[0].coarse_edge.begin(), flipped[0].coarse_edge.end(),
-                                   [](index_t e) { return e >= 0; });
+    const auto kept =
+        std::ranges::find_if(flipped[0].coarse_edge, [](index_t e) { return e >= 0; });
     REQUIRE(kept != flipped[0].coarse_edge.end());
     auto& flip =
         flipped[0].coarse_flipped[static_cast<std::size_t>(kept - flipped[0].coarse_edge.begin())];
@@ -872,13 +876,13 @@ TEST_CASE("the hierarchy digest is the SHA-256 of format 1's bytes", "[multigrid
                .coarse_flipped = {}};
   std::vector<unsigned char> bytes;
   auto u64 = [&](std::uint64_t v) {
-    for (int k = 0; k < 8; ++k) bytes.push_back(static_cast<unsigned char>(v >> (8 * k)));
+    for (unsigned k = 0; k < 8; ++k) bytes.push_back(static_cast<unsigned char>(v >> (8U * k)));
   };
-  auto i64s = [&](std::initializer_list<std::int64_t> values) {
+  const auto i64s = [&](std::initializer_list<std::int64_t> values) {
     u64(values.size());
     for (const std::int64_t v : values) u64(static_cast<std::uint64_t>(v));
   };
-  auto u8s = [&](std::initializer_list<unsigned char> values) {
+  const auto u8s = [&](std::initializer_list<unsigned char> values) {
     u64(values.size());
     bytes.insert(bytes.end(), values.begin(), values.end());
   };

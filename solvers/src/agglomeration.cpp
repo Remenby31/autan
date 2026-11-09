@@ -686,7 +686,7 @@ std::vector<index_t> canonical_order(const Mesh& mesh, const Geometry& geometry)
   auto id = [&](std::size_t c) { return ids.empty() ? static_cast<std::int64_t>(c) : ids[c]; };
   std::vector<index_t> order(n);
   std::iota(order.begin(), order.end(), 0);
-  std::sort(order.begin(), order.end(), [&](index_t a, index_t b) {
+  std::ranges::sort(order, [&](index_t a, index_t b) {
     const auto ua = static_cast<std::size_t>(a), ub = static_cast<std::size_t>(b);
     const std::array<double, 3> xa{geometry.cell_centroid_x[ua], geometry.cell_centroid_y[ua],
                                    geometry.cell_centroid_z[ua]};
@@ -724,7 +724,7 @@ std::vector<Level> agglomerate(const Mesh& mesh, const Geometry& geometry,
   const std::vector<index_t> new_to_old = canonical_order(mesh, geometry);
   bool identity = true;
   for (std::size_t i = 0; i < new_to_old.size() && identity; ++i) {
-    identity = static_cast<std::size_t>(new_to_old[i]) == i;
+    identity = std::cmp_equal(new_to_old[i], i);
   }
   if (identity) return build(mesh, geometry, options);
 
@@ -795,10 +795,12 @@ std::string hierarchy_sha256(const std::vector<Level>& levels, const Mesh& mesh,
       const index_t a = old_to_new[static_cast<std::size_t>(level.owner[e])];
       const index_t b = old_to_new[static_cast<std::size_t>(level.neighbour[e])];
       const std::int64_t ce = coarse ? level.coarse_edge[e] : 0;
-      const int flip = coarse && ce >= 0 ? (level.coarse_flipped[e] ^ (a > b ? 1 : 0)) : 0;
+      const unsigned flip =
+          coarse && ce >= 0 ? (static_cast<unsigned>(level.coarse_flipped[e]) ^ (a > b ? 1U : 0U))
+                            : 0U;
       edges[e] = {std::min(a, b), std::max(a, b), ce, flip};
     }
-    std::sort(edges.begin(), edges.end());
+    std::ranges::sort(edges);
     std::vector<index_t> owner(edges.size()), neighbour(edges.size());
     std::vector<std::int64_t> coarse_edge;
     std::vector<std::uint8_t> coarse_flipped;
