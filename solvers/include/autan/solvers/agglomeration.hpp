@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "autan/core/geometry.hpp"
@@ -57,9 +58,20 @@ struct AgglomerationOptions {
 std::vector<std::vector<std::size_t>> line_colours(const Level& level);
 
 /// Agglomeration hierarchy of a mesh without ghost cells, finest level first. Throws
-/// std::invalid_argument on a mesh with ghost cells. Deterministic: the result depends only on
-/// the mesh, its geometry and the options.
+/// std::invalid_argument on a mesh with ghost cells. The hierarchy is built on the cells in
+/// canonical order (by centroid, then global id) and level 0 is returned in the mesh's own cells
+/// and faces: a permutation of the cells, with the geometry carried by renumber_geometry, gives
+/// the same hierarchy, relabelled.
 std::vector<Level> agglomerate(const Mesh& mesh, const Geometry& geometry,
                                const AgglomerationOptions& options = {});
+
+/// SHA-256 (hex) of a hierarchy of `mesh` with level 0 written in canonical cells and edges:
+/// equal for the hierarchies agglomerate gives on any permutation of the mesh's cells. Format 1,
+/// little-endian: the version and the level count (u64); per level its node count (u64), then
+/// owner, neighbour, line_offsets, line_nodes, coarse_node, coarse_edge and coarse_flipped, each
+/// as its length (u64) and its values (i64; coarse_flipped u8). Level 0's edges are oriented from
+/// the lower canonical cell and sorted by (owner, neighbour, coarse_edge, coarse_flipped).
+std::string hierarchy_sha256(const std::vector<Level>& levels, const Mesh& mesh,
+                             const Geometry& geometry);
 
 }  // namespace autan::solvers

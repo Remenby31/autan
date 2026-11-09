@@ -656,6 +656,35 @@ TEST_CASE("the multigrid builds the levels autan-mesh-info publishes", "[euler]"
   CHECK(built["edges"] == published["edges_by_level"]);
 }
 
+TEST_CASE("the multigrid logs one hierarchy digest in either cell order", "[euler]") {
+  // #365: the hierarchy is built on the cells in canonical order, so a run in RCM order and one in
+  // the order read log the same hierarchy_sha256.
+  std::vector<Json> digests;
+  for (const char* order : {"rcm", "input"}) {
+    CAPTURE(order);
+    REQUIRE(setenv("AUTAN_CELL_ORDER", order, 1) == 0);
+    const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+      inviscid_along_x(d, "fp64");
+      d["time"]["linear_solver"] = "multigrid";
+      d["time"]["max_iterations"] = 1;
+    });
+    const auto out = run(doc);
+    unsetenv("AUTAN_CELL_ORDER");
+    INFO(out.err);
+    REQUIRE(out.status == ExitStatus::finished);
+    std::ifstream log_in(out.run / "log.jsonl");
+    for (std::string line; std::getline(log_in, line);) {
+      const Json event = Json::parse(line);
+      if (event["source"] == "linear" && event["data"].contains("edges")) {
+        digests.push_back(event["data"]["hierarchy_sha256"]);
+      }
+    }
+  }
+  REQUIRE(digests.size() == 2);
+  CHECK(digests[0].get<std::string>().size() == 64);
+  CHECK(digests[0] == digests[1]);
+}
+
 TEST_CASE("the line smoother sweeps the same lines whatever the flow model", "[navier-stokes]") {
   // linear_solver = "lines" keeps each of the mesh's lines whole and colours the lines
   // (euler_groups): an SA case sweeps the colours of the inviscid one, not those of single cells.
