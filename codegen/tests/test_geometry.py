@@ -122,7 +122,7 @@ def test_face_moments_are_exactly_zero_where_planarity_is_exact() -> None:
     parts = (full.cell_centroid[:, 0] > 0.5).astype(np.int32)
     reversed_planar = 0
     for rank in (0, 1):
-        local = s.partition(full, parts, 2, rank, layers=1)
+        local = s.partition(full, parts, 2, rank, ghosts="face")
         s.set_global_order(local, None)
         _, faces = s.global_ids(local)
         moments = s.face_moments(local)

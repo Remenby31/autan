@@ -41,8 +41,8 @@ def test_face_loops_skip_halo_faces_of_a_two_layer_partition(
         return dict(zip(cells.tolist(), res.tolist(), strict=True))
 
     for rank in (0, 1):
-        two = s.partition(full, parts, 2, rank, layers=2)
-        one = s.partition(full, parts, 2, rank, layers=1)
+        two = s.partition(full, parts, 2, rank, ghosts="face2")
+        one = s.partition(full, parts, 2, rank, ghosts="face")
         assert two.n_faces > one.n_faces  # the halo faces this test is about
         r2, r1 = residual(two), residual(one)
         scale = max(abs(v) for v in r1.values())
@@ -97,11 +97,11 @@ def test_results_are_bit_identical_across_rank_counts(backend: str, kind: str, w
             for c in range(m.n_owned)
         }
 
-    one = s.partition(full, np.zeros(full.n_cells, np.int32), 1, 0, layers=2)
+    one = s.partition(full, np.zeros(full.n_cells, np.int32), 1, 0, ghosts="face2")
     s.set_global_order(one, "face2")
     reference = owned(one)
     for rank in (0, 1):
-        two = s.partition(full, parts, 2, rank, layers=2)
+        two = s.partition(full, parts, 2, rank, ghosts="face2")
         s.set_global_order(two, "face2")
         got = owned(two)
         assert got.keys() <= reference.keys()
@@ -123,7 +123,7 @@ def test_orders_that_follow_the_numbering_are_refused_when_rank_independent(
     if strategy != "scatter" and backend == "metal":
         pytest.skip("the global order is a DeviceMesh option (CUDA/HIP)")
     full = s.mesh(meshes.build("hex", 4))
-    m = s.partition(full, np.zeros(full.n_cells, np.int32), 1, 0, layers=2)
+    m = s.partition(full, np.zeros(full.n_cells, np.int32), 1, 0, ghosts="face2")
     s.set_global_order(m, None)
     q, grad = np.zeros(m.n_cells), np.zeros((m.n_cells, 3))
     run = (
@@ -134,3 +134,17 @@ def test_orders_that_follow_the_numbering_are_refused_when_rank_independent(
     with pytest.raises(s.SpikeError) as err:
         run()
     assert err.value.code == "E1109"
+
+
+def test_a_stencil_wider_than_the_partition_ghosts_is_refused() -> None:
+    # A partition holds its ghost stencil (autan::GhostStencil) and nothing wider: a vertex
+    # stencil on face2 ghosts, or a face2 stencil on face ghosts, would be truncated, E0148.
+    full = s.mesh(meshes.build("tet", 4))
+    parts = (full.cell_centroid[:, 0] > np.median(full.cell_centroid[:, 0])).astype(np.int32)
+    for ghosts, stencil in (("face2", "vertex"), ("face", "face2")):
+        part = s.partition(full, parts, 2, 0, ghosts=ghosts)
+        for build in (s.set_stencil, s.set_global_order):
+            with pytest.raises(s.SpikeError) as err:
+                build(part, stencil)
+            assert err.value.code == "E0148"
+    assert s.set_stencil(s.partition(full, parts, 2, 0, ghosts="vertex"), "vertex") > 0

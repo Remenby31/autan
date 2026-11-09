@@ -148,6 +148,11 @@ class EulerPhysics final : public runtime::Physics {
   using Res = typename P::residual;
   static constexpr bool is_viscous = !std::is_same_v<Flow, Euler<P>>;
 
+  // The ghost stencil the flow's scheme reads (PhysicsRegistry::Entry::ghosts).
+  static std::optional<GhostStencil> ghosts(const runtime::SolverInput& in) {
+    return ghost_stencil(flow_scheme(in));
+  }
+
   explicit EulerPhysics(const PhysicsContext& ctx)
       : exempt_(runtime::residual_names(ctx.input), ctx.input.start && ctx.input.start->woken
                                                         ? *ctx.input.start->woken
@@ -485,15 +490,20 @@ class EulerPhysics final : public runtime::Physics {
   static Flow make_flow(const PhysicsContext& ctx, const Gas& gas,
                         const kernels::GlobalKeys* keys) {
     if constexpr (is_viscous) {
-      // The quadratic gradient in every cell: with the linear one near the boundary only, or with
-      // the fit to cell averages, ns-mms-order loses its order on tetrahedra or hexahedra
-      // (docs/design/euler.md, Quadratic gradient).
-      Scheme s = scheme(ctx.input);
-      s.gradient_fit = GradientFit::quadratic;
-      return Flow(ctx.mesh, ctx.geometry, gas, s, transport_of(ctx.input), keys);
+      return Flow(ctx.mesh, ctx.geometry, gas, flow_scheme(ctx.input), transport_of(ctx.input),
+                  keys);
     } else {
-      return Flow(ctx.mesh, ctx.geometry, gas, scheme(ctx.input), keys);
+      return Flow(ctx.mesh, ctx.geometry, gas, flow_scheme(ctx.input), keys, ctx.ghost_stencil);
     }
+  }
+
+  static Scheme flow_scheme(const runtime::SolverInput& in) {
+    Scheme s = scheme(in);
+    // The quadratic gradient in every cell: with the linear one near the boundary only, or with
+    // the fit to cell averages, ns-mms-order loses its order on tetrahedra or hexahedra
+    // (docs/design/euler.md, Quadratic gradient).
+    if constexpr (is_viscous) s.gradient_fit = GradientFit::quadratic;
+    return s;
   }
 
   struct Vortex {
@@ -1818,17 +1828,21 @@ runtime::CellGroups euler_groups(const runtime::SolverInput& in, const Mesh& mes
 void register_euler(runtime::PhysicsRegistry& registry) {
   registry.add({"compressible", "inviscid", "fp64", "cpu"},
                factory<kernels::fp64, Euler<kernels::fp64>>(), euler_scope,
-               /*several_ranks=*/true, euler_groups, euler_restart_names);
+               /*several_ranks=*/true, euler_groups, euler_restart_names,
+               EulerPhysics<kernels::fp64, Euler<kernels::fp64>>::ghosts);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"},
                factory<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>(), euler_scope,
-               /*several_ranks=*/true, euler_groups, euler_restart_names);
+               /*several_ranks=*/true, euler_groups, euler_restart_names,
+               EulerPhysics<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>::ghosts);
 #ifdef AUTAN_PHYSICS_CUDA
   registry.add({"compressible", "inviscid", "fp64", "cuda"},
                factory<kernels::fp64, Euler<kernels::fp64>>(), euler_device_scope,
-               /*several_ranks=*/false, {}, euler_restart_names);
+               /*several_ranks=*/false, {}, euler_restart_names,
+               EulerPhysics<kernels::fp64, Euler<kernels::fp64>>::ghosts);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cuda"},
                factory<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>(), euler_device_scope,
-               /*several_ranks=*/false, {}, euler_restart_names);
+               /*several_ranks=*/false, {}, euler_restart_names,
+               EulerPhysics<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>::ghosts);
 #endif
 }
 
@@ -1837,10 +1851,12 @@ void register_navier_stokes(runtime::PhysicsRegistry& registry) {
   for (const char* model : {"laminar", "sa"}) {
     registry.add({"compressible", model, "fp64", "cpu"},
                  factory<kernels::fp64, NavierStokes<kernels::fp64>>(), navier_stokes_scope,
-                 /*several_ranks=*/false, euler_groups, euler_restart_names);
+                 /*several_ranks=*/false, euler_groups, euler_restart_names,
+                 EulerPhysics<kernels::fp64, NavierStokes<kernels::fp64>>::ghosts);
     registry.add({"compressible", model, "fp32+acc64", "cpu"},
                  factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>(),
-                 navier_stokes_scope, /*several_ranks=*/false, euler_groups, euler_restart_names);
+                 navier_stokes_scope, /*several_ranks=*/false, euler_groups, euler_restart_names,
+                 EulerPhysics<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>::ghosts);
   }
 }
 
