@@ -1787,9 +1787,9 @@ TEST_CASE("a steady case on several ranks converges to the one-rank solution", "
   REQUIRE(!many.empty());
   CHECK(Json::parse(read(many / "run.json"))["status"] == "converged");
   {
-    // Each rank owns the cells, and holds the ghosts, of autan-mesh-info --ranks N, with
-    // --groups lines when the case forms the lines, as "lines" and the multigrid do (mesh-info.md,
-    // partition).
+    // Each rank owns the cells, and holds the ghosts, of autan-mesh-info --ranks N with the
+    // groups the case forms: --groups lines for "lines", --groups multigrid for the multigrid
+    // (mesh-info.md, partition.groups).
     Json partitioned;
     std::ifstream log_in(many / "log.jsonl");
     for (std::string line; std::getline(log_in, line);) {
@@ -1797,8 +1797,9 @@ TEST_CASE("a steady case on several ranks converges to the one-rank solution", "
       if (event["source"] == "mpi") partitioned = event["data"];
     }
     const autan::Mesh mesh = autan::io::read_mesh(mesh_path);
-    const auto groups = std::string(linear) == "gauss-seidel" ? autan::io::RankGroups::none
-                                                              : autan::io::RankGroups::lines;
+    const auto groups = std::string(linear) == "lines"       ? autan::io::RankGroups::lines
+                        : std::string(linear) == "multigrid" ? autan::io::RankGroups::multigrid
+                                                             : autan::io::RankGroups::none;
     const auto counts =
         autan::io::run_counts(mesh, 1.0, autan::io::CellOrder::rcm,
                               autan::io::RanksRequest{.ranks = ranks, .groups = groups});

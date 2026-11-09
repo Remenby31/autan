@@ -281,7 +281,7 @@ def test_the_multigrid_hierarchy_is_for_the_cell_order_the_run_builds_it_in(
     case = autan.load(write_case(TINY.replace("Inviscid())", physics + ")")))
     document = prepared(tiny_mesh(20).document(), ranks=gpus)
     if gpus > 1:
-        document["partition"]["groups"] = "lines"
+        document["partition"]["groups"] = "multigrid"
     for order in ("rcm", "input"):
         document["quality"]["multigrid"]["order"] = order
         mesh = autan.MeshInfo.from_document(document, autan.Location())
@@ -333,11 +333,23 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
         prepared(mesh_document("crm-hl"), ranks=4), autan.Location()
     )
     four = autan.load(write_case(CRM_HL)).plan(on_four, gpus=4, device_kind="cuda").memory
-    # A steady CPU run with the lines solver keeps its lines whole: a partition without them is
-    # not the run's.
-    lines = autan.load(write_case(CRM_HL + "case.time = autan.Steady(linear_solver='lines')\n"))
-    assert "E0212" in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cpu"))
-    assert "E0212" not in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cuda"))
+    # A steady CPU run keeps whole the line smoother's lines with the lines solver, the
+    # multigrid's finest lines with the multigrid (mesh-info.md, partition.groups): a partition
+    # formed with other groups is not the run's. A device run keeps none.
+    # Inviscid flow, whose multigrid runs on a partition, its hierarchy built on the mesh as read.
+    for solver in ("lines", "multigrid"):
+        body = TINY.replace("linear_solver='multigrid'", f"linear_solver={solver!r}")
+        case = autan.load(write_case(body))
+        for mode in ("none", "lines", "multigrid"):
+            document = prepared(tiny_mesh(20).document(), ranks=4)
+            document["partition"]["groups"] = mode
+            document["quality"]["multigrid"]["order"] = "input"
+            labelled = autan.MeshInfo.from_document(document, autan.Location())
+            codes = diagnostic_codes(case.plan(labelled, gpus=4, device_kind="cpu"))
+            assert ("E0212" in codes) == (mode != solver), (solver, mode)
+        document["partition"]["groups"] = "none"
+        plain = autan.MeshInfo.from_document(document, autan.Location())
+        assert "E0212" not in diagnostic_codes(case.plan(plain, gpus=4, device_kind="cuda"))
     by_name = {c.name: c for c in four.components}
     assert by_name["mesh"] == {c.name: c for c in cuda.components}["mesh"]
     assert four.bytes_device < cuda.bytes_device / 3

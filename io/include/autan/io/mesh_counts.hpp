@@ -12,10 +12,12 @@ namespace autan::io {
 /// The cell order a run computes in (results.md, cell_order).
 enum class CellOrder : std::uint8_t { rcm, input };
 
-/// The groups a run on several ranks keeps whole: none, or the smoother's lines
-/// (smoother_lines on the mesh as read), which a steady Euler case with
-/// linear_solver "lines" or "multigrid" forms.
-enum class RankGroups : std::uint8_t { none, lines };
+/// The groups a run on several ranks keeps whole (mesh-info.md, partition.groups): none; lines,
+/// the line smoother's lines (smoother_lines on the mesh as read), which a steady Euler case with
+/// linear_solver "lines" forms; multigrid, the lines of the multigrid's finest level
+/// (solvers::agglomerate on the mesh as read, level 0), which a steady Euler case with
+/// linear_solver "multigrid" forms.
+enum class RankGroups : std::uint8_t { none, lines, multigrid };
 
 struct RanksRequest {
   std::int32_t ranks = 1;

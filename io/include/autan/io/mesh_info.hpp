@@ -75,7 +75,7 @@ struct MeshInfoRun {
   std::int64_t periodic_ghosts = 0;
   struct Partition {
     std::int32_t ranks = 0;
-    std::string groups;  // "none" or "lines"
+    std::string groups;  // "none", "lines" or "multigrid"
     std::vector<std::int64_t> cells, ghosts, faces, interior_faces, stencil_entries;
     std::vector<std::int64_t> vertex_stencil_entries, band_entries, boundary_fit_entries;
     std::vector<std::int64_t> nodes, face_nodes, sent_cells;

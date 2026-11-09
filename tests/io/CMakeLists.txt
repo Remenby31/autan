@@ -14,6 +14,7 @@ target_link_libraries(
     autan::mesh_counts
     autan::kernels
     autan::partition
+    autan::solvers
     nlohmann_json::nlohmann_json
     Catch2::Catch2WithMain
     autan_compile_options

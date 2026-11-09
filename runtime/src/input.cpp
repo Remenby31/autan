@@ -382,7 +382,8 @@ void read_mesh_info(const Json& info, SolverInput& in) {
          "band_entries_by_rank", "boundary_fit_entries_by_rank", "nodes_by_rank",
          "face_nodes_by_rank", "sent_cells_by_rank"});
     const std::int64_t ranks = part.integer("ranks", 1);
-    (void)part.tag("groups", {"none", "lines"});
+    in.mesh_info_ranks = ranks;
+    in.mesh_info_groups = part.tag("groups", {"none", "lines", "multigrid"});
     for (const char* key :
          {"cells_by_rank", "ghosts_by_rank", "faces_by_rank", "interior_faces_by_rank",
           "stencil_entries_by_rank", "vertex_stencil_entries_by_rank", "band_entries_by_rank",
@@ -884,6 +885,21 @@ SolverInput parse_solver_input(const std::string& text) {
         m.is_null("ref_length") ? std::nullopt : std::optional<double>(m.positive("ref_length"));
     fm.moment_center = m.vector3("moment_center");
     in.monitors.push_back(std::move(fm));
+  }
+  // mesh-info.md, partition.groups: a run on several ranks is planned with a partition that keeps
+  // whole the groups it forms, a steady CPU run's line smoother's lines with linear_solver "lines"
+  // or its multigrid's finest lines with "multigrid", none otherwise (the SDK plans with the same
+  // rule, E0212). A run on one rank takes no partition of several from the MeshInfo.
+  if (in.device_count > 1 && in.mesh_info_ranks > 1) {
+    const bool cpu_steady = in.time.kind == "steady" && in.device_kind == "cpu";
+    const std::string formed =
+        cpu_steady && (in.time.linear_solver == "lines" || in.time.linear_solver == "multigrid")
+            ? in.time.linear_solver
+            : "none";
+    if (in.mesh_info_groups != formed) {
+      invalid("mesh_info.partition.groups",
+              "is '" + in.mesh_info_groups + "', but the run keeps '" + formed + "' whole");
+    }
   }
   return in;
 }
