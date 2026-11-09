@@ -58,6 +58,8 @@ jobs:
           [[ -z $LEVELS || $LEVELS =~ ^[0-9]+(,[0-9]+)*$ ]] || fail "levels: comma-separated integers, not '$LEVELS'"
           # The primal-cell export exists for tet, poly and agglomerated only, not for 'all'.
           [[ $EXPORT_CELLS != true || $KIND =~ ^(tet|poly|agglomerated)$ ]] || fail "export_cells: kind tet, poly or agglomerated, not '$KIND'"
+          # Exports grow with the level (points and polygons as JSON): only for levels given.
+          [[ $EXPORT_CELLS != true || -n $LEVELS ]] || fail "export_cells: give the levels to export"
           # The bounds autan-vv meshes enforces, checked before four runners install anything.
           awk -v p="$PERTURBATION" 'BEGIN { exit !(p >= 0 && p < 1) }' || fail "perturbation: from 0 up to, not including, 1"
           IFS=, read -ra given <<< "$LEVELS"

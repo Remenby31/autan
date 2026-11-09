@@ -90,7 +90,7 @@ Each family directory has `manifest.json` (schema `autan.mesh-family/1`): kind, 
 | `cells` | per primal cell, its polygons: lists of indices into `points`, oriented outward (counter-clockwise seen from outside) |
 | `map` | per primal cell, the index of the mesh-file cell that contains it |
 
-The primal cells are the tetrahedra for `tet` and the median dual's cells for `poly` and `agglomerated`. The map is the identity, except for `agglomerated`, where each mesh cell is the union of the median-dual cells mapped to it; their shared polygons are inside it, the others are its faces. The hosted `vv-meshes` workflow passes the flag when asked (`export_cells`), and its `SHA256SUMS` lists the `.cells.json` files with the meshes.
+The primal cells are the tetrahedra for `tet` and the median dual's cells for `poly` and `agglomerated`. The map is the identity, except for `agglomerated`, where each mesh cell is the union of the median-dual cells mapped to it; their shared polygons are inside it, the others are its faces. The hosted `vv-meshes` workflow passes the flag when asked (`export_cells`, for the levels given only), and its `SHA256SUMS` lists the `.cells.json` files with the meshes. An export is larger than its mesh file (each interior polygon is listed by both of its cells, indices in decimal), so it is meant for the levels a checker reads, not for every gate level.
 
 ## Checks
 

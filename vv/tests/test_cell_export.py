@@ -192,5 +192,58 @@ def test_a_kind_without_primal_cells_to_export_is_refused(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["meshes", "hex", "--levels", "3", "--out", str(tmp_path), "--export-cells"]) == 2
-    assert "--export-cells applies to tet, poly and agglomerated" in capsys.readouterr().err
+    assert capsys.readouterr().err.startswith("V0309:")
     assert not list(tmp_path.iterdir())
+
+
+# agglomerated: one tiny level, at a level, perturbation and seed that ADR 0003's stage 2 does not
+# use (its instances avoid every level vv's tests generate), so the held-out family stays unseen.
+AGGLOMERATED_LEVEL = 4
+
+
+def test_an_agglomerated_export_maps_primal_cells_onto_the_merged_file_cells(
+    tmp_path: Path,
+) -> None:
+    args = ["meshes", "agglomerated", "--levels", str(AGGLOMERATED_LEVEL)]
+    args += ["--perturbation", str(PERTURBATION), "--seed", str(SEED)]
+    assert main([*args, "--out", str(tmp_path / "with"), "--export-cells"]) == 0
+    assert main([*args, "--out", str(tmp_path / "without")]) == 0
+    mesh_file = next((tmp_path / "with").glob("*.msh"))
+    doc = json.loads(mesh_file.with_name(f"{mesh_file.stem}.cells.json").read_text())
+    back = _read_poly(mesh_file)
+    n_file = len(back.cell_faces)
+    assert doc["mesh"]["sha256"] == hashlib.sha256(mesh_file.read_bytes()).hexdigest()
+    assert doc["mesh"]["n_cells"] == n_file
+    assert np.array_equal(np.array(doc["points"]), back.points)
+    # The map sends each primal cell to one file cell and hits every file cell; cells were merged.
+    assert len(doc["map"]) == len(doc["cells"]) > n_file
+    assert sorted(set(doc["map"])) == list(range(n_file))
+    points = np.array(doc["points"], dtype=np.float64)
+    volume = np.zeros(n_file)
+    union: list[list[tuple[int, ...]]] = [[] for _ in range(n_file)]
+    for c, polys in zip(doc["map"], doc["cells"], strict=True):
+        assert all(len(p) == len(set(p)) >= 3 for p in polys)
+        terms = [_fan(points, p) for p in polys]
+        total = np.sum([a for a, _ in terms], axis=0)
+        assert float(np.linalg.norm(total)) <= 1e-13 * sum(
+            float(np.linalg.norm(a)) for a, _ in terms
+        )
+        v = sum(v for _, v in terms)
+        assert v > 0.0
+        volume[c] += v
+        union[c] += [_key(p) for p in polys]
+    np.testing.assert_allclose(volume, back.volume, rtol=1e-12, atol=0.0)
+    assert back.outward is not None
+    for c in range(n_file):
+        keys = set(union[c])
+        assert len(keys) == len(union[c])
+        # Polygons two primal cells of one merged cell share (one from each side) are inside it.
+        one_sided = {k for k in keys if _key(list(k)[::-1]) not in keys}
+        assert one_sided == back.outward[c]
+    without = {p.name: p.read_bytes() for p in (tmp_path / "without").iterdir()}
+    with_export = {
+        p.name: p.read_bytes()
+        for p in (tmp_path / "with").iterdir()
+        if not p.name.endswith(".cells.json")
+    }
+    assert with_export == without

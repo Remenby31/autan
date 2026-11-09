@@ -636,21 +636,22 @@ def generate_level(
             primal, cell_map = mesh, np.arange(mesh.n_cells, dtype=np.int64)
             if path is not None:
                 _write_msh(gmsh, points, cells, boundary, path, periodic)
-        if cells_path is not None and path is not None:
-            write_cell_export(
-                cells_path,
-                kind=kind,
-                n=n,
-                perturbation=perturbation,
-                seed=seed,
-                mesh_path=path,
-                primal=primal,
-                cell_map=cell_map,
-                n_cells=mesh.n_cells,
-            )
     finally:
         gmsh.finalize()
     mesh.check()
+    # After the check: a refused level leaves no export beside its mesh.
+    if cells_path is not None and path is not None:
+        write_cell_export(
+            cells_path,
+            kind=kind,
+            n=n,
+            perturbation=perturbation,
+            seed=seed,
+            mesh_path=path,
+            primal=primal,
+            cell_map=cell_map,
+            n_cells=mesh.n_cells,
+        )
     return mesh, version
 
 
