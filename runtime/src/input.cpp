@@ -640,12 +640,15 @@ Start parse_start(const Json& value, const SolverInput& in) {
   if (continued && (steady ? in.time.max_iterations : in.time.steps) <= start.iterations) {
     invalid(o.at("iterations"), "the time budget must exceed the iterations already done");
   }
+  // case-schema.md#time: a steady run continued, or warm-started from a steady run (no time),
+  // takes the convergence reference of the run it starts from; any other start has none.
+  const bool inherits = steady && (continued || !start.time);
   if (o.is_null("residual_reference")) {
-    if (continued && steady) invalid(o.at("residual_reference"), "must not be null here");
+    if (inherits) invalid(o.at("residual_reference"), "must not be null here");
     if (!o.is_null("woken")) invalid(o.at("woken"), "must be null here");
     return start;
   }
-  if (!(continued && steady)) invalid(o.at("residual_reference"), "must be null here");
+  if (!inherits) invalid(o.at("residual_reference"), "must be null here");
   const auto equations = residual_names(in);
   const Object r(o.get("residual_reference"), o.at("residual_reference"), equations);
   std::vector<double> reference;
@@ -666,6 +669,8 @@ Start parse_start(const Json& value, const SolverInput& in) {
       invalid(path, "no equation '" + names.back() + "'");
     if (i > 0 && !(names[i - 1] < names[i])) invalid(path, "names must be sorted and distinct");
   }
+  // A warm start begins with no equation woken (case-schema.md#time).
+  if (!continued && !names.empty()) invalid(o.at("woken"), "must be empty for a warm start");
   start.woken = std::move(names);
   return start;
 }
