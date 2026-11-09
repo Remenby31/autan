@@ -1187,6 +1187,10 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
         run(input([](Json& d) { d["cell_zones"][0]["medium"]["viscosity"].erase("law"); })),
         "E0705");
     require_error(run(input([](Json& d) { d["time"].erase("kind"); })), "E0705");
+    require_error(run(input([](Json& d) { d["time"].erase("start_order"); })), "E0705");
+  }
+  SECTION("E0705 start_order other than first or second") {
+    require_error(run(input([](Json& d) { d["time"]["start_order"] = "third"; })), "E0705");
   }
   SECTION("E0705 value a kind forbids") {
     require_error(run(input([](Json& d) { d["boundaries"][0]["static_pressure"] = 1e5; })),

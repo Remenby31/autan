@@ -519,6 +519,43 @@ TEST_CASE("the history marks provisional exactly the steps of the first-order st
   const double counted = field(out.run, "SolverFirstOrderSteps", "RestartState").front();
   CHECK(marked < 201);
   CHECK(counted == static_cast<double>(marked - 1));
+  // case-schema.md#time: start_order "second" has no first-order start, and the run logs it.
+  const auto second = run(input("hybrid.solver-input.json", [](Json& d) {
+    inviscid_along_x(d, "fp64");
+    d["time"]["max_iterations"] = 20;
+    d["time"]["start_order"] = "second";
+  }));
+  INFO(second.err);
+  REQUIRE(second.status == ExitStatus::finished);
+  for (const auto& line : history(second.run)) CHECK(line["provisional"] == false);
+  CHECK(field(second.run, "SolverFirstOrderSteps", "RestartState").front() == 0.0);
+  std::istringstream log(read(second.run / "log.jsonl"));
+  bool logged = false;
+  for (std::string text; std::getline(log, text);) {
+    const Json event = Json::parse(text);
+    logged =
+        logged || (event["data"].is_object() && event["data"].value("start_order", "") == "second");
+  }
+  CHECK(logged);
+  // ... and the steps themselves are second order: on a non-uniform flow (the manufactured
+  // solution's source), three steps from the same start end elsewhere than with the first-order
+  // start, in either precision.
+  for (const char* precision : {"fp64", "fp32+acc64"}) {
+    INFO(precision);
+    const auto three = [&](const char* order) {
+      return run(input("hybrid-verification.solver-input.json", [&](Json& d) {
+        d["precision"] = precision;
+        d["time"]["max_iterations"] = 3;
+        d["time"]["start_order"] = order;
+      }));
+    };
+    const auto first = three("first");
+    const auto second_order = three("second");
+    REQUIRE(first.status == ExitStatus::finished);
+    REQUIRE(second_order.status == ExitStatus::finished);
+    CHECK(field(first.run, "Density", "FlowSolution") !=
+          field(second_order.run, "Density", "FlowSolution"));
+  }
   // Unsteady lines leave it out.
   const auto steps = run(input("hybrid.solver-input.json", [](Json& d) {
     inviscid_along_x(d, "fp64");
