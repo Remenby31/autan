@@ -27,8 +27,8 @@ Each gate is checked on run 1. The values come from `main` 179e316c, #597's B4 h
 | Outcome | Meaning |
 |---|---|
 | green | Every gate passes and the two runs are identical. |
-| red | A gate fails, the runs differ, a run exits non-zero, or a run cannot be measured: a build failure, a crash, a non-finite or truncated history or monitor, a missing binary fingerprint, a foreign commit, or the night's deadline (06:30 UTC the next day, which stops the build or the runs). Inputs the enqueue refuses (the mesh's sha256, a failed fetch) give a red verdict without a job. |
-| void | A named infrastructure failure only: a cgroup OOM kill that the job's own counter records during the night. |
+| red | A gate fails, the runs differ, a run exits non-zero, or a run cannot be measured: a build failure, a crash, a non-finite or truncated history or monitor, a missing binary fingerprint, a foreign commit, or the night's deadline (06:30 UTC the next day, which stops the runs) once run 1 has started. Inputs the enqueue refuses (the mesh's sha256, a failed fetch) give a red verdict without a job. |
+| void | A named infrastructure failure only: the deadline firing before run 1 started (a late queue start; the verdict gives the queue start and the publication time), or a cgroup OOM kill that the job's own counter records during the night. |
 | MISSING | No verdict by 07:00 UTC. |
 
 **Reading the results:** every morning, V&V reads `spark-5512:~/cfd/vv-guard/STATUS`, one line per night, with the orchestrator as backup. A red or MISSING night gets an issue with both runs' paths. The host has no `gh`, so this step is manual.
@@ -41,7 +41,7 @@ On the reference run, energy first goes 10 orders below its peak at step 1977. I
 
 ## Installation on spark-5512
 
-The units run from a dedicated clone, `~/cfd/vv-guard/repo`, updated at each merge of this directory. The inputs sit in `~/cfd/vv-guard/inputs`: the mesh (its sha256 is fixed in `enqueue.sh`) and `reference-history.jsonl`, the reference run's history, for the first differing step before the first green night.
+Everything lives under `~/cfd/vv-guard`; `~/cfd/guard` belongs to the shared memory guard. The units run from a dedicated clone, `~/cfd/vv-guard/repo`, updated at each merge of this directory. The inputs sit in `~/cfd/vv-guard/inputs`: the mesh (its sha256 is fixed in `enqueue.sh`) and `reference-history.jsonl`, the reference run's history, for the first differing step before the first green night.
 
 ```sh
 git clone https://github.com/Remenby31/autan ~/cfd/vv-guard/repo
@@ -53,6 +53,6 @@ systemctl --user enable --now autan-guard-enqueue.timer autan-guard-watchdog.tim
 ```
 
 **What runs where:**
-- **The enqueue timer** (23:30 UTC, `Persistent=true`) only prepares the night's directory and writes its job file, `10-guard-<date>.job`, into the legacy queue. A night is the date of the latest 23:30 UTC slot, so a catch-up after midnight prepares the right night. A lock covers it, and a night prepared but not yet published is published by the next run.
+- **The enqueue timer** (23:30 UTC, `Persistent=true`) only prepares the night's directory and writes its job file, `05-guard-<date>.job`, into the legacy queue. PRIO 05 puts the guard ahead of the campaigns (08 and above); only the declared critical path (00–04) goes first. A night is the date of the latest 23:30 UTC slot, so a catch-up after midnight prepares the right night. A lock covers it, and a night prepared but not yet published is published by the next run.
 - **The job,** THREADS 1, CAP 6 GiB, does the build and the two runs.
 - **The watchdog** (07:00 UTC) appends one line per night to `STATUS`, for the night whose deadline the latest 07:00 slot closed, and trims green nights older than 14 days to their verdicts and histories.

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Nightly guard (#611), run by autan-guard-enqueue.timer on spark-5512 at 23:30 UTC (Persistent:
 # a missed run catches up). Prepares the night's directory from tonight's origin/main and publishes
-# its job file into the queue. Nothing is built or run on the host. A night is the date of the
-# latest 23:30 UTC slot; a night already published is not prepared again; one prepared but not
-# published is published. Refused inputs give the night a red verdict without a job.
+# its job file into the queue at PRIO 05, ahead of the campaigns. Nothing is built or run on the
+# host. A night is the date of the latest 23:30 UTC slot; a night already published is not prepared
+# again; one prepared but not published is published. Refused inputs give the night a red verdict
+# without a job.
 set -euo pipefail
 G=${AUTAN_GUARD_ROOT:-$HOME/cfd/vv-guard}
 MESH_SHA256=ceb75abce31f12437e954107467e3e2ca4acbf66b1059b4a24d910b86ae7a59e
@@ -13,8 +14,9 @@ if [ "$(date -u +%H%M)" -lt 2330 ]; then night=$(date -u -d yesterday +%F); else
 dir=$G/$night
 publish() {
   [ -e "$dir/ENQUEUED" ] && return 0
-  local name="10-guard-$night.job" q=$HOME/cfd/queue
+  local name="05-guard-$night.job" q=$HOME/cfd/queue
   if [ ! -e "$q/pending/$name" ] && [ ! -e "$q/running/$name" ] && [ ! -e "$q/done/$name" ]; then
+    date -u +%FT%TZ > "$dir/PUBLISHED"
     cp "$dir/job.file" "$q/pending/.$name.tmp" && mv "$q/pending/.$name.tmp" "$q/pending/$name"
   fi
   touch "$dir/ENQUEUED"
