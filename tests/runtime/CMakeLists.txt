@@ -34,6 +34,19 @@ if(AUTAN_ENABLE_CUDA)
   endforeach()
 endif()
 if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
+  # The launcher flags of the autan_ranks_tests registrations below, one string literal each.
+  set(autan_mpiexec_preflags "")
+  foreach(flag IN LISTS MPIEXEC_PREFLAGS)
+    string(REPLACE "\\" "\\\\" flag "${flag}")
+    string(REPLACE "\"" "\\\"" flag "${flag}")
+    string(APPEND autan_mpiexec_preflags "\"${flag}\", ")
+  endforeach()
+  file(
+    CONFIGURE
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/generated/mpiexec_preflags.hpp
+    CONTENT "#define AUTAN_MPIEXEC_PREFLAGS ${autan_mpiexec_preflags}\n"
+  )
+  target_include_directories(autan_runtime_tests PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
   target_compile_definitions(
     autan_runtime_tests
     PRIVATE
