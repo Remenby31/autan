@@ -21,6 +21,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -2899,13 +2900,15 @@ TEST_CASE("A momentum component drops from the largest momentum residual at iter
   // equation starts at 1e-5 of that law, above the floor 1e-12 x 6, and stops at 1e-12, 7.5
   // orders below its own first value. A momentum component drops from the largest momentum
   // residual at iteration 1, momentum-z's 4: the run converges at k = 28 whether momentum-x or
-  // momentum-y is the weak one, as when the mesh axes are permuted. Energy keeps its own
-  // reference: weak, it holds the run back.
-  for (const auto& [equation, converges] :
-       {std::pair{1, true}, std::pair{2, true}, std::pair{4, false}}) {
-    CAPTURE(equation);
+  // momentum-y is the weak one, as when the mesh axes are permuted; stopping at 5e-8 instead,
+  // above 4e-8, it holds the run back. Energy keeps its own reference: weak, it holds the run back.
+  for (const auto& [equation, stall, converges] :
+       {std::tuple{1, 1e-12, true}, std::tuple{2, 1e-12, true}, std::tuple{1, 5e-8, false},
+        std::tuple{4, 1e-12, false}}) {
+    CAPTURE(equation, stall);
     autan_test::RelaxationOptions weak;
     weak.weak_equation = equation;
+    weak.weak_stall = stall;
     const Outcome o = run(input([](Json& d) { d["time"]["max_iterations"] = 100; }), weak);
     REQUIRE(o.status == ExitStatus::finished);
     const Json info = Json::parse(read(o.run / "run.json"));

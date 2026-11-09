@@ -1734,16 +1734,24 @@ TEST_CASE("the steady CFL penalty halves after a rise of the relative residual a
   REQUIRE(first + 2 < h.size());
   double largest = 0.0;
   for (std::size_t k = 0; k < names.size(); ++k) largest = std::max(largest, at(0, k));
-  // A momentum component drops from the largest momentum component's reference.
+  // A momentum component drops from the largest momentum component's reference (#544).
   const double momentum = std::max({reference[1], reference[2], reference[3]});
-  auto relative = [&](std::size_t i) {
+  auto relative_by = [&](std::size_t i, bool shared) {
     double drop = 0.0;
     for (std::size_t k = 0; k < names.size(); ++k) {
-      const double from = k >= 1 && k <= 3 ? momentum : reference[k];
+      const double from = shared && k >= 1 && k <= 3 ? momentum : reference[k];
       if (at(0, k) >= 1e-12 * largest) drop = std::max(drop, at(i, k) / from);
     }
     return drop;
   };
+  auto relative = [&](std::size_t i) { return relative_by(i, true); };
+  // The restart state holds the last step's relative residual. Ringleb's momentum references
+  // differ, so the rule shows in it: each component against its own reference gives another value.
+  const double last = relative(h.size() - 1), own = relative_by(h.size() - 1, false);
+  INFO("last relative residual " << last << ", against own references " << own);
+  REQUIRE(std::abs(last - own) > 1e-6 * last);
+  CHECK(std::abs(field(whole.run, "SolverPreviousDrop", "RestartState").front() - last) <=
+        4 * std::numeric_limits<double>::epsilon() * last);
   std::set<std::int64_t> warned;
   {
     std::ifstream log_in(whole.run / "log.jsonl");
