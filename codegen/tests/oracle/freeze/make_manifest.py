@@ -1,8 +1,8 @@
 """Write the stage 1 manifest of ADR 0003's held-out validation (#43), deterministically.
 
 Usage: python make_manifest.py FIXTURES_JSONL OUT_JSON NODE_IDS
-NODE_IDS is `pytest --collect-only -q` of the oracle suite: every node id it lists is frozen as an
-auxiliary test that must pass for stage 1.
+NODE_IDS is `pytest --collect-only -q` of AUX_FILES (the oracle suite the auxiliary run executes):
+every node id it lists, one per line, is frozen as an auxiliary test that must pass for stage 1.
 FIXTURES_JSONL is the evaluation of every declared positive-fixture candidate on development (B)
 sizes (fixtures_eval output); the manifest records all candidates and their outcomes, not only the
 approved ones. The spike library's digest is NOT in this file: the library is built from the commit
@@ -26,7 +26,14 @@ FILES = [
     "test_oracle_controls.py", "test_oracle_fixtures.py", "test_spike_isolation.py",
     "test_oracle_heldout.py", "oracle/freeze/make_manifest.py", "oracle/freeze/fixtures_eval.py",
     "oracle/freeze/equivalence.py",
-    "oracle/freeze/nodeid_report.py",
+    "oracle/freeze/nodeid_report.py", "test_oracle_freeze_tooling.py",
+]  # fmt: skip
+# The files the auxiliary run collects and runs (codegen/tests/...), in its order.
+AUX_FILES = [
+    "tests/test_oracle_certified.py", "tests/test_oracle_roots.py", "tests/test_oracle_tidy.py",
+    "tests/test_oracle_topology.py", "tests/test_oracle_geometry.py", "tests/test_oracle_controls.py",
+    "tests/test_oracle_d1.py", "tests/test_oracle_fixtures.py", "tests/test_oracle_heldout.py",
+    "tests/test_spike_isolation.py",
 ]  # fmt: skip
 POLICIES = ["fp64", "fp32+acc64", "fp32"]
 METHODS = ["lsq", "gg"]
@@ -77,6 +84,13 @@ WHY_NOT = {
     "hybrid-constant-N4": "as tet-constant-N4",
     "hex-perturbed-constant-N4": "LSQ certifies R = 0; Green-Gauss has R > 0 and g_hat != G exactly (perturbed geometry)",
 }  # fmt: skip
+
+
+def node_ids(collected: str) -> list[str]:
+    """The node ids of `pytest --collect-only -q` output: one per line, whole. A node id may hold
+    spaces (parametrize ids such as `[a=9.0 G=[0, 0, 0] fp64 lsq]`), so lines are never split on
+    whitespace (stage 1 froze a truncated id that way, #43)."""
+    return [line.strip() for line in collected.splitlines() if "::" in line]
 
 
 def fixtures(path: Path) -> dict:
@@ -152,7 +166,7 @@ def main() -> int:
         "boundary_cases": {"test": "codegen/tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4"},
         "auxiliary_tests": {
             "rule": "the oracle suite on the frozen build: every node id below must pass (none skipped, deselected or missing); it holds the positive fixtures, the boundary cases, every control, the contract and frozen-code checks and the runner's own tests",
-            "node_ids": [n for n in Path(sys.argv[3]).read_text().split() if "::" in n],
+            "node_ids": node_ids(Path(sys.argv[3]).read_text()),
         },
         "controls": {"tests": ["codegen/tests/test_oracle_controls.py", "codegen/tests/test_oracle_geometry.py"], "rule": "every control demonstrated and failing as stated, with its proof at the output"},
         "reporting": {"per_class_radii": "a separate pass after the stage results, on the same frozen instances; reporting only, never read by the gate"},
