@@ -85,11 +85,26 @@ def read_run(run: Path, commit: str) -> tuple[dict[str, Any], list[dict[str, Any
     if its != list(range(1, STEPS + 1)) or info["iterations"] != STEPS:
         msg = f"{run}: history is not steps 1 to {STEPS} ({len(its)} lines)"
         raise GuardError(msg)
+    if not info["solver"].get("binary_sha256"):
+        msg = f"{run}: no binary_sha256 in run.json"
+        raise GuardError(msg)
     for line in lines:
-        if not all(math.isfinite(v) and v >= 0.0 for v in line["residuals"].values()):
-            msg = f"{run}: non-finite residual at step {line['iteration']}"
+        values = [*line["residuals"].values(), *_numbers(line.get("monitors", {}))]
+        if not all(isinstance(v, int | float) and math.isfinite(v) for v in values):
+            msg = f"{run}: non-finite or non-numeric value at step {line['iteration']}"
+            raise GuardError(msg)
+        if not all(v >= 0.0 for v in line["residuals"].values()):
+            msg = f"{run}: negative residual at step {line['iteration']}"
             raise GuardError(msg)
     return info, lines
+
+
+def _numbers(value: Any) -> list[Any]:
+    if isinstance(value, dict):
+        return [x for v in value.values() for x in _numbers(v)]
+    if isinstance(value, list):
+        return [x for v in value for x in _numbers(v)]
+    return [value] if not isinstance(value, str | bool) and value is not None else []
 
 
 def _rule_step(lines: list[dict[str, Any]], shared: bool) -> int | None:
@@ -132,8 +147,12 @@ def measure(lines: list[dict[str, Any]]) -> dict[str, Any]:
         peak = max(r)
         drops[k] = {
             "peak": math.log10(peak / r[-1]) if r[-1] > 0 else math.inf,
-            "first": math.log10(first[k] / r[-1]) if first[k] > 0 and r[-1] > 0 else None,
-            "shared": math.log10(momentum / r[-1]) if k in MOMENTUM and r[-1] > 0 else None,
+            "first": (math.log10(first[k] / r[-1]) if r[-1] > 0 else math.inf)
+            if first[k] > 0
+            else None,
+            "shared": (math.log10(momentum / r[-1]) if r[-1] > 0 else math.inf)
+            if k in MOMENTUM
+            else None,
         }
     energy = [line["residuals"]["energy"] for line in lines]
     threshold = max(energy) * 10.0**-ORDERS
@@ -148,6 +167,7 @@ def measure(lines: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "final": dict(last),
         "zero_floor": floor,
+        "zero_equation_max": max(line["residuals"][ZERO_EQUATION] for line in lines),
         "drops": drops,
         "m3f": m3f,
         "m3s": m3s,
@@ -166,7 +186,7 @@ def gates(m: dict[str, Any], has_544: bool) -> list[dict[str, Any]]:
         v = m["final"].get(k)
         out.append({"gate": "b", "equation": k, "value": v, "bound": bound,
                     "pass": v is not None and v <= bound})  # fmt: skip
-    z = m["final"].get(ZERO_EQUATION)
+    z = m["zero_equation_max"]
     out.append({"gate": "b", "equation": ZERO_EQUATION, "value": z, "bound": m["zero_floor"],
                 "pass": z is not None and z <= m["zero_floor"]})  # fmt: skip
     for (k, ref), low in DROP_MIN.items():
@@ -180,6 +200,13 @@ def gates(m: dict[str, Any], has_544: bool) -> list[dict[str, Any]]:
     return out
 
 
+def _first_difference(a: list[dict[str, Any]], b: list[dict[str, Any]]) -> int | None:
+    for x, y in zip(a, b, strict=False):
+        if x["residuals"] != y["residuals"]:
+            return int(x["iteration"])
+    return None if len(a) == len(b) else min(len(a), len(b)) + 1
+
+
 def verdict(
     run1: Path,
     run2: Path,
@@ -187,41 +214,71 @@ def verdict(
     *,
     has_544: bool,
     previous: dict[str, Any] | None = None,
+    previous_history: Path | None = None,
+    exit_codes: tuple[int, int] = (0, 0),
     infra: str | None = None,
 ) -> dict[str, Any]:
     """One night's verdict (schema autan.vv-guard-night/1). `infra` names evidenced infrastructure
-    failure (a cgroup OOM kill, a host reboot, a queue fault): the night is then `void`. Any run
-    that cannot be measured, two runs that differ, or a failing gate is `red`. `previous` is the
-    last green night's verdict: same binary, then same canonical history (gate e)."""
-    night: dict[str, Any] = {"schema": VERDICT_SCHEMA, "commit": commit, "has_544": has_544}
+    failure (a cgroup OOM kill the job measured as new): the night is then `void`. A run that exits
+    non-zero (`exit_codes`) or cannot be measured, two runs that differ, or a failing gate is
+    `red`. `previous` is the last green night's verdict (or the reference run's, before the first
+    green night): the same binary must give the same canonical history (gate e); another binary's
+    difference is reported, with the first differing step against `previous_history`."""
+    night: dict[str, Any] = {"schema": VERDICT_SCHEMA, "commit": commit, "has_544": has_544,
+                             "exit_codes": list(exit_codes)}  # fmt: skip
     if infra:
         return {**night, "outcome": "void", "infra": infra}
     try:
         info1, lines1 = read_run(run1, commit)
         info2, lines2 = read_run(run2, commit)
-    except (GuardError, OSError, KeyError, ValueError) as err:
+        sha1, sha2 = canonical_sha256(lines1), canonical_sha256(lines2)
+        binary = info1["solver"]["binary_sha256"]
+        night |= {"binary_sha256": binary, "history_sha256": sha1, "status": info1["status"]}
+        m = measure(lines1)
+        checks = gates(m, has_544)
+    except (GuardError, OSError, KeyError, ValueError, TypeError) as err:
         return {**night, "outcome": "red", "reason": f"unmeasurable run: {err}"}
-    sha1, sha2 = canonical_sha256(lines1), canonical_sha256(lines2)
-    binary = info1["solver"].get("binary_sha256")
-    night |= {"binary_sha256": binary, "history_sha256": sha1, "status": info1["status"]}
-    m = measure(lines1)
-    checks = gates(m, has_544)
     reasons = [c for c in checks if not c["pass"]]
-    if sha1 != sha2 or binary != info2["solver"].get("binary_sha256"):
+    if any(rc != 0 for rc in exit_codes):
+        reasons.append({"gate": "exit", "exit_codes": list(exit_codes), "pass": False})
+    if sha1 != sha2 or binary != info2["solver"]["binary_sha256"]:
         reasons.append({"gate": "repeat", "run1": sha1, "run2": sha2, "pass": False})
     across: dict[str, Any] = {"previous": None}
     if previous is not None:
-        across = {
-            "previous": previous.get("commit"),
-            "same_binary": previous.get("binary_sha256") == binary,
-        }
+        across = {"previous": previous.get("commit"),
+                  "same_binary": previous.get("binary_sha256") == binary}  # fmt: skip
         if across["same_binary"]:
             across["same_history"] = previous.get("history_sha256") == sha1
             if not across["same_history"]:
                 reasons.append({"gate": "e", "previous": previous.get("history_sha256"),
                                 "tonight": sha1, "pass": False})  # fmt: skip
+        if previous_history is not None and previous.get("history_sha256") != sha1:
+            try:
+                across["first_differing_step"] = _first_difference(
+                    _history_lines(previous_history), lines1
+                )
+            except (OSError, ValueError) as err:
+                across["first_differing_step"] = f"unreadable: {err}"
+        pm = previous.get("measures") or {}
+        across["deltas"] = {
+            "m3f": _delta(m["m3f"], pm.get("m3f")),
+            "m3s": _delta(m["m3s"], pm.get("m3s")),
+            "drops": {k: {r: _delta(v, (pm.get("drops") or {}).get(k, {}).get(r))
+                          for r, v in d.items()} for k, d in m["drops"].items()},
+        }  # fmt: skip
     return {**night, "outcome": "red" if reasons else "green", "measures": m, "gates": checks,
             "failing": reasons, "across_nights": across}  # fmt: skip
+
+
+def _history_lines(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(x) for x in path.read_text().splitlines() if x.strip()]
+
+
+def _delta(now: Any, before: Any) -> float | None:
+    numbers = isinstance(now, int | float) and isinstance(before, int | float)
+    if numbers and math.isfinite(now) and math.isfinite(before):
+        return float(now - before)
+    return None
 
 
 def night_status(night: Path) -> str:

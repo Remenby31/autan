@@ -1,0 +1,9 @@
+{
+  "schema": "autan.vv-guard-night/1",
+  "outcome": "reference",
+  "commit": "179e316cc543f01e8cb3a0cda0e60cd97e939415",
+  "binary_sha256": "2f10a030d1e9c7f6c0a0683881ac03e60dc915171301c2e666e0123b0b022b9e",
+  "history_sha256": "8f4b59340bba057ed7e48fcfb01c081045ec54ec0742f7c6e400cfb41c329533",
+  "source": "#597 bisection B4 (residual_orders 10, 20000 steps), https://github.com/Remenby31/autan/issues/597#issuecomment-6731375077",
+  "measures": {"m3f": 1977, "m3s": 12087}
+}

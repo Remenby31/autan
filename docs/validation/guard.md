@@ -16,19 +16,19 @@ Each gate is checked on run 1. The values come from `main` 179e316c, #597's B4 h
 
 | Gate | Condition |
 |---|---|
-| (a) rule | The case-schema rule at 10 orders, recomputed from the history (`autan_vv.guard`), is met at some step ≤ 20 000 once #544 is in the night's commit, with the shared momentum reference. Before #544, it is recorded and not gated: momentum-y does not meet it against its own step-1 value. |
-| (b) final residuals | ≤ the reference run's × 10^0.5: density 4.579e-15, momentum-x 1.2719e-12, momentum-y 5.355e-13, energy 1.8778e-9, `nu-tilde` 3.625e-18; momentum-z (zero in this slab) ≤ its identically-zero floor. |
+| (a) rule | The case-schema rule at 10 orders, recomputed from the history (`autan_vv.guard`), is met at some step ≤ 20 000 once #544 is in the night's commit, with the shared momentum reference. Before #544, it is recorded and not gated: momentum-y does not meet it against its own step-1 value. The night has #544 when its pinned history holds a commit whose subject ends `(#N)`, N being `PR` in `vv/guard/has544.conf`, which #544's PR sets. |
+| (b) final residuals | ≤ the reference run's × 10^0.5: density 4.579e-15, momentum-x 1.2719e-12, momentum-y 5.355e-13, energy 1.8778e-9, `nu-tilde` 3.625e-18; momentum-z (zero in this slab) ≤ its identically-zero floor at every step, not only the last. |
 | (c) drops, orders | Energy ≥ 11.36 below its peak and ≥ 9.82 below its step-1 value (after #544 the binding equation, with 0.3 order of margin); momentum-x ≥ 12.53 below step 1; momentum-y ≥ 12.91 below the shared momentum reference; `nu-tilde` ≥ 13.27 below step 1. |
 | (d) speed | Energy first 10 orders below its peak by step 2 174 (m3f), and staying there from step 13 295 on (m3s). |
-| (e) repeat | The two runs give the same history; with the same `autan-run` as the last green night, so does the night against that night. |
+| (e) repeat | The two runs give the same history, and both exit 0. With the same `autan-run` as the last green night (before any, the reference run, `vv/guard/reference.json`), so does the night against that night. With another binary, the first differing step and the changes of m3f, m3s and every drop are reported. |
 
 ## Outcomes
 
 | Outcome | Meaning |
 |---|---|
 | green | Every gate passes and the two runs are identical. |
-| red | A gate fails, the runs differ, or a run cannot be measured: a build failure, a crash, a non-finite or truncated history, a foreign commit, or the 06:30 UTC stop. |
-| void | A named infrastructure failure only: a cgroup OOM kill. |
+| red | A gate fails, the runs differ, a run exits non-zero, or a run cannot be measured: a build failure, a crash, a non-finite or truncated history or monitor, a missing binary fingerprint, a foreign commit, or the night's deadline (06:30 UTC the next day, which stops the build or the runs). Inputs the enqueue refuses (the mesh's sha256, a failed fetch) give a red verdict without a job. |
+| void | A named infrastructure failure only: a cgroup OOM kill that the job's own counter records during the night. |
 | MISSING | No verdict by 07:00 UTC. |
 
 **Reading the results:** every morning, V&V reads `spark-5512:~/cfd/guard/STATUS`, one line per night, with the orchestrator as backup. A red or MISSING night gets an issue with both runs' paths. The host has no `gh`, so this step is manual.
@@ -41,18 +41,18 @@ On the reference run, energy first goes 10 orders below its peak at step 1977. I
 
 ## Installation on spark-5512
 
-The units run from a dedicated clone, `~/cfd/guard/repo`, updated at each merge of this directory. The inputs sit in `~/cfd/guard/inputs`: the mesh and `mesh.sha256`.
+The units run from a dedicated clone, `~/cfd/guard/repo`, updated at each merge of this directory. The inputs sit in `~/cfd/guard/inputs`: the mesh (its sha256 is fixed in `enqueue.sh`) and `reference-history.jsonl`, the reference run's history, for the first differing step before the first green night.
 
 ```sh
 git clone https://github.com/Remenby31/autan ~/cfd/guard/repo
 mkdir -p ~/cfd/guard/inputs ~/.config/systemd/user
-cp <the mesh> ~/cfd/guard/inputs/ && (cd ~/cfd/guard/inputs && sha256sum flatplate-137x97.msh > mesh.sha256)
+cp <the mesh> <the reference run's history.jsonl> ~/cfd/guard/inputs/   # names: flatplate-137x97.msh, reference-history.jsonl
 cp ~/cfd/guard/repo/vv/guard/autan-guard-*.{service,timer} ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now autan-guard-enqueue.timer autan-guard-watchdog.timer
 ```
 
 **What runs where:**
-- **The enqueue timer** (23:30 UTC, `Persistent=true`) only prepares the night's directory and writes its job file, `10-guard-<date>.job`, into the legacy queue.
+- **The enqueue timer** (23:30 UTC, `Persistent=true`) only prepares the night's directory and writes its job file, `10-guard-<date>.job`, into the legacy queue. A night is the date of the latest 23:30 UTC slot, so a catch-up after midnight prepares the right night. A lock covers it, and a night prepared but not yet published is published by the next run.
 - **The job,** THREADS 1, CAP 6 GiB, does the build and the two runs.
-- **The watchdog** (07:00 UTC) appends the line to `STATUS`.
+- **The watchdog** (07:00 UTC) appends one line per night to `STATUS`, for the night whose deadline the latest 07:00 slot closed, and trims green nights older than 14 days to their verdicts and histories.

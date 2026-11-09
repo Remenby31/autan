@@ -73,8 +73,10 @@ def test_main_like_night_is_green_and_its_measures_follow_from_the_history(tmp_p
     assert m["drops"]["momentum-y"]["shared"] == pytest.approx(math.log10(4.0 / 1.6e-13))
     assert m["rule_own"] is None  # momentum-y is 7.97 orders below its own step-1 value
     assert m["rule_shared"] is not None
-    assert m["m3f"] == m["m3s"]
-    assert m["m3f"] <= 1500
+    energy = _green()["energy"]
+    below = energy <= energy.max() * 1e-10
+    assert m["m3f"] == int(np.argmax(below)) + 1  # first step below
+    assert m["m3s"] == m["m3f"]  # monotone after the peak: the crossing is sustained
     # Once #544 is in the night's commit, the shared rule must be met: here it is.
     assert _night(tmp_path / "n544", _green(), has_544=True)["outcome"] == "green"
 
@@ -97,13 +99,40 @@ def _worse(edit: str) -> dict[str, np.ndarray]:
 
 
 @pytest.mark.parametrize(
-    ("edit", "gate"),
-    [("energy-final", "b"), ("m3f", "d"), ("m3s", "d"), ("momentum-z", "b"), ("nu-tilde", "c")],
+    ("edit", "gate", "what"),
+    [
+        ("energy-final", "b", "energy"),
+        ("m3f", "d", "m3f"),
+        ("m3s", "d", "m3s"),
+        ("momentum-z", "b", "momentum-z"),
+        ("nu-tilde", "c", "nu-tilde"),
+    ],
 )
-def test_a_night_worse_than_main_is_red_on_its_gate(tmp_path: Path, edit: str, gate: str) -> None:
+def test_a_night_worse_than_main_is_red_on_its_gate(
+    tmp_path: Path, edit: str, gate: str, what: str
+) -> None:
     v = _night(tmp_path, _worse(edit))
     assert v["outcome"] == "red"
-    assert gate in {c["gate"] for c in v["failing"]}
+    failing = {(c["gate"], c.get("equation") or c.get("measure")) for c in v["failing"]}
+    assert (gate, what) in failing
+    if edit == "m3s":
+        assert ("d", "m3f") not in failing
+        assert v["measures"]["m3s"] == 14001  # the step after the excursion at step 14 000
+
+
+def test_an_excursion_of_the_zero_equation_is_red_even_if_it_recovers(tmp_path: Path) -> None:
+    s = _green()
+    z = s["momentum-z"].copy()
+    z[9999] = 1e-9  # above its floor (1e-12 x 12) at step 10 000, back at 1e-19 after
+    s["momentum-z"] = z
+    v = _night(tmp_path, s)
+    assert ("b", "momentum-z") in {(c["gate"], c.get("equation")) for c in v["failing"]}
+
+
+def test_a_run_that_exits_non_zero_is_red_whatever_its_history(tmp_path: Path) -> None:
+    v = _night(tmp_path, _green(), exit_codes=(0, 1))
+    assert v["outcome"] == "red"
+    assert "exit" in {c["gate"] for c in v["failing"]}
 
 
 def test_after_544_the_shared_rule_must_be_met(tmp_path: Path) -> None:
@@ -180,6 +209,24 @@ def test_cli_writes_strict_json_and_exits_1_on_red(tmp_path: Path) -> None:
         main(["guard", "verdict", str(night), "--run1", str(r1), "--run2", str(r2),
               "--commit", COMMIT])  # fmt: skip
     assert err.value.code == 1
-    report = json.loads((night / "verdict.json").read_text())
-    assert report["outcome"] == "red"
+    assert json.loads((night / "verdict.json").read_text())["outcome"] == "red"
     assert main(["guard", "status", str(night)]) == 0
+
+
+def test_an_infinite_drop_passes_and_is_written_as_strict_json(tmp_path: Path) -> None:
+    s = _green()
+    x = s["momentum-x"].copy()
+    x[-1] = 0.0  # exactly zero at the last step: an infinite drop
+    s["momentum-x"] = x
+    night = tmp_path / "night"
+    night.mkdir()
+    r1, r2 = _run(night / "run1", s), _run(night / "run2", s)
+    assert main(["guard", "verdict", str(night), "--run1", str(r1), "--run2", str(r2),
+                 "--commit", COMMIT]) == 0  # fmt: skip
+
+    def refuse(name: str) -> None:
+        raise ValueError(name)
+
+    report = json.loads((night / "verdict.json").read_text(), parse_constant=refuse)
+    assert report["outcome"] == "green"
+    assert report["measures"]["drops"]["momentum-x"]["first"] is None  # infinity, written as null

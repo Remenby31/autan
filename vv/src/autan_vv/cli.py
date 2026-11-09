@@ -508,25 +508,33 @@ def _cmd_guard(args: argparse.Namespace) -> None:
     if args.action == "status":
         _say(guard.night_status(args.night))
         return
-    previous = json.loads(args.previous.read_text()) if args.previous is not None else None
+    previous, note = None, None
+    if args.previous is not None:
+        try:
+            previous = json.loads(args.previous.read_text())
+        except (OSError, ValueError) as err:
+            note = f"previous verdict unreadable: {err}"
     report = guard.verdict(
         args.run1,
         args.run2,
         args.commit,
         has_544=args.has_544,
         previous=previous,
+        previous_history=args.previous_history,
+        exit_codes=(args.rc1, args.rc2),
         infra=args.infra,
     )
-    (args.night / "verdict.json").write_text(
-        json.dumps(_strict(report), indent=2, allow_nan=False) + "\n"
-    )
+    if note:
+        report["note"] = note
+    tmp = args.night / ".verdict.json.tmp"
+    tmp.write_text(json.dumps(_strict(report), indent=2, allow_nan=False) + "\n")
+    tmp.replace(args.night / "verdict.json")
     failing = ", ".join(
         f"{c['gate']}:{c.get('equation') or c.get('measure') or c.get('rule') or ''}"
         for c in report.get("failing", [])
     )
-    _say(
-        f"{report['outcome']} {report['commit'][:12]} {failing or report.get('reason') or report.get('infra') or ''}"
-    )
+    detail = failing or report.get("reason") or report.get("infra") or ""
+    _say(f"{report['outcome']} {report['commit'][:12]} {detail}")
     if report["outcome"] == "red":
         raise SystemExit(1)
 
@@ -722,6 +730,9 @@ def main(argv: list[str] | None = None) -> int:
         "--has-544", action="store_true", help="verdict: the commit contains #544's merge"
     )
     p.add_argument("--previous", type=Path, help="verdict: the last green night's verdict.json")
+    p.add_argument("--previous-history", type=Path, help="verdict: that night's run-1 history")
+    p.add_argument("--rc1", type=int, default=0, help="verdict: run 1's exit code")
+    p.add_argument("--rc2", type=int, default=0, help="verdict: run 2's exit code")
     p.add_argument("--infra", help="verdict: evidenced infrastructure failure (the night is void)")
     p.set_defaults(func=_cmd_guard)
 
