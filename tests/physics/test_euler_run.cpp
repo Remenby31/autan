@@ -136,9 +136,9 @@ Json continue_from(const fs::path& previous, const std::string& mode = "continue
   picosha2::hash256_hex_string(read(previous / "solution.cgns"), hash);
   Json reference = nullptr;
   Json woken = nullptr;
-  if (info["time"].is_null() && mode == "continue") {
-    // case-schema.md#time: the equations below 1e-12 of the largest at
-    // iteration 1 that went above that floor.
+  if (info["time"].is_null()) {
+    // case-schema.md#time: a steady continue or warm start takes the reference;
+    // continue also the equations below 1e-12 of its largest that went above that floor.
     const auto lines = history(previous);
     reference = lines[0]["residuals"];
     double largest = 0.0;
@@ -151,7 +151,7 @@ Json continue_from(const fs::path& previous, const std::string& mode = "continue
       if (f.get<double>() < 1e-12 * largest && left) names.push_back(name);
     }
     std::ranges::sort(names);
-    woken = Json(names);
+    woken = mode == "warm" ? Json::array() : Json(names);
   }
   return Json{{"run", previous.string()},         {"run_id", info["run_id"]},
               {"identity", info["identity"]},     {"mode", mode},
