@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Nightly guard (#611), run by autan-guard-enqueue.timer on spark-5512 at 23:30 UTC (Persistent:
 # a missed run catches up). Prepares the night's directory from tonight's origin/main and publishes
-# its job file into the queue at PRIO 05, ahead of the campaigns. Nothing is built or run on the
-# host. A night is the date of the latest 23:30 UTC slot; a night already published is not prepared
-# again; one prepared but not published is published. Refused inputs give the night a red verdict
-# without a job.
+# its job file through ~/cfd/bin/cfd-submit at PRIO 05, ahead of the campaigns. Nothing is built or
+# run on the host. A night is the date of the latest 23:30 UTC slot; a night already published is
+# not prepared again; one prepared but not published is published. Refused inputs give the night a
+# red verdict without a job.
 set -euo pipefail
 G=${AUTAN_GUARD_ROOT:-$HOME/cfd/vv-guard}
 MESH_SHA256=ceb75abce31f12437e954107467e3e2ca4acbf66b1059b4a24d910b86ae7a59e
@@ -14,14 +14,14 @@ now=$(date -u +%s)
 if [ "$(date -u -d "@$now" +%H%M)" -lt 2330 ]; then now=$((now - 86400)); fi
 night=$(date -u -d "@$now" +%F)
 dir=$G/$night
+job=05-guard-$night.job
 publish() {
   [ -e "$dir/ENQUEUED" ] && return 0
-  local name="05-guard-$night.job" q=$HOME/cfd/queue
-  if [ ! -e "$q/pending/$name" ] && [ ! -e "$q/running/$name" ] && [ ! -e "$q/done/$name" ]; then
-    date -u +%FT%TZ > "$dir/PUBLISHED"
-    cp "$dir/job.file" "$q/pending/.$name.tmp" || return 1
-    mv "$q/pending/.$name.tmp" "$q/pending/$name" || return 1
-  fi
+  local q=$HOME/cfd/queue
+  local d
+  for d in pending running done migrated; do [ -e "$q/$d/$job" ] && { touch "$dir/ENQUEUED"; return 0; }; done
+  "$HOME/cfd/bin/cfd-submit" "$dir/$job" > "$dir/submit.log" 2>&1 || return 1
+  date -u +%FT%TZ > "$dir/PUBLISHED"
   touch "$dir/ENQUEUED"
 }
 refuse() {
@@ -30,7 +30,7 @@ refuse() {
   mv "$tmp" "$dir"
   exit 0
 }
-if [ -e "$dir" ]; then [ -e "$dir/job.file" ] && publish; exit 0; fi
+if [ -e "$dir" ]; then [ -e "$dir/$job" ] && publish; exit 0; fi
 tmp=$(mktemp -d "$G/.prep-XXXXXX")
 echo "$night" > "$tmp/NIGHT"
 git -C "$G/repo" fetch -q origin main || refuse "git fetch failed"
@@ -61,6 +61,6 @@ else
   [ -e "$G/inputs/reference-history.jsonl" ] && cp "$G/inputs/reference-history.jsonl" "$tmp/previous-history.jsonl"
 fi
 printf 'ID=guard-%s\nOWNER=CFD - Comparatif SU2 (V&V)\nDECL=https://github.com/Remenby31/autan/issues/611#issuecomment-6731459780\nCAP_GIB=6\nRESERVE_GIB=3\nEST_MIN=150\nTHREADS=2\nGPU=0\nWORKDIR=%s\nCMD=bash /work/src/vv/guard/job.sh\n' \
-  "$night" "$dir" > "$tmp/job.file"
+  "$night" "$dir" > "$tmp/$job"
 mv "$tmp" "$dir"
 publish
