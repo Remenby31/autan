@@ -1,5 +1,3 @@
-FetchContent_GetProperties(picosha2)
-
 # results.md, run.json `solver.binary_sha256`: the hash of autan-run covers the solver only when
 # every library of ours links into it statically.
 if(BUILD_SHARED_LIBS)
@@ -28,7 +26,7 @@ target_include_directories(
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
-target_include_directories(autan_runtime SYSTEM PRIVATE ${picosha2_SOURCE_DIR})
+target_link_libraries(autan_runtime PRIVATE autan::picosha2)
 # Every process hashes its executable (run.json solver.binary_sha256): unoptimised, hashing a
 # Debug test executable took seconds. Not per configuration, which Xcode refuses per source.
 set_source_files_properties(src/executable_hash.cpp PROPERTIES COMPILE_OPTIONS -O2)

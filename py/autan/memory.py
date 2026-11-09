@@ -255,7 +255,7 @@ def _partition(mesh: MeshInfo, r: int) -> tuple[int, int, int]:
         + 8 * counts.cells
         + 16 * fn  # the local mesh's closure check, at most 16 B a face node
     )
-    if p.ghost_stencil == "vertex":
+    if p.ghost_stencil != "face2":
         # The ring check's degree of every global node and map of the owned node copies.
         extraction += 4 * counts.nodes + 64 * n
     return kept, halo_device, max(extraction, 8 * counts.cells)

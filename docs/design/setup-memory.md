@@ -52,7 +52,7 @@ Every rank reads the whole mesh and runs these steps on it, so every row is held
 | `local`, `ghosts_of`'s sets and frontiers, `first_layer`, `faces` (`extract.cpp:278`–`344`) | `L_r`, `G_r`, `F_r` | Q |
 | the `nodes` map (`extract.cpp:380`) and the local `MeshInput`'s `x`, `y`, `z`, `face_nodes` by `push_back` (`extract.cpp:389`–`404`) | `N_r`, `P_r` | Q |
 | the local `MeshInput`'s face and cell arrays, `assemble`'s temporaries, the local mesh, geometry, `face_global_id`, `face_reversed` (`extract.cpp:364`–`447`, `mesh.cpp:273`–`377`) | `F_r`, `F_ir`, `L_r`, `G_r` | Q |
-| with `GhostStencil::vertex`: the rings' cells and faces (`rings_of`), and `check_rings`' degree, 4 B a global node, and map of the owned node copies, 64 B each | N, `N_r` | M: 4N; Q |
+| with a vertex `GhostStencil`: the rings' cells, walked node copies and faces (`rings_of`), and `check_rings`' degree, 4 B a global node, and map of the walked node copies, 64 B each | N, `N_r` | M: 4N; Q |
 | one neighbour's ghosts, recomputed for each neighbour in turn (`extract.cpp:472`) | that neighbour's `C_q` + `G_q` | Q |
 | send lists, slots and interface faces (`extract.cpp:473`–`494`), `HaloExchange`'s index copies and messages (`halo_exchange.cpp:322`–`336`) | `S_r`, `G_r` | Q |
 | `host_slots`, `host_ghosts`: 16 components of 8 B each, whatever the run moves (`halo_exchange.cpp:366`) | `S_r`, `G_r` | Q |

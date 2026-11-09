@@ -318,12 +318,12 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     lines = autan.load(write_case(CRM_HL + "case.time = autan.Steady(linear_solver='lines')\n"))
     assert "E0212" in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cpu"))
     assert "E0212" not in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cuda"))
-    # Nor is a partition holding the vertex stencil's ghosts that of a face2 run.
-    vertex = prepared(mesh_document("crm-hl"), ranks=4)
-    vertex["partition"]["ghost_stencil"] = "vertex"
-    on_vertex = autan.MeshInfo.from_document(vertex, autan.Location())
+    # Nor is a partition holding face2's ghosts that of an SA run, whose fits read four vertex
+    # rings (vertex4).
+    face2 = prepared(mesh_document("crm-hl"), ranks=4, ghost_stencil="face2")
+    on_face2 = autan.MeshInfo.from_document(face2, autan.Location())
     assert "E0212" in diagnostic_codes(
-        autan.load(write_case(CRM_HL)).plan(on_vertex, gpus=4, device_kind="cuda")
+        autan.load(write_case(CRM_HL)).plan(on_face2, gpus=4, device_kind="cuda")
     )
     by_name = {c.name: c for c in four.components}
     assert by_name["mesh"] == {c.name: c for c in cuda.components}["mesh"]

@@ -29,7 +29,7 @@ cmake --build build
 
 The build generates the flow kernels from `kernels/` with Python, then compiles them. It writes `build/runtime/autan-run` and `build/io/autan-mesh-info`.
 
-The configuration downloads nlohmann/json and PicoSHA2, and Catch2 for the tests, from GitHub, and checks each against its SHA-256. If the environment variable `AUTAN_GITHUB_TOKEN` is set, its value is sent as the downloads' token, which GitHub serves first under load. CI sets it to the workflow's read-only `GITHUB_TOKEN`.
+nlohmann/json and PicoSHA2 are in the repository, under `third_party/`, so a build without the tests downloads nothing. With the tests, the configuration downloads Catch2 from GitHub and checks it against its SHA-256. If the environment variable `AUTAN_GITHUB_TOKEN` is set, its value is sent as the download's token, which GitHub serves first under load. CI sets it to the workflow's read-only `GITHUB_TOKEN`.
 
 ## Run a case on the CPU
 

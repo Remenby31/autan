@@ -1,12 +1,15 @@
 // autan-partition-report: reads a mesh, partitions it and prints the time of
 // each step and the partition quality as one JSON object per part count;
-// `--ghosts vertex` extracts rank 0 with the vertex ghost stencil.
+// parts are METIS's or Scotch's with cell_cost_weights, as a run's. `--ghosts K` extracts with
+// the ghost stencil K (default face2); `--every-rank` extracts every rank, one at a time, each
+// freed before the next, and adds each rank's extraction time and ghost count.
 // `write-box DIR n` writes an n^3 hex box as a binary polyMesh to read back.
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -165,8 +168,8 @@ int main(int argc, char** argv) {
   }
   if (argc < 4) {
     std::fprintf(stderr,
-                 "usage: %s write-box DIR n\n       %s MESH metis|scotch [--ghosts vertex] "
-                 "parts...\n",
+                 "usage: %s write-box DIR n\n       %s MESH metis|scotch [--ghosts K] "
+                 "[--every-rank] parts...\n",
                  argv[0], argv[0]);
     return 2;
   }
@@ -177,13 +180,30 @@ int main(int argc, char** argv) {
 
   int first_part = 3;
   autan::GhostStencil ghosts = autan::GhostStencil::face2;
-  if (argc > 5 && std::string(argv[3]) == "--ghosts" && std::string(argv[4]) == "vertex") {
-    ghosts = autan::GhostStencil::vertex;
-    first_part = 5;
+  bool every_rank = false;
+  while (first_part < argc && std::string(argv[first_part]).starts_with("--")) {
+    const std::string option = argv[first_part];
+    if (option == "--every-rank") {
+      every_rank = true;
+      ++first_part;
+      continue;
+    }
+    const auto kind = option == "--ghosts" && first_part + 1 < argc
+                          ? autan::ghost_stencil_named(argv[first_part + 1])
+                          : std::nullopt;
+    if (!kind) {
+      std::fprintf(stderr,
+                   "options: --ghosts face|face2|vertex|vertex2|vertex3|vertex4, "
+                   "--every-rank\n");
+      return 2;
+    }
+    ghosts = *kind;
+    first_part += 2;
   }
 
   auto start = std::chrono::steady_clock::now();
   const autan::Mesh mesh = autan::io::read_mesh(argv[1]);
+  options.cell_weights = autan::cell_cost_weights(mesh);
   const double t_read = seconds_since(start);
   start = std::chrono::steady_clock::now();
   const autan::Geometry geometry = autan::compute_geometry(mesh);
@@ -194,21 +214,42 @@ int main(int argc, char** argv) {
     start = std::chrono::steady_clock::now();
     const auto parts = autan::partition_cells(mesh, n_parts, options);
     const double t_partition = seconds_since(start);
-    const auto q = autan::partition_quality(mesh, parts, n_parts);
-    start = std::chrono::steady_clock::now();
-    const auto local = autan::extract_partition(mesh, geometry, parts, n_parts, 0, ghosts);
-    const double t_extract = seconds_since(start);
+    const auto q = autan::partition_quality(mesh, parts, n_parts, options.cell_weights);
+    double t_extract = 0.0;
+    index_t rank0_cells = 0;
+    std::string times, counts;
+    for (std::int32_t r = 0; r < (every_rank ? n_parts : 1); ++r) {
+      start = std::chrono::steady_clock::now();
+      const auto part = autan::extract_partition(mesh, geometry, parts, n_parts, r, ghosts);
+      const double t = seconds_since(start);
+      if (r == 0) {
+        t_extract = t;
+        rank0_cells = part.mesh.n_cells();
+      }
+      char buffer[32];
+      std::snprintf(buffer, sizeof buffer, "%s%.2f", r == 0 ? "" : ", ", t);
+      times += buffer;
+      counts +=
+          (r == 0 ? "" : ", ") + std::to_string(part.mesh.n_cells() - part.mesh.n_owned_cells());
+    }
+    const std::string by_rank = every_rank ? ", \"extract_s_by_rank\": [" + times +
+                                                 "], \"ghosts_by_rank\": [" + counts + "]"
+                                           : std::string();
     std::printf(
         "{\"cells\": %d, \"method\": \"%s\", \"parts\": %d, \"cut_faces\": %lld, "
         "\"cut_fraction\": %.4f, \"imbalance\": %.4f, \"ghost_ratio\": %.4f, "
         "\"max_ghost_ratio\": %.4f, \"max_neighbours\": %d, \"read_s\": %.2f, "
         "\"geometry_s\": %.2f, \"partition_s\": %.2f, \"extract_rank0_s\": %.2f, "
-        "\"rank0_cells\": %d%s}\n",
+        "\"rank0_cells\": %d%s%s}\n",
         mesh.n_cells(), method_name.c_str(), n_parts, static_cast<long long>(q.cut_faces),
         static_cast<double>(q.cut_faces) / mesh.n_interior_faces(), q.imbalance, q.ghost_ratio,
         q.max_ghost_ratio, q.max_neighbours, t_read, t_geometry, t_partition, t_extract,
-        local.mesh.n_cells(),
-        ghosts == autan::GhostStencil::vertex ? ", \"ghosts\": \"vertex\"" : "");
+        rank0_cells,
+        (ghosts == autan::GhostStencil::face2
+             ? std::string()
+             : ", \"ghosts\": \"" + std::string(autan::name(ghosts)) + "\"")
+            .c_str(),
+        by_rank.c_str());
     std::fflush(stdout);
   }
   // Peak resident memory, where the kernel reports it (Linux).

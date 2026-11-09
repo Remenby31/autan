@@ -69,8 +69,8 @@ struct Scheme {
 };
 
 /// The ghost stencil a partition must hold for `scheme` to compute its owned cells as on the
-/// whole mesh: face2, or vertex for GradientStencil::vertex; none for the quadratic fit, whose two
-/// vertex rings no partition holds.
+/// whole mesh: face2, vertex for GradientStencil::vertex, vertex2 for the quadratic fit's two
+/// vertex rings.
 std::optional<GhostStencil> ghost_stencil(const Scheme& scheme);
 
 /// Fills the ghost cells of a partitioned mesh from their owners: each pointer is one component
