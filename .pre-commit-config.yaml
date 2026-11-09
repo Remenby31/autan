@@ -2,6 +2,9 @@
 # clang-format stays at the version named in .clang-format (Dependabot ignores it).
 # Files under tests/data/ are written by independent tools (Gmsh, OpenFOAM) and are test oracles:
 # no hook rewrites them, and .gitattributes keeps Git from converting them.
+# The vendored libraries under third_party/ are upstream's bytes: no hook rewrites them, and
+# `third-party sums` checks them against third_party/SHA256SUMS.
+exclude: ^third_party/(nlohmann_json|picosha2)/
 default_install_hook_types: [pre-commit]
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -77,6 +80,12 @@ repos:
 
   - repo: local
     hooks:
+      - id: third-party-sums
+        name: third-party sums
+        language: system
+        entry: python3 tools/check-third-party.py
+        always_run: true
+        pass_filenames: false
       # The error codes' registry (py/autan/) and the tables that document them must agree; the
       # SDK's test says so in about a second, before CI's Python SDK job does. On every commit: it
       # also reads files a commit may delete or rename. From uv.lock only, build backend included,
