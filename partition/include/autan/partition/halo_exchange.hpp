@@ -66,15 +66,20 @@ class HaloExchange {
   std::unique_ptr<State> state_;
 };
 
-/// The row of every ghost of `pattern`, in ghost order (row g for cell n_owned + g): the row its
-/// owner gives in `owned`, one row per owned cell. A cell sent to several ranks, or to the same
-/// rank as several periodic images, is sent once per ghost; an image of the rank's own cell gets
-/// that cell's row as is, its keys the caller's to rebase (Mesh::ghost_translation). Collective
-/// over `comm` (size pattern.n_ranks, rank pattern.rank), host memory, the same bits on every
-/// run. Throws E0144 if the ranks disagree on the halo or on the stride, or the halo's offsets
-/// leave their lists, and E0140 for rows that do not match their sizes, a message beyond the MPI
-/// count range or rows that do not fit in memory, on every rank.
-CellRows forward_rows(const HaloPattern& pattern, const CellRows& owned, MPI_Comm comm);
+/// The row of every ghost of `pattern` that `wanted` selects, in ghost order (row g for cell
+/// n_owned + g): the row its owner gives in `owned`, one row per owned cell, whole, in the owner's
+/// entry order and bit for bit; an empty row where wanted[g] is 0. `wanted` holds one byte, 0 or
+/// 1, per ghost slot, so two receivers, or two periodic images, of one cell may differ. Only the
+/// selected rows travel: one reverse exchange of the masks, then the lengths, keys and values of
+/// the selected slots. An image of the rank's own cell gets that cell's row as is, its keys the
+/// caller's to rebase (Mesh::ghost_translation). Collective over `comm` (size pattern.n_ranks,
+/// rank pattern.rank), host memory, the same bits on every run. Throws E0144 if the ranks disagree
+/// on the halo or on the stride, or the halo's offsets leave their lists, and E0140 for rows that
+/// do not match their sizes, a mask of the wrong size or with a byte other than 0 and 1, selected
+/// rows beyond the MPI count range, or data-sized buffers that do not fit in memory, on every
+/// rank. Smaller allocations (per rank, messages) are not agreed.
+CellRows forward_rows(const HaloPattern& pattern, const CellRows& owned,
+                      std::span<const std::uint8_t> wanted, MPI_Comm comm);
 
 /// Fills the ghost cell volumes and centroids of a host Geometry from their
 /// owners, with a forward exchange on the host, and moves the centroids of
