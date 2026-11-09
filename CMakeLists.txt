@@ -21,9 +21,9 @@ option(AUTAN_ENABLE_SCOTCH "Partition with Scotch" OFF)
 option(AUTAN_ENABLE_MPI "Build the MPI halo exchange" OFF)
 option(AUTAN_ENABLE_CUDA "Build the CUDA paths" OFF)
 
-# FetchContent's GitHub downloads (Catch2, nlohmann/json, PicoSHA2) with a token when the
+# FetchContent's GitHub download (Catch2, for the tests) with a token when the
 # environment holds one: GitHub slows unauthenticated downloads under load. CI sets it to the
-# workflow's read-only GITHUB_TOKEN; the archives are checked against their SHA-256 either way.
+# workflow's read-only GITHUB_TOKEN; the archive is checked against its SHA-256 either way.
 # CMake before 3.31 does not verify TLS certificates by default: a token is sent only with it.
 if(DEFINED ENV{AUTAN_GITHUB_TOKEN} AND NOT "$ENV{AUTAN_GITHUB_TOKEN}" STREQUAL "")
   set(
@@ -69,6 +69,7 @@ target_compile_options(
     $<$<BOOL:${AUTAN_WARNINGS_AS_ERRORS}>:-Werror>
 )
 
+add_subdirectory(third_party)
 add_subdirectory(core)
 add_subdirectory(io)
 add_subdirectory(partition)
@@ -83,6 +84,12 @@ add_subdirectory(solvers)
 add_subdirectory(physics)
 
 if(AUTAN_BUILD_TESTS)
+  # Default per-test timeout of ctest, in seconds: a test that hangs fails after 10 minutes, with its
+  # name, instead of holding its CI job until the job's own timeout. Tests that need longer set
+  # their own TIMEOUT (the halo and ranks tests; the [long] tests of tests/physics). include(CTest)
+  # reads it into ctest's configuration. A build directory configured before keeps its cached
+  # value.
+  set(DART_TESTING_TIMEOUT 600 CACHE STRING "Default per-test timeout of ctest, in seconds")
   include(CTest)
   include(FetchContent)
   FetchContent_Declare(

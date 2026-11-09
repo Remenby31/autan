@@ -92,12 +92,13 @@ def mesh(fa: FaceArrays, n_ghost_cells: int = 0) -> Mesh:
     return _wrap(h)
 
 
-_GHOSTS = {"face": 0, "face2": 1, "vertex": 2}
+_GHOSTS = {"face": 0, "face2": 1, "vertex": 2, "vertex2": 3, "vertex3": 4, "vertex4": 5}
 
 
 def partition(m: Mesh, parts: npt.NDArray[np.int32], n_parts: int, rank: int, ghosts: str) -> Mesh:
     """Part `rank` of `parts` (one per cell of the unpartitioned `m`) with the ghosts of the
-    stencil `ghosts` ("face", "face2" or "vertex", autan::GhostStencil), ghost geometry filled
+    stencil `ghosts` ("face", "face2", "vertex", "vertex2", "vertex3" or "vertex4",
+    autan::GhostStencil), ghost geometry filled
     from `m` (autan::extract_partition)."""
     err = ctypes.create_string_buffer(512)
     h = ctypes.c_void_p()

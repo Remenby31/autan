@@ -1,7 +1,9 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <span>
+#include <vector>
 
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
@@ -56,11 +58,16 @@ class SpalartAllmaras {
   /// orientation.
   void assemble(std::span<const double> shift, std::span<double> diag, std::span<double> upper,
                 std::span<double> lower) const;
-  /// Solves the assembled system A dx = b with `sweeps` symmetric Gauss-Seidel sweeps in cell
-  /// order (deterministic).
+  /// Solves the assembled system A dx = b with `sweeps` symmetric Gauss-Seidel sweeps: in cell
+  /// order, or with `colours` (the owned cells by global colour) colour by colour, forward then
+  /// backward, `exchange` filling dx's ghosts after each colour: the same sweeps on any number of
+  /// ranks and in any cell order.
   void solve(std::span<const double> diag, std::span<const double> upper,
              std::span<const double> lower, std::span<const double> b, std::span<double> dx,
-             int sweeps) const;
+             int sweeps, const std::vector<std::vector<std::size_t>>* colours = nullptr,
+             const std::function<void(std::span<double>)>& exchange = {}) const;
+  /// The ghost exchange: nt's gradient, computed on the owned cells, is filled into the ghosts.
+  void set_ghosts(GhostFill* ghosts) noexcept;
   /// Writes the eddy viscosity of s to the flow, per cell and per boundary face.
   void eddy_viscosity(std::span<const State> s);
   /// For a device copy: the generated loops' data in host memory (geometry, wall distance,

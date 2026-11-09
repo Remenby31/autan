@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -8,6 +9,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "autan/core/geometry.hpp"
@@ -62,6 +64,8 @@ struct StartState {
   /// averaged, and its RestartState.
   std::vector<io::Field> mean_fields;
   std::vector<io::Field> restart_fields;
+  /// `continue` only: its SolverState, the same on every rank (Physics::restart_scalars).
+  std::vector<io::Field> scalars;
 };
 
 /// Fills the ghost cells of PhysicsContext::mesh from their owners: the
@@ -125,6 +129,11 @@ struct PhysicsContext {
   /// physics declared (PhysicsRegistry::Entry::ghosts). Empty on the whole mesh, which holds
   /// every stencil.
   std::optional<GhostStencil> ghost_stencil;
+  /// For a physics whose registry entry asks for it (PhysicsRegistry::Entry::wall_distance) and a
+  /// case with no-slip wall zones: the distance from each cell centroid of `mesh` (owned and
+  /// ghosts) to the walls of the whole mesh read (WallSurface, exact point-triangle projections),
+  /// the same bits on any number of ranks. Empty otherwise.
+  std::span<const double> wall_distance;
 };
 
 // case-schema.md#time: the round-off floor is C * eps32 times an equation's flux scale, C = 0.5.
@@ -159,6 +168,10 @@ class Physics {
   /// Cell-centred state beyond fields(false) that a `continue` needs to go
   /// on bit for bit (earlier time levels, averaging sums); empty when none.
   [[nodiscard]] virtual std::vector<io::Field> restart_fields() const = 0;
+  /// The solver's own state that is not cell-centred and that a `continue` needs to go on bit for
+  /// bit, the same on every rank (rank 0's is written), as named arrays of the lengths its
+  /// registration gives; empty when none.
+  [[nodiscard]] virtual std::vector<io::Field> restart_scalars() const { return {}; }
   /// Pressure and WallShearStressX/Y/Z on `wall_faces` (ascending).
   [[nodiscard]] virtual std::vector<io::Field> wall_fields(
       std::span<const index_t> wall_faces) const = 0;
@@ -215,6 +228,11 @@ using PartitionGroups =
 using RestartNames =
     std::function<std::vector<std::string>(const SolverInput& input, bool averaging)>;
 
+/// The names and lengths of the SolverState arrays the physics writes for `input`, in order
+/// (Physics::restart_scalars). A continued start is read only when its SolverState holds exactly
+/// these (E0707).
+using RestartScalars = std::function<std::vector<std::pair<std::string, std::int64_t>>(
+    const SolverInput& input, bool averaging)>;
 /// The ghost stencil the physics' scheme reads for `input`: the partition of a run holds it,
 /// on several ranks, with periodic pairs or under reproducibility "ranks". nullopt: no partition
 /// holds it, and such a run is E0148 before its directory exists.
@@ -232,10 +250,13 @@ class PhysicsRegistry {
     PartitionGroups groups;  ///< empty: no group
     RestartNames restart;    ///< empty: no RestartState
     GhostStencils ghosts;    ///< empty: face2
+    RestartScalars scalars;  ///< empty: no SolverState
+    /// Whether it reads PhysicsContext::wall_distance.
+    bool wall_distance = false;
   };
   void add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope = {},
            bool several_ranks = false, PartitionGroups groups = {}, RestartNames restart = {},
-           GhostStencils ghosts = {});
+           GhostStencils ghosts = {}, RestartScalars scalars = {}, bool wall_distance = false);
   /// The entry for `input`, or null when this build has none (E0706).
   [[nodiscard]] const Entry* find(const SolverInput& input) const;
 

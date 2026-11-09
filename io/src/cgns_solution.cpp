@@ -110,6 +110,26 @@ std::map<std::string, std::vector<std::string>> solution_field_names(
   return out;
 }
 
+std::vector<std::pair<std::string, std::int64_t>> solver_state_arrays(
+    const std::filesystem::path& file) {
+  const CgioTree tree(file);
+  const auto base = tree.child(tree.root(), "CGNSBase_t");
+  const auto zone = base ? tree.child(*base, "Zone_t") : std::nullopt;
+  const auto state = zone ? tree.child(*zone, "UserDefinedData_t", "SolverState") : std::nullopt;
+  std::vector<std::pair<std::string, std::int64_t>> out;
+  if (!state) return out;
+  for (const double array : tree.children(*state)) {
+    if (tree.label(array) != "DataArray_t") continue;
+    const std::string name = tree.name(array);
+    if (tree.data_type(array) != "R8" || tree.dimensions(array) != 1 || tree.values(array) < 1) {
+      throw Error(ErrorCode::io_malformed,
+                  file.string() + ": SolverState array '" + name + "' is not one-dimensional R8");
+    }
+    out.emplace_back(name, tree.values(array));
+  }
+  return out;
+}
+
 StoredSolution read_solution(const std::filesystem::path& file, bool whole_state) {
   reject_outside_data(file);  // E0134, before the library reads anything
   const CgnsFile in(file, CG_MODE_READ);
@@ -169,6 +189,35 @@ StoredSolution read_solution(const std::filesystem::path& file, bool whole_state
                        field.values.data()),
          "read field " + field.name);
       target->push_back(std::move(field));
+    }
+  }
+  if (whole_state) {
+    // The zone's SolverState: one-dimensional arrays of any length (results.md).
+    int user = 0;
+    ok(cg_goto(fn, 1, "Zone_t", 1, "end"), "go to the zone");
+    ok(cg_nuser_data(&user), "count user data");
+    for (int u = 1; u <= user; ++u) {
+      ok(cg_goto(fn, 1, "Zone_t", 1, "end"), "go to the zone");
+      ok(cg_user_data_read(u, name), "read user data");
+      if (std::string_view(name) != "SolverState") continue;
+      ok(cg_goto(fn, 1, "Zone_t", 1, "UserDefinedData_t", u, "end"), "go to SolverState");
+      int arrays = 0;
+      ok(cg_narrays(&arrays), "count SolverState arrays");
+      for (int a = 1; a <= arrays; ++a) {
+        CGNS_ENUMT(DataType_t) type{};
+        int dims = 0;
+        cgsize_t extent[12] = {};
+        ok(cg_array_info(a, name, &type, &dims, extent), "read a SolverState array");
+        if (type != CGNS_ENUMV(RealDouble) || dims != 1 || extent[0] < 1) {
+          throw Error(ErrorCode::io_malformed, file.string() + ": SolverState array '" + name +
+                                                   "' is not one-dimensional R8");
+        }
+        Field field{.name = name,
+                    .values = std::vector<double>(static_cast<std::size_t>(extent[0]))};
+        ok(cg_array_read_as(a, CGNS_ENUMV(RealDouble), field.values.data()),
+           "read SolverState array " + field.name);
+        out.solver_state.push_back(std::move(field));
+      }
     }
   }
   return out;

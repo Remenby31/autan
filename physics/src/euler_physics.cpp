@@ -17,7 +17,6 @@
 #include <nlohmann/json.hpp>
 
 #include "autan/core/lines.hpp"
-#include "autan/core/wall_distance.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/euler_device.hpp"
@@ -131,6 +130,9 @@ struct SaState {
       : model(mesh, geometry, flow, t, ft2, keys) {}
   SpalartAllmaras<P> model;
   std::vector<double> rnu, rhs, dx, diag, upper, lower;
+  // Under global keys or on a partition: the owned cells by global colour, which solve() sweeps
+  // with an exchange after each, the same sweeps on any number of ranks.
+  std::vector<std::vector<std::size_t>> colours;
   double nt_inf = 0.0;  ///< m^2/s, the freestream's
   std::vector<typename P::state> s;
   std::vector<typename P::residual> res;
@@ -150,7 +152,11 @@ class EulerPhysics final : public runtime::Physics {
 
   // The ghost stencil the flow's scheme reads (PhysicsRegistry::Entry::ghosts).
   static std::optional<GhostStencil> ghosts(const runtime::SolverInput& in) {
-    return ghost_stencil(flow_scheme(in));
+    if constexpr (is_viscous) {
+      return navier_stokes_ghost_stencil();
+    } else {
+      return ghost_stencil(flow_scheme(in));
+    }
   }
 
   explicit EulerPhysics(const PhysicsContext& ctx)
@@ -231,6 +237,14 @@ class EulerPhysics final : public runtime::Physics {
       euler_.set_second_order(false);
     } else {
       second_order_ = true;
+    }
+    // case-schema.md#time: start_order "second" skips the first-order start
+    // (euler.md#time-stepping).
+    if (in.time.kind == "steady" && in.time.start_order == "second") {
+      second_order_ = true;
+      euler_.set_second_order(true);
+      ctx.log.write("info", "solver", "the steady run starts at second order (time.start_order)",
+                    {}, nlohmann::json{{"start_order", "second"}}.dump());
     }
     if (mms) set_source(*mms);
     std::map<std::string, const runtime::CellZoneInput*> zones;
@@ -344,7 +358,7 @@ class EulerPhysics final : public runtime::Physics {
       }
       out.push_back({.name = "AverageWeight", .values = std::vector<double>(owned_, mean_weight_)});
     }
-    if (sa_) out.push_back({.name = "DensityNuTilde", .values = sa_->rnu});
+    if (sa_) out.push_back({.name = "DensityNuTilde", .values = owned(sa_->rnu, 0)});
     // The steady solver's own state, one uniform field per value (cell-centred, as RestartState).
     if (ctx_.input.time.kind == "steady") {
       for (const auto& [name, value] : solver_state()) {
@@ -413,8 +427,8 @@ class EulerPhysics final : public runtime::Physics {
     }
     if (sa_) {
       if (mean) throw std::invalid_argument("time averages of SA runs are not supported");
-      io::Field nt{.name = "TurbulentSANuTilde", .values = std::vector<double>(n_)};
-      for (std::size_t c = 0; c < n_; ++c) nt.values[c] = sa_->rnu[c] / u_[c];
+      io::Field nt{.name = "TurbulentSANuTilde", .values = std::vector<double>(owned_)};
+      for (std::size_t c = 0; c < owned_; ++c) nt.values[c] = sa_->rnu[c] / u_[c];
       out.push_back(std::move(nt));
     }
     return out;
@@ -491,7 +505,7 @@ class EulerPhysics final : public runtime::Physics {
                         const kernels::GlobalKeys* keys) {
     if constexpr (is_viscous) {
       return Flow(ctx.mesh, ctx.geometry, gas, flow_scheme(ctx.input), transport_of(ctx.input),
-                  keys);
+                  keys, ctx.ghost_stencil);
     } else {
       return Flow(ctx.mesh, ctx.geometry, gas, flow_scheme(ctx.input), keys, ctx.ghost_stencil);
     }
@@ -566,7 +580,11 @@ class EulerPhysics final : public runtime::Physics {
         for (auto& [name, value] : state) value = find(start.restart_fields, name)->front();
         set_solver_state(state);
       }
-      if (sa_) sa_->rnu = *find(start.restart_fields, "DensityNuTilde");
+      if (sa_) {
+        const auto& v = *find(start.restart_fields, "DensityNuTilde");
+        std::copy(v.begin(), v.end(), sa_->rnu.begin());
+        fill_ghost_values(sa_->rnu);
+      }
       if (mean_weight_ > 0.0) {
         for (std::size_t k = 0; k < 6; ++k) {
           const auto& v = *find(start.restart_fields, std::string("AverageSum") + field_names[k]);
@@ -584,6 +602,7 @@ class EulerPhysics final : public runtime::Physics {
     if (sa_) {
       const auto& nt = *find(start.fields, "TurbulentSANuTilde");
       for (std::size_t c = 0; c < owned_; ++c) sa_->rnu[c] = rho[c] * nt[c];
+      fill_ghost_values(sa_->rnu);
     }
   }
 
@@ -642,6 +661,7 @@ class EulerPhysics final : public runtime::Physics {
                                        mms == nullptr || mms->turbulence() != "sa-noft2",
                                        keys_ ? &*keys_ : nullptr);
     auto& t = *sa_;
+    t.model.set_ghosts(&ghost_fill_);
     const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
     const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
     std::vector<std::array<double, 3>> cells(n_), bfaces(nb);
@@ -664,13 +684,10 @@ class EulerPhysics final : public runtime::Physics {
     } else {
       std::map<std::string, std::string> kinds;
       for (const auto& b : in.boundaries) kinds[b.zone] = b.kind;
-      std::vector<index_t> walls;
-      for (std::size_t z = 0; z < mesh.face_zones().size(); ++z) {
-        const auto it = kinds.find(mesh.face_zones()[z].name);
-        if (it != kinds.end() && it->second == "wall") walls.push_back(static_cast<index_t>(z));
-      }
-      if (walls.empty()) throw std::invalid_argument("the SA physics needs a wall");
-      d = wall_distance(mesh, g, walls);
+      // The runtime's, from the walls of the whole mesh: a cell's nearest wall may lie in
+      // another part.
+      if (ctx_.wall_distance.empty()) throw std::invalid_argument("the SA physics needs a wall");
+      d.assign(ctx_.wall_distance.begin(), ctx_.wall_distance.end());
       for (std::size_t b = 0; b < nb; ++b) {
         const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[ni + b])];
         const auto it = kinds.find(zone.name);
@@ -686,6 +703,14 @@ class EulerPhysics final : public runtime::Physics {
     for (std::size_t c = 0; c < n_; ++c) {
       const auto zi = static_cast<std::size_t>(mesh.cell_zone()[c]);
       t.rnu[c] = u_[c] * zones.at(mesh.cell_zones()[zi].name)->initial.nu_tilde.value_or(0.0);
+    }
+    // The ghosts' density may not be filled yet: their owners' rho nt.
+    fill_ghost_values(t.rnu);
+    if (keys_ || owned_ < n_) {
+      t.colours.assign(static_cast<std::size_t>(ctx_.n_colours), {});
+      for (std::size_t c = 0; c < owned_; ++c) {
+        t.colours[static_cast<std::size_t>(ctx_.cell_colours[c])].push_back(c);
+      }
     }
     t.rhs.assign(n_, 0.0);
     t.dx.assign(n_, 0.0);
@@ -1131,14 +1156,21 @@ class EulerPhysics final : public runtime::Physics {
         for (std::size_t c = 0; c < n_; ++c) t.rhs[c] = -static_cast<double>(t.res[c]);
         std::fill(t.dx.begin(), t.dx.end(), 0.0);
         t.model.assemble(shift, t.diag, t.upper, t.lower);
-        t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, nt_sweeps);
+        if (t.colours.empty()) {
+          t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, nt_sweeps);
+        } else {
+          t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, nt_sweeps, &t.colours,
+                        [this](std::span<double> x) { fill_ghost_values(x); });
+        }
         // Local under-relaxation of the SA update: rho nt changes by at most a fraction of
-        // max(|rho nt|, rho nt_inf) per step, which the converged state never reaches.
-        for (std::size_t c = 0; c < n_; ++c) {
+        // max(|rho nt|, rho nt_inf) per step, which the converged state never reaches. Owned
+        // cells; the ghosts take their owners' values.
+        for (std::size_t c = 0; c < owned_; ++c) {
           const double scale = std::max(std::abs(t.rnu[c]), u_[c] * t.nt_inf);
           t.rnu[c] +=
               alpha * std::clamp(t.dx[c], -nt_max_decrease * scale, nt_max_increase * scale);
         }
+        fill_ghost_values(t.rnu);
       }
     }
   }
@@ -1217,6 +1249,13 @@ class EulerPhysics final : public runtime::Physics {
       }
     }
     return ctx_.ranks.max(m);
+  }
+
+  // Fills the ghost values of one cell array (n_ values) from their owners. On every rank: the
+  // exchange is collective, even for a part without ghosts.
+  void fill_ghost_values(std::span<double> x) {
+    std::array<double*, 1> c{x.data()};
+    ctx_.ghosts.forward(std::span<double* const>(c), MemorySpace::host, nullptr);
   }
 
   void fill_ghosts(std::span<double> x) {
@@ -1694,8 +1733,8 @@ std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::Solver
         .data_json = "{}",
         .code = "E1109"};
   }
-  // NavierStokes<P> and SpalartAllmaras<P> fill no ghost cells of their own (their fields, fits
-  // and Jacobian blocks would be wrong across a periodic pair): one rank, no periodic pairs.
+  // The viscous terms' ghost fills and boundary fits are written for partitions; across a periodic
+  // pair the fits would need image ghosts' translated stencils.
   if (!in.periodic.empty()) {
     return runtime::PhysicsRefusal{
         .message = "the Navier-Stokes physics does not run with periodic pairs yet",
@@ -1847,16 +1886,17 @@ void register_euler(runtime::PhysicsRegistry& registry) {
 }
 
 void register_navier_stokes(runtime::PhysicsRegistry& registry) {
-  // One rank only: NavierStokes<P> and SpalartAllmaras<P> fill no ghost cells of their own.
   for (const char* model : {"laminar", "sa"}) {
     registry.add({"compressible", model, "fp64", "cpu"},
                  factory<kernels::fp64, NavierStokes<kernels::fp64>>(), navier_stokes_scope,
-                 /*several_ranks=*/false, euler_groups, euler_restart_names,
-                 EulerPhysics<kernels::fp64, NavierStokes<kernels::fp64>>::ghosts);
+                 /*several_ranks=*/true, euler_groups, euler_restart_names,
+                 EulerPhysics<kernels::fp64, NavierStokes<kernels::fp64>>::ghosts, {},
+                 /*wall_distance=*/std::string(model) == "sa");
     registry.add({"compressible", model, "fp32+acc64", "cpu"},
                  factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>(),
-                 navier_stokes_scope, /*several_ranks=*/false, euler_groups, euler_restart_names,
-                 EulerPhysics<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>::ghosts);
+                 navier_stokes_scope, /*several_ranks=*/true, euler_groups, euler_restart_names,
+                 EulerPhysics<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>::ghosts, {},
+                 /*wall_distance=*/std::string(model) == "sa");
   }
 }
 

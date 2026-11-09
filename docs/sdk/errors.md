@@ -466,7 +466,7 @@ Fix: Put the groups file next to the mesh.
 
 The MeshInfo's derived counts are not for this run: its lines were computed at another scale than the case's `mesh_unit`, or a run on several ranks has no partition for that rank count, the groups its linear solver keeps whole and the ghost stencil its physics reads, or a run on one rank with periodic pairs or reproducibility `"ranks"` has no such one-part partition. The message names the difference.
 
-Fix: Run `autan-mesh-info --json --scale <metres per mesh unit>` again, with `--ranks N` (and `--groups lines` for a steady CPU run with the lines solver) for a run on N ranks, and `--ghosts vertex` for a physics that reads the vertex stencil.
+Fix: Run `autan-mesh-info --json --scale <metres per mesh unit>` again, with `--ranks N` (and `--groups lines` for a steady CPU run with the lines solver) for a run on N ranks, and `--ghosts vertex4` for a Navier-Stokes case (laminar or SA).
 
 ## E0301
 
