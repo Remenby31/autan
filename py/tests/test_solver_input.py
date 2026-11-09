@@ -375,6 +375,40 @@ def test_reproducibility_reaches_the_runtime_and_the_hash(
     assert document["reproducibility"] == mode
 
 
+@pytest.mark.parametrize("flux", ["roe", "hllc", "ausm+up"])
+def test_the_flux_reaches_the_runtime_and_the_hash(
+    flux: str, write_case: Callable[..., Path], capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    # case-schema.md#physics: a compressible case names its convective flux, Roe by default.
+    body = CRM_HL.replace("autan.SA())", f"autan.SA(), flux={flux!r})")
+    case = write_case(body, name="flux.py")
+    spec = autan.load(case).spec
+    copy = tmp_path / "copy.toml"
+    copy.write_text(autan.load(case).to_toml())
+    assert autan.load(copy).spec == spec
+    default = autan.load(write_case(CRM_HL, name="default.py")).spec
+    assert isinstance(default.physics, autan.Compressible)
+    assert default.physics.flux == "roe"
+    assert (spec.hash() == default.hash()) == (flux == "roe")
+    assert main(["prepare", str(case), "--mesh-info", str(FIXTURES / "crm-hl.meshinfo.json")]) == 0
+    document = json.loads(capsys.readouterr().out)
+    jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
+    assert document["physics"]["flux"] == flux
+    # The flux is given exactly for compressible physics, in the schema as in the model.
+    for physics in (
+        document["physics"] | {"flux": None},
+        document["physics"] | {"kind": "incompressible"},
+    ):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.Draft202012Validator(json_schema("solver-input")).validate(
+                document | {"physics": physics}
+            )
+        with pytest.raises(ValidationError):
+            autan.solver_input.SolverInput.model_validate(document | {"physics": physics})
+    with pytest.raises(autan.CaseError):
+        autan.load(write_case(CRM_HL.replace("autan.SA())", "autan.SA(), flux='jst')")))
+
+
 def test_the_runtime_mode_is_the_case_s(
     write_case: Callable[..., Path], capsys: pytest.CaptureFixture[str]
 ) -> None:

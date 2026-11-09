@@ -7,26 +7,34 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <numbers>
 #include <random>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_template_test_macros.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/generators/catch_generators_range.hpp>
+#include <unistd.h>
 
+#include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
+#include "autan/partition/partition.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/point_vortex.hpp"
 #include "euler_cpu.hpp"
+#include "fixtures.hpp"
 
 namespace {
 
@@ -233,7 +241,9 @@ TEMPLATE_TEST_CASE("slip walls keep a gauge pressure finer than FP32 resolves p_
   // residual reduce to the closure of the gauge pressure, even when p - p_ref = 1e-3 is below the
   // FP32 spacing of p_ref = 0.95e5 (7.8e-3).
   using P = TestType;
-  const fs::path file = fs::temp_directory_path() / "autan-one-skew-tet.msh";
+  // One file per process: the two precisions run as separate tests, possibly at once (ctest -j).
+  const fs::path file =
+      fs::temp_directory_path() / ("autan-one-skew-tet-" + std::to_string(::getpid()) + ".msh");
   {
     std::ofstream out(file);
     out << "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n"
@@ -246,6 +256,7 @@ TEMPLATE_TEST_CASE("slip walls keep a gauge pressure finer than FP32 resolves p_
         << "3 1 4 1\n5 1 2 3 4\n$EndElements\n";
   }
   const Case c(file.c_str());
+  fs::remove(file);
   REQUIRE(c.mesh.n_cells() == 1);
   const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
   Euler<P> e(c.mesh, c.geometry, air, second_order(Flux::roe, 0.1));
@@ -890,4 +901,229 @@ TEMPLATE_TEST_CASE("the limited residual is that of the generated loops run one 
   ek::cpu::roe_faces(d);
   ek::cpu::roe_boundaries(d);
   CHECK(std::memcmp(r.data(), ref.data(), r.size() * sizeof(r[0])) == 0);
+}
+
+namespace {
+
+// A stencil entry by global keys: a cell (0, global id, translation) or a boundary face
+// (1, global face id, translation of its cell), with its three LSQ weights.
+using StencilKey = std::tuple<int, std::int64_t, std::array<double, 3>>;
+using Row = std::vector<std::pair<StencilKey, std::array<double, 3>>>;
+
+// The gradient stencil of every owned cell of `part`, by global cell id, as Euler builds it
+// under the global keys of reproducibility "ranks", every boundary face a slip wall. Every
+// entry to a ghost must have its twin: the adjoint's partial sums for the reverse exchange.
+template <class P>
+std::map<std::int64_t, Row> owned_rows(const autan::LocalPartition& part,
+                                       autan::physics::GradientStencil gradient) {
+  const auto& m = part.mesh;
+  const autan::kernels::GlobalKeys keys{.cell = m.cell_global_id(),
+                                        .face = part.face_global_id,
+                                        .reversed = part.face_reversed,
+                                        .shift = m.ghost_translation()};
+  Scheme s = second_order(Flux::roe, 0.5);
+  s.gradient = gradient;
+  Euler<P> e(m, part.geometry, air, s, &keys, part.ghosts);
+  const auto nb = static_cast<std::size_t>(m.n_boundary_faces());
+  e.set_boundary(std::vector<BoundaryKind>(nb, BoundaryKind::slip),
+                 std::vector<double>(5 * nb, 0.0));
+  const auto& st = e.stencil();
+  const auto twin = e.stencil_twin();
+  const auto* w = e.data().stencil_lsq_weight;
+  const auto ns = st.entries.size();
+  const auto n_owned = m.n_owned_cells();
+  const auto shift = [&](autan::index_t c) {
+    return c < n_owned ? std::array<double, 3>{}
+                       : m.ghost_translation()[static_cast<std::size_t>(c - n_owned)];
+  };
+  std::map<std::int64_t, Row> rows;
+  for (autan::index_t c = 0; c < n_owned; ++c) {
+    Row& row = rows[m.cell_global_id()[static_cast<std::size_t>(c)]];
+    const auto uc = static_cast<std::size_t>(c);
+    for (auto k = st.offsets[uc]; k < st.offsets[uc + 1]; ++k) {
+      const auto uk = static_cast<std::size_t>(k);
+      const autan::index_t e_k = st.entries[uk];
+      const auto f = static_cast<std::size_t>(-1 - e_k);
+      const StencilKey key =
+          e_k >= 0 ? StencilKey{0, m.cell_global_id()[static_cast<std::size_t>(e_k)], shift(e_k)}
+                   : StencilKey{1, part.face_global_id[f], shift(m.owner()[f])};
+      row.push_back({key,
+                     {static_cast<double>(w[uk]), static_cast<double>(w[ns + uk]),
+                      static_cast<double>(w[2 * ns + uk])}});
+      if (e_k >= n_owned) {
+        REQUIRE(twin[uk] >= 0);
+        CHECK(twin[static_cast<std::size_t>(twin[uk])] == k);
+      }
+    }
+  }
+  return rows;
+}
+
+// Cells of `m` whose vertex stencil holds an entry (cell or boundary face) its face2 stencil does
+// not.
+std::size_t cells_beyond_face2(const autan::Mesh& m, const autan::Geometry& g) {
+  const auto packed = autan::kernels::pack_geometry(m, g);
+  const auto v = autan::kernels::cell_stencil(m, packed, autan::kernels::StencilKind::vertex);
+  const auto f = autan::kernels::cell_stencil(m, packed, autan::kernels::StencilKind::face2);
+  std::size_t cells = 0;
+  for (std::size_t c = 0; c + 1 < v.offsets.size(); ++c) {
+    const std::set<autan::index_t> face2(f.entries.begin() + f.offsets[c],
+                                         f.entries.begin() + f.offsets[c + 1]);
+    bool beyond = false;
+    for (auto k = v.offsets[c]; k < v.offsets[c + 1]; ++k) {
+      beyond = beyond || !face2.contains(v.entries[static_cast<std::size_t>(k)]);
+    }
+    cells += beyond ? 1 : 0;
+  }
+  return cells;
+}
+
+// Blocks of the unit cube that meet at corners, numbered modulo n.
+std::vector<std::int32_t> blocks(const autan::Geometry& g, std::int32_t n) {
+  std::vector<std::int32_t> parts(g.cell_volume.size());
+  for (std::size_t c = 0; c < parts.size(); ++c) {
+    const auto at = [](double x, int k) { return static_cast<int>(std::floor(x * k)); };
+    const int b =
+        at(g.cell_centroid_x[c], 3) + 2 * at(g.cell_centroid_y[c], 2) + at(g.cell_centroid_z[c], 2);
+    parts[c] = std::clamp(b, 0, 99) % n;
+  }
+  return parts;
+}
+
+autan::Mesh periodic_hex_box(int n) {
+  autan::CellwiseMesh cells = autan::test::box(n, autan::test::BoxFill::hexa, 0.2);
+  for (int k = 0; k < 2; ++k) {
+    cells.face_zones[static_cast<std::size_t>(2 * k)].kind = autan::BcKind::periodic;
+    cells.face_zones[static_cast<std::size_t>(2 * k + 1)].kind = autan::BcKind::periodic;
+    std::array<double, 3> t{};
+    t[static_cast<std::size_t>(k)] = 1.0;
+    cells.periodic.push_back({.zone_a = 2 * k, .zone_b = 2 * k + 1, .translation = t});
+  }
+  return autan::assemble(autan::to_face_based(std::move(cells)));
+}
+
+}  // namespace
+
+TEMPLATE_TEST_CASE(
+    "on a part holding its ghost stencil, every owned cell's gradient stencil "
+    "and weights are those of one rank",
+    "[euler][partition]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // A partition whose ghosts hold the scheme's stencil (GhostStencil) gives each owned cell the
+  // entries the whole mesh gives it, in the same global order, so its LSQ weights, and the
+  // gradient they make, have the same bits on any number of ranks. Blocks of the cube meet at
+  // corners, where a vertex neighbour lies three face steps from a part. The periodic boxes, two
+  // and three cells wide, give a cell two images of one boundary face. A face2 partition would
+  // truncate the vertex stencil (on every mesh but the polyhedral dual, below): Euler refuses it
+  // (E0148).
+  using P = TestType;
+  using autan::physics::GradientStencil;
+  const int which = GENERATE(range(0, static_cast<int>(meshes.size()) + 2));
+  const auto gradient = GENERATE(GradientStencil::face2, GradientStencil::vertex);
+  const autan::Mesh global =
+      which < static_cast<int>(meshes.size())
+          ? autan::io::read_mesh(mesh_dir / meshes[static_cast<std::size_t>(which)])
+          : periodic_hex_box(which - static_cast<int>(meshes.size()) + 2);
+  INFO("mesh " << which << " gradient " << static_cast<int>(gradient));
+  const autan::Geometry gg = autan::compute_geometry(global);
+  const auto ghosts = gradient == GradientStencil::vertex ? autan::GhostStencil::vertex
+                                                          : autan::GhostStencil::face2;
+  const auto part_of = [&](const std::vector<std::int32_t>& parts, std::int32_t n, std::int32_t r,
+                           autan::GhostStencil g) {
+    auto part = autan::extract_partition(global, gg, parts, n, r, g);
+    // Ghost geometry as the forward exchange gives it: the owner's, an image's centroid moved by
+    // its translation.
+    auto& lg = part.geometry;
+    const auto& m = part.mesh;
+    for (autan::index_t c = m.n_owned_cells(); c < m.n_cells(); ++c) {
+      const auto u = static_cast<std::size_t>(c);
+      const auto o = static_cast<std::size_t>(m.cell_global_id()[u]);
+      const auto& t = m.ghost_translation()[static_cast<std::size_t>(c - m.n_owned_cells())];
+      lg.cell_volume[u] = gg.cell_volume[o];
+      lg.cell_centroid_x[u] = gg.cell_centroid_x[o] + t[0];
+      lg.cell_centroid_y[u] = gg.cell_centroid_y[o] + t[1];
+      lg.cell_centroid_z[u] = gg.cell_centroid_z[o] + t[2];
+    }
+    return part;
+  };
+  const auto reference = owned_rows<P>(
+      part_of(std::vector<std::int32_t>(gg.cell_volume.size(), 0), 1, 0, ghosts), gradient);
+  REQUIRE(std::ssize(reference) == global.n_cells());
+  for (const std::int32_t n : {2, 3, 4}) {
+    const auto parts = blocks(gg, n);
+    for (std::int32_t r = 0; r < n; ++r) {
+      for (const auto& [id, row] : owned_rows<P>(part_of(parts, n, r, ghosts), gradient)) {
+        CHECK(row == reference.at(id));
+      }
+    }
+  }
+  if (gradient == GradientStencil::vertex) {
+    // The gap the ghost stencil closes: on face2 parts, some owned cell's vertex stencil, built
+    // directly, misses entries, and Euler refuses such a part.
+    const auto parts = blocks(gg, 4);
+    bool truncated = false;
+    for (std::int32_t r = 0; r < 4; ++r) {
+      const auto part = part_of(parts, 4, r, autan::GhostStencil::face2);
+      const auto& m = part.mesh;
+      const auto st = autan::kernels::cell_stencil(
+          m, autan::kernels::pack_geometry(m, part.geometry), autan::kernels::StencilKind::vertex);
+      for (autan::index_t c = 0; c < m.n_owned_cells(); ++c) {
+        const auto uc = static_cast<std::size_t>(c);
+        const auto size = static_cast<std::size_t>(st.offsets[uc + 1] - st.offsets[uc]);
+        truncated = truncated || size < reference.at(m.cell_global_id()[uc]).size();
+      }
+      if (m.n_cells() > m.n_owned_cells()) {
+        try {
+          Scheme s = second_order(Flux::roe, 0.5);
+          s.gradient = GradientStencil::vertex;
+          Euler<P> e(m, part.geometry, air, s, nullptr, part.ghosts);
+          FAIL("expected E0148");
+        } catch (const autan::Error& e) {
+          CHECK(e.code() == autan::ErrorCode::partition_stencil_not_local);
+        }
+      }
+    }
+    // The polyhedral dual mesh cannot show the power: every cell's vertex stencil lies inside its
+    // face2 stencil, so no partition truncates it. That measured fact is asserted, so that a
+    // change of the mesh or of the stencils brings the power check back for it. The hanging-node
+    // polyhedron goes beyond face2 but fills half its box, leaving the declared grid partitions
+    // empty: it is not used (#606, #630).
+    if (which < static_cast<int>(meshes.size()) &&
+        std::string(meshes[static_cast<std::size_t>(which)]) == "poly/polyMesh") {
+      CHECK(cells_beyond_face2(global, gg) == 0);
+    } else {
+      CHECK(truncated);
+    }
+  }
+}
+
+TEST_CASE("a part without ghosts refuses a stencil its ghost stencil does not hold", "[euler]") {
+  // Two hexahedra sharing one corner node: on two face2 parts neither cell has a ghost, yet each
+  // one's vertex stencil on the whole mesh holds the other. A part's declared ghost stencil, not
+  // its ghost count, decides: the vertex gradient is E0148 there, face2 runs.
+  autan::test::ReferenceCell first = autan::test::affine_cell(
+      autan::CellShape::hexa, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}, {0, 0, 0});
+  autan::CellwiseMesh cells = std::move(first.mesh);
+  std::vector<autan::index_t> nodes{6};  // the first cell's corner (1, 1, 1)
+  for (const auto& r : std::vector<std::array<double, 3>>{
+           {2, 1, 1}, {2, 2, 1}, {1, 2, 1}, {1, 1, 2}, {2, 1, 2}, {2, 2, 2}, {1, 2, 2}}) {
+    cells.x.push_back(r[0]);
+    cells.y.push_back(r[1]);
+    cells.z.push_back(r[2]);
+    nodes.push_back(static_cast<autan::index_t>(cells.x.size() - 1));
+  }
+  cells.add_cell(autan::CellShape::hexa, nodes, 0);
+  const autan::Mesh global = autan::assemble(autan::to_face_based(std::move(cells)));
+  const auto part = autan::extract_partition(global, autan::compute_geometry(global),
+                                             std::vector<std::int32_t>{0, 1}, 2, 0);
+  REQUIRE(part.mesh.n_cells() == part.mesh.n_owned_cells());
+  Scheme s = second_order(Flux::roe, 0.5);
+  CHECK_NOTHROW(
+      Euler<autan::kernels::fp64>(part.mesh, part.geometry, air, s, nullptr, part.ghosts));
+  s.gradient = autan::physics::GradientStencil::vertex;
+  try {
+    Euler<autan::kernels::fp64> e(part.mesh, part.geometry, air, s, nullptr, part.ghosts);
+    FAIL("expected E0148");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == autan::ErrorCode::partition_stencil_not_local);
+  }
 }

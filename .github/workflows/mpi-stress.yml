@@ -34,17 +34,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
+      - uses: ./.github/actions/micromamba # zizmor: ignore[self-repository]
         with:
-          micromamba-version: 2.3.3-0
+          token: ${{ github.token }}
           environment-name: mpi
           create-args: -c conda-forge cgns=4.5.2 ninja=1.13.2 openmpi=5.0.11 metis=5.2.1
-          init-shell: none
-          cache-downloads: false
-          cache-environment: false
       - name: Put the environment's tools on the PATH
         run: echo "${MAMBA_ROOT_PREFIX}/envs/mpi/bin" >> "${GITHUB_PATH}"
       - name: Configure with MPI and METIS
+        env:
+          AUTAN_GITHUB_TOKEN: ${{ github.token }}
         run: >-
           cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="${MAMBA_ROOT_PREFIX}/envs/mpi"
           -DCMAKE_BUILD_TYPE=Release -DAUTAN_WARNINGS_AS_ERRORS=ON

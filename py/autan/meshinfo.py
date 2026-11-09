@@ -223,6 +223,7 @@ ByRank = Annotated[tuple[Count, ...], Field(min_length=1)]
 class Partition(_Strict):
     ranks: Annotated[int, Field(strict=True, ge=1)]
     groups: Literal["none", "lines"]
+    ghost_stencil: Literal["face2", "vertex"]
     cells_by_rank: ByRank
     ghosts_by_rank: ByRank
     faces_by_rank: ByRank
@@ -352,7 +353,7 @@ class MeshInfo(_Strict):
 
     def _partition_problems(self, partition: Partition) -> list[str]:
         problems = []
-        by_rank = partition.model_dump(exclude={"ranks", "groups"})
+        by_rank = partition.model_dump(exclude={"ranks", "groups", "ghost_stencil"})
         if any(len(values) != partition.ranks for values in by_rank.values()):
             problems.append("partition lists one value per rank")
         if sum(partition.cells_by_rank) != self.counts.cells:

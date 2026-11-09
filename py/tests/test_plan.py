@@ -282,13 +282,18 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
 
     cpu = memory(device_kind="cpu")
     assert names(cpu) >= {"mesh", "physics", "jacobian", "multigrid", "solution output"}
+    # The steady operator's gradient term and its derivative of the boundary values the fit keeps,
+    # on every steady CPU path, viscous included.
+    assert {"gradient tangent", "boundary state tangent"} <= names(cpu)
+    gauss_seidel = CRM_HL + "case.time = autan.Steady(linear_solver='gauss-seidel')\n"
+    assert "boundary state tangent" in names(memory(gauss_seidel, device_kind="cpu"))
     assert cpu.bytes_device == 0
     # The peak: every persistent component and the largest transient one.
     persistent = sum(c.bytes_host for c in cpu.components if not c.transient)
     assert cpu.bytes_host == persistent + max(c.bytes_host for c in cpu.components if c.transient)
     # A device run solves explicitly: no Jacobian or linear solver, the state on the device.
     cuda = memory(device_kind="cuda")
-    assert not names(cuda) & {"jacobian", "multigrid"}
+    assert not names(cuda) & {"jacobian", "multigrid", "boundary state tangent"}
     assert cuda.bytes_device > 0
     # The device frees nothing before the iterations: its components add up, all of them.
     on_device = [c.bytes_device for c in cuda.components if c.bytes_device]
@@ -300,7 +305,7 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     )
     assert gs.bytes_host < cpu.bytes_host
     unsteady = memory(CRM_HL + "case.time = autan.Unsteady(steps=10, cfl=1.0)\n", device_kind="cpu")
-    assert not names(unsteady) & {"jacobian", "multigrid"}
+    assert not names(unsteady) & {"jacobian", "multigrid", "boundary state tangent"}
     # Every rank keeps the global mesh; its share of the rest shrinks with the ranks, from the
     # partition the MeshInfo gives for them (mesh-info.md), without which the plan is refused.
     assert "E0212" in diagnostic_codes(autan.load(write_case(CRM_HL)).plan(crm_mesh, gpus=4))
@@ -313,6 +318,13 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     lines = autan.load(write_case(CRM_HL + "case.time = autan.Steady(linear_solver='lines')\n"))
     assert "E0212" in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cpu"))
     assert "E0212" not in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cuda"))
+    # Nor is a partition holding the vertex stencil's ghosts that of a face2 run.
+    vertex = prepared(mesh_document("crm-hl"), ranks=4)
+    vertex["partition"]["ghost_stencil"] = "vertex"
+    on_vertex = autan.MeshInfo.from_document(vertex, autan.Location())
+    assert "E0212" in diagnostic_codes(
+        autan.load(write_case(CRM_HL)).plan(on_vertex, gpus=4, device_kind="cuda")
+    )
     by_name = {c.name: c for c in four.components}
     assert by_name["mesh"] == {c.name: c for c in cuda.components}["mesh"]
     assert four.bytes_device < cuda.bytes_device / 3
@@ -471,6 +483,7 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     split["partition"] = {
         "ranks": 2,
         "groups": "none",
+        "ghost_stencil": "face2",
         "cells_by_rank": [7, 3],
         "ghosts_by_rank": [3, 2],
         "faces_by_rank": [30, 18],

@@ -2,7 +2,7 @@
   "schema": "autan.solver-input/1",
   "case": {
     "name": "hybrid",
-    "sha256": "75fcc3fd3f38e127c0e089cafdc42ac3b3c7c2ca81ba8c5923364ba9063a8104",
+    "sha256": "f09b34494659a0479e7f05f665d149ae78635347817b15bbd218af8193718b76",
     "toml": "schema = \"autan.case/1\"\nname = \"hybrid\"\nmesh = \"../mesh/hybrid/polyMesh\"\nmesh_unit = \"m\"\nboundaries = [\n    { zones = \"ymin\", condition = { kind = \"wall\" } },\n    { zones = \"zmax\", condition = { kind = \"symmetry\" } },\n    { zones = \"xmin\", condition = { kind = \"farfield\" } },\n    { zones = \"xmax\", condition = { kind = \"farfield\" } },\n    { zones = \"ymax\", condition = { kind = \"farfield\" } },\n    { zones = \"zmin\", condition = { kind = \"farfield\" } },\n]\ncell_zones = []\n\n[physics]\nkind = \"compressible\"\nprecision = \"fp32+acc64\"\nreproducibility = \"run\"\n\n[physics.turbulence]\nmodel = \"sa\"\nnu_tilde_ratio = 3.0\n\n[physics.gas]\nkind = \"ideal-gas\"\nname = \"air\"\nmolar_mass = \"0.0289647 kg / mol\"\ngamma = 1.4\nprandtl = 0.72\n\n[physics.gas.viscosity]\nlaw = \"sutherland\"\nmu_ref = \"1.716e-05 Pa * s\"\nt_ref = \"273.15 K\"\ns = \"110.4 K\"\n\n[freestream]\nmach = 0.3\naoa = \"2.0 deg\"\nsideslip = \"0.0 deg\"\ntemperature = \"288.15 K\"\nre = 1000000.0\nref_length = \"1.0 m\"\n\n[time]\nkind = \"unsteady\"\nsteps = 6\ndt = \"0.01 s\"\naverage_from = 3\n\n[time.checkpoint]\nseconds = \"1800.0 s\"\n\n[[monitors]]\nkind = \"forces\"\nname = \"forces\"\nsurfaces = \"ymin\"\nevery = 5\nref_area = \"1.0 m ** 2\"\nmoment_center = [\n    \"0.0 m\",\n    \"0.0 m\",\n    \"0.0 m\",\n]\n"
   },
   "mesh": {
@@ -183,6 +183,7 @@
   },
   "physics": {
     "kind": "compressible",
+    "flux": "roe",
     "turbulence": {
       "model": "sa",
       "base": null,

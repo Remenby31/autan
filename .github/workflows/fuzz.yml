@@ -37,19 +37,18 @@ jobs:
         with:
           persist-credentials: false
       # 64-bit, HDF5-backed CGNS 4.5 and Ninja from conda-forge, as in ci.yml.
-      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39 # v3.2.1
+      - uses: ./.github/actions/micromamba # zizmor: ignore[self-repository]
         with:
-          micromamba-version: 2.3.3-0
+          token: ${{ github.token }}
           environment-name: cgns
           create-args: -c conda-forge cgns=4.5.2 ninja=1.13.2
-          init-shell: none
-          cache-downloads: false
-          cache-environment: false
       - name: Put CGNS tools and Ninja on the PATH
         run: |
           grep -q '#define CG_BUILD_64BIT  1' "${MAMBA_ROOT_PREFIX}/envs/cgns/include/cgnstypes.h"
           echo "${MAMBA_ROOT_PREFIX}/envs/cgns/bin" >> "${GITHUB_PATH}"
       - name: Configure with libFuzzer, ASan and UBSan
+        env:
+          AUTAN_GITHUB_TOKEN: ${{ github.token }}
         run: |
           clang++ --version
           cmake -S . -B build-fuzz -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \

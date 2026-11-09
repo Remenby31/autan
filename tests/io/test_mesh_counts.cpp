@@ -32,9 +32,10 @@ autan::CellwiseMesh box(int n, double stretch) {
 }
 
 autan::io::MeshInfoRun counts(autan::CellwiseMesh cw, CellOrder order,
-                              std::optional<autan::io::RanksRequest> ranks = std::nullopt) {
+                              std::optional<autan::io::RanksRequest> ranks = std::nullopt,
+                              autan::GhostStencil ghosts = autan::GhostStencil::face2) {
   const autan::Mesh mesh = autan::assemble(autan::to_face_based(std::move(cw)));
-  return autan::io::run_counts(mesh, 1.0, order, ranks);
+  return autan::io::run_counts(mesh, 1.0, order, ranks, ghosts);
 }
 
 // The face2 stencil of the n^3 hexahedra of a box, from its definition (kernels::StencilKind):
@@ -279,13 +280,16 @@ TEST_CASE("MeshInfo counts a single-rank run's stencil entries and periodic ghos
 TEST_CASE("MeshInfo counts each rank of a partitioned run", "[mesh-info]") {
   const int n = 4;
   const auto groups = GENERATE(autan::io::RankGroups::none, autan::io::RankGroups::lines);
-  CAPTURE(groups == autan::io::RankGroups::lines);
-  const auto c =
-      counts(box(n, 10.0), CellOrder::rcm, autan::io::RanksRequest{.ranks = 3, .groups = groups});
+  const auto ghost_stencil = GENERATE(autan::GhostStencil::face2, autan::GhostStencil::vertex);
+  const bool vertex = ghost_stencil == autan::GhostStencil::vertex;
+  CAPTURE(groups == autan::io::RankGroups::lines, vertex);
+  const auto c = counts(box(n, 10.0), CellOrder::rcm,
+                        autan::io::RanksRequest{.ranks = 3, .groups = groups}, ghost_stencil);
   REQUIRE(c.partition);
   const auto& p = *c.partition;
   CHECK(p.ranks == 3);
   CHECK(p.groups == (groups == autan::io::RankGroups::lines ? "lines" : "none"));
+  CHECK(p.ghost_stencil == (vertex ? "vertex" : "face2"));
   REQUIRE(p.cells.size() == 3);
   std::int64_t owned = 0, ghosts = 0, sent = 0;
   for (std::size_t r = 0; r < 3; ++r) {
@@ -315,8 +319,10 @@ TEST_CASE("MeshInfo counts each rank of a partitioned run", "[mesh-info]") {
         {.cell_weights = autan::cell_cost_weights(mesh), .group_offsets = {}, .group_cells = {}});
     for (std::int32_t r = 0; r < 3; ++r) {
       CAPTURE(r);
-      const Rings ring = counted_rings(autan::extract_partition(mesh, geometry, parts, 3, r).mesh);
+      const auto part = autan::extract_partition(mesh, geometry, parts, 3, r, ghost_stencil);
+      const Rings ring = counted_rings(part.mesh);
       const auto i = static_cast<std::size_t>(r);
+      CHECK(p.ghosts[i] == part.mesh.n_cells() - part.mesh.n_owned_cells());
       CHECK(p.vertex_stencil_entries[i] == ring.vertex);
       CHECK(p.band_entries[i] == ring.band);
       CHECK(p.boundary_fit_entries[i] == ring.boundary_fit);

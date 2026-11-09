@@ -6,8 +6,14 @@
 
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
+#include "autan/kernels/geometry.hpp"
 #include "autan/physics/block_matrix.hpp"
 #include "autan/physics/euler.hpp"
+
+namespace autan::kernels::navier_stokes {
+template <class P>
+struct Data;
+}  // namespace autan::kernels::navier_stokes
 
 namespace autan::physics {
 
@@ -31,9 +37,13 @@ class NavierStokes {
  public:
   using State = typename P::state;
   using Res = typename P::residual;
+  using Faces = typename Euler<P>::Faces;
 
+  /// With `keys`, as Euler<P>'s: its Euler<P> takes them, the viscous face loops gather each cell's
+  /// faces in global order and orientation, the boundary fit lists its entries in ascending global
+  /// id, and assemble() sums and places its blocks in that order and orientation.
   NavierStokes(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme,
-               Transport transport);
+               Transport transport, const kernels::GlobalKeys* keys = nullptr);
   ~NavierStokes();
   NavierStokes(const NavierStokes&) = delete;
   NavierStokes& operator=(const NavierStokes&) = delete;
@@ -63,6 +73,12 @@ class NavierStokes {
   /// A = diag(shift) + J~ into `a`: Euler<P>'s blocks, the viscous face Jacobians and, through
   /// the boundary fit, the viscous fluxes' dependence on the fitted cell and the face's other cell.
   void assemble(std::span<const double> shift, BlockMatrix& a) const;
+  /// After residual_and_jacobian(s): adds to dres the chosen faces' derivative through the
+  /// gradients that `assemble` leaves out, convective (Euler<P>::gradient_tangent) and viscous
+  /// (the cell gradients, and the boundary fit's stencil entries outside the block pattern), the
+  /// limiter, the eddy viscosity and the fits' boundary values held fixed.
+  void gradient_tangent(std::span<const State> s, std::span<const State> du, std::span<Res> dres,
+                        typename Euler<P>::Faces faces);
   /// After assemble: Frobenius norms of the boundary fit's Jacobian blocks it added and of those
   /// outside the block pattern (stencil entries that are not the face's cells), which it leaves
   /// out.
@@ -89,6 +105,12 @@ class NavierStokes {
     double gas_constant;
   };
   [[nodiscard]] Arrays arrays() noexcept;
+
+  /// For a device copy of the residual, after set_boundary: the Euler residual it adds to, and
+  /// the viscous loops' data in host memory (geometry, the boundary fit's stencil and weights,
+  /// eddy viscosity, parameters).
+  [[nodiscard]] const Euler<P>& euler() const noexcept;
+  [[nodiscard]] const kernels::navier_stokes::Data<P>& data() const;
 
  private:
   struct Impl;

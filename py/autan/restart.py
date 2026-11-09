@@ -130,9 +130,11 @@ def problems(
     return found
 
 
-def start_info(previous: Results, mode: Mode) -> StartInfo:
+def start_info(previous: Results, mode: Mode, spec: CaseSpec) -> StartInfo:
     """The provenance the new run records, with the hash of the file it reads: the final
-    solution, or the checkpoint of a run that did not end converged, completed or stopped."""
+    solution, or the checkpoint of a run that did not end converged, completed or stopped.
+    A steady ``continue``, and a steady ``warm`` start from a steady run, carry the steady
+    convergence reference of the run they start from (case-schema.md#time)."""
     run = previous.run
     final = run.status in RESUMABLE
     point = _resume_point(previous)
@@ -142,12 +144,18 @@ def start_info(previous: Results, mode: Mode) -> StartInfo:
     # A checkpoint carries its own convergence state; a final solution's is the history's.
     reference: dict[str, float] | None = None
     found_woken: list[str] | None = None
-    if mode == "continue" and isinstance(previous.case.time, Steady):
+    inherits = isinstance(previous.case.time, Steady) and (
+        mode == "continue" or isinstance(spec.time, Steady)
+    )
+    if inherits:
         if final:
             reference = _reference(previous)
             found_woken = None if reference is None else woken(previous, reference, point.iteration)
         else:
             reference, found_woken = point.residual_reference, point.woken
+        # A warm start begins with no equation woken: it solves another problem.
+        if mode == "warm" and reference is not None:
+            found_woken = []
     return StartInfo(
         run_id=run.run_id,
         identity=run.identity,
@@ -162,12 +170,12 @@ def start_info(previous: Results, mode: Mode) -> StartInfo:
 
 
 def _reference(previous: Results) -> dict[str, float] | None:
-    """Residuals at iteration 1 of the original run, carried along a chain of continuations:
-    the steady convergence criterion is relative to them (case-schema.md#time)."""
+    """The steady convergence reference of ``previous``: the one its start carried (a chain of
+    continuations and warm starts), else its own residuals at iteration 1 (case-schema.md#time)."""
     if not isinstance(previous.case.time, Steady):
         return None
     start = previous.run.start
-    if start is not None and start.mode == "continue":
+    if start is not None and start.residual_reference is not None:
         return start.residual_reference
     history = previous.history
     return {name: float(history.residual(name)[0]) for name in history.equations}
@@ -180,11 +188,11 @@ FLOOR = 1e-12
 
 def woken(previous: Results, reference: dict[str, float], up_to: int) -> list[str]:
     """The identically zero equations that rose above their floor during ``previous``, up to
-    iteration ``up_to``, or the runs it continues: they no longer have the exemption
-    (case-schema.md#time)."""
+    iteration ``up_to``, or earlier in its chain (what its start carried): they no longer have
+    the exemption (case-schema.md#time)."""
     floor = FLOOR * max(reference.values(), default=0.0)
     start = previous.run.start
-    found = set(start.woken or []) if start is not None and start.mode == "continue" else set()
+    found = set(start.woken or []) if start is not None else set()
     history = previous.history
     upto = history.iterations <= up_to
     for name, first in reference.items():
@@ -210,4 +218,4 @@ def resolve(
     found = problems(spec, mesh_info, previous, mode)
     if found:
         raise CaseError(found)
-    return Start(info=start_info(previous, mode), run=previous.path.absolute())
+    return Start(info=start_info(previous, mode, spec), run=previous.path.absolute())

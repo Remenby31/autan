@@ -5,7 +5,13 @@
 
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
+#include "autan/kernels/geometry.hpp"
 #include "autan/physics/navier_stokes.hpp"
+
+namespace autan::kernels::spalart_allmaras {
+template <class P>
+struct Data;
+}  // namespace autan::kernels::spalart_allmaras
 
 namespace autan::physics {
 
@@ -19,9 +25,11 @@ class SpalartAllmaras {
   using State = typename P::state;
   using Res = typename P::residual;
 
-  /// `ft2`: false gives SA-noft2 (manufactured solutions of that variant only).
+  /// `ft2`: false gives SA-noft2 (manufactured solutions of that variant only). With `keys` (the
+  /// flow's), every sum follows the global numbering, as NavierStokes<P>'s (runtime.md, Ranks).
   SpalartAllmaras(const Mesh& mesh, const Geometry& geometry, NavierStokes<P>& flow,
-                  const Transport& transport, bool ft2 = true);
+                  const Transport& transport, bool ft2 = true,
+                  const kernels::GlobalKeys* keys = nullptr);
   ~SpalartAllmaras();
   SpalartAllmaras(const SpalartAllmaras&) = delete;
   SpalartAllmaras& operator=(const SpalartAllmaras&) = delete;
@@ -44,6 +52,8 @@ class SpalartAllmaras {
   /// negative part of each cell's source derivative dropped (production does not lower the
   /// diagonal): `diag` per cell, `upper` (row owner, column neighbour) and `lower` (row
   /// neighbour, column owner) per interior face, in mesh face order, as BlockMatrix.
+  /// Under the flow's global keys, each diagonal entry sums its cell's faces in global order and
+  /// orientation.
   void assemble(std::span<const double> shift, std::span<double> diag, std::span<double> upper,
                 std::span<double> lower) const;
   /// Solves the assembled system A dx = b with `sweeps` symmetric Gauss-Seidel sweeps in cell
@@ -53,6 +63,9 @@ class SpalartAllmaras {
              int sweeps) const;
   /// Writes the eddy viscosity of s to the flow, per cell and per boundary face.
   void eddy_viscosity(std::span<const State> s);
+  /// For a device copy: the generated loops' data in host memory (geometry, wall distance,
+  /// boundary values, source, parameters). Under the flow's global keys the face loops gather.
+  [[nodiscard]] const kernels::spalart_allmaras::Data<P>& data() const;
 
  private:
   struct Impl;
