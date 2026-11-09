@@ -468,6 +468,7 @@ def test_the_input_stays_within_the_size_its_plan_counts(
                 "type": "wall",
                 "native_type": None,
                 "faces": faces // walls_n,
+                "first_cell_height": walls[0]["first_cell_height"],
             }
             for i in range(walls_n)
         ]
@@ -482,6 +483,7 @@ def test_the_input_stays_within_the_size_its_plan_counts(
                     "type": "farfield",
                     "native_type": None,
                     "faces": total // walls_n + (total % walls_n if i == 0 else 0),
+                    "first_cell_height": far[0]["first_cell_height"],
                 }
                 for i in range(walls_n)
             ]

@@ -21,8 +21,10 @@ Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py
   },
   "bounds": {"min": [-1.2e3, 0.0, -2.1e2], "max": [2.9e3, 1.16e3, 5.6e2]},
   "boundary_zones": [
-    {"name": "wing.main", "type": "wall", "native_type": "BCWall", "faces": 812000},
-    {"name": "empennage", "type": null, "native_type": null, "faces": 95000}
+    {"name": "wing.main", "type": "wall", "native_type": "BCWall", "faces": 812000,
+     "first_cell_height": {"min": 1.1e-6, "median": 2.4e-6, "max": 8.9e-6}},
+    {"name": "empennage", "type": null, "native_type": null, "faces": 95000,
+     "first_cell_height": {"min": 2.0e-6, "median": 3.1e-6, "max": 1.2e-5}}
   ],
   "cell_zones": [{"name": "fluid", "type": null, "native_type": null, "cells": 48200000}],
   "interfaces": [],
@@ -61,6 +63,7 @@ Producer: the mesh readers in `io/` (owner: CFD - Noyau maillage). Consumer: `py
 | `boundary_zones[].type` | normalized type or `null` | See the mapping below. `null` means the file carries no usable type. |
 | `boundary_zones[].native_type` | string or `null` | The type exactly as written in the file, for display. |
 | `boundary_zones[].faces` | integer ≥ 0 | Face count. A zone the file declares without faces is kept so its name stays visible; it needs no condition. |
+| `boundary_zones[].first_cell_height` | `{min, median, max}` or `null` | Over the zone's faces, the distance along each face's normal from the centroid of the cell that owns it to the face's centroid, \|(x_cell − x_face) · n̂\|, in the file's units (as `bounds`): the wall distance of a first cell's unknown. Numbers with 0 ≤ min ≤ median ≤ max (0 when a concave cell's centroid lies in the face's plane); the median of an even count is the mean of the two middle values, so one face gives three equal numbers and two faces a median halfway between them. `null` exactly for a zone without faces. |
 | `cell_zones[]` | list, names unique, at least one | Every cell belongs to exactly one zone. A file without cell zones yields one zone named `fluid` with `type: null`; cells outside every zone (Gmsh cells outside any 3D physical group) go to that zone. |
 | `cell_zones[].type` | `"fluid"` · `"solid"` · `null` | Medium declared by the file. |
 | `cell_zones[].native_type` | string or `null` | As written in the file. |
