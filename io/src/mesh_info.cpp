@@ -457,6 +457,7 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256, std::int
     const auto& p = *run.partition;
     doc["partition"] = {{"ranks", p.ranks},
                         {"groups", p.groups},
+                        {"ghost_stencil", p.ghost_stencil},
                         {"cells_by_rank", p.cells},
                         {"ghosts_by_rank", p.ghosts},
                         {"faces_by_rank", p.faces},
