@@ -122,6 +122,10 @@ TEST_CASE("solution.cgns round-trips the mesh and passes cgnscheck", "[cgns]") {
   autan::io::Field previous{.name = "DensityPreviousLevel", .values = {}};
   for (index_t c = 0; c < mesh.n_cells(); ++c) previous.values.push_back(-1.0 / (c + 1));
   solution.restart_fields.push_back(previous);
+  // Solver state of other lengths than the cells: one value and a window of five.
+  solution.solver_state.push_back({.name = "SolverSteps", .values = {42.0}});
+  solution.solver_state.push_back(
+      {.name = "SolverWindow", .values = {0.5, -1.0, 1e-300, 3.0, 7.0}});
   const fs::path file = temp_dir() / (name + "-solution.cgns");
   fs::create_directories(temp_dir());
   autan::io::write_solution(file, mesh, solution);
@@ -161,11 +165,16 @@ TEST_CASE("solution.cgns round-trips the mesh and passes cgnscheck", "[cgns]") {
   same(stored.fields, solution.fields);
   same(stored.mean_fields, solution.mean_fields);
   same(stored.restart_fields, solution.restart_fields);
+  same(stored.solver_state, solution.solver_state);
+  // Its names and lengths through cgio, as a continue checks them before reading (E0707).
+  CHECK(autan::io::solver_state_arrays(file) ==
+        std::vector<std::pair<std::string, std::int64_t>>{{"SolverSteps", 1}, {"SolverWindow", 5}});
   // A warm start reads FlowSolution alone.
   const auto fields_only = autan::io::read_solution(file, false);
   same(fields_only.fields, solution.fields);
   CHECK(fields_only.mean_fields.empty());
   CHECK(fields_only.restart_fields.empty());
+  CHECK(fields_only.solver_state.empty());
 }
 
 TEST_CASE("Zone node names follow the results.md rule", "[cgns]") {
@@ -343,6 +352,19 @@ TEST_CASE("The writer rejects arrays that do not match the mesh", "[cgns]") {
     FAIL("expected E0101");
   } catch (const autan::Error& e) {
     CHECK(e.code() == autan::ErrorCode::mesh_inconsistent_sizes);
+  }
+  // A solver state array is one or more values, named once.
+  for (const auto& bad : {std::vector<autan::io::Field>{{.name = "Empty", .values = {}}},
+                          std::vector<autan::io::Field>{{.name = "Twice", .values = {1.0}},
+                                                        {.name = "Twice", .values = {2.0}}}}) {
+    autan::io::Solution wrong = solution_for(mesh);
+    wrong.solver_state = bad;
+    try {
+      autan::io::write_solution(temp_dir() / "bad.cgns", mesh, wrong);
+      FAIL("expected E0101");
+    } catch (const autan::Error& e) {
+      CHECK(e.code() == autan::ErrorCode::mesh_inconsistent_sizes);
+    }
   }
   autan::CellwiseMesh cells = autan::test::box(2, autan::test::BoxFill::hexa);
   cells.face_zones[0].name = "walls";
@@ -1045,7 +1067,9 @@ TEST_CASE("A start solution holds only what the writer writes for its mesh", "[c
   fs::create_directories(temp_dir());
   const autan::Mesh mesh = autan::io::read_mesh(data_dir / "hybrid" / "polyMesh");
   const fs::path file = temp_dir() / "start.cgns";
-  autan::io::write_solution(file, mesh, solution_for(mesh));
+  autan::io::Solution written = solution_for(mesh);
+  written.solver_state.push_back({.name = "SolverWindow", .values = std::vector<double>(501, 1.0)});
+  autan::io::write_solution(file, mesh, written);
   const auto zones = autan::io::meshinfo_zones(mesh);
   const autan::io::StartLimits limits{
       .zones = static_cast<std::int64_t>(zones.boundary.size() + zones.cell.size()),
