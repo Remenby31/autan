@@ -57,7 +57,7 @@ else
   cp "$tmp/src/vv/guard/reference.json" "$tmp/previous.json"
   [ -e "$G/inputs/reference-history.jsonl" ] && cp "$G/inputs/reference-history.jsonl" "$tmp/previous-history.jsonl"
 fi
-printf 'ID=guard-%s\nOWNER=CFD - Comparatif SU2 (V&V)\nDECL=https://github.com/Remenby31/autan/issues/611#issuecomment-6731459780\nCAP_GIB=6\nRESERVE_GIB=3\nEST_MIN=150\nTHREADS=1\nGPU=0\nWORKDIR=%s\nCMD=bash /work/src/vv/guard/job.sh\n' \
+printf 'ID=guard-%s\nOWNER=CFD - Comparatif SU2 (V&V)\nDECL=https://github.com/Remenby31/autan/issues/611#issuecomment-6731459780\nCAP_GIB=6\nRESERVE_GIB=3\nEST_MIN=150\nTHREADS=2\nGPU=0\nWORKDIR=%s\nCMD=bash /work/src/vv/guard/job.sh\n' \
   "$night" "$dir" > "$tmp/job.file"
 mv "$tmp" "$dir"
 publish

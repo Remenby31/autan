@@ -8,7 +8,7 @@ Every night, the guard runs the TMR flat plate on `main` and checks that it conv
   - It is #597's bisection case with `residual_orders = 14`, so that no build stops early and every night is measured at step 20 000.
   - The mesh is `flatplate-137x97.msh`, sha256 `ceb75abc…a7a59e`, checked before each night.
 - **Build:** the `origin/main` sha resolved at 23:30 UTC is pinned for the night. Release, CPU, one rank, one thread.
-- **Two runs per night,** from one binary, whose histories must be bitwise identical in their numbers.
+- **Two runs per night,** at the same time from one binary, whose histories must be bitwise identical in their numbers.
 
 ## Gates
 
@@ -27,11 +27,11 @@ Each gate is checked on run 1. The values come from `main` 179e316c, #597's B4 h
 | Outcome | Meaning |
 |---|---|
 | green | Every gate passes and the two runs are identical. |
-| red | A gate fails, the runs differ, a run exits non-zero, or a run cannot be measured: a build failure, a crash, a non-finite or truncated history or monitor, a missing binary fingerprint, a foreign commit, or the night's deadline (06:30 UTC the next day, which stops the runs) once run 1 has started. Inputs the enqueue refuses (the mesh's sha256, a failed fetch) give a red verdict without a job. |
-| void | A named infrastructure failure only: the deadline firing before run 1 started (a late queue start; the verdict gives the queue start and the publication time), or a cgroup OOM kill that the job's own counter records during the night. |
+| red | A gate fails, the runs differ, a run exits non-zero, or a run cannot be measured: a build failure, a crash, a non-finite or truncated history or monitor, a missing binary fingerprint, or a foreign commit. Inputs the enqueue refuses (the mesh's sha256, a failed fetch) give a red verdict without a job. |
+| void | A named infrastructure failure only: the night's deadline (06:30 UTC the next day), which stops the build or the runs, or a cgroup OOM kill that the job's own counter records. The case runs a fixed 20 000 steps, so a missed deadline measures the queue and the host's load, not the numerics; the verdict gives the steps reached, the steps per minute, the queue start and the publication time. |
 | MISSING | No verdict by 07:00 UTC. |
 
-**Reading the results:** every morning, V&V reads `spark-5512:~/cfd/vv-guard/STATUS`, one line per night, with the orchestrator as backup. A red or MISSING night gets an issue with both runs' paths. The host has no `gh`, so this step is manual.
+**Reading the results:** every morning, V&V reads `spark-5512:~/cfd/vv-guard/STATUS`, one line per night, with the orchestrator as backup. A red or MISSING night, or a second void in a row (`STATUS` flags it), gets an issue with both runs' paths. The host has no `gh`, so this step is manual.
 
 **What is kept:** each night's directory holds `verdict.json` (schema `autan.vv-guard-night/1`), both runs, the logs and `previous.json`, the last green night it was compared with. A green night's sources and build are removed after 14 days. Red and void nights stay whole.
 
@@ -54,5 +54,5 @@ systemctl --user enable --now autan-guard-enqueue.timer autan-guard-watchdog.tim
 
 **What runs where:**
 - **The enqueue timer** (23:30 UTC, `Persistent=true`) only prepares the night's directory and writes its job file, `05-guard-<date>.job`, into the legacy queue. PRIO 05 puts the guard ahead of the campaigns (08 and above); only the declared critical path (00–04) goes first. A night is the date of the latest 23:30 UTC slot, so a catch-up after midnight prepares the right night. A lock covers it, and a night prepared but not yet published is published by the next run.
-- **The job,** THREADS 1, CAP 6 GiB, does the build and the two runs.
+- **The job,** THREADS 2, CAP 6 GiB, does the build and the two runs.
 - **The watchdog** (07:00 UTC) appends one line per night to `STATUS`, for the night whose deadline the latest 07:00 slot closed, and trims green nights older than 14 days to their verdicts and histories.
