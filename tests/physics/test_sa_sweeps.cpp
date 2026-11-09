@@ -361,7 +361,7 @@ TEST_CASE("SA's colour groups refuse a colouring that couples a colour", "[spala
 // gpu-tests nightly and on pull requests that touch the SA assembly or sweeps.
 TEST_CASE("SA's sweeps by colour converge within bounds certified by interval arithmetic",
           "[spalart-allmaras][.certificate]") {
-  // T2c (#163, step 7a, revision 3). On T2's four systems at CFL 1000:
+  // T2c (#163, step 7a). On T2's four systems at CFL 1000:
   // - C_j >= ||M^j||_inf, M the exact iteration matrix of one symmetric pair, j = 1 ... 400;
   //   the gate C_400 <= 0.9;
   // - interval sweeps [x]_N from x_0 = 0 enclose the exact iterate x_N and the binary64 one, which
