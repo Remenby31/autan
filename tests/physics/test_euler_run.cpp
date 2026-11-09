@@ -37,6 +37,7 @@ extern char** environ;
 
 #include "../runtime/planned.hpp"
 #include "../runtime/refusal.hpp"
+#include "../runtime/run_diagnostics.hpp"
 #include "autan/core/cellwise.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/io/mesh_info.hpp"
@@ -328,7 +329,7 @@ TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[
   INFO(out.err);
   REQUIRE(out.status == ExitStatus::finished);
   const Json info = Json::parse(read(out.run / "run.json"));
-  CHECK(info["diagnostics"].empty());
+  CHECK(autan_test::run_diagnostics(info).empty());
   const auto& f = doc["freestream"];
   const double eps = std::string(precision) == "fp64" ? std::numeric_limits<double>::epsilon()
                                                       : std::numeric_limits<float>::epsilon();
