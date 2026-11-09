@@ -57,6 +57,7 @@
 #include "planned.hpp"
 #include "refusal.hpp"
 #include "relaxation.hpp"
+#include "run_diagnostics.hpp"
 
 extern char** environ;
 
@@ -1043,7 +1044,7 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     const Json info = Json::parse(read(o.run / "run.json"));
     CHECK(info["status"] == "failed");
     CHECK(info["iterations"] == 28);
-    CHECK(info["diagnostics"][0]["code"] == "E0704");
+    CHECK(autan_test::run_diagnostics(info).at(0).at("code") == "E0704");
     CHECK(info["monitors"].is_null());
   }
   SECTION("failed on final loads that overflow: E0704, no monitors") {
@@ -1057,7 +1058,7 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(o.status == ExitStatus::failed);
     const Json info = Json::parse(read(o.run / "run.json"));
     CHECK(info["status"] == "failed");
-    CHECK(info["diagnostics"][0]["code"] == "E0704");
+    CHECK(autan_test::run_diagnostics(info).at(0).at("code") == "E0704");
     CHECK(info["monitors"].is_null());
   }
   SECTION("failed on a recorded load that is not finite: E0704, history up to the line before") {
@@ -1069,7 +1070,7 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     const Json info = Json::parse(read(o.run / "run.json"));
     CHECK(info["status"] == "failed");
     CHECK(info["iterations"] == 4);
-    CHECK(info["diagnostics"][0]["code"] == "E0704");
+    CHECK(autan_test::run_diagnostics(info).at(0).at("code") == "E0704");
     CHECK(info["monitors"].is_null());
     const auto lines = history(o.run);
     REQUIRE(lines.size() == 4);
@@ -1081,7 +1082,7 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(o.status == ExitStatus::failed);
     const Json info = Json::parse(read(o.run / "run.json"));
     CHECK(info["status"] == "failed");
-    CHECK(info["diagnostics"][0]["code"] == "E0704");
+    CHECK(autan_test::run_diagnostics(info).at(0).at("code") == "E0704");
     CHECK(info["monitors"].is_null());
     CHECK(info["timing"].is_null());
   }
@@ -1095,7 +1096,7 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(o.status == ExitStatus::failed);
     const Json info = Json::parse(read(o.run / "run.json"));
     CHECK(info["status"] == "failed");
-    CHECK(info["diagnostics"][0]["code"] == "E0704");
+    CHECK(autan_test::run_diagnostics(info).at(0).at("code") == "E0704");
     CHECK_FALSE(fs::exists(o.run / "solution.cgns"));
   }
   SECTION("diverged: D0107 with the iteration, cell and zone") {
@@ -1104,8 +1105,9 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     const Json info = Json::parse(read(o.run / "run.json"));
     CHECK(info["status"] == "diverged");
     CHECK(info["iterations"] == 6);
-    REQUIRE(info["diagnostics"].size() == 1);
-    const Json& d = info["diagnostics"][0];
+    const Json diagnostics = autan_test::run_diagnostics(info);
+    REQUIRE(diagnostics.size() == 1);
+    const Json& d = diagnostics[0];
     CHECK(d["code"] == "D0107");
     CHECK(d["severity"] == "divergence");
     CHECK(d["data"]["iteration"] == 7);
@@ -1123,8 +1125,9 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     CHECK(o.status == ExitStatus::failed);
     const Json info = Json::parse(read(o.run / "run.json"));
     CHECK(info["status"] == "failed");
-    CHECK(info["diagnostics"][0]["code"] == "E0704");
-    CHECK(info["diagnostics"][0]["data"] == Json::object());  // one rank: no data.rank
+    const Json diagnostics = autan_test::run_diagnostics(info);
+    CHECK(diagnostics.at(0).at("code") == "E0704");
+    CHECK(diagnostics.at(0).at("data") == Json::object());  // one rank: no data.rank
     CHECK(history(o.run).size() == 3);
     CHECK(info["monitors"].is_null());
     CHECK(info["timing"].is_null());  // a failed run is not timed
@@ -1851,7 +1854,7 @@ TEST_CASE("log.jsonl records the run's events in the results.md shape", "[runtim
   const auto d0107 =
       std::ranges::find_if(lines, [](const Json& l) { return l["code"] == "D0107"; });
   REQUIRE(d0107 != lines.end());
-  CHECK((*d0107)["data"] == info["diagnostics"][0]["data"]);
+  CHECK((*d0107)["data"] == autan_test::run_diagnostics(info).at(0).at("data"));
   CHECK((*d0107)["iteration"] == 4);
   CHECK(lines.back()["data"]["status"] == "diverged");
   CHECK(lines.back()["level"] == "info");
@@ -2870,8 +2873,9 @@ TEST_CASE("An equation at round-off from iteration 1 does not hold back converge
   REQUIRE(w.status == ExitStatus::finished);
   CHECK(Json::parse(read(w.run / "run.json"))["status"] == "completed");
   const Json info_w = Json::parse(read(w.run / "run.json"));
-  REQUIRE(info_w["diagnostics"].size() == 1);
-  CHECK(info_w["diagnostics"][0]["code"] == "W0710");
+  const Json woke = autan_test::run_diagnostics(info_w);
+  REQUIRE(woke.size() == 1);
+  CHECK(woke[0]["code"] == "W0710");
   std::vector<Json> warnings;
   std::ifstream in(w.run / "log.jsonl");
   for (std::string line; std::getline(in, line);) {
@@ -2932,7 +2936,7 @@ TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]
   CHECK(info["iterations"] == 28);
   CHECK(info["start"]["woken"] == Json::array({"momentum-x"}));
   // The equation woke in the first run: no new W0710 in the continuation.
-  CHECK(info["diagnostics"].empty());
+  CHECK(autan_test::run_diagnostics(info).empty());
   auto chain = lines_of(a.run / "history.jsonl");
   const auto rest = lines_of(b.run / "history.jsonl");
   chain.insert(chain.end(), rest.begin(), rest.end());
@@ -3078,7 +3082,7 @@ TEST_CASE("In fp32+acc64 an equation converges on a round-off plateau near its f
     CHECK(bad.status == ExitStatus::failed);
     const Json failed = Json::parse(read(bad.run / "run.json"));
     CHECK(failed["status"] == "failed");
-    CHECK(failed["diagnostics"][0]["code"] == "E0704");
+    CHECK(autan_test::run_diagnostics(failed).at(0).at("code") == "E0704");
   }
 }
 
@@ -3113,20 +3117,26 @@ TEST_CASE("A run that needs more memory than its host can give is refused before
   const Json kept = refusal(run(input(), registry, {}, {.margin_bytes = huge}), "E0711");
   CHECK(kept["data"]["margin_bytes"] == huge);
   // Started anyway on request, with W0712 and the same data in run.json and the log, which is
-  // published with it: its second line, after the start (results.md).
+  // published with it: right after the start, among the host's memory warnings (results.md).
   const Outcome over = run(input([&](Json& d) { d["memory"]["bytes_host"] = huge; }), registry, {},
                            {.allow_oversubscription = true});
   REQUIRE(over.status == ExitStatus::finished);
   const Json info = Json::parse(read(over.run / "run.json"));
-  REQUIRE(info["diagnostics"].size() == 1);
-  CHECK(info["diagnostics"][0]["code"] == "W0712");
-  CHECK(info["diagnostics"][0]["data"]["required_bytes"] == huge);
+  CHECK(autan_test::run_diagnostics(info).empty());
+  const auto& diagnostics = info["diagnostics"];
+  const auto is_w0712 = [](const Json& d) { return d["code"] == "W0712"; };
+  CHECK(std::count_if(diagnostics.begin(), diagnostics.end(), is_w0712) == 1);
+  const auto recorded = std::find_if(diagnostics.begin(), diagnostics.end(), is_w0712);
+  REQUIRE(recorded != diagnostics.end());
+  CHECK((*recorded)["data"]["required_bytes"] == huge);
   const auto logged = lines_of(over.run / "log.jsonl");
-  REQUIRE(logged.size() >= 2);
-  const Json second = Json::parse(logged[1]);
+  std::size_t k = 1;
+  while (k < logged.size() && Json::parse(logged[k])["code"] == "W0713") ++k;
+  REQUIRE(k < logged.size());
+  const Json second = Json::parse(logged[k]);
   CHECK(second["code"] == "W0712");
   CHECK(second["level"] == "warning");
-  CHECK(second["data"] == info["diagnostics"][0]["data"]);
+  CHECK(second["data"] == (*recorded)["data"]);
   std::size_t w0712 = 0;
   for (const auto& line : logged) w0712 += Json::parse(line)["code"] == "W0712" ? 1 : 0;
   CHECK(w0712 == 1);
@@ -3462,9 +3472,13 @@ TEST_CASE("The ranks of a host share its memory", "[runtime][mpi]") {
   CHECK(margined["data"]["margin_bytes"] == huge);
   const fs::path over = run_on_ranks(heavy, ranks, {}, 0, nullptr, {"--allow-oversubscription"});
   const Json info = Json::parse(read(over / "run.json"));
-  REQUIRE(info["diagnostics"].size() == 1);
-  CHECK(info["diagnostics"][0]["code"] == "W0712");
-  CHECK(info["diagnostics"][0]["data"]["required_bytes"] == ranks * huge);
+  CHECK(autan_test::run_diagnostics(info).empty());
+  const auto& diagnostics = info["diagnostics"];
+  const auto is_w0712 = [](const Json& d) { return d["code"] == "W0712"; };
+  CHECK(std::count_if(diagnostics.begin(), diagnostics.end(), is_w0712) == 1);
+  const auto recorded = std::find_if(diagnostics.begin(), diagnostics.end(), is_w0712);
+  REQUIRE(recorded != diagnostics.end());
+  CHECK((*recorded)["data"]["required_bytes"] == ranks * huge);
 }
 
 TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
@@ -3706,8 +3720,9 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
                        "run.json"));
   CHECK(f["status"] == "failed");
   CHECK(f["iterations"] == 3);
-  CHECK(f.at("diagnostics").at(0).at("code") == "E0704");
-  CHECK(f.at("diagnostics").at(0).at("data").at("rank") == ranks - 1);
+  const Json f_diagnostics = autan_test::run_diagnostics(f);
+  CHECK(f_diagnostics.at(0).at("code") == "E0704");
+  CHECK(f_diagnostics.at(0).at("data").at("rank") == ranks - 1);
 
   // The same failure in the final monitor record (loads() called only by
   // finish, `every` beyond the run), the others inside the collective sum of
@@ -3722,8 +3737,9 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
                        "run.json"));
   CHECK(g["status"] == "failed");
   CHECK(g["monitors"].is_null());
-  CHECK(g.at("diagnostics").at(0).at("code") == "E0704");
-  CHECK(g.at("diagnostics").at(0).at("data").at("rank") == ranks - 1);
+  const Json g_diagnostics = autan_test::run_diagnostics(g);
+  CHECK(g_diagnostics.at(0).at("code") == "E0704");
+  CHECK(g_diagnostics.at(0).at("data").at("rank") == ranks - 1);
 
   // A stop file the last rank creates during iteration 5: rank 0 sees it, and
   // all stop before iteration 6.
