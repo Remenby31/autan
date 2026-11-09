@@ -327,7 +327,7 @@ TEST_CASE("SA's sweeps by colour give the declared symmetric colour Gauss-Seidel
   for (const int pairs : {1, 4}) {
     CAPTURE(pairs);
     auto dx = x0;
-    s.sa->solve(s.diag, s.upper, s.lower, s.b, dx, pairs, &groups);
+    s.sa->solve(s.diag, s.upper, s.lower, s.b, dx, pairs, groups);
     const auto up = reference(s.mesh, s.diag, s.upper, s.lower, s.b,
                               buckets(colours, n_colours, false), x0, pairs);
     const auto down = reference(s.mesh, s.diag, s.upper, s.lower, s.b,
@@ -417,7 +417,7 @@ TEST_CASE("SA's sweeps by colour converge within bounds certified by interval ar
   bool same = true, inside = true;
   for (int p = 1; p <= last; ++p) {
     interval_pair(s, by_colour, faces, true, x);
-    s.sa->solve(s.diag, s.upper, s.lower, s.b, production, 1, &groups);
+    s.sa->solve(s.diag, s.upper, s.lower, s.b, production, 1, groups);
     ref = reference(s.mesh, s.diag, s.upper, s.lower, s.b, by_colour, ref, 1);
     same = same && same_bits(production, ref);
     if (std::ranges::find(marks, p) != marks.end()) {

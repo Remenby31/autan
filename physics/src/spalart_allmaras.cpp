@@ -36,8 +36,6 @@ struct SpalartAllmaras<P>::Impl {
   std::vector<typename P::grad> nt_grad;
   std::vector<J> cell_jac, face_jac, bnd_jac;
   std::vector<index_t> owner, neighbour;
-  std::vector<offset_t> cell_offsets;  // cell -> interior faces CSR
-  std::vector<index_t> cell_faces;
   GhostFill* ghost_fill = nullptr;
   sk::Data<P> d{};
 
@@ -69,20 +67,6 @@ struct SpalartAllmaras<P>::Impl {
     bnd_jac.assign(nf, J(0));
     owner.assign(mesh.owner().begin(), mesh.owner().end());
     neighbour.assign(mesh.neighbour().begin(), mesh.neighbour().end());
-    cell_offsets.assign(nc + 1, 0);
-    for (std::size_t g = 0; g < ni; ++g) {
-      ++cell_offsets[static_cast<std::size_t>(owner[g]) + 1];
-      ++cell_offsets[static_cast<std::size_t>(neighbour[g]) + 1];
-    }
-    for (std::size_t c = 0; c < nc; ++c) cell_offsets[c + 1] += cell_offsets[c];
-    cell_faces.assign(static_cast<std::size_t>(cell_offsets[nc]), 0);
-    auto fill = cell_offsets;
-    for (std::size_t g = 0; g < ni; ++g) {
-      cell_faces[static_cast<std::size_t>(fill[static_cast<std::size_t>(owner[g])]++)] =
-          static_cast<index_t>(g);
-      cell_faces[static_cast<std::size_t>(fill[static_cast<std::size_t>(neighbour[g])]++)] =
-          static_cast<index_t>(g);
-    }
 
     d.nt = nt.data();
     d.nt_b = nt_b.data();
@@ -275,48 +259,31 @@ template <class P>
 void SpalartAllmaras<P>::solve(std::span<const double> diag, std::span<const double> upper,
                                std::span<const double> lower, std::span<const double> b,
                                std::span<double> dx, int sweeps,
-                               const std::vector<std::vector<std::size_t>>* colours,
+                               const std::vector<std::vector<std::size_t>>& colours,
                                const std::function<void(std::span<double>)>& exchange) const {
   const auto& m = *impl_;
-  auto relax = [&](std::size_t c) {
+  // The global distance-1 colouring: no two cells of a colour are neighbours, so each colour
+  // relaxes in any order, and the sweeps are those of one rank in any cell order. Each row sums
+  // its faces in Topology::cell_faces order (the global order under keys).
+  const auto& t = m.d.topo;
+  auto relax_row = [&](std::size_t c) {
     double r = b[c];
-    for (auto k = m.cell_offsets[c]; k < m.cell_offsets[c + 1]; ++k) {
-      const auto f = static_cast<std::size_t>(m.cell_faces[static_cast<std::size_t>(k)]);
-      const auto o = static_cast<std::size_t>(m.owner[f]);
-      const auto n = static_cast<std::size_t>(m.neighbour[f]);
+    for (auto k = t.cell_face_offsets[c]; k < t.cell_face_offsets[c + 1]; ++k) {
+      const auto f = static_cast<std::size_t>(t.cell_faces[k]);
+      if (f >= m.ni) continue;
+      const auto o = static_cast<std::size_t>(t.owner[f]);
+      const auto n = static_cast<std::size_t>(t.neighbour[f]);
       r -= o == c ? upper[f] * dx[n] : lower[f] * dx[o];
     }
     dx[c] = r / diag[c];
   };
-  if (colours != nullptr) {
-    // The global distance-1 colouring: no two cells of a colour are neighbours, so each colour
-    // relaxes in any order, and the sweeps are those of one rank in any cell order. Each row
-    // sums its faces in Topology::cell_faces order (the global order under keys).
-    const auto& t = m.d.topo;
-    auto relax_row = [&](std::size_t c) {
-      double r = b[c];
-      for (auto k = t.cell_face_offsets[c]; k < t.cell_face_offsets[c + 1]; ++k) {
-        const auto f = static_cast<std::size_t>(t.cell_faces[k]);
-        if (f >= m.ni) continue;
-        const auto o = static_cast<std::size_t>(t.owner[f]);
-        const auto n = static_cast<std::size_t>(t.neighbour[f]);
-        r -= o == c ? upper[f] * dx[n] : lower[f] * dx[o];
-      }
-      dx[c] = r / diag[c];
-    };
-    auto colour = [&](const std::vector<std::size_t>& cells) {
-      for (const auto c : cells) relax_row(c);
-      if (exchange) exchange(dx);
-    };
-    for (int s = 0; s < sweeps; ++s) {
-      for (const auto& cells : *colours) colour(cells);
-      for (auto it = colours->rbegin(); it != colours->rend(); ++it) colour(*it);
-    }
-    return;
-  }
+  auto colour = [&](const std::vector<std::size_t>& cells) {
+    for (const auto c : cells) relax_row(c);
+    if (exchange) exchange(dx);
+  };
   for (int s = 0; s < sweeps; ++s) {
-    for (std::size_t c = 0; c < m.nc; ++c) relax(c);
-    for (std::size_t c = m.nc; c-- > 0;) relax(c);
+    for (const auto& cells : colours) colour(cells);
+    for (auto it = colours.rbegin(); it != colours.rend(); ++it) colour(*it);
   }
 }
 

@@ -1145,7 +1145,7 @@ class EulerPhysics final : public runtime::Physics {
         for (std::size_t c = 0; c < n_; ++c) t.rhs[c] = -static_cast<double>(t.res[c]);
         std::fill(t.dx.begin(), t.dx.end(), 0.0);
         t.model.assemble(shift, t.diag, t.upper, t.lower);
-        t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, nt_sweeps, &t.colours,
+        t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, nt_sweeps, t.colours,
                       [this](std::span<double> x) { fill_ghost_values(x); });
         // Local under-relaxation of the SA update: rho nt changes by at most a fraction of
         // max(|rho nt|, rho nt_inf) per step, which the converged state never reaches. Owned
