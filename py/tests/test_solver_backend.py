@@ -547,6 +547,8 @@ def _box(
                 "--json",
                 "--scale",
                 str(metres_per(ureg.Unit(mesh_unit))),
+                # The ghost stencil the plan expects of the case's physics (vertex4 when viscous).
+                *(() if turbulence == "Inviscid" else ("--ghosts", "vertex4")),
                 str(PERIODIC_BOX),
             ],
             capture_output=True,
@@ -664,7 +666,8 @@ def test_two_ranks_run_and_stop_through_the_launcher(
     meshinfo = tmp_path / "hybrid.meshinfo.json"
     meshinfo.write_text(
         subprocess.run(
-            [str(MESH_INFO), "--json", "--ranks", "2", str(MESH)],
+            # The ghost stencil the plan expects of the case's physics (vertex4: the case is laminar).
+            [str(MESH_INFO), "--json", "--ranks", "2", "--ghosts", "vertex4", str(MESH)],
             capture_output=True,
             text=True,
             check=True,

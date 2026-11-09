@@ -78,6 +78,12 @@ add_subdirectory(solvers)
 add_subdirectory(physics)
 
 if(AUTAN_BUILD_TESTS)
+  # Default per-test timeout of ctest, in seconds: a test that hangs fails after 10 minutes, with its
+  # name, instead of holding its CI job until the job's own timeout. Tests that need longer set
+  # their own TIMEOUT (the halo and ranks tests; the [long] tests of tests/physics). include(CTest)
+  # reads it into ctest's configuration. A build directory configured before keeps its cached
+  # value.
+  set(DART_TESTING_TIMEOUT 600 CACHE STRING "Default per-test timeout of ctest, in seconds")
   include(CTest)
   include(FetchContent)
   FetchContent_Declare(
