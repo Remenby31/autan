@@ -19,9 +19,20 @@ Partitioning is serial: every rank reads the global mesh, rank 0 partitions it a
 
 ## A partition
 
-`extract_partition(global, compute_geometry(global), parts, n_parts, rank)` returns a `LocalPartition`:
+`extract_partition(global, compute_geometry(global), parts, n_parts, rank, ghosts)` returns a `LocalPartition`:
 
-- `mesh`: owned cells in the order of the global mesh, then the ghost cells within `layers` face steps (2 by default, 1 on request), ordered by owning rank, the same order, then periodic shift. The first ghost layer carries all its faces, so the face-of-face stencil of every owned cell is local; those halo faces come after the owned faces (mesh contract, invariant 6), and loops that write residuals stop at `n_owned_interior_faces` and `n_owned_faces`. Each cell keeps its `cell_global_id`, so a global mesh renumbered before partitioning keeps its ids. Built through `assemble`, so it meets every invariant of the mesh contract.
+- `mesh`: owned cells in the order of the global mesh, then the ghost cells of `ghosts`, ordered by owning rank, the same order, then periodic shift. Halo faces come after the owned faces (mesh contract, invariant 6), and loops that write residuals stop at `n_owned_interior_faces` and `n_owned_faces`. `ghosts` (`GhostStencil`, recorded in `LocalPartition::ghosts`) is the stencil the physics declares:
+
+  | `ghosts` | Ghost cells | Faces beyond the owned cells' | Stencil of an owned cell that is local |
+  |---|---|---|---|
+  | `face` | the face neighbours | none | its faces |
+  | `face2` (default) | within 2 face steps | every face of the first layer | `StencilKind::face2` |
+  | `vertex` | face2's, and every cell around a node of an owned cell | face2's, every face around those nodes, and the boundary faces of the cells around them | `StencilKind::vertex`, and any per-cell union with face2 |
+  | `vertex2`, `vertex3`, `vertex4` | face2's, and the cells within 2, 3 or 4 vertex rings of an owned cell | face2's, every face around the nodes of the cells within one ring fewer, and the boundary faces of the outermost ring's cells | `StencilKind::vertex` of every cell within one ring fewer: the quadratic gradient's two rings, the viscous fits' |
+
+  Measured cost of `vertex4` (#632, ONERA M6 n048 tetrahedra and a 128³ hex box, METIS): on tetrahedra, 7.6 times face2's ghosts at 8 parts and 8.9 times at 64 (the worst rank 2.3 ghosts per owned cell), above #632's budget of 8 times at 64 parts; on hexahedra, the worst rank's ghosts per owned cell 2.7 times face2's at 8 parts (0.27) and 3.1 times at 64 (1.24), above the budget of 3 times at 64 parts; the slowest rank extracts in 56 s at most, and the extraction's peak memory grows by 8 % at most. Ghost depth 3 with the ghosts' fit rows exchanged is #651.
+
+  Nodes and rings are those of the periodic covering, so a ring runs across periodic faces. A ring cell carries its boundary faces so that a stencil choosing by "the cell has a boundary face" reads the same answer on the part. With a vertex kind, every node copy the rings walk around must keep, on the part, as many face incidences as its class has on the whole mesh (zone-b periodic faces counted through their zone-a partner); a node whose cells do not all meet through faces around it fails this, and the extraction throws `E0148` rather than truncate a stencil. Each cell keeps its `cell_global_id`, so a global mesh renumbered before partitioning keeps its ids. Built through `assemble`, so it meets every invariant of the mesh contract.
 - `geometry`: the global geometry, copied bit for bit. A face whose orientation flips (its owned cell has the higher global index) has its area vector negated, which is exact. Ghost cells are NaN until a forward exchange fills them (`exchange_ghost_geometry`). `compute_geometry` on the partition would agree only to round-off, because a reversed face sums its nodes in another order.
 - `face_global_id`: the global face of each local face, the key for summing a cell's faces in an order that no partition changes. For a periodic face it is the face that represents the pair, the same on every part.
 - `face_reversed`: 1 where the local face runs opposite to its global face (the negated area vectors above), so that a kernel can evaluate a flux in the global orientation, swapping its two states, and get the global bits; never on a boundary face.
@@ -29,7 +40,7 @@ Partitioning is serial: every rank reads the global mesh, rank 0 partitions it a
 
 ## Halo pattern
 
-Ghosts from neighbour `i` are the contiguous cells `n_owned + [recv_offsets[i], recv_offsets[i+1])`. The owned cells that rank `i` holds as ghosts are `send_cells[send_offsets[i] .. send_offsets[i+1])`, in the same order: a cell is a ghost of part `q` exactly when it is within `layers` face steps of `q`, a symmetric relation, so both lists are the same cells in the same order. `interface_faces` lists the owned interior faces that touch a ghost.
+Ghosts from neighbour `i` are the contiguous cells `n_owned + [recv_offsets[i], recv_offsets[i+1])`. The owned cells that rank `i` holds as ghosts are `send_cells[send_offsets[i] .. send_offsets[i+1])`, in the same order: a cell is a ghost of part `q` exactly when it is within the face steps of `ghosts` of `q`, or, with a vertex kind, lies within its vertex rings of one of its cells, a symmetric relation, so both lists are the same cells in the same order. `interface_faces` lists the owned interior faces that touch a ghost.
 
 ## Periodic images
 
@@ -60,12 +71,14 @@ With `MemorySpace::cuda`, packing and unpacking run as CUDA kernels and device b
 
 `PartitionOptions::group_offsets` and `group_cells` name groups of cells that must share a part, a smoother's lines for instance. `partition_cells` contracts each group into one node of the graph its method partitions, weighing the sum of its cells, then gives every cell its group's part.
 
-A multigrid level is a graph, `GraphLevel`: nodes with global ids, and edges between them. `coarse_parts` gives each coarse node the part of its child with the least global id; `level_parts` does the same except that every node of a line of at least two nodes takes the part of the line's least child, so that each line is solved on one rank. Levels are taken in order, each from the finer level's final parts; every rank holds the same hierarchy, so all agree (#259 D2). `extract_graph` builds a rank's share of a level, `LocalGraph`:
+A multigrid level is a graph, `GraphLevel`: nodes with global ids, and edges between them.
+`coarse_parts` gives each coarse node the part of its child with the least global id; `level_parts` does the same except that every node of a line of at least two nodes takes the part of the line's least child, so that each line is solved on one rank. Levels are taken in order, each from the finer level's final parts; every rank holds the same hierarchy, so all agree (#259 D2). `extract_graph` builds a rank's share of a level, `LocalGraph`:
 - **Nodes:** owned nodes in increasing global id, then ghost nodes ordered by owning part and global id. The ghosts are the edge neighbours of the owned nodes and, with coarse parts given, the remote children (`remote_children`: children, owned elsewhere, of the coarse nodes this rank owns) and their neighbours.
 - **Edges:** those with an end owned or a remote child, each owned by the part of its owner node, in global orientation flagged by `edge_reversed`.
 - **Halos:** `node_halo` and `edge_halo` are HaloPatterns, so `HaloExchange` moves per-node and per-edge data. A coarse owner then restricts and assembles from all its children's values, summed in global id order: the same bits on any number of ranks, with no reverse sum (#259).
+
 - **Parents:** `parent_import` gives a rank the coarse nodes, owned elsewhere, that hold one of its fine nodes, after its own coarse nodes, with the HaloPattern that brings them: the prolongation's transfer down, which a rank needs even when it owns no coarse node.
 
 ## Tests
 
-`tests/partition/`: analytic halo sizes of slab partitions, valid extraction for every cell type and a 105-face polyhedron, balance and reproducibility of METIS and Scotch, graph levels (each part's ghosts, edges and halos against a recount, coarse owners with lines kept whole, parent imports, remote children far beyond any stencil's halo), and error codes. `autan_halo_tests` runs on 1, 2, 4 and 8 ranks, on the host and on the GPU: ghost geometry and a Green–Gauss gradient match the single-rank values bit for bit in FP32 and FP64, reverse passes the dot-product test against forward, reverse counts the ranks that hold each cell as a ghost, and graph levels' node, edge and parent-import halos deliver each owner's value.
+`tests/partition/`: analytic halo sizes of slab partitions, the vertex ghost stencils of hex boxes (plain and periodic, up to four rings) against their definition and `E0148` at a node whose cells meet only there, valid extraction for every cell type and a 105-face polyhedron, balance and reproducibility of METIS and Scotch, graph levels (each part's ghosts, edges and halos against a recount, coarse owners with lines kept whole, parent imports, remote children far beyond any stencil's halo), and error codes. `autan_halo_tests` runs on 1, 2, 4 and 8 ranks, on the host and on the GPU: ghost geometry and a Green–Gauss gradient match the single-rank values bit for bit in FP32 and FP64, reverse passes the dot-product test against forward, reverse counts the ranks that hold each cell as a ghost, and graph levels' node, edge and parent-import halos deliver each owner's value.

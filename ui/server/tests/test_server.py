@@ -616,7 +616,12 @@ def _archived_state_run(kind: str, runs: Path, tmp_path: Path) -> tuple[Path, Pa
     if kind == "oracle-state":
         for zone in mesh["boundary_zones"]:
             if zone["name"] == "farfield":
-                zone.update(faces=2, type=None, native_type=None)
+                zone.update(
+                    faces=2,
+                    type=None,
+                    native_type=None,
+                    first_cell_height={"min": 1.0, "median": 1.5, "max": 2.0},
+                )
         states = {
             "schema": "autan.face-states/1",
             "oracle": "test",

@@ -37,7 +37,7 @@ inline nlohmann::json planned(nlohmann::json doc, const std::filesystem::path& r
     return o == "input" ? autan::io::CellOrder::input : autan::io::CellOrder::rcm;
   };
   const auto counts =
-      autan::io::run_counts(m, scale, as_order(order), std::nullopt,
+      autan::io::run_counts(m, scale, as_order(order), std::nullopt, autan::GhostStencil::face2,
                             as_order(multigrid_order.empty() ? order : multigrid_order));
   const std::string hash = autan::io::mesh_hash(mesh);
   // The sidecar's groups as autan-mesh-info gives them; a sidecar the reader refuses is left to

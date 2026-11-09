@@ -1,7 +1,9 @@
 #include "autan/physics/spalart_allmaras.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
+#include <span>
 #include <stdexcept>
 #include <type_traits>
 #include <vector>
@@ -35,14 +37,16 @@ struct SpalartAllmaras<P>::Impl {
   std::vector<index_t> owner, neighbour;
   std::vector<offset_t> cell_offsets;  // cell -> interior faces CSR
   std::vector<index_t> cell_faces;
+  GhostFill* ghost_fill = nullptr;
   sk::Data<P> d{};
 
-  Impl(const Mesh& mesh, const Geometry& geometry, NavierStokes<P>& f, const Transport& t, bool ft2)
+  Impl(const Mesh& mesh, const Geometry& geometry, NavierStokes<P>& f, const Transport& t, bool ft2,
+       const kernels::GlobalKeys* keys)
       : flow(f),
         nc(static_cast<std::size_t>(mesh.n_cells())),
         nf(static_cast<std::size_t>(mesh.n_faces())),
         ni(static_cast<std::size_t>(mesh.n_interior_faces())) {
-    const auto packed = kernels::pack_geometry(mesh, geometry);
+    const auto packed = kernels::pack_geometry(mesh, geometry, keys);
     face_normal =
         kernels::converted<typename decltype(face_normal)::value_type>(packed.face_normal);
     face_area_magnitude = kernels::converted<typename decltype(face_area_magnitude)::value_type>(
@@ -128,23 +132,46 @@ struct SpalartAllmaras<P>::Impl {
     }
   }
 
+  // `data` over every local cell and face (the generated cell and boundary loops cover owned ones
+  // only): ghosts then hold nt, its boundary values and the eddy viscosity of their owners.
+  [[nodiscard]] static sk::Data<P> halo(sk::Data<P> data) {
+    data.topo.n_owned_cells = data.topo.n_cells;
+    data.topo.n_owned_interior_faces = data.topo.n_interior_faces;
+    data.topo.n_owned_faces = data.topo.n_faces;
+    return data;
+  }
+
   void prepare(std::span<const State> s, std::span<Res> res) {
     share();
     d.rnu = const_cast<State*>(s.data());
     d.nt_res = res.data();
-    sk::cpu::nt_values(d);
-    sk::cpu::boundary_values(d);
+    const auto h = halo(d);
+    sk::cpu::nt_values(h);
+    sk::cpu::boundary_values(h);
+    // The owned cells' gradients, filled into the ghosts: a ghost's stencil weights are not set
+    // (Euler<P>::set_boundary weighs the owned cells' stencils).
     sk::cpu::nt_gradients(d);
+    if (ghost_fill != nullptr) {
+      std::array<typename P::grad*, 3> g{};
+      for (std::size_t k = 0; k < 3; ++k) g[k] = nt_grad.data() + k * nc;
+      ghost_fill->forward(std::span<typename P::grad* const>(g.data(), 3));
+    }
   }
 };
 
 template <class P>
 SpalartAllmaras<P>::SpalartAllmaras(const Mesh& mesh, const Geometry& geometry,
-                                    NavierStokes<P>& flow, const Transport& transport, bool ft2)
-    : impl_(std::make_unique<Impl>(mesh, geometry, flow, transport, ft2)) {}
+                                    NavierStokes<P>& flow, const Transport& transport, bool ft2,
+                                    const kernels::GlobalKeys* keys)
+    : impl_(std::make_unique<Impl>(mesh, geometry, flow, transport, ft2, keys)) {}
 
 template <class P>
 SpalartAllmaras<P>::~SpalartAllmaras() = default;
+
+template <class P>
+void SpalartAllmaras<P>::set_ghosts(GhostFill* ghosts) noexcept {
+  impl_->ghost_fill = ghosts;
+}
 
 template <class P>
 void SpalartAllmaras<P>::set_boundary(std::span<const double> nt) {
@@ -192,14 +219,40 @@ template <class P>
 void SpalartAllmaras<P>::assemble(std::span<const double> shift, std::span<double> diag,
                                   std::span<double> upper, std::span<double> lower) const {
   const auto& m = *impl_;
-  // Under keys that reverse a face the face loops' blocks are in its global orientation, which
-  // the placement below does not undo.
-  if (const auto* rev = m.d.topo.face_reversed;
-      rev != nullptr && std::any_of(rev, rev + m.nf, [](auto r) { return r != 0; })) {
-    throw std::logic_error("SpalartAllmaras: assemble under keys that reverse a face");
-  }
   for (std::size_t c = 0; c < m.nc; ++c) {
     diag[c] = shift[c] + std::max(0.0, static_cast<double>(m.cell_jac[c]));
+  }
+  if (m.d.topo.rank_independent) {
+    // Under global keys the face loops evaluate each face in its global orientation (face_jac:
+    // dF/d(rho nt) of the global left, block 0, and right, block 1), each diagonal entry gathers
+    // its cell's faces in Topology::cell_faces order (the global order), and the off-diagonal
+    // entries are placed in the local orientation, as Euler<P>::assemble.
+    const auto& t = m.d.topo;
+    auto left = [&](std::size_t f) {
+      const bool rev = t.face_reversed != nullptr && t.face_reversed[f] != 0;
+      return static_cast<std::size_t>(rev ? t.neighbour[f] : t.owner[f]);
+    };
+    for (std::size_t c = 0; c < m.nc; ++c) {
+      for (auto k = t.cell_face_offsets[c]; k < t.cell_face_offsets[c + 1]; ++k) {
+        const auto f = static_cast<std::size_t>(t.cell_faces[k]);
+        if (f >= m.ni) {
+          diag[c] += static_cast<double>(m.bnd_jac[f]);
+        } else if (left(f) == c) {
+          diag[c] += static_cast<double>(m.face_jac[f]);
+        } else {
+          diag[c] -= static_cast<double>(m.face_jac[m.nf + f]);
+        }
+      }
+    }
+    for (std::size_t f = 0; f < m.ni; ++f) {
+      const bool rev = left(f) != static_cast<std::size_t>(t.owner[f]);
+      const double jl = static_cast<double>(m.face_jac[f]);
+      const double jr = static_cast<double>(m.face_jac[m.nf + f]);
+      // A(left, right) = jr, A(right, left) = -jl.
+      upper[f] = rev ? -jl : jr;
+      lower[f] = rev ? jr : -jl;
+    }
+    return;
   }
   // R_o += F, R_n -= F; F depends on rho nt of the owner (block 0) and the neighbour (block 1).
   for (std::size_t f = 0; f < m.ni; ++f) {
@@ -220,7 +273,9 @@ void SpalartAllmaras<P>::assemble(std::span<const double> shift, std::span<doubl
 template <class P>
 void SpalartAllmaras<P>::solve(std::span<const double> diag, std::span<const double> upper,
                                std::span<const double> lower, std::span<const double> b,
-                               std::span<double> dx, int sweeps) const {
+                               std::span<double> dx, int sweeps,
+                               const std::vector<std::vector<std::size_t>>* colours,
+                               const std::function<void(std::span<double>)>& exchange) const {
   const auto& m = *impl_;
   auto relax = [&](std::size_t c) {
     double r = b[c];
@@ -232,6 +287,32 @@ void SpalartAllmaras<P>::solve(std::span<const double> diag, std::span<const dou
     }
     dx[c] = r / diag[c];
   };
+  if (colours != nullptr) {
+    // The global distance-1 colouring: no two cells of a colour are neighbours, so each colour
+    // relaxes in any order, and the sweeps are those of one rank in any cell order. Each row
+    // sums its faces in Topology::cell_faces order (the global order under keys).
+    const auto& t = m.d.topo;
+    auto relax_row = [&](std::size_t c) {
+      double r = b[c];
+      for (auto k = t.cell_face_offsets[c]; k < t.cell_face_offsets[c + 1]; ++k) {
+        const auto f = static_cast<std::size_t>(t.cell_faces[k]);
+        if (f >= m.ni) continue;
+        const auto o = static_cast<std::size_t>(t.owner[f]);
+        const auto n = static_cast<std::size_t>(t.neighbour[f]);
+        r -= o == c ? upper[f] * dx[n] : lower[f] * dx[o];
+      }
+      dx[c] = r / diag[c];
+    };
+    auto colour = [&](const std::vector<std::size_t>& cells) {
+      for (const auto c : cells) relax_row(c);
+      if (exchange) exchange(dx);
+    };
+    for (int s = 0; s < sweeps; ++s) {
+      for (const auto& cells : *colours) colour(cells);
+      for (auto it = colours->rbegin(); it != colours->rend(); ++it) colour(*it);
+    }
+    return;
+  }
   for (int s = 0; s < sweeps; ++s) {
     for (std::size_t c = 0; c < m.nc; ++c) relax(c);
     for (std::size_t c = m.nc; c-- > 0;) relax(c);
@@ -243,10 +324,11 @@ void SpalartAllmaras<P>::eddy_viscosity(std::span<const State> s) {
   auto& m = *impl_;
   m.share();
   m.d.rnu = const_cast<State*>(s.data());
-  sk::cpu::nt_values(m.d);
-  sk::cpu::boundary_values(m.d);
-  sk::cpu::eddy_viscosities(m.d);
-  sk::cpu::boundary_eddy_viscosities(m.d);
+  const auto h = Impl::halo(m.d);
+  sk::cpu::nt_values(h);
+  sk::cpu::boundary_values(h);
+  sk::cpu::eddy_viscosities(h);
+  sk::cpu::boundary_eddy_viscosities(h);
 }
 
 template <class P>

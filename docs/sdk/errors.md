@@ -356,6 +356,14 @@ Fix: Run this build on one rank, or use a build with MPI, such as the dev image.
 
 Fix: Give it the `solution.cgns` of a run directory.
 
+## E0148
+
+**Stencil not local to the partition** (error)
+
+A stencil reaches a cell or face that the partition does not hold: the physics' stencil is wider than the partition's ghost stencil, or the cells around a node of an owned cell do not all meet through faces around it.
+
+Fix: Run on one rank, or choose a scheme whose stencil the partition holds; a mesh whose cells meet at a node only cannot run the vertex stencil on several ranks.
+
 ## W0150
 
 **Periodic nodes moved** (warning)
@@ -456,9 +464,9 @@ Fix: Put the groups file next to the mesh.
 
 **MeshInfo prepared for another run** (error)
 
-The MeshInfo's derived counts are not for this run: its lines were computed at another scale than the case's `mesh_unit`, or a run on several ranks has no partition for that rank count and the groups its linear solver keeps whole, or a run on one rank with periodic pairs or reproducibility `"ranks"` has no one-part partition, or a steady CPU run with the multigrid builds its hierarchy in another cell order than `quality.multigrid`: the mesh as read on a partition (several ranks, or reproducibility `"ranks"`), its cell order on one rank. The message names the difference.
+The MeshInfo's derived counts are not for this run: its lines were computed at another scale than the case's `mesh_unit`, or a run on several ranks has no partition for that rank count, the groups its linear solver keeps whole and the ghost stencil its physics reads, or a run on one rank with periodic pairs or reproducibility `"ranks"` has no such one-part partition, or a steady CPU run with the multigrid builds its hierarchy in another cell order than `quality.multigrid`: RCM on a partition (several ranks, or reproducibility `"ranks"`), its cell order on one rank. The message names the difference.
 
-Fix: Run `autan-mesh-info --json --scale <metres per mesh unit>` again, with `--ranks N` (and `--groups lines` for a steady CPU run with the lines solver or the multigrid) for a run on N ranks, and `--multigrid-order input` for a steady CPU run with the multigrid on a partition.
+Fix: Run `autan-mesh-info --json --scale <metres per mesh unit>` again, with `--ranks N` (and `--groups lines` for a steady CPU run with the lines solver or the multigrid) for a run on N ranks, `--ghosts vertex4` for a Navier-Stokes case (laminar or SA), and `--multigrid-order rcm` for a steady CPU run with the multigrid on a partition.
 
 ## E0301
 

@@ -60,6 +60,9 @@ add_cli_test(
   input
   ${mesh_dir}/hex/polyMesh
 )
+add_cli_test(ghosts 0 "\"ghost_stencil\": \"vertex\"" --json --ghosts vertex ${mesh_dir}/hex/polyMesh)
+add_cli_test(ghosts-without-json 2 "usage: autan-mesh-info" --ghosts vertex ${mesh_dir}/hex/polyMesh)
+add_cli_test(ghosts-face 2 "usage: autan-mesh-info" --json --ghosts face ${mesh_dir}/hex/polyMesh)
 if(AUTAN_ENABLE_METIS)
   add_cli_test(
     partition

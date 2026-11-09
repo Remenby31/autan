@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from autan.errors import Diagnostic
     from autan.results import Convergence, StartInfo
 
-    from autan_vv.meshes.facemesh import FaceMesh, FloatArray
+    from autan_vv.meshes.facemesh import FaceMesh, FloatArray, Zone
 
 KINDS = {
     "tet": "tetra",
@@ -91,6 +91,16 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str, scale: float = 1.0) 
     vertex_entries = int(vertex.sum())
     band = (mesh.n_cells + vertex_entries) * widest
     typed = mesh_format == "fluent"
+    # mesh-info.md, first_cell_height: each boundary face's distance along its normal from its
+    # owner's centroid, per zone (min, median, max), as autan-mesh-info measures it.
+    height = np.abs(np.einsum("ij,ij->i", db, normal[ni:]))
+
+    def first_cell_height(z: Zone) -> dict[str, float] | None:
+        if z.count == 0:
+            return None
+        h = height[z.start - ni : z.start - ni + z.count]
+        return {"min": float(h.min()), "median": float(np.median(h)), "max": float(h.max())}
+
     document = {
         "schema": "autan.mesh-info/1",
         "source": {
@@ -130,6 +140,7 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str, scale: float = 1.0) 
                 "type": NORMALIZED[z.bc_type] if typed else None,
                 "native_type": z.bc_type if typed else None,
                 "faces": z.count,
+                "first_cell_height": first_cell_height(z),
             }
             for z in mesh.zones
         ],

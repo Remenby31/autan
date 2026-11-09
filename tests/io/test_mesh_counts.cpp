@@ -33,9 +33,10 @@ autan::CellwiseMesh box(int n, double stretch) {
 
 autan::io::MeshInfoRun counts(autan::CellwiseMesh cw, CellOrder order,
                               std::optional<autan::io::RanksRequest> ranks = std::nullopt,
+                              autan::GhostStencil ghosts = autan::GhostStencil::face2,
                               std::optional<CellOrder> multigrid_order = std::nullopt) {
   const autan::Mesh mesh = autan::assemble(autan::to_face_based(std::move(cw)));
-  return autan::io::run_counts(mesh, 1.0, order, ranks, multigrid_order);
+  return autan::io::run_counts(mesh, 1.0, order, ranks, ghosts, multigrid_order);
 }
 
 // The face2 stencil of the n^3 hexahedra of a box, from its definition (kernels::StencilKind):
@@ -208,8 +209,8 @@ TEST_CASE("MeshInfo builds the multigrid's levels in the order it names", "[mesh
   const auto input = autan::io::run_counts(mesh, 1.0, CellOrder::input);
   REQUIRE(std::pair(rcm.multigrid_cells, rcm.multigrid_edges) !=
           std::pair(input.multigrid_cells, input.multigrid_edges));
-  const auto mixed =
-      autan::io::run_counts(mesh, 1.0, CellOrder::rcm, std::nullopt, CellOrder::input);
+  const auto mixed = autan::io::run_counts(mesh, 1.0, CellOrder::rcm, std::nullopt,
+                                           autan::GhostStencil::face2, CellOrder::input);
   CHECK(mixed.line_order == "rcm");
   CHECK(mixed.multigrid_order == "input");
   CHECK(mixed.multigrid_cells == input.multigrid_cells);
@@ -231,7 +232,8 @@ TEST_CASE("MeshInfo counts the cells in the smoother's lines", "[mesh-info]") {
   CHECK(flat.long_line_cells == (n >= 4 ? n * n * n : 0));
   // A run on a partition builds its hierarchy on the mesh as read, whatever order it computes
   // its lines in: the levels of the input order beside the lines of the run's.
-  const auto partitioned = counts(box(n, 10.0), order, std::nullopt, CellOrder::input);
+  const auto partitioned =
+      counts(box(n, 10.0), order, std::nullopt, autan::GhostStencil::face2, CellOrder::input);
   const auto as_read = counts(box(n, 10.0), CellOrder::input);
   CHECK(partitioned.line_order == flat.line_order);
   CHECK(partitioned.line_cells == flat.line_cells);
@@ -310,13 +312,17 @@ TEST_CASE("MeshInfo counts a single-rank run's stencil entries and periodic ghos
 TEST_CASE("MeshInfo counts each rank of a partitioned run", "[mesh-info]") {
   const int n = 4;
   const auto groups = GENERATE(autan::io::RankGroups::none, autan::io::RankGroups::lines);
-  CAPTURE(groups == autan::io::RankGroups::lines);
-  const auto c =
-      counts(box(n, 10.0), CellOrder::rcm, autan::io::RanksRequest{.ranks = 3, .groups = groups});
+  const auto [ghost_stencil, name] = GENERATE(std::pair{autan::GhostStencil::face2, "face2"},
+                                              std::pair{autan::GhostStencil::vertex, "vertex"},
+                                              std::pair{autan::GhostStencil::vertex4, "vertex4"});
+  CAPTURE(groups == autan::io::RankGroups::lines, name);
+  const auto c = counts(box(n, 10.0), CellOrder::rcm,
+                        autan::io::RanksRequest{.ranks = 3, .groups = groups}, ghost_stencil);
   REQUIRE(c.partition);
   const auto& p = *c.partition;
   CHECK(p.ranks == 3);
   CHECK(p.groups == (groups == autan::io::RankGroups::lines ? "lines" : "none"));
+  CHECK(p.ghost_stencil == name);
   REQUIRE(p.cells.size() == 3);
   std::int64_t owned = 0, ghosts = 0, sent = 0;
   for (std::size_t r = 0; r < 3; ++r) {
@@ -346,8 +352,10 @@ TEST_CASE("MeshInfo counts each rank of a partitioned run", "[mesh-info]") {
         {.cell_weights = autan::cell_cost_weights(mesh), .group_offsets = {}, .group_cells = {}});
     for (std::int32_t r = 0; r < 3; ++r) {
       CAPTURE(r);
-      const Rings ring = counted_rings(autan::extract_partition(mesh, geometry, parts, 3, r).mesh);
+      const auto part = autan::extract_partition(mesh, geometry, parts, 3, r, ghost_stencil);
+      const Rings ring = counted_rings(part.mesh);
       const auto i = static_cast<std::size_t>(r);
+      CHECK(p.ghosts[i] == part.mesh.n_cells() - part.mesh.n_owned_cells());
       CHECK(p.vertex_stencil_entries[i] == ring.vertex);
       CHECK(p.band_entries[i] == ring.band);
       CHECK(p.boundary_fit_entries[i] == ring.boundary_fit);

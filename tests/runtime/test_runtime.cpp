@@ -382,15 +382,15 @@ std::int64_t peak_of(const Run& run) {
 
 // The `start` the SDK writes for a run that starts from `previous`
 // (solver-input.md): its run.json, the hash of its solution and, for a
-// steady `continue`, the residuals at iteration 1 of the chain's first run
-// and the equations exempt from them that went above their floor in the
-// chain (case-schema.md#time).
+// steady `continue` or a `warm` start from a steady run, the convergence
+// reference of the chain and the equations exempt from it that went above
+// their floor in the chain, none for a warm start (case-schema.md#time).
 Json start_from(const fs::path& previous, const std::string& mode) {
   const Json info = Json::parse(read(previous / "run.json"));
   Json reference = nullptr;
   Json woken = nullptr;
-  if (mode == "continue" && info["time"].is_null()) {
-    const bool chained = !info["start"].is_null() && info["start"]["mode"] == "continue";
+  if (info["time"].is_null()) {
+    const bool chained = !info["start"].is_null() && !info["start"]["residual_reference"].is_null();
     reference = chained ? info["start"]["residual_reference"] : history(previous)[0]["residuals"];
     double largest = 0.0;
     for (const auto& [name, f] : reference.items()) largest = std::max(largest, f.get<double>());
@@ -406,6 +406,7 @@ Json start_from(const fs::path& previous, const std::string& mode) {
       }
     }
     woken = Json(std::vector<std::string>(names.begin(), names.end()));
+    if (mode == "warm") woken = Json::array();
   }
   return Json{{"run", previous.string()},
               {"run_id", info["run_id"]},
@@ -1186,6 +1187,10 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
         run(input([](Json& d) { d["cell_zones"][0]["medium"]["viscosity"].erase("law"); })),
         "E0705");
     require_error(run(input([](Json& d) { d["time"].erase("kind"); })), "E0705");
+    require_error(run(input([](Json& d) { d["time"].erase("start_order"); })), "E0705");
+  }
+  SECTION("E0705 start_order other than first or second") {
+    require_error(run(input([](Json& d) { d["time"]["start_order"] = "third"; })), "E0705");
   }
   SECTION("E0705 value a kind forbids") {
     require_error(run(input([](Json& d) { d["boundaries"][0]["static_pressure"] = 1e5; })),
@@ -1318,6 +1323,15 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
         [](Json& m) { m["cell_zones"][0]["cells"] = m["cell_zones"][0]["cells"].get<int>() + 1; },
         [](Json& m) { m["boundary_zones"][0]["type"] = "outflow"; },
         [](Json& m) { m["boundary_zones"].push_back(m["boundary_zones"][0]); },
+        // first_cell_height (mesh-info.md): null exactly without faces, 0 <= min <= median <=
+        // max, three equal numbers for one face.
+        [](Json& m) { m["boundary_zones"][0].erase("first_cell_height"); },
+        [](Json& m) { m["boundary_zones"][0]["first_cell_height"] = nullptr; },
+        [](Json& m) { m["boundary_zones"][0]["first_cell_height"]["min"] = -1.0; },
+        [](Json& m) {
+          auto& h = m["boundary_zones"][0]["first_cell_height"];
+          h["median"] = h["max"].get<double>() * 2;
+        },
         [](Json& m) { m["bounds"]["min"][0] = 1e9; },
         [](Json& m) { m["quality"]["lines"]["long_cells"] = m["counts"]["cells"].get<int>() + 1; },
         [](Json& m) {
@@ -1329,6 +1343,7 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
           const int cells = m["counts"]["cells"].get<int>();
           m["partition"] = {{"ranks", 2},
                             {"groups", "none"},
+                            {"ghost_stencil", "face2"},
                             {"cells_by_rank", {cells, 0}},
                             {"ghosts_by_rank", {0}},
                             {"faces_by_rank", {0, 0}},
@@ -1851,12 +1866,13 @@ TEST_CASE("log.jsonl records the run's events in the results.md shape", "[runtim
 }
 
 TEST_CASE("A continued run goes on bit for bit from the run it continues", "[runtime]") {
-  // The state grows at each step, so that the history (forces) and the
-  // solution depend on the state handed over; the uninterrupted run is the
-  // reference (results.md: same identity parts, same iterations).
+  // The state grows at each step, at a rate that rises with the physics' step count kept in its
+  // SolverState, so that the history (forces) and the solution depend on the state and the
+  // solver state handed over; the uninterrupted run is the reference (results.md: same identity
+  // parts, same iterations).
   const bool steady = GENERATE(true, false);
   CAPTURE(steady);
-  const autan_test::RelaxationOptions options{.growth = 1e-3};
+  const autan_test::RelaxationOptions options{.growth = 1e-3, .scalars = 3};
   const auto budget = [&](std::int64_t n) {
     return [steady, n](Json& d) {
       d["reproducibility"] = "run";
@@ -1894,6 +1910,25 @@ TEST_CASE("A continued run goes on bit for bit from the run it continues", "[run
   const Outcome other_order = run(autan_test::planned(second, mesh_path), options);
   unsetenv("AUTAN_CELL_ORDER");
   require_error(other_order, "E0708");
+  // A SolverState of other lengths than the physics registers is refused (E0707); a physics that
+  // returns other arrays than it registers fails the run (E0704).
+  autan_test::RelaxationOptions longer = options;
+  longer.scalars = 4;
+  require_error(run(second, longer), "E0707");
+  autan_test::RelaxationOptions wrong = options;
+  wrong.scalars_wrong_rank = 0;
+  const Outcome failed = run(doc(first), wrong);
+  const Json failed_info = Json::parse(read(failed.run / "run.json"));
+  CHECK(failed_info["status"] == "failed");
+  CHECK(std::ranges::count_if(failed_info["diagnostics"],
+                              [](const Json& d) { return d["code"] == "E0704"; }) == 1);
+  // The solution holds the physics' SolverState as it was at the end, rank 0's.
+  const auto stored = autan::io::read_solution(b.run / "solution.cgns");
+  REQUIRE(stored.solver_state.size() == 2);
+  CHECK(stored.solver_state[0].name == "RelaxationSteps");
+  CHECK(stored.solver_state[0].values ==
+        std::vector<double>{static_cast<double>(
+            Json::parse(read(b.run / "run.json"))["iterations"].get<std::int64_t>())});
 
   const auto all = lines_of(whole.run / "history.jsonl");
   auto chain = lines_of(a.run / "history.jsonl");
@@ -2135,12 +2170,90 @@ TEST_CASE("A warm start takes the previous state and counts from 1", "[runtime]"
   const Json info = Json::parse(read(b.run / "run.json"));
   CHECK(info["iterations"] == 3);
   CHECK(info["start"]["mode"] == "warm");
-  CHECK(info["start"]["residual_reference"].is_null());
+  CHECK(info["start"]["residual_reference"] == history(a.run)[0]["residuals"]);
+  CHECK(info["start"]["woken"] == Json::array());
   const auto previous = solution_field(a.run / "solution.cgns", "FlowSolution", "Density");
   CHECK(solution_field(b.run / "solution.cgns", "FlowSolution", "Density") == previous);
   // 1.25^5 times the initial density: not the freestream state.
   CHECK_THAT(previous[0],
              WithinRel(doc["freestream"]["density"].get<double>() * std::pow(1.25, 5.0), 1e-14));
+}
+
+TEST_CASE("A warm start converges against the reference of the run it starts from", "[runtime]") {
+  // case-schema.md#time: a steady warm start from a steady run stops at the first iteration where
+  // every residual has dropped residual_orders below the source's reference, not below its own
+  // first residual.
+  const auto doc = [](std::int64_t n) {
+    return input([n](Json& d) {
+      d["reproducibility"] = "run";
+      d["time"]["max_iterations"] = n;
+    });
+  };
+  const Outcome a = run(doc(10));
+  REQUIRE(a.status == ExitStatus::finished);
+  Json next = doc(1000);
+  next["start"] = start_from(a.run, "warm");
+  const Outcome b = run(next);
+  INFO(b.err);
+  REQUIRE(b.status == ExitStatus::finished);
+  const Json info = Json::parse(read(b.run / "run.json"));
+  CHECK(info["status"] == "converged");
+  const Json reference = history(a.run)[0]["residuals"];
+  CHECK(info["start"]["residual_reference"] == reference);
+  const double drop = std::pow(10.0, -next["time"]["residual_orders"].get<double>());
+  double largest = 0.0;
+  for (const auto& [name, r] : reference.items()) largest = std::max(largest, r.get<double>());
+  const auto met = [&](const Json& line) {
+    for (const auto& [name, r] : reference.items()) {
+      const double v = line["residuals"][name].get<double>();
+      // An identically zero equation (below 1e-12 of the largest) passes at its floor.
+      if (r.get<double>() < 1e-12 * largest ? v > 1e-12 * largest : v > r.get<double>() * drop)
+        return false;
+    }
+    return true;
+  };
+  const auto lines = history(b.run);
+  REQUIRE(lines.size() >= 2);
+  CHECK(met(lines.back()));
+  CHECK_FALSE(met(lines[lines.size() - 2]));
+}
+
+TEST_CASE("A warm start begins with no equation woken and wakes against its reference's floor",
+          "[runtime]") {
+  // case-schema.md#time: momentum-x is silent in the reference, so exempt; the source woke it
+  // (iterations 10-14), but a warm start begins with none woken and reports its own W0710 when
+  // momentum-x rises above the floor of the reference it takes.
+  autan_test::RelaxationOptions source;
+  source.silent_equation = 1;
+  source.wake_at = 10;
+  source.sleep_at = 15;
+  const auto doc = [](std::int64_t n) {
+    return input([n](Json& d) {
+      d["reproducibility"] = "run";
+      d["time"]["max_iterations"] = n;
+    });
+  };
+  const Outcome a = run(doc(20), source);
+  REQUIRE(a.status == ExitStatus::finished);
+  Json next = doc(40);
+  next["start"] = start_from(a.run, "warm");
+  CHECK(next["start"]["woken"] == Json::array());
+  autan_test::RelaxationOptions warm;
+  warm.silent_equation = 1;
+  warm.wake_at = 3;
+  warm.sleep_at = 6;
+  const Outcome b = run(next, warm);
+  INFO(b.err);
+  REQUIRE(b.status == ExitStatus::finished);
+  const Json info = Json::parse(read(b.run / "run.json"));
+  CHECK(info["start"]["residual_reference"] == history(a.run)[0]["residuals"]);
+  std::vector<Json> wakes;
+  for (const auto& d : info["diagnostics"]) {
+    if (d["code"] == "W0710") wakes.push_back(d["data"]);
+  }
+  REQUIRE(wakes.size() == 1);
+  CHECK(wakes[0]["equation"] == "momentum-x");
+  CHECK(wakes[0]["iteration"] == 3);
 }
 
 TEST_CASE("A start from a run with the longest case name and mesh path is honoured", "[runtime]") {
@@ -2264,8 +2377,8 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
   SECTION("the previous run solved other variables") {
     require_error(from([](Json& d) {
                     d["start"]["mode"] = "warm";
-                    d["start"]["residual_reference"] = nullptr;
-                    d["start"]["woken"] = nullptr;
+                    d["start"]["residual_reference"].erase("nu-tilde");
+                    d["start"]["woken"] = Json::array();
                     d["physics"]["turbulence"]["model"] = "laminar";
                     d["physics"]["turbulence"]["nu_tilde_ratio"] = nullptr;
                     for (auto& z : d["cell_zones"]) z["initial"]["nu_tilde"] = nullptr;
@@ -2349,7 +2462,23 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
   }
   SECTION("the solver-input rules of start") {
     require_error(from([](Json& d) { d["start"]["residual_reference"] = nullptr; }), "E0705");
-    require_error(from([](Json& d) { d["start"]["mode"] = "warm"; }), "E0705");
+    // A steady warm start from a steady run carries the reference; from an unsteady one, none.
+    require_error(from([](Json& d) {
+                    d["start"]["mode"] = "warm";
+                    d["start"]["residual_reference"] = nullptr;
+                    d["start"]["woken"] = nullptr;
+                  }),
+                  "E0705");
+    require_error(from([](Json& d) {
+                    d["start"]["mode"] = "warm";
+                    d["start"]["time"] = 0.5;
+                  }),
+                  "E0705");
+    require_error(from([](Json& d) {
+                    d["start"]["mode"] = "warm";
+                    d["start"]["woken"] = Json::array({"momentum-y"});
+                  }),
+                  "E0705");
     require_error(from([](Json& d) { d["time"]["max_iterations"] = 4; }), "E0705");
     require_error(from([](Json& d) { d["start"]["run"] = "relative/run"; }), "E0705");
     require_error(from([](Json& d) { d["start"]["residual_reference"].erase("energy"); }), "E0705");
@@ -3654,9 +3783,12 @@ TEST_CASE("Several ranks checkpoint and continue from it as one", "[runtime][mpi
       d["time"]["checkpoint"] = Json{{"iterations", 3}};
     };
   };
-  const std::vector<std::string> env{"AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1"};
-  const Outcome whole =
-      run(input(steps(12), "hybrid-unsteady.solver-input.json"), {.growth = 1e-3, .vary = true});
+  // The physics' SolverState (a step count driving its growth) is rank 0's in the checkpoint and
+  // every rank's on the continue.
+  const std::vector<std::string> env{"AUTAN_TEST_GROWTH=0.001", "AUTAN_TEST_VARY=1",
+                                     "AUTAN_TEST_SCALARS=3"};
+  const autan_test::RelaxationOptions one{.growth = 1e-3, .vary = true, .scalars = 3};
+  const Outcome whole = run(input(steps(12), "hybrid-unsteady.solver-input.json"), one);
   std::vector<std::string> failing = env;
   failing.emplace_back("AUTAN_TEST_THROW_AT=8");
   const fs::path a =
@@ -3665,8 +3797,18 @@ TEST_CASE("Several ranks checkpoint and continue from it as one", "[runtime][mpi
   REQUIRE(checkpoint_iteration(a / "checkpoint.cgns") == 6);
   Json next = input(steps(12), "hybrid-unsteady.solver-input.json");
   next["start"] = start_from_checkpoint(a);
-  const fs::path b = resume_on == 1 ? run(next, {.growth = 1e-3, .vary = true}).run
-                                    : run_on_ranks(next, ranks, env);
+  const fs::path b = resume_on == 1 ? run(next, one).run : run_on_ranks(next, ranks, env);
+  if (resume_on == 2) {
+    // A SolverState that rank 1 alone returns of another length than registered fails the run.
+    std::vector<std::string> wrong = env;
+    wrong.emplace_back("AUTAN_TEST_SCALARS_WRONG_RANK=1");
+    const fs::path bad =
+        run_on_ranks(input(steps(12), "hybrid-unsteady.solver-input.json"), ranks, wrong, 1);
+    const Json info = Json::parse(read(bad / "run.json"));
+    CHECK(info["status"] == "failed");
+    CHECK(std::ranges::count_if(info["diagnostics"],
+                                [](const Json& d) { return d["code"] == "E0704"; }) == 1);
+  }
 
   auto chain = lines_of(a / "history.jsonl");
   chain.resize(6);

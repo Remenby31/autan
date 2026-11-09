@@ -91,6 +91,7 @@ struct TimeInput {
   bool coupled_turbulence =
       false;                 ///< steady: the flow and SA solved together (case-schema.md#time)
   bool matrix_free = false;  ///< steady laminar: the matrix-free step (case-schema.md#time)
+  std::string start_order = "first";  ///< steady: "first" or "second" (case-schema.md#time)
   std::int64_t steps = 0;
   std::optional<double> dt, cfl;
   std::optional<std::int64_t> average_from;
@@ -125,8 +126,8 @@ struct Start {
   std::string solution_sha256;
   /// The file of `run` to read: "solution" (solution.cgns) or "checkpoint" (checkpoint.cgns).
   std::string file;
-  /// Residuals at iteration 1 of the original run, in residual_names order;
-  /// set exactly for a steady `continue`.
+  /// The steady convergence reference of the run started from, in residual_names order;
+  /// set exactly for a steady `continue` or a steady `warm` from a steady run.
   std::optional<std::vector<double>> residual_reference;
   /// Equations exempt at iteration 1 that left their floor earlier in the
   /// chain (case-schema.md#time), sorted; set exactly with residual_reference.

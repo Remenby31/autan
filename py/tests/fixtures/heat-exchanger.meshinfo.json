@@ -48,31 +48,56 @@
       "name": "air-inlet",
       "type": "inlet",
       "native_type": "pressure-inlet",
-      "faces": 4000
+      "faces": 4000,
+      "first_cell_height": {
+        "min": 0.001,
+        "median": 0.004,
+        "max": 0.01
+      }
     },
     {
       "name": "air-outlet",
       "type": "outlet",
       "native_type": "pressure-outlet",
-      "faces": 4000
+      "faces": 4000,
+      "first_cell_height": {
+        "min": 0.001,
+        "median": 0.004,
+        "max": 0.01
+      }
     },
     {
       "name": "co2-inlet",
       "type": "inlet",
       "native_type": "pressure-inlet",
-      "faces": 4000
+      "faces": 4000,
+      "first_cell_height": {
+        "min": 0.001,
+        "median": 0.004,
+        "max": 0.01
+      }
     },
     {
       "name": "co2-outlet",
       "type": "outlet",
       "native_type": "pressure-outlet",
-      "faces": 4000
+      "faces": 4000,
+      "first_cell_height": {
+        "min": 0.001,
+        "median": 0.004,
+        "max": 0.01
+      }
     },
     {
       "name": "casing",
       "type": "wall",
       "native_type": "wall",
-      "faces": 96000
+      "faces": 96000,
+      "first_cell_height": {
+        "min": 2e-07,
+        "median": 5e-07,
+        "max": 2e-06
+      }
     }
   ],
   "cell_zones": [
@@ -144,6 +169,7 @@
   "partition": {
     "ranks": 1,
     "groups": "none",
+    "ghost_stencil": "face2",
     "cells_by_rank": [
       1200000
     ],

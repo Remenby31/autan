@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -119,6 +121,38 @@ std::size_t shape_index(const Mesh& mesh, index_t cell, std::vector<index_t>& no
   if (n == 5 && triangles == 2 && quads == 3 && v == 6 && count(3) == 6) return 2;
   if (n == 6 && quads == 6 && v == 8 && count(3) == 8) return 3;
   return 4;
+}
+
+}  // namespace
+
+namespace {
+
+// mesh-info.md, first_cell_height: over the faces [first, last), the distance along each face's
+// normal from its owner's centroid to the face's centroid: min, median (the mean of the two middle
+// values for an even count) and max; null without faces.
+Json first_cell_height(const Mesh& mesh, const Geometry& g, index_t first, index_t last) {
+  if (first == last) return nullptr;
+  std::vector<double> h;
+  h.reserve(static_cast<std::size_t>(last - first));
+  for (index_t face = first; face < last; ++face) {
+    const auto f = static_cast<std::size_t>(face);
+    const auto c = static_cast<std::size_t>(mesh.owner()[f]);
+    const double d = (g.cell_centroid_x[c] - g.face_centroid_x[f]) * g.face_area_x[f] +
+                     (g.cell_centroid_y[c] - g.face_centroid_y[f]) * g.face_area_y[f] +
+                     (g.cell_centroid_z[c] - g.face_centroid_z[f]) * g.face_area_z[f];
+    h.push_back(std::abs(d) / g.face_area[f]);
+  }
+  const std::size_t m = h.size() / 2;
+  std::ranges::nth_element(h, h.begin() + static_cast<std::ptrdiff_t>(m));
+  const double upper = h[m];
+  const double median =
+      h.size() % 2 == 1
+          ? upper
+          : (*std::ranges::max_element(h.begin(), h.begin() + static_cast<std::ptrdiff_t>(m)) +
+             upper) /
+                2;
+  const auto [low, high] = std::ranges::minmax(h);
+  return Json{{"min", low}, {"median", median}, {"max", high}};
 }
 
 }  // namespace
@@ -349,10 +383,12 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256, std::int
   for (const index_t zi : zones.boundary) {
     const auto z = at(zi);
     const FaceZone& zone = mesh.face_zones()[z];
-    boundary.push_back(Json{{"name", zone.name},
-                            {"type", name_or_null(bc_type_name(zone.kind))},
-                            {"native_type", string_or_null(zone.bc_type)},
-                            {"faces", offsets[z + 1] - offsets[z]}});
+    boundary.push_back(
+        Json{{"name", zone.name},
+             {"type", name_or_null(bc_type_name(zone.kind))},
+             {"native_type", string_or_null(zone.bc_type)},
+             {"faces", offsets[z + 1] - offsets[z]},
+             {"first_cell_height", first_cell_height(mesh, geometry, offsets[z], offsets[z + 1])}});
   }
 
   std::vector<std::int64_t> cells_in_zone(mesh.cell_zones().size(), 0);
@@ -459,6 +495,7 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256, std::int
     const auto& p = *run.partition;
     doc["partition"] = {{"ranks", p.ranks},
                         {"groups", p.groups},
+                        {"ghost_stencil", p.ghost_stencil},
                         {"cells_by_rank", p.cells},
                         {"ghosts_by_rank", p.ghosts},
                         {"faces_by_rank", p.faces},

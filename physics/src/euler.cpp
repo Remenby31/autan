@@ -6,17 +6,40 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <vector>
 
+#include "autan/core/error.hpp"
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "euler_cpu.hpp"
 
 namespace autan::physics {
+
+std::optional<GhostStencil> ghost_stencil(const Scheme& scheme) {
+  if (scheme.gradient_fit == GradientFit::quadratic) return GhostStencil::vertex2;
+  return scheme.gradient == GradientStencil::vertex ? GhostStencil::vertex : GhostStencil::face2;
+}
+
+namespace {
+
+// `mesh`, once its ghosts hold the stencil of `scheme`: E0148 otherwise, so that no owned cell
+// computes on a truncated stencil.
+const Mesh& holding(const Mesh& mesh, const Scheme& scheme, std::optional<GhostStencil> ghosts) {
+  if (!ghosts && mesh.n_cells() == mesh.n_owned_cells()) return mesh;
+  const auto needed = ghost_stencil(scheme);
+  if (*needed > ghosts.value_or(GhostStencil::face2)) {
+    throw Error(ErrorCode::partition_stencil_not_local,
+                "the gradient stencil reaches beyond the partition's ghost stencil");
+  }
+  return mesh;
+}
+
+}  // namespace
 
 namespace ek = autan::kernels::euler;
 
@@ -65,6 +88,7 @@ struct Euler<P>::Impl {
   // against their global orientation; face loops then gather (no scatter order).
   kernels::GlobalOrder order;
   std::vector<std::uint8_t> reversed;
+  std::vector<std::int64_t> cell_key, face_key;  // global ids, under keys only
   bool gather = false;
   bool all_planar = false;
   bool planar = false;
@@ -130,6 +154,8 @@ struct Euler<P>::Impl {
     if (keys != nullptr) {
       order = kernels::global_order(mesh, *keys);
       reversed.assign(keys->reversed.begin(), keys->reversed.end());
+      cell_key.assign(keys->cell.begin(), keys->cell.end());
+      face_key.assign(keys->face.begin(), keys->face.end());
       topo.cell_faces = order.cell_faces.data();
       topo.incidence_twin = order.twin.data();
       topo.face_reversed = reversed.data();
@@ -450,8 +476,20 @@ struct Euler<P>::Impl {
       }
       std::sort(points.begin(), points.end());
       points.erase(std::unique(points.begin(), points.end()), points.end());
+      const auto boundary_points = static_cast<std::ptrdiff_t>(points.size());
       for (const auto e : cells) {
         if (e != static_cast<index_t>(c)) points.push_back(e);
+      }
+      if (!cell_key.empty()) {
+        // Under global keys the boundary faces, then the cells, in ascending global id: the fit
+        // sums its entries in that order, the same in any cell order (runtime.md, Ranks).
+        std::sort(points.begin(), points.begin() + boundary_points, [&](index_t a, index_t b) {
+          return face_key[static_cast<std::size_t>(-a - 1)] <
+                 face_key[static_cast<std::size_t>(-b - 1)];
+        });
+        std::sort(points.begin() + boundary_points, points.end(), [&](index_t a, index_t b) {
+          return cell_key[static_cast<std::size_t>(a)] < cell_key[static_cast<std::size_t>(b)];
+        });
       }
       const auto xc = centre(static_cast<index_t>(c));
       auto offset = [&](index_t e) {
@@ -722,8 +760,8 @@ struct Euler<P>::Impl {
 
 template <class P>
 Euler<P>::Euler(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme,
-                const kernels::GlobalKeys* keys)
-    : impl_(std::make_unique<Impl>(mesh, geometry, gas, scheme, keys)) {}
+                const kernels::GlobalKeys* keys, std::optional<GhostStencil> ghosts)
+    : impl_(std::make_unique<Impl>(holding(mesh, scheme, ghosts), geometry, gas, scheme, keys)) {}
 
 template <class P>
 Euler<P>::~Euler() = default;
