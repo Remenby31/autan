@@ -1329,6 +1329,7 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
           const int cells = m["counts"]["cells"].get<int>();
           m["partition"] = {{"ranks", 2},
                             {"groups", "none"},
+                            {"ghost_stencil", "face2"},
                             {"cells_by_rank", {cells, 0}},
                             {"ghosts_by_rank", {0}},
                             {"faces_by_rank", {0, 0}},

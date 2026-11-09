@@ -6,17 +6,41 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <vector>
 
+#include "autan/core/error.hpp"
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "euler_cpu.hpp"
 
 namespace autan::physics {
+
+std::optional<GhostStencil> ghost_stencil(const Scheme& scheme) {
+  if (scheme.gradient_fit == GradientFit::quadratic) return std::nullopt;
+  return scheme.gradient == GradientStencil::vertex ? GhostStencil::vertex : GhostStencil::face2;
+}
+
+namespace {
+
+// `mesh`, once its ghosts hold the stencil of `scheme`: E0148 otherwise, so that no owned cell
+// computes on a truncated stencil.
+const Mesh& holding(const Mesh& mesh, const Scheme& scheme, std::optional<GhostStencil> ghosts) {
+  if (!ghosts && mesh.n_cells() == mesh.n_owned_cells()) return mesh;
+  const auto needed = ghost_stencil(scheme);
+  if (!needed || *needed > ghosts.value_or(GhostStencil::face2)) {
+    throw Error(ErrorCode::partition_stencil_not_local,
+                needed ? "the gradient stencil reaches beyond the partition's ghost stencil"
+                       : "the quadratic gradient's two vertex rings are not local on a partition");
+  }
+  return mesh;
+}
+
+}  // namespace
 
 namespace ek = autan::kernels::euler;
 
@@ -704,8 +728,8 @@ struct Euler<P>::Impl {
 
 template <class P>
 Euler<P>::Euler(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme,
-                const kernels::GlobalKeys* keys)
-    : impl_(std::make_unique<Impl>(mesh, geometry, gas, scheme, keys)) {}
+                const kernels::GlobalKeys* keys, std::optional<GhostStencil> ghosts)
+    : impl_(std::make_unique<Impl>(holding(mesh, scheme, ghosts), geometry, gas, scheme, keys)) {}
 
 template <class P>
 Euler<P>::~Euler() = default;
