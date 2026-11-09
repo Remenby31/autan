@@ -595,6 +595,31 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     )
     setup = {c.name: c for c in coarse.memory.components}["multigrid setup"].bytes_host
     assert setup == 160 * 20 + 284 * 10 + 72 * 20
+    # On a partition (here one rank under reproducibility "ranks") every rank builds the hierarchy
+    # on an RCM copy of the global mesh (setup-memory.md, Multigrid on a partition). It keeps the
+    # order and its inverse (8 C), the face maps (5 F), each node's part (4 C), the global level 0
+    # (16 C + 13 F_i), its lines as zone groups (12 C) and each level's parts (4 B a node). Its
+    # setup holds the copy, the mesh (2 520 B), its point map grown without reserve (8 N) and its
+    # geometry (56 F + 32 C), beside the build's peak, the line grouping above; the copy's
+    # renumbering, 40 C + 60 N + 50 F + 8 F_i + 24 P, is lower. The rank's distributed multigrid
+    # keeps two copies of the finest blocks (200 B a cell, 400 an interior face, for 5
+    # equations), its maps (8 C + 9 F_i) and vectors (80 C); its construction holds 16 C + 56 F_i
+    # and 8 B a node of every level; assembling the dense coarsest level, here level 0, holds
+    # 872 B a node and 1 696 an edge.
+    assert "partition hierarchy" not in by_name
+    ranked = TINY.replace("autan.Inviscid()", 'autan.Inviscid(), reproducibility="ranks"')
+    partitioned = autan.load(write_case(ranked)).plan(tiny_mesh(20), device_kind="cpu")
+    part = {c.name: c for c in partitioned.memory.components}
+    kept = 8 * 10 + 5 * 40 + 4 * 10 + 16 * 10 + 13 * 20 + 12 * 10 + 4 * 10
+    assert part["partition hierarchy"].bytes_host == kept
+    copy = 2520 + 8 * 30 + 56 * 40 + 32 * 10
+    build = 160 * 20 + 284 * 10 + 72 * 20
+    assert part["multigrid setup"].bytes_host == copy + build
+    assert copy + build > 40 * 10 + 60 * 30 + 50 * 40 + 8 * 20 + 24 * 160
+    operator = 2 * (200 * 10 + 400 * 20) + 8 * 10 + 9 * 20 + 80 * 10
+    assert part["partition multigrid"].bytes_host == operator
+    assert part["partition multigrid setup"].bytes_host == 16 * 10 + 56 * 20 + 8 * 10
+    assert part["multigrid coarsest assembly"].bytes_host == 872 * 10 + 1696 * 20
     # A start reads the previous solution on every rank and takes the rank's share: 8 (C + C_r)
     # bytes per field, the 34 written fields for a continuation, the 6 primitives for a warm one;
     # and its descriptors at their bounds, held from cg_open: run metadata of 64 KiB, also
