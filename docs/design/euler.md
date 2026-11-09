@@ -103,6 +103,21 @@ Restart: `restart_fields` holds the conserved variables bit for bit (5 arrays), 
 
 On a partition (several ranks, or one with periodic image ghosts) the residual fills the ghost cells' primitives, gradients and limiter between its loops (`Euler<P>::set_ghosts`), and the physics updates, sums and reports its owned cells only; norms, residual scales and loads are exact sums over the ranks. The guarantee across rank counts is in [runtime.md](../contracts/runtime.md#ranks).
 
+## Conservation check
+
+With `AUTAN_CONSERVATION=1`, the inviscid physics checks at every host step that the face part R^F of the residual (the residual without its source) sums to the boundary fluxes, Σ_c R^F_c = Σ_b F_b, which holds when every interior flux enters its two cells with opposite signs. R^F comes from the residual's own face loops on the state the step leaves (a step that diverges logs none, so the last event is the written solution's for a run that does not diverge), with the current scheme, flux and planar choice (`Euler::face_parts`); the loads and fields re-evaluate their own state, so the check changes no output; the face fluxes come from write-only loops around the same bodies (`*_face_fluxes`, `*_boundary_fluxes` in `kernels/euler.py`). The check costs one more residual evaluation and one face pass per step, and 5 × (cells + faces) FP64 values allocated at its first step; without the variable nothing runs. Each step logs an `info` event, source `solver`, message `conservation`, whose data hold, per equation (`equations`, the history's names), exact sums over the owned cells of every rank, each term added on its own:
+
+| Key | Content |
+|---|---|
+| `faces` | Σ_c R^F_c |
+| `boundary` | Σ_b F_b over the boundary faces of owned cells |
+| `E` | `faces` − `boundary`, one exact sum of the signed terms |
+| `D` | Σ \|F\| over the incidences of owned cells: an interior face once per owned cell it bounds, a boundary face once |
+| `max_faces`, `max_terms` | the largest number of faces of a cell, and of face terms the loops add into one owned cell, over the ranks |
+| `flux_mismatch`, `first_mismatch` | how many partition-interface faces have fluxes that differ in any bit between their two ranks (in the orientation of the mesh as read), and the least global id among them, or null |
+
+A non-finite sum is written null. Under reproducibility `"run"` the two ranks may evaluate an interface face in opposite orientations, so its fluxes can differ in their last bits. On a device, for Navier-Stokes, with periodic pairs, or with another value, the check does not run and a `solver` warning gives the reason (`data.reason`).
+
 ## Limiter and verification
 
 Venkatakrishnan's threshold ε² ∝ h³ shrinks faster than the squared variations ∝ h² of a smooth solution, so the limiter clips smooth extrema more as the mesh is refined; K sets where that starts (Venkatakrishnan 1995; Michalak and Ollivier-Gooch 2008, AIAA 2008-776, discuss the same trade-off). On the MMS (tet, levels 12–32, Roe, host study), fitted / finest-pair orders of ρv with the limiter on: K = 5 gives 1.88/1.78, K = 10, 20 and 40 give 1.99/1.97, the unlimited values. K = 10 is the default: smooth flows keep the design order at these resolutions, and the limiter still acts at shocks (Sod gate, below). A manufactured solution is smooth by construction and measures the design order of the scheme; verification cases (`verification` in the solver input) run without the limiter, every other case with it.

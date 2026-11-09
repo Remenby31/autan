@@ -166,6 +166,15 @@ class Euler {
   /// R(s) into res, and the approximate Jacobian's blocks: dF/dW of every face with the
   /// reconstruction's gradients and limiter held fixed, and dW/dU of every cell.
   void residual_and_jacobian(std::span<const State> s, std::span<Res> res);
+  /// The face part R^F of R(s), without the source: every array refreshed from s as residual()
+  /// does, or as residual_and_jacobian() does with `jacobian`, then that evaluation's face loops
+  /// (flux, strategy, planar or full; the fused Jacobian loops with `jacobian`) into `res_faces`
+  /// (5 x n_cells), zeroed first. And the flux of every face as those loops evaluate it into
+  /// `face_flux` (5 x n_faces, face f at k * n_faces + f): an owned interior face's in its global
+  /// orientation, every boundary face's, from write-only loops around the same bodies (the
+  /// conservation check, docs/design/euler.md). Faces joining two ghosts are left as they were.
+  void face_parts(std::span<const State> s, std::span<Res> res_faces, std::span<Res> face_flux,
+                  bool jacobian = false);
   /// After residual_and_jacobian: A = diag(shift) + dR/dU into `a`, shift_c per cell (V / dt).
   void assemble(std::span<const double> shift, BlockMatrix& a) const;
   /// First-order residual's tangent dR/dU du (no reconstruction): the preconditioning operator.
@@ -217,6 +226,7 @@ class Euler {
   [[nodiscard]] const Scheme& scheme() const;
 
  private:
+  void allocate_jacobian();
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

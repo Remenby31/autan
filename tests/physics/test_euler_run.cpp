@@ -245,6 +245,102 @@ Json ringleb_slab(double w, std::int64_t iterations) {
   });
 }
 
+struct ConservationCheck {
+  ConservationCheck() { setenv("AUTAN_CONSERVATION", "1", 1); }
+  ~ConservationCheck() { unsetenv("AUTAN_CONSERVATION"); }
+  ConservationCheck(const ConservationCheck&) = delete;
+  ConservationCheck& operator=(const ConservationCheck&) = delete;
+};
+
+std::vector<Json> conservation_events(const fs::path& run) {
+  std::vector<Json> out;
+  std::istringstream log(read(run / "log.jsonl"));
+  for (std::string l; std::getline(log, l);) {
+    const auto e = Json::parse(l);
+    if (e["source"] == "solver" && e["message"] == "conservation") out.push_back(e["data"]);
+  }
+  return out;
+}
+
+// #259 D2, gate 7: tau = max(64 * 2^-52, 2 gamma_{d+2}), gamma_m = m u / (1 - m u), u = 2^-53,
+// d the largest number of faces of a cell.
+double conservation_tau(std::int64_t d) {
+  const double mu = static_cast<double>(d + 2) * 0x1p-53;
+  return std::max(64 * 0x1p-52, 2 * mu / (1 - mu));
+}
+
+// Every event closes: q_k = |E_k| / D_k <= tau(d) for each equation (E_k = 0 where D_k = 0),
+// the interface faces' fluxes agree bit for bit, and no cell sums more terms than d.
+void check_conservation_closes(const std::vector<Json>& events, std::int64_t d) {
+  REQUIRE(!events.empty());
+  const double tau = conservation_tau(d);
+  for (const auto& e : events) {
+    INFO(e.dump());
+    CHECK(e["max_faces"] == d);
+    CHECK(e["max_terms"].get<std::int64_t>() <= d);
+    CHECK(e["flux_mismatch"] == 0);
+    for (std::size_t k = 0; k < 5; ++k) {
+      CHECK(std::abs(e["E"][k].get<double>()) <= tau * e["D"][k].get<double>());
+    }
+  }
+}
+
+// The unit cube cut into 2 x 2 x 2 hexahedra, farfield on every side, at the uniform state
+// rho = 1, v = (1, 1, 1), p = p_ref = 2 of a gas with gamma = 2 (rho E = 3.5): `steps` explicit
+// steps under reproducibility "ranks".
+Json analytic_box(const char* precision, int steps) {
+  std::random_device random;
+  const fs::path dir = fs::temp_directory_path() / ("autan_euler_box-" + std::to_string(random()));
+  autan::io::write_polymesh(
+      dir / "polyMesh",
+      autan::assemble(autan::to_face_based(autan::test::box(2, autan::test::BoxFill::hexa))));
+  return input("hybrid.solver-input.json", [&](Json& d) {
+    d["reproducibility"] = "ranks";
+    inviscid_along_x(d, precision);
+    d["mesh"]["path"] = (dir / "polyMesh").string();
+    d["mesh"]["sha256"] = autan::io::mesh_hash(dir / "polyMesh");
+    Json zone = d["cell_zones"][0];
+    const double temperature = 2.0 / zone["medium"]["gas_constant"].get<double>();
+    auto& f = d["freestream"];
+    f["density"] = 1.0;
+    f["pressure"] = 2.0;
+    f["temperature"] = temperature;
+    f["velocity"] = {1.0, 1.0, 1.0};
+    f["speed"] = std::sqrt(3.0);
+    f["mach"] = std::sqrt(3.0) / 2.0;
+    zone["zone"] = "fluid";
+    zone["medium"]["gamma"] = 2.0;
+    zone["initial"]["density"] = 1.0;
+    zone["initial"]["pressure"] = 2.0;
+    zone["initial"]["temperature"] = temperature;
+    zone["initial"]["velocity"] = {1.0, 1.0, 1.0};
+    d["cell_zones"] = Json::array({zone});
+    for (auto& b : d["boundaries"]) b["kind"] = "farfield";
+    d["monitors"] = Json::array();
+    d["time"] = {{"kind", "unsteady"},      {"steps", steps},
+                 {"dt", nullptr},           {"cfl", 0.8},
+                 {"average_from", nullptr}, {"checkpoint", {{"seconds", 1800.0}}}};
+  });
+}
+
+// Every face of the box carries the physical flux of the uniform state, (rho v_n, rho v_n v,
+// rho v_n H) A with v_n = +-1 and H = 5.5, the momentum flux with the gauge pressure 0:
+// |F| = A (1, 1, 1, 1, 5.5). The boundary (area 6) gives B = 0 and sum |F_b| = (6, 6, 6, 6, 33);
+// D counts the interior faces (area 3) twice: (12, 12, 12, 12, 66).
+void check_analytic_box(const std::vector<Json>& events, const char* precision) {
+  const double eps = std::string(precision) == "fp64" ? 0x1p-52 : 0x1p-23;
+  const std::array<double, 5> boundary_abs{6.0, 6.0, 6.0, 6.0, 33.0};
+  const std::array<double, 5> incidences{12.0, 12.0, 12.0, 12.0, 66.0};
+  check_conservation_closes(events, 6);
+  for (const auto& e : events) {
+    INFO(e.dump());
+    for (std::size_t k = 0; k < 5; ++k) {
+      CHECK(std::abs(e["boundary"][k].get<double>()) <= 64 * eps * boundary_abs[k]);
+      CHECK(std::abs(e["D"][k].get<double>() - incidences[k]) <= 64 * eps * incidences[k]);
+    }
+  }
+}
+
 }  // namespace
 
 TEST_CASE("a uniform flow along slip walls and farfield faces stays uniform", "[euler]") {
@@ -529,6 +625,54 @@ TEST_CASE("a verification case converges to its discrete solution", "[euler]") {
   const Json info = Json::parse(read(out.run / "run.json"));
   CHECK(info["status"] == "converged");
   CHECK(fs::exists(out.run / "manufactured.json"));
+}
+
+TEST_CASE("the conservation check gives the analytic sums of a uniform flow", "[euler]") {
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  INFO(precision);
+  const ConservationCheck on;
+  const auto out = run(analytic_box(precision, 2));
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  const auto events = conservation_events(out.run);
+  CHECK(events.size() == 2);
+  check_analytic_box(events, precision);
+}
+
+TEST_CASE("the conservation check closes on a manufactured solution", "[euler]") {
+  // The face part of the residual leaves out the manufactured source, so it sums to the
+  // boundary fluxes; d from autan-mesh-info.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  const char* reproducibility = GENERATE("run", "ranks");
+  CAPTURE(precision, reproducibility);
+  const ConservationCheck on;
+  const auto doc = input("hybrid-verification.solver-input.json", [&](Json& d) {
+    d["precision"] = precision;
+    d["reproducibility"] = reproducibility;
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  // Converged: past the first-order start, so the check also ran on second-order steps.
+  REQUIRE(Json::parse(read(out.run / "run.json"))["status"] == "converged");
+  const auto events = conservation_events(out.run);
+  CHECK(events.size() == history(out.run).size());
+  check_conservation_closes(events,
+                            doc["mesh_info"]["quality"]["max_faces_per_cell"].get<std::int64_t>());
+  // The check reads the state and changes nothing the run writes.
+  unsetenv("AUTAN_CONSERVATION");
+  const auto off = run(doc);
+  REQUIRE(off.status == ExitStatus::finished);
+  CHECK(conservation_events(off.run).empty());
+  CHECK(read(off.run / "history.jsonl") == read(out.run / "history.jsonl"));
+  for (const char* name : {"Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure"}) {
+    CAPTURE(name);
+    const auto a = field(out.run, name), b = field(off.run, name);
+    REQUIRE(a.size() == b.size());
+    CHECK(std::equal(a.begin(), a.end(), b.begin(), [](double x, double y) {
+      return std::bit_cast<std::uint64_t>(x) == std::bit_cast<std::uint64_t>(y);
+    }));
+  }
 }
 
 TEST_CASE("the multigrid builds the levels autan-mesh-info publishes", "[euler]") {
@@ -991,6 +1135,28 @@ TEST_CASE("a uniform flow through periodic pairs stays uniform", "[euler]") {
     CHECK(std::abs(v - 0.6 * speed) <= 64 * eps * speed);
   for (const double v : field(out.run, "VelocityY"))
     CHECK(std::abs(v - 0.8 * speed) <= 64 * eps * speed);
+}
+
+TEST_CASE("the conservation check is refused where it cannot be honoured", "[euler]") {
+  // Through periodic pairs a face and its image are two fluxes: a warning, and no event.
+  const ConservationCheck on;
+  const auto out = run(input("hybrid.solver-input.json", [&](Json& d) {
+    periodic_box(d, "fp64");
+    unsteady_through_pairs(d, 2);
+  }));
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  CHECK(conservation_events(out.run).empty());
+  std::vector<Json> refusals;
+  std::istringstream log(read(out.run / "log.jsonl"));
+  for (std::string l; std::getline(log, l);) {
+    const auto e = Json::parse(l);
+    if (e["level"] == "warning" && e["data"].value("environment", "") == "AUTAN_CONSERVATION") {
+      refusals.push_back(e["data"]);
+    }
+  }
+  REQUIRE(refusals.size() == 1);
+  CHECK(refusals[0]["reason"] == "periodic");
 }
 
 TEST_CASE("cases outside the Euler physics are refused before any directory exists", "[euler]") {
@@ -1519,6 +1685,43 @@ TEST_CASE("steady Gauss-Seidel steps through periodic pairs follow the one-rank 
     CHECK(diff <= (fp64 ? 1e-9 : 1e-5) * scale);
   }
   if (std::string(reproducibility) == "ranks") check_bit_for_bit(one.run, many);
+}
+
+TEST_CASE("the conservation check gives the analytic sums of a uniform flow on several ranks",
+          "[euler][mpi]") {
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  const int ranks = GENERATE(2, 4);
+  CAPTURE(precision, ranks);
+  const ConservationCheck on;
+  const fs::path many = run_on_ranks(analytic_box(precision, 2), ranks);
+  REQUIRE(!many.empty());
+  const auto events = conservation_events(many);
+  CHECK(events.size() == 2);
+  check_analytic_box(events, precision);
+}
+
+TEST_CASE("the conservation check closes on a manufactured solution on several ranks",
+          "[euler][mpi]") {
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  const int ranks = GENERATE(2, 4);
+  CAPTURE(precision, ranks);
+  const ConservationCheck on;
+  const auto doc = input("hybrid-verification.solver-input.json", [&](Json& d) {
+    d["precision"] = precision;
+    d["reproducibility"] = "ranks";
+    d["time"]["max_iterations"] = 3;
+  });
+  const fs::path many = run_on_ranks(doc, ranks);
+  REQUIRE(!many.empty());
+  const auto events = conservation_events(many);
+  CHECK(events.size() == 3);
+  check_conservation_closes(events,
+                            doc["mesh_info"]["quality"]["max_faces_per_cell"].get<std::int64_t>());
+  unsetenv("AUTAN_CONSERVATION");
+  const fs::path off = run_on_ranks(doc, ranks);
+  REQUIRE(!off.empty());
+  CHECK(conservation_events(off).empty());
+  check_bit_for_bit(many, off);
 }
 #endif
 

@@ -198,6 +198,25 @@ TEST_CASE("MeshInfo counts the vertex rings of the quadratic gradient and the bo
   CHECK(c.boundary_fit_entries == expected.boundary_fit);
 }
 
+TEST_CASE("MeshInfo builds the multigrid's levels in the order it names", "[mesh-info]") {
+  // The agglomeration breaks ties by cell index (#365): on the hybrid mesh its RCM and input
+  // hierarchies differ, so the levels show which order they were built in. A run on a partition
+  // builds them on the mesh as read beside lines in the run's order (--multigrid-order input).
+  const auto mesh =
+      autan::io::read_mesh(std::filesystem::path(AUTAN_TEST_MESH_DIR) / "hybrid" / "polyMesh");
+  const auto rcm = autan::io::run_counts(mesh, 1.0, CellOrder::rcm);
+  const auto input = autan::io::run_counts(mesh, 1.0, CellOrder::input);
+  REQUIRE(std::pair(rcm.multigrid_cells, rcm.multigrid_edges) !=
+          std::pair(input.multigrid_cells, input.multigrid_edges));
+  const auto mixed =
+      autan::io::run_counts(mesh, 1.0, CellOrder::rcm, std::nullopt, CellOrder::input);
+  CHECK(mixed.line_order == "rcm");
+  CHECK(mixed.multigrid_order == "input");
+  CHECK(mixed.multigrid_cells == input.multigrid_cells);
+  CHECK(mixed.multigrid_edges == input.multigrid_edges);
+  CHECK(mixed.line_cells == rcm.line_cells);
+}
+
 TEST_CASE("MeshInfo counts the cells in the smoother's lines", "[mesh-info]") {
   // Hexahedra 10 times wider than tall couple 100 times more strongly across their z faces
   // (A_f / |d|) than across the others: each column of n cells is a line (Mavriplis 1998), long

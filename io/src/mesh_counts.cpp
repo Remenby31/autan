@@ -188,14 +188,14 @@ Stencils stencils(const Mesh& mesh, const Geometry& geometry) {
   return out;
 }
 
-// What depends on the cell order: the smoother's lines, and the multigrid's hierarchy, which
-// the run builds with its default options.
+// The smoother's lines, which depend on the cell order.
 void count_lines(const Mesh& mesh, const Geometry& geometry, MeshInfoRun& out) {
   const Lines lines = smoother_lines(mesh, geometry);
   out.line_cells = static_cast<std::int64_t>(cells_in_lines(lines));
   out.long_line_cells = static_cast<std::int64_t>(cells_in_lines(lines, long_line));
 }
 
+// The multigrid's hierarchy, built with the run's default options; it depends on the cell order.
 void count_levels(const Mesh& mesh, const Geometry& geometry, MeshInfoRun& out) {
   for (const auto& level : solvers::agglomerate(mesh, geometry)) {
     out.multigrid_cells.push_back(static_cast<std::int64_t>(level.n_nodes));

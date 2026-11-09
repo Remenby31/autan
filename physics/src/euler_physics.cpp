@@ -2,16 +2,22 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <map>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -292,6 +298,7 @@ class EulerPhysics final : public runtime::Physics {
       throw std::logic_error("the Euler physics was built without CUDA");
 #endif
     }
+    setup_conservation();
   }
 
   StepReport step(std::int64_t /*iteration*/) override {
@@ -322,6 +329,11 @@ class EulerPhysics final : public runtime::Physics {
     for (auto& v : vortices_) v.circulation = v.next;
     apply_vortices();
     if (!report.diverged_cell) report.diverged_cell = first_invalid_cell();
+    // On the state the step leaves, so that the last event is the written solution's; every rank
+    // agrees on the divergence, which the check would not survive.
+    if (conservation_ && ctx_.ranks.max(report.diverged_cell ? 1.0 : 0.0) == 0.0) {
+      check_conservation();
+    }
     return report;
   }
 
@@ -1503,6 +1515,161 @@ class EulerPhysics final : public runtime::Physics {
     }
   }
 
+  // AUTAN_CONSERVATION=1 turns on check_conservation (docs/design/euler.md, Conservation check)
+  // on the host steps of the inviscid physics without periodic pairs; elsewhere a warning says it
+  // is not honoured. One decision on every rank: the check is collective.
+  void setup_conservation() {
+    const char* value = std::getenv("AUTAN_CONSERVATION");
+    const double asked = ctx_.ranks.max(value == nullptr ? 0.0 : 1.0);
+    if (asked == 0.0) return;
+    // The first refusal, as a code reduced over the ranks before any rank returns.
+    const bool invalid = value != nullptr && std::string_view(value) != "1";
+    const double local = invalid                        ? 1.0
+                         : ctx_.device >= 0             ? 2.0
+                         : is_viscous                   ? 3.0
+                         : !ctx_.input.periodic.empty() ? 4.0
+                                                        : 0.0;
+    const double refused = ctx_.ranks.max(local);
+    static constexpr std::array<std::pair<const char*, const char*>, 5> reasons{
+        {{"", ""},
+         {"value", "its value is not 1 on some rank"},
+         {"device", "the device steps have no face-flux pass"},
+         {"viscous", "the face fluxes it sums leave out the viscous ones"},
+         {"periodic", "a periodic face and its image are two fluxes"}}};
+    const auto& [reason, why] = reasons[static_cast<std::size_t>(refused)];
+    if (refused > 0.0) {
+      ctx_.log.write(
+          "warning", "solver",
+          std::string("AUTAN_CONSERVATION is set, no conservation check: ") + why, {},
+          nlohmann::json{{"environment", "AUTAN_CONSERVATION"}, {"reason", reason}}.dump());
+      return;
+    }
+    const auto& mesh = ctx_.mesh;
+    const auto owner = mesh.owner();
+    const auto neighbour = mesh.neighbour();
+    const auto offsets = mesh.cell_face_offsets();
+    const auto owned = [&](index_t c) { return static_cast<std::size_t>(c) < owned_; };
+    // The terms the face loops add into each owned cell: its faces among the owned ones.
+    std::vector<std::int64_t> terms(owned_, 0);
+    for (index_t f = 0; f < mesh.n_owned_interior_faces(); ++f) {
+      const auto i = static_cast<std::size_t>(f);
+      if (owned(owner[i])) ++terms[static_cast<std::size_t>(owner[i])];
+      if (owned(neighbour[i])) ++terms[static_cast<std::size_t>(neighbour[i])];
+      if (owned(owner[i]) != owned(neighbour[i])) interface_faces_.push_back(i);
+    }
+    for (index_t f = mesh.n_interior_faces(); f < mesh.n_owned_faces(); ++f) {
+      ++terms[static_cast<std::size_t>(owner[static_cast<std::size_t>(f)])];
+    }
+    std::int64_t faces = 0, most = 0;
+    for (std::size_t c = 0; c < owned_; ++c) {
+      faces = std::max<std::int64_t>(faces, offsets[c + 1] - offsets[c]);
+      most = std::max(most, terms[c]);
+    }
+    max_faces_ = ctx_.ranks.max(faces);
+    max_terms_ = ctx_.ranks.max(most);
+    conservation_ = true;
+    const auto bytes = (5 * n_ + 5 * static_cast<std::size_t>(mesh.n_faces())) * sizeof(Res);
+    ctx_.log.write(
+        "info", "solver",
+        "conservation check on: each host step evaluates the residual's face part and "
+        "every face's flux once more",
+        {},
+        nlohmann::json{
+            {"residuals_per_step", 1}, {"face_flux_passes_per_step", 1}, {"bytes", bytes}}
+            .dump());
+  }
+
+  // On the state the step leaves, with the current scheme: R^F, the residual's face
+  // part, from the face loops (Euler::face_parts), against the face fluxes of the write-only loops.
+  // Per equation over the owned cells, each an exact sum over the ranks with the terms added one
+  // by one: `faces` sums R^F, `boundary` the fluxes of the owned cells' boundary faces, E the
+  // former minus the latter, D the |flux| of every incidence of an owned cell. An interface face
+  // is evaluated on both of its ranks: the two values, in the orientation of the mesh as read,
+  // must have the same bits.
+  void check_conservation() {
+    if constexpr (!is_viscous) {
+      const auto& mesh = ctx_.mesh;
+      const auto nf = static_cast<std::size_t>(mesh.n_faces());
+      if (face_flux_.empty()) {
+        res_faces_.assign(5 * n_, Res(0));
+        face_flux_.assign(5 * nf, Res(0));
+      }
+      euler_.state(u_, state_);
+      // A steady host step assembles its residual in the fused Jacobian loops: those, then.
+      euler_.face_parts(state_, res_faces_, face_flux_, matrix_.has_value());
+      const auto owner = mesh.owner();
+      const auto neighbour = mesh.neighbour();
+      const auto owned = [&](index_t c) { return static_cast<std::size_t>(c) < owned_; };
+      const auto flux = [&](std::size_t k, std::size_t f) {
+        return static_cast<double>(face_flux_[k * nf + f]);
+      };
+      // Per equation k: E at k, D at 5 + k, boundary at 10 + k, faces at 15 + k.
+      std::array<runtime::ExactSum, 20> sums;
+      for (std::size_t k = 0; k < 5; ++k) {
+        for (std::size_t c = 0; c < owned_; ++c) {
+          const auto r = static_cast<double>(res_faces_[k * n_ + c]);
+          sums[k].add(r);
+          sums[15 + k].add(r);
+        }
+        for (auto f = static_cast<std::size_t>(mesh.n_interior_faces());
+             f < static_cast<std::size_t>(mesh.n_owned_faces()); ++f) {
+          sums[k].add(-flux(k, f));
+          sums[5 + k].add(std::abs(flux(k, f)));
+          sums[10 + k].add(flux(k, f));
+        }
+        for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_owned_interior_faces()); ++f) {
+          if (owned(owner[f])) sums[5 + k].add(std::abs(flux(k, f)));
+          if (owned(neighbour[f])) sums[5 + k].add(std::abs(flux(k, f)));
+        }
+      }
+      ctx_.ranks.sum(sums);
+      // Every rank's interface faces: global id, then the five fluxes. Without the global keys a
+      // face is evaluated in its local orientation, negated back where it runs against the mesh
+      // as read.
+      std::vector<double> mine;
+      mine.reserve(6 * interface_faces_.size());
+      for (const auto f : interface_faces_) {
+        const bool flip = !keys_ && !ctx_.face_reversed.empty() && ctx_.face_reversed[f] != 0;
+        mine.push_back(static_cast<double>(ctx_.face_global_id[f]));
+        for (std::size_t k = 0; k < 5; ++k) mine.push_back(flip ? -flux(k, f) : flux(k, f));
+      }
+      const auto all = ctx_.ranks.all_gather(mine);
+      std::vector<std::size_t> rows(all.size() / 6);
+      std::iota(rows.begin(), rows.end(), std::size_t{0});
+      std::ranges::stable_sort(rows, {}, [&](std::size_t i) { return all[6 * i]; });
+      std::int64_t mismatches = 0;
+      nlohmann::json first = nullptr;
+      for (std::size_t i = 0; i < rows.size();) {
+        std::size_t j = i + 1;
+        while (j < rows.size() && all[6 * rows[j]] == all[6 * rows[i]]) ++j;
+        bool same = j - i == 2;
+        for (std::size_t k = 1; same && k < 6; ++k) {
+          same = std::bit_cast<std::uint64_t>(all[6 * rows[i] + k]) ==
+                 std::bit_cast<std::uint64_t>(all[6 * rows[i + 1] + k]);
+        }
+        if (!same) {
+          if (mismatches == 0) first = static_cast<std::int64_t>(all[6 * rows[i]]);
+          ++mismatches;
+        }
+        i = j;
+      }
+      const auto names = runtime::residual_names(ctx_.input);
+      nlohmann::json data{
+          {"equations", std::vector<std::string>(names.begin(), names.begin() + 5)}};
+      const std::array<const char*, 4> keys{"E", "D", "boundary", "faces"};
+      for (std::size_t q = 0; q < keys.size(); ++q) {
+        nlohmann::json v = nlohmann::json::array();
+        for (std::size_t k = 0; k < 5; ++k) v.push_back(sums[5 * q + k].value());
+        data[keys[q]] = v;
+      }
+      data["max_faces"] = max_faces_;
+      data["max_terms"] = max_terms_;
+      data["flux_mismatch"] = mismatches;
+      data["first_mismatch"] = first;
+      ctx_.log.write("info", "solver", "conservation", {}, data.dump());
+    }
+  }
+
   runtime::RoundOffExemption exempt_;
   bool exempt_logged_ = false;
 
@@ -1536,6 +1703,10 @@ class EulerPhysics final : public runtime::Physics {
   std::vector<Res> res_, dres_;
   std::vector<double> boundary_data_;  // set_boundary's data, before any vortex
   std::vector<Vortex> vortices_;
+  bool conservation_ = false;
+  std::int64_t max_faces_ = 0, max_terms_ = 0;
+  std::vector<std::size_t> interface_faces_;
+  std::vector<Res> res_faces_, face_flux_;
 };
 
 template <class P, class Flow>

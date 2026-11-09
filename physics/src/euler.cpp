@@ -646,6 +646,39 @@ struct Euler<P>::Impl {
     }
   }
 
+  void face_fluxes(bool full) {
+    const bool planar_bodies = planar && !full;
+    switch (scheme.flux) {
+      case Flux::roe:
+        if (planar_bodies) {
+          ek::cpu::roe_face_fluxes_planar(d);
+          ek::cpu::roe_boundary_fluxes_planar(d);
+        } else {
+          ek::cpu::roe_face_fluxes(d);
+          ek::cpu::roe_boundary_fluxes(d);
+        }
+        break;
+      case Flux::hllc:
+        if (planar_bodies) {
+          ek::cpu::hllc_face_fluxes_planar(d);
+          ek::cpu::hllc_boundary_fluxes_planar(d);
+        } else {
+          ek::cpu::hllc_face_fluxes(d);
+          ek::cpu::hllc_boundary_fluxes(d);
+        }
+        break;
+      case Flux::ausm_up:
+        if (planar_bodies) {
+          ek::cpu::ausm_face_fluxes_planar(d);
+          ek::cpu::ausm_boundary_fluxes_planar(d);
+        } else {
+          ek::cpu::ausm_face_fluxes(d);
+          ek::cpu::ausm_boundary_fluxes(d);
+        }
+        break;
+    }
+  }
+
   void faces_jacobian() {
     switch (scheme.flux) {
       case Flux::roe:
@@ -870,7 +903,31 @@ void Euler<P>::residual(std::span<const State> u, std::span<Res> res) {
 }
 
 template <class P>
-void Euler<P>::residual_and_jacobian(std::span<const State> s, std::span<Res> res) {
+void Euler<P>::face_parts(std::span<const State> s, std::span<Res> res_faces,
+                          std::span<Res> face_flux, bool jacobian) {
+  auto& m = *impl_;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  if (s.size() != 5 * nc || res_faces.size() != 5 * nc || face_flux.size() != 5 * nf) {
+    throw std::invalid_argument("face_parts: arrays do not match the cells and faces");
+  }
+  if (jacobian) allocate_jacobian();
+  m.d.u = const_cast<State*>(s.data());
+  m.d.res = res_faces.data();
+  m.cell_loops(jacobian);
+  std::fill(res_faces.begin(), res_faces.end(), Res(0));
+  if (jacobian) {
+    m.faces_jacobian();
+  } else {
+    m.faces();
+  }
+  m.d.face_flux = face_flux.data();
+  m.face_fluxes(jacobian);
+  m.d.face_flux = nullptr;
+}
+
+template <class P>
+void Euler<P>::allocate_jacobian() {
   auto& m = *impl_;
   if (m.dwdu.empty()) {
     // Allocated on first use: residual-only users (explicit, unsteady) carry no Jacobian.
@@ -883,6 +940,12 @@ void Euler<P>::residual_and_jacobian(std::span<const State> s, std::span<Res> re
     m.d.bnd_jac = m.bnd_jac.data();
     m.d.dwdu = m.dwdu.data();
   }
+}
+
+template <class P>
+void Euler<P>::residual_and_jacobian(std::span<const State> s, std::span<Res> res) {
+  auto& m = *impl_;
+  allocate_jacobian();
   m.d.u = const_cast<State*>(s.data());
   m.d.res = res.data();
   m.cell_loops(true);
