@@ -238,6 +238,14 @@ class EulerPhysics final : public runtime::Physics {
     } else {
       second_order_ = true;
     }
+    // case-schema.md#time: start_order "second" skips the first-order start
+    // (euler.md#time-stepping).
+    if (in.time.kind == "steady" && in.time.start_order == "second") {
+      second_order_ = true;
+      euler_.set_second_order(true);
+      ctx.log.write("info", "solver", "the steady run starts at second order (time.start_order)",
+                    {}, nlohmann::json{{"start_order", "second"}}.dump());
+    }
     if (mms) set_source(*mms);
     std::map<std::string, const runtime::CellZoneInput*> zones;
     for (const auto& z : in.cell_zones) zones[z.zone] = &z;
