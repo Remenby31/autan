@@ -685,6 +685,12 @@
       "fix": "Continue with the binary of the original run, or start the chain again with this one.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#w0715"
     },
+    "E0720": {
+      "severity": "error",
+      "title": "Colouring couples a colour",
+      "fix": "Pass the runtime's distance-1 cell colouring (PhysicsContext::cell_colours).",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0720"
+    },
     "W0801": {
       "severity": "warning",
       "title": "No NVIDIA GPU found",

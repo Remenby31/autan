@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -338,5 +339,29 @@ const kernels::spalart_allmaras::Data<P>& SpalartAllmaras<P>::data() const {
 
 template class SpalartAllmaras<kernels::fp64>;
 template class SpalartAllmaras<kernels::fp32_acc64>;
+
+std::vector<std::vector<std::size_t>> colour_groups(const Mesh& mesh,
+                                                    std::span<const std::int32_t> colours,
+                                                    std::int32_t n_colours, std::size_t owned) {
+  const auto nc = static_cast<std::size_t>(mesh.n_cells());
+  if (colours.size() != nc || n_colours < 0 || owned > nc) {
+    throw std::invalid_argument("E0720: the colouring does not give one colour per cell");
+  }
+  for (std::size_t c = 0; c < nc; ++c) {
+    if (colours[c] < 0 || colours[c] >= n_colours) {
+      throw std::invalid_argument("E0720: cell " + std::to_string(c) + " has no valid colour");
+    }
+  }
+  for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_interior_faces()); ++f) {
+    if (colours[static_cast<std::size_t>(mesh.owner()[f])] ==
+        colours[static_cast<std::size_t>(mesh.neighbour()[f])]) {
+      throw std::invalid_argument("E0720: interior face " + std::to_string(f) +
+                                  " joins two cells of one colour");
+    }
+  }
+  std::vector<std::vector<std::size_t>> groups(static_cast<std::size_t>(n_colours));
+  for (std::size_t c = 0; c < owned; ++c) groups[static_cast<std::size_t>(colours[c])].push_back(c);
+  return groups;
+}
 
 }  // namespace autan::physics

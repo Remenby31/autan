@@ -916,6 +916,14 @@ This `continue` run's `autan-run` executable is not the one that wrote the state
 
 Fix: Continue with the binary of the original run, or start the chain again with this one.
 
+## E0720
+
+**Colouring couples a colour** (error)
+
+A colour-ordered smoother receives a colouring without one valid colour per cell, or in which two cells of one colour share an interior face.
+
+Fix: Pass the runtime's distance-1 cell colouring (PhysicsContext::cell_colours).
+
 ## W0801
 
 **No NVIDIA GPU found** (warning)

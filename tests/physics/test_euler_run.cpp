@@ -935,6 +935,25 @@ TEST_CASE("a Navier-Stokes case outside the physics' scope is refused before any
   CHECK(diagnostic["location"]["path"] == (ranks ? "reproducibility" : "periodic"));
 }
 
+TEST_CASE("an SA case with the flow on multigrid takes SA steps by colour", "[navier-stokes]") {
+  // ADR 0005 (B), #163 step 7a: SA sweeps the runtime's cell colours whatever the flow's linear
+  // solver. A steady SA run with the flow on multigrid (reproducibility "run": "ranks" refuses
+  // it, E1109) completes past the second-order switch, where SA steps start, with rho nt changed
+  // from its uniform start.
+  const auto doc = input("hybrid.solver-input.json", [](Json& d) {
+    d["time"]["linear_solver"] = "multigrid";
+    d["time"]["max_iterations"] = 400;
+  });
+  const auto out = run(doc);
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  REQUIRE(field(out.run, "SolverSecondOrder", "RestartState").front() == 1.0);
+  const auto rnu = field(out.run, "DensityNuTilde", "RestartState");
+  REQUIRE(!rnu.empty());
+  const auto [lo, hi] = std::ranges::minmax_element(rnu);
+  CHECK(*lo < *hi);
+}
+
 TEST_CASE(
     "a Navier-Stokes case under reproducibility ranks gives the same bits in every cell order",
     "[navier-stokes][long]") {

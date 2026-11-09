@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <span>
@@ -78,5 +79,13 @@ class SpalartAllmaras {
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
+
+/// The owned cells (the first `owned` of `mesh`) grouped by colour, in increasing index, for
+/// SpalartAllmaras<P>::solve. `colours` gives every cell of `mesh`, owned and ghosts, a colour in
+/// [0, n_colours), and no interior face joins two cells of one colour (the runtime's distance-1
+/// colouring, PhysicsContext::cell_colours). Refused otherwise (std::invalid_argument, E0720).
+std::vector<std::vector<std::size_t>> colour_groups(const Mesh& mesh,
+                                                    std::span<const std::int32_t> colours,
+                                                    std::int32_t n_colours, std::size_t owned);
 
 }  // namespace autan::physics

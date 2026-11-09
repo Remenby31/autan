@@ -130,8 +130,8 @@ struct SaState {
       : model(mesh, geometry, flow, t, ft2, keys) {}
   SpalartAllmaras<P> model;
   std::vector<double> rnu, rhs, dx, diag, upper, lower;
-  // Under global keys or on a partition: the owned cells by global colour, which solve() sweeps
-  // with an exchange after each, the same sweeps on any number of ranks.
+  // The owned cells by global colour, which solve() sweeps with an exchange after each: the same
+  // sweeps on any number of ranks and in any cell order.
   std::vector<std::vector<std::size_t>> colours;
   double nt_inf = 0.0;  ///< m^2/s, the freestream's
   std::vector<typename P::state> s;
@@ -698,12 +698,9 @@ class EulerPhysics final : public runtime::Physics {
     }
     // The ghosts' density may not be filled yet: their owners' rho nt.
     fill_ghost_values(t.rnu);
-    if (keys_ || owned_ < n_) {
-      t.colours.assign(static_cast<std::size_t>(ctx_.n_colours), {});
-      for (std::size_t c = 0; c < owned_; ++c) {
-        t.colours[static_cast<std::size_t>(ctx_.cell_colours[c])].push_back(c);
-      }
-    }
+    // ADR 0005 (B): SA's system is swept by the runtime's colours on any number of ranks and
+    // whatever the flow's linear solver, so that a device repeats the same sweeps.
+    t.colours = colour_groups(mesh, ctx_.cell_colours, ctx_.n_colours, owned_);
     t.rhs.assign(n_, 0.0);
     t.dx.assign(n_, 0.0);
     t.diag.assign(n_, 0.0);
@@ -1148,12 +1145,8 @@ class EulerPhysics final : public runtime::Physics {
         for (std::size_t c = 0; c < n_; ++c) t.rhs[c] = -static_cast<double>(t.res[c]);
         std::fill(t.dx.begin(), t.dx.end(), 0.0);
         t.model.assemble(shift, t.diag, t.upper, t.lower);
-        if (t.colours.empty()) {
-          t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, nt_sweeps);
-        } else {
-          t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, nt_sweeps, &t.colours,
-                        [this](std::span<double> x) { fill_ghost_values(x); });
-        }
+        t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, nt_sweeps, &t.colours,
+                      [this](std::span<double> x) { fill_ghost_values(x); });
         // Local under-relaxation of the SA update: rho nt changes by at most a fraction of
         // max(|rho nt|, rho nt_inf) per step, which the converged state never reaches. Owned
         // cells; the ghosts take their owners' values.
