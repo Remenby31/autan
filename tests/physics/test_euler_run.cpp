@@ -36,6 +36,7 @@ extern char** environ;
 #endif
 
 #include "../runtime/planned.hpp"
+#include "../runtime/refusal.hpp"
 #include "autan/core/cellwise.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/io/mesh_info.hpp"
@@ -895,8 +896,7 @@ TEST_CASE("a case runs the convective flux its physics names", "[euler]") {
     d["physics"]["flux"] = "jst";
   }));
   CHECK(out.status == ExitStatus::invalid_input);
-  const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
-  CHECK(diagnostic["code"] == "E0705");
+  const auto diagnostic = autan_test::refusal_in(out.err, "E0705");
   CHECK(diagnostic["location"]["path"] == "physics.flux");
 }
 
@@ -930,7 +930,6 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
   INFO(out.err);
   CHECK(out.status == ExitStatus::invalid_input);
   CHECK(!fs::exists(out.runs));
-  const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
   const std::map<std::string, std::pair<std::string, std::string>> expected = {
       {"periodic", {"E0706", "time.linear_solver"}},
       {"ranks", {"E1109", "reproducibility"}},
@@ -938,7 +937,7 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
       {"matrix-free", {"E0429", "time.matrix_free"}},
       {"coupled sa", {"E0426", "time.coupled_turbulence"}},
       {"matrix-free laminar", {"E0429", "time.matrix_free"}}};
-  CHECK(diagnostic["code"] == expected.at(reason).first);
+  const auto diagnostic = autan_test::refusal_in(out.err, expected.at(reason).first);
   CHECK(diagnostic["location"]["path"] == expected.at(reason).second);
 }
 
@@ -967,8 +966,7 @@ TEST_CASE("a Navier-Stokes case outside the physics' scope is refused before any
   INFO(out.err);
   CHECK(out.status == ExitStatus::invalid_input);
   CHECK(!fs::exists(out.runs));
-  const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
-  CHECK(diagnostic["code"] == (ranks ? "E1109" : "E0706"));
+  const auto diagnostic = autan_test::refusal_in(out.err, ranks ? "E1109" : "E0706");
   CHECK(diagnostic["location"]["path"] == (ranks ? "reproducibility" : "periodic"));
 }
 
@@ -1222,8 +1220,7 @@ TEST_CASE("cases outside the Euler physics are refused before any directory exis
   CHECK(out.status == ExitStatus::invalid_input);
   CHECK(out.run.empty());
   CHECK(!fs::exists(out.runs));
-  const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
-  CHECK(diagnostic.at("code") == "E0706");
+  const auto diagnostic = autan_test::refusal_in(out.err, "E0706");
   CHECK(diagnostic.at("data").at("path") == path);
   CHECK(diagnostic.at("data").at(field) == value);
   CHECK(diagnostic.at("data").at("zone") ==
@@ -1670,16 +1667,7 @@ TEST_CASE("a steady multigrid case on several ranks is refused before any direct
   std::string err;
   CHECK(run_on_ranks(doc, 2, 2, &err).empty());
   INFO(err);
-  // The launcher may write its own lines; the diagnostic is the first JSON object.
-  Json diagnostic;
-  std::istringstream lines(err);
-  for (std::string line; std::getline(lines, line);) {
-    if (line.starts_with('{')) {
-      diagnostic = Json::parse(line);
-      break;
-    }
-  }
-  CHECK(diagnostic["code"] == "E0706");
+  const Json diagnostic = autan_test::refusal_in(err, "E0706", true);
   CHECK(diagnostic["location"]["path"] == "time.linear_solver");
 }
 
@@ -2752,8 +2740,7 @@ TEST_CASE("on a device, what the device steps cannot honour is refused before an
   INFO(out.err);
   CHECK(out.status == ExitStatus::invalid_input);
   CHECK(!fs::exists(out.runs));
-  const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
-  CHECK(diagnostic["code"] == (vortex ? "E0706" : "E1109"));
+  const auto diagnostic = autan_test::refusal_in(out.err, vortex ? "E0706" : "E1109");
   CHECK(diagnostic["location"]["path"].get<std::string>().ends_with(vortex ? ".point_vortex"
                                                                            : "reproducibility"));
 }
