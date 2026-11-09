@@ -1,20 +1,3 @@
-include(FetchContent)
-FetchContent_Declare(
-  nlohmann_json
-  URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz
-  URL_HASH SHA256=42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa
-  ${AUTAN_GITHUB_DOWNLOAD}
-)
-FetchContent_Declare(
-  picosha2
-  URL https://github.com/okdshin/PicoSHA2/archive/161cb3fc4170fa7a3eca9e582cebd27cc4d1fe29.tar.gz
-  URL_HASH SHA256=6cf473a00c98298d3ddee0aed853e3c799791f49dbc01c996ea46cb248e85802
-  ${AUTAN_GITHUB_DOWNLOAD}
-  # Header only: a subdirectory without CMakeLists.txt skips its example build.
-  SOURCE_SUBDIR no-build
-)
-FetchContent_MakeAvailable(nlohmann_json picosha2)
-
 add_library(
   autan_io
   src/read_mesh.cpp
@@ -85,7 +68,7 @@ if(AUTAN_ENABLE_CGNS)
 endif()
 
 target_include_directories(autan_io PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
-target_include_directories(autan_io SYSTEM PRIVATE ${picosha2_SOURCE_DIR})
+target_link_libraries(autan_io PRIVATE autan::picosha2)
 target_link_libraries(
   autan_io
   PUBLIC autan::core
