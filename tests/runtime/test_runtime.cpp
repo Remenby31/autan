@@ -55,6 +55,7 @@
 #include "autan/runtime/round_off.hpp"
 #include "autan/runtime/run.hpp"
 #include "planned.hpp"
+#include "refusal.hpp"
 #include "relaxation.hpp"
 
 extern char** environ;
@@ -276,7 +277,7 @@ void require_error(const Outcome& o, const std::string& code) {
   CHECK(o.run.empty());
   CHECK((!fs::exists(o.runs) || fs::is_empty(o.runs)));
   REQUIRE(!o.err.empty());
-  CHECK(Json::parse(o.err)["code"] == code);
+  autan_test::refusal_in(o.err, code);
 }
 
 std::string file_sha256(const fs::path& file) {
@@ -686,7 +687,7 @@ TEST_CASE("A checkpoint names its iteration, and a start checks it", "[runtime]"
   const Outcome off = run(next, autan_test::RelaxationOptions{.factor = 0.999});
   CHECK(off.status == ExitStatus::invalid_input);
   CHECK(off.run.empty());
-  CHECK(off.err.find("E0707") != std::string::npos);
+  autan_test::refusal_in(off.err, "E0707");
 }
 
 // `s` quoted for the shell.
@@ -1137,15 +1138,7 @@ TEST_CASE("Every final status is recorded as results.md defines it", "[runtime]"
     const Outcome o = run_in(dir, input(), autan_test::relaxation_registry({}));
     CHECK(o.status == ExitStatus::failed);
     CHECK(o.run.empty());
-    // Warnings (W0713) may come first; the last diagnostic is the failure.
-    std::vector<Json> diagnostics;
-    std::istringstream err_lines(o.err);
-    for (std::string line; std::getline(err_lines, line);)
-      if (line.starts_with("{")) diagnostics.push_back(Json::parse(line));
-    REQUIRE(!diagnostics.empty());
-    for (std::size_t k = 0; k + 1 < diagnostics.size(); ++k)
-      CHECK(diagnostics[k]["severity"] == "warning");
-    CHECK(diagnostics.back()["code"] == "E0704");
+    autan_test::refusal_in(o.err, "E0704");
   }
   SECTION("unsteady with averaging: time, averaging and FlowSolutionMean") {
     // Written by `autan prepare` with time = Unsteady(steps=6, dt=0.01 s,
@@ -1393,19 +1386,19 @@ TEST_CASE("A device run needs a build and a device that drive it", "[runtime]") 
                });
   const Outcome hip = run(input([](Json& d) { d["devices"]["kind"] = "hip"; }), cpu_only);
   require_error(hip, "E0706");
-  CHECK(Json::parse(hip.err)["data"]["path"] == "devices.kind");
+  CHECK(autan_test::refusal_in(hip.err, "E0706")["data"]["path"] == "devices.kind");
 #ifdef AUTAN_HAVE_CUDA
   // As a host without a GPU: CUDA reads this before its first call, and
   // this test runs in a process of its own.
   REQUIRE(setenv("CUDA_VISIBLE_DEVICES", "-1", 1) == 0);
   const Outcome o = run(input([](Json& d) { d["devices"]["kind"] = "cuda"; }), cpu_only);
   require_error(o, "E0807");
-  CHECK(Json::parse(o.err)["data"] ==
+  CHECK(autan_test::refusal_in(o.err, "E0807")["data"] ==
         Json{{"visible", 0}, {"needed", 1}, {"path", "devices.kind"}});
 #else
   const Outcome o = run(input([](Json& d) { d["devices"]["kind"] = "cuda"; }), cpu_only);
   require_error(o, "E0706");
-  CHECK(Json::parse(o.err)["data"]["path"] == "devices.kind");
+  CHECK(autan_test::refusal_in(o.err, "E0706")["data"]["path"] == "devices.kind");
 #endif
 }
 
@@ -1455,7 +1448,7 @@ TEST_CASE("A scope's refusal carries its own code", "[runtime]") {
   refusing.refuse_code = "E0705";
   const Outcome o = run(input(), refusing);
   require_error(o, "E0705");
-  CHECK(Json::parse(o.err)["data"]["path"] == "physics");
+  CHECK(autan_test::refusal_in(o.err, "E0705")["data"]["path"] == "physics");
 }
 
 TEST_CASE("A physics' scope refuses an input before any directory", "[runtime]") {
@@ -1482,7 +1475,7 @@ TEST_CASE("A physics' scope refuses an input before any directory", "[runtime]")
     return;
   }
   require_error(o, "E0706");
-  const Json d = Json::parse(o.err);
+  const Json d = autan_test::refusal_in(o.err, "E0706");
   CHECK(d["location"]["path"] == "cell_zones[1].medium");
   CHECK(d["data"] ==
         Json{{"zone", doc["cell_zones"][1]["zone"]}, {"path", "cell_zones[1].medium"}});
@@ -1678,7 +1671,7 @@ TEST_CASE("The input reader enforces the solver-input rules", "[runtime]") {
   SECTION("one rank per device: devices.count is the rank count") {
     const Outcome o = run(input([](Json& d) { d["devices"]["count"] = 2; }));
     require_error(o, "E0705");
-    CHECK(Json::parse(o.err)["location"]["path"] == "devices.count");
+    CHECK(autan_test::refusal_in(o.err, "E0705")["location"]["path"] == "devices.count");
   }
   SECTION("mesh path is absolute") {
     require_error(run(input([](Json& d) { d["mesh"]["path"] = "relative/polyMesh"; })), "E0705");
@@ -2443,7 +2436,7 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
       d["start"]["solution_sha256"] = file_sha256(previous / "solution.cgns");
     });
     require_error(o, "E0134");
-    const Json refusal = Json::parse(o.err.substr(0, o.err.find('\n')));
+    const Json refusal = autan_test::refusal_in(o.err, "E0134");
     CHECK(refusal.at("data").at("node") == node);
     CHECK(refusal.at("location").at("path") == "start.run");
   }
@@ -3097,18 +3090,18 @@ TEST_CASE("A run that needs more memory than its host can give is refused before
   constexpr std::int64_t huge = std::int64_t{1} << 60;
   constexpr std::int64_t margin = std::int64_t{2} << 30;
   const auto registry = autan_test::relaxation_registry({});
-  const auto refusal = [](const Outcome& o) {
+  const auto refusal = [](const Outcome& o, const std::string& code) {
     CHECK(o.status == ExitStatus::invalid_input);
     CHECK_FALSE(fs::exists(o.runs));
-    return Json::parse(o.err.substr(0, o.err.find('\n')));
+    return autan_test::refusal_in(o.err, code);
   };
   const Json heavy = refusal(run(input([](Json& d) {
                                    d["memory"]["bytes_host"] = huge / 2;
                                    d["memory"]["bytes_device"] = huge / 2;
                                    d["mesh"]["path"] = "/nonexistent/polyMesh";
                                  }),
-                                 registry));
-  CHECK(heavy["code"] == "E0711");
+                                 registry),
+                             "E0711");
   CHECK(heavy["location"]["path"] == "memory");
   CHECK(heavy["data"]["required_bytes"] == huge);
   CHECK(heavy["data"]["margin_bytes"] == margin);
@@ -3117,8 +3110,7 @@ TEST_CASE("A run that needs more memory than its host can give is refused before
   CHECK(available >= 0);
   CHECK(available < huge);
   // The margin is kept free: nothing more than it fits.
-  const Json kept = refusal(run(input(), registry, {}, {.margin_bytes = huge}));
-  CHECK(kept["code"] == "E0711");
+  const Json kept = refusal(run(input(), registry, {}, {.margin_bytes = huge}), "E0711");
   CHECK(kept["data"]["margin_bytes"] == huge);
   // Started anyway on request, with W0712 and the same data in run.json and the log, which is
   // published with it: its second line, after the start (results.md).
@@ -3146,16 +3138,15 @@ TEST_CASE("A run that needs more memory than its host can give is refused before
                             }),
                             registry, {}, {.allow_oversubscription = true});
   CHECK(early.status == ExitStatus::invalid_input);
+  autan_test::refusal_in(early.err, "E0130");
   std::vector<std::string> codes;
   std::istringstream err_lines(early.err);
   for (std::string line; std::getline(err_lines, line);)
-    if (line.starts_with("{")) codes.push_back(Json::parse(line)["code"]);
-  REQUIRE(codes.size() == 2);
-  CHECK(codes[0] == "W0712");
-  CHECK(codes[1] != "W0712");
+    if (!line.empty()) codes.push_back(Json::parse(line)["code"]);
+  CHECK(std::ranges::count(codes, "W0712") == 1);
+  CHECK(std::ranges::find(codes, "W0712") < std::ranges::find(codes, "E0130"));
   // The estimate is required.
-  const Json missing = refusal(run(input([](Json& d) { d.erase("memory"); }), registry));
-  CHECK(missing["code"] == "E0705");
+  const Json missing = refusal(run(input([](Json& d) { d.erase("memory"); }), registry), "E0705");
   CHECK(missing["data"]["path"] == "memory");
 }
 
@@ -3347,9 +3338,9 @@ std::vector<std::string> ranks_not_returned(const fs::path& exits, int ranks, in
 
 // autan-run-relaxation under the launcher on `ranks` ranks: its run
 // directory (none for an invalid input), after checking its exit status;
-// `diagnostic`, when given, receives the JSON diagnostic line of stderr.
+// `err`, when given, receives the launcher's stderr, the ranks' lines included.
 fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>& options,
-                      int expected_status = 0, Json* diagnostic = nullptr,
+                      int expected_status = 0, std::string* err = nullptr,
                       const std::vector<std::string>& extra_args = {}, bool directory = true) {
   const fs::path dir = fresh_dir();
   const fs::path input_file = dir / "solver-input.json";
@@ -3409,12 +3400,7 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
     // judgement above reads it (a failing rank may end the others first).
     if (expected_status == 0) CHECK(ranks_not_returned(exits, ranks, 0).empty());
   }
-  if (diagnostic != nullptr) {
-    std::ifstream in(err_file);
-    for (std::string line; std::getline(in, line);) {
-      if (line.starts_with("{")) *diagnostic = Json::parse(line);
-    }
-  }
+  if (err != nullptr) *err = read(err_file);
   fs::path run;
   if (fs::exists(dir / "runs")) {
     for (const auto& entry : fs::directory_iterator(dir / "runs")) run = entry.path();
@@ -3465,16 +3451,14 @@ TEST_CASE("The ranks of a host share its memory", "[runtime][mpi]") {
   constexpr std::int64_t huge = std::int64_t{1} << 60;
   constexpr int ranks = 2;
   const Json heavy = input([&](Json& d) { d["memory"]["bytes_host"] = huge; });
-  Json refusal;
-  CHECK(run_on_ranks(heavy, ranks, {}, 2, &refusal, {}, false).empty());
-  CHECK(refusal["code"] == "E0711");
+  std::string err;
+  CHECK(run_on_ranks(heavy, ranks, {}, 2, &err, {}, false).empty());
+  const Json refusal = autan_test::refusal_in(err, "E0711", true);
   CHECK(refusal["data"]["required_bytes"] == ranks * huge);
   // The command line sets the margin, and starts a run beyond its memory with W0712.
-  Json margined;
-  CHECK(run_on_ranks(input(), ranks, {}, 2, &margined, {"--memory-margin", std::to_string(huge)},
-                     false)
+  CHECK(run_on_ranks(input(), ranks, {}, 2, &err, {"--memory-margin", std::to_string(huge)}, false)
             .empty());
-  CHECK(margined["code"] == "E0711");
+  const Json margined = autan_test::refusal_in(err, "E0711", true);
   CHECK(margined["data"]["margin_bytes"] == huge);
   const fs::path over = run_on_ranks(heavy, ranks, {}, 0, nullptr, {"--allow-oversubscription"});
   const Json info = Json::parse(read(over / "run.json"));
@@ -3598,24 +3582,22 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   // refusing rank's code reaches stderr, and no rank ends in an abort. The
   // launcher may end the other ranks once one has exited non-zero, so at
   // least one rank, not every rank, is seen returning.
-  const auto refused_together = [&](const char* groups, Json& diagnostic) {
+  const auto refused_together = [&](const char* groups) {
     const fs::path exits = fresh_dir();
+    std::string err;
     CHECK(run_on_ranks(
               doc, ranks,
               {std::string("AUTAN_TEST_GROUPS=") + groups, "AUTAN_TEST_EXIT_DIR=" + exits.string()},
-              1, &diagnostic, {}, false)
+              1, &err, {}, false)
               .empty());
     int returned = 0;
     for (int r = 0; r < ranks; ++r) returned += fs::exists(exits / ("exit-" + std::to_string(r)));
     CAPTURE(groups);
     CHECK(returned >= 1);
+    return autan_test::refusal_in(err, "E0140", true);
   };
-  Json malformed;
-  refused_together("-1", malformed);
-  CHECK(malformed["code"] == "E0140");
-  Json alone;
-  refused_together("-2", alone);
-  CHECK(alone["code"] == "E0140");
+  refused_together("-1");
+  const Json alone = refused_together("-2");
   CHECK(alone["data"]["rank"] == 1);
 #ifdef AUTAN_HAVE_CUDA
   // On CUDA devices, the ranks sharing the host's GPUs: the relaxation
@@ -3708,11 +3690,10 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
   CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_ONE_RANK=1"}, 2).empty());
   // Every rank's scope must see the count for the run to start.
   CHECK(!run_on_ranks(doc, ranks, {"AUTAN_TEST_EXPECT_RANKS=" + std::to_string(ranks)}).empty());
-  Json refusal;
-  CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_EXPECT_RANKS=" + std::to_string(ranks + 1)}, 2,
-                     &refusal)
+  std::string err;
+  CHECK(run_on_ranks(doc, ranks, {"AUTAN_TEST_EXPECT_RANKS=" + std::to_string(ranks + 1)}, 2, &err)
             .empty());
-  CHECK(refusal["code"] == "E0706");
+  const Json refusal = autan_test::refusal_in(err, "E0706", true);
   CHECK(refusal["data"] == Json{{"ranks", ranks}, {"path", "physics"}});
 
   // A physics failure on the last rank alone, the others waiting for it in a
