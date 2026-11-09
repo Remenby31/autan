@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <fstream>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <memory>
@@ -301,7 +303,8 @@ class EulerPhysics final : public runtime::Physics {
     setup_conservation();
   }
 
-  StepReport step(std::int64_t /*iteration*/) override {
+  StepReport step(std::int64_t iteration) override {
+    iteration_ = iteration;
     pressure_valid_ = false;
     // A steady step that solves the first-order start is provisional (case-schema.md#time).
     const bool provisional = ctx_.input.time.kind == "steady" && !second_order_;
@@ -321,6 +324,10 @@ class EulerPhysics final : public runtime::Physics {
       report.diverged_cell = bad;
       return report;
     }
+    if (conservation_ && !conservation_started_) {
+      conservation_started_ = true;
+      check_conservation("start", iteration_ - 1);
+    }
     if (ctx_.input.time.kind == "steady") {
       steady_step(report);
     } else {
@@ -329,10 +336,10 @@ class EulerPhysics final : public runtime::Physics {
     for (auto& v : vortices_) v.circulation = v.next;
     apply_vortices();
     if (!report.diverged_cell) report.diverged_cell = first_invalid_cell();
-    // On the state the step leaves, so that the last event is the written solution's; every rank
-    // agrees on the divergence, which the check would not survive.
+    // On the state the step leaves, so that the last "step" event is the written solution's; every
+    // rank agrees on the divergence, which the check would not survive.
     if (conservation_ && ctx_.ranks.max(report.diverged_cell ? 1.0 : 0.0) == 0.0) {
-      check_conservation();
+      check_conservation("step", iteration_);
     }
     return report;
   }
@@ -1567,6 +1574,33 @@ class EulerPhysics final : public runtime::Physics {
     }
     max_faces_ = ctx_.ranks.max(faces);
     max_terms_ = ctx_.ranks.max(most);
+    // AUTAN_CONSERVATION_FACE and AUTAN_CONSERVATION_FACES, and the point, agreed over the ranks
+    // before any rank branches on them: the check's gathers follow them.
+    const char* point = std::getenv("AUTAN_CONSERVATION_FACE");
+    const char* file = std::getenv("AUTAN_CONSERVATION_FACES");
+    std::array<double, 3> p{};
+    bool parsed = point != nullptr;
+    const char* s = point;
+    for (std::size_t a = 0; parsed && a < 3; ++a) {
+      char* end = nullptr;
+      p[a] = std::strtod(s, &end);
+      parsed = end != s && *end == (a < 2 ? ',' : '\0') && std::isfinite(p[a]);
+      s = end + 1;
+    }
+    const double has_point = point != nullptr ? 1.0 : 0.0;
+    const double has_file = file != nullptr && *file != '\0' ? 1.0 : 0.0;
+    const double readable = point == nullptr || parsed ? 1.0 : 0.0;
+    std::array<double, 6> spread{ctx_.ranks.max(has_point) - ctx_.ranks.min(has_point),
+                                 ctx_.ranks.max(has_file) - ctx_.ranks.min(has_file),
+                                 1.0 - ctx_.ranks.min(readable)};
+    for (std::size_t a = 0; a < 3; ++a) spread[3 + a] = ctx_.ranks.max(p[a]) - ctx_.ranks.min(p[a]);
+    if (std::ranges::any_of(spread, [](double v) { return v != 0.0; })) {
+      throw std::invalid_argument(
+          "AUTAN_CONSERVATION_FACE (a point x,y,z) and AUTAN_CONSERVATION_FACES must be the same "
+          "on every rank");
+    }
+    if (has_point > 0.0) selected_at_ = p;
+    if (has_file > 0.0) faces_file_ = file;
     conservation_ = true;
     const auto bytes = (5 * n_ + 5 * static_cast<std::size_t>(mesh.n_faces())) * sizeof(Res);
     ctx_.log.write(
@@ -1579,14 +1613,15 @@ class EulerPhysics final : public runtime::Physics {
             .dump());
   }
 
-  // On the state the step leaves, with the current scheme: R^F, the residual's face
-  // part, from the face loops (Euler::face_parts), against the face fluxes of the write-only loops.
-  // Per equation over the owned cells, each an exact sum over the ranks with the terms added one
-  // by one: `faces` sums R^F, `boundary` the fluxes of the owned cells' boundary faces, E the
-  // former minus the latter, D the |flux| of every incidence of an owned cell. An interface face
-  // is evaluated on both of its ranks: the two values, in the orientation of the mesh as read,
-  // must have the same bits.
-  void check_conservation() {
+  // On the current state (`at`: "start" before the first step, "step" after each; `iteration`, the
+  // history iteration whose state it is, the start's being the one before the first step), with the
+  // current scheme: R^F, the residual's face part, from the face loops (Euler::face_parts),
+  // against the face fluxes of the write-only loops. Per equation over the owned cells, each an
+  // exact sum over the ranks with the terms added one by one: `faces` sums R^F, `boundary` the
+  // fluxes of the owned cells' boundary faces, E the former minus the latter, D the |flux| of
+  // every incidence of an owned cell. An interface face is evaluated on both of its ranks: the
+  // two values, in the orientation of the mesh as read, must have the same bits.
+  void check_conservation(const char* at, std::int64_t iteration) {
     if constexpr (!is_viscous) {
       const auto& mesh = ctx_.mesh;
       const auto nf = static_cast<std::size_t>(mesh.n_faces());
@@ -1655,6 +1690,8 @@ class EulerPhysics final : public runtime::Physics {
       }
       const auto names = runtime::residual_names(ctx_.input);
       nlohmann::json data{
+          {"at", at},
+          {"iteration", iteration},
           {"equations", std::vector<std::string>(names.begin(), names.begin() + 5)}};
       const std::array<const char*, 4> keys{"E", "D", "boundary", "faces"};
       for (std::size_t q = 0; q < keys.size(); ++q) {
@@ -1666,8 +1703,119 @@ class EulerPhysics final : public runtime::Physics {
       data["max_terms"] = max_terms_;
       data["flux_mismatch"] = mismatches;
       data["first_mismatch"] = first;
+      if (selected_at_) data["selected_face"] = selected_face(*selected_at_);
+      if (!faces_file_.empty() && std::string_view(at) == "start") {
+        write_face_fluxes(data);
+        data["faces_file"] = faces_file_;
+      }
       ctx_.log.write("info", "solver", "conservation", {}, data.dump());
     }
+  }
+
+  // Face f as a row: global id, centroid, then the five fluxes in its global orientation
+  // (the write-only loops' values of the last check).
+  void face_row(std::size_t f, std::vector<double>& out) const {
+    const auto nf = static_cast<std::size_t>(ctx_.mesh.n_faces());
+    const bool reversed = !ctx_.face_reversed.empty() && ctx_.face_reversed[f] != 0;
+    const bool flip = !keys_ && reversed;
+    const auto& g = ctx_.geometry;
+    out.push_back(static_cast<double>(ctx_.face_global_id.empty() ? static_cast<std::int64_t>(f)
+                                                                  : ctx_.face_global_id[f]));
+    out.insert(out.end(), {g.face_centroid_x[f], g.face_centroid_y[f], g.face_centroid_z[f]});
+    for (std::size_t k = 0; k < 5; ++k) {
+      const auto v = static_cast<double>(face_flux_[k * nf + f]);
+      out.push_back(flip ? -v : v);
+    }
+  }
+
+  // The interior faces whose global-left cell this rank owns: each face of the mesh on one rank.
+  template <class Visit>
+  void for_left_owned_faces(Visit visit) const {
+    const auto owner = ctx_.mesh.owner();
+    const auto neighbour = ctx_.mesh.neighbour();
+    for (std::size_t f = 0; f < static_cast<std::size_t>(ctx_.mesh.n_owned_interior_faces()); ++f) {
+      const bool reversed = !ctx_.face_reversed.empty() && ctx_.face_reversed[f] != 0;
+      const auto left = static_cast<std::size_t>(reversed ? neighbour[f] : owner[f]);
+      if (left < owned_) visit(f, left);
+    }
+  }
+
+  // AUTAN_CONSERVATION_FACE: the interior faces whose centroid lies within 1e-6 of `at` in every
+  // coordinate, over the ranks. With exactly one, its global id, global-left cell, the rank that
+  // owns that cell, whether it lies on a partition interface, and its flux.
+  [[nodiscard]] nlohmann::json selected_face(const std::array<double, 3>& at) const {
+    const auto& g = ctx_.geometry;
+    const auto cells = ctx_.mesh.cell_global_id();
+    const auto owner = ctx_.mesh.owner();
+    const auto neighbour = ctx_.mesh.neighbour();
+    std::vector<double> mine;
+    for_left_owned_faces([&](std::size_t f, std::size_t left) {
+      const std::array<double, 3> c{g.face_centroid_x[f], g.face_centroid_y[f],
+                                    g.face_centroid_z[f]};
+      for (std::size_t a = 0; a < 3; ++a) {
+        if (!(std::abs(c[a] - at[a]) <= 1e-6)) return;
+      }
+      face_row(f, mine);
+      mine.push_back(
+          static_cast<double>(cells.empty() ? static_cast<std::int64_t>(left) : cells[left]));
+      mine.push_back(static_cast<double>(ctx_.ranks.rank()));
+      const bool interface = static_cast<std::size_t>(owner[f]) >= owned_ ||
+                             static_cast<std::size_t>(neighbour[f]) >= owned_;
+      mine.push_back(interface ? 1.0 : 0.0);
+    });
+    const auto all = ctx_.ranks.all_gather(mine);
+    nlohmann::json out{{"at", at}, {"matches", all.size() / 12}};
+    if (all.size() == 12) {
+      out["id"] = static_cast<std::int64_t>(all[0]);
+      out["centroid"] = {all[1], all[2], all[3]};
+      out["flux"] = {all[4], all[5], all[6], all[7], all[8]};
+      out["left_cell"] = static_cast<std::int64_t>(all[9]);
+      out["rank"] = static_cast<std::int64_t>(all[10]);
+      out["interface"] = all[11] != 0.0;
+    }
+    return out;
+  }
+
+  // AUTAN_CONSERVATION_FACES: every face of the mesh once, gathered to rank 0, which writes a JSON
+  // line (the event's equations, E, D and max_faces, and the counts of interior and boundary
+  // faces), a CSV header, then one row per face in ascending global id: id, 1 for a boundary face
+  // and 0 for an interior one, centroid, the five signed fluxes.
+  void write_face_fluxes(const nlohmann::json& event) const {
+    std::vector<double> mine;
+    const auto row = [&](std::size_t f, double flag) {
+      face_row(f, mine);
+      mine.insert(mine.end() - 8, flag);
+    };
+    for_left_owned_faces([&](std::size_t f, std::size_t) { row(f, 0.0); });
+    for (auto f = static_cast<std::size_t>(ctx_.mesh.n_interior_faces());
+         f < static_cast<std::size_t>(ctx_.mesh.n_owned_faces()); ++f) {
+      row(f, 1.0);
+    }
+    const auto all = ctx_.ranks.all_gather(mine);
+    if (ctx_.ranks.rank() != 0) return;
+    std::vector<std::size_t> rows(all.size() / 10);
+    std::iota(rows.begin(), rows.end(), std::size_t{0});
+    std::ranges::sort(rows, {}, [&](std::size_t i) { return all[10 * i]; });
+    const std::int64_t boundary =
+        std::ranges::count_if(rows, [&](std::size_t i) { return all[10 * i + 1] != 0.0; });
+    std::ofstream out(faces_file_, std::ios::binary | std::ios::trunc);
+    const nlohmann::json head{{"schema", "autan.conservation-faces/1"},
+                              {"equations", event["equations"]},
+                              {"E", event["E"]},
+                              {"D", event["D"]},
+                              {"max_faces", event["max_faces"]},
+                              {"faces", static_cast<std::int64_t>(rows.size()) - boundary},
+                              {"boundary_faces", boundary}};
+    out << head.dump() << "\nface,boundary,x,y,z";
+    for (const auto& name : event["equations"]) out << ',' << name.get<std::string>();
+    out << '\n' << std::setprecision(17);
+    for (const auto i : rows) {
+      out << static_cast<std::int64_t>(all[10 * i]) << ',' << (all[10 * i + 1] != 0.0 ? 1 : 0);
+      for (std::size_t j = 2; j < 10; ++j) out << ',' << all[10 * i + j];
+      out << '\n';
+    }
+    out.close();
+    if (!out) throw std::runtime_error("AUTAN_CONSERVATION_FACES: cannot write " + faces_file_);
   }
 
   runtime::RoundOffExemption exempt_;
@@ -1704,6 +1852,10 @@ class EulerPhysics final : public runtime::Physics {
   std::vector<double> boundary_data_;  // set_boundary's data, before any vortex
   std::vector<Vortex> vortices_;
   bool conservation_ = false;
+  bool conservation_started_ = false;  // the event on the state the run starts from is logged
+  std::int64_t iteration_ = 0;         // the history iteration of the step being taken
+  std::optional<std::array<double, 3>> selected_at_;  // AUTAN_CONSERVATION_FACE
+  std::string faces_file_;                            // AUTAN_CONSERVATION_FACES
   std::int64_t max_faces_ = 0, max_terms_ = 0;
   std::vector<std::size_t> interface_faces_;
   std::vector<Res> res_faces_, face_flux_;

@@ -7,10 +7,12 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <optional>
@@ -19,20 +21,19 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <cgnslib.h>
+#include <fcntl.h>
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
-#ifdef AUTAN_MPIEXEC
-#include <fcntl.h>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
 extern char** environ;
-#endif
 
 #include "../runtime/planned.hpp"
 #include "autan/core/cellwise.hpp"
@@ -269,13 +270,15 @@ double conservation_tau(std::int64_t d) {
   return std::max(64 * 0x1p-52, 2 * mu / (1 - mu));
 }
 
-// Every event closes: q_k = |E_k| / D_k <= tau(d) for each equation (E_k = 0 where D_k = 0),
-// the interface faces' fluxes agree bit for bit, and no cell sums more terms than d.
+// The first event is the start's, every other a step's, and every event closes:
+// q_k = |E_k| / D_k <= tau(d) for each equation (E_k = 0 where D_k = 0), the interface faces'
+// fluxes agree bit for bit, and no cell sums more terms than d.
 void check_conservation_closes(const std::vector<Json>& events, std::int64_t d) {
   REQUIRE(!events.empty());
   const double tau = conservation_tau(d);
   for (const auto& e : events) {
     INFO(e.dump());
+    CHECK(e["at"] == (&e == &events.front() ? "start" : "step"));
     CHECK(e["max_faces"] == d);
     CHECK(e["max_terms"].get<std::int64_t>() <= d);
     CHECK(e["flux_mismatch"] == 0);
@@ -288,9 +291,13 @@ void check_conservation_closes(const std::vector<Json>& events, std::int64_t d) 
 // The unit cube cut into 2 x 2 x 2 hexahedra, farfield on every side, at the uniform state
 // rho = 1, v = (1, 1, 1), p = p_ref = 2 of a gas with gamma = 2 (rho E = 3.5): `steps` explicit
 // steps under reproducibility "ranks".
-Json analytic_box(const char* precision, int steps) {
+// With `name`, the mesh's directory is that name's, so that every run of one control reads the
+// same mesh path and case: the intact and mutated builds' records then share their identity.
+Json analytic_box(const char* precision, int steps, const std::string& name = {}) {
   std::random_device random;
-  const fs::path dir = fs::temp_directory_path() / ("autan_euler_box-" + std::to_string(random()));
+  const fs::path dir =
+      fs::temp_directory_path() /
+      (name.empty() ? "autan_euler_box-" + std::to_string(random()) : "autan_gate7_box-" + name);
   autan::io::write_polymesh(
       dir / "polyMesh",
       autan::assemble(autan::to_face_based(autan::test::box(2, autan::test::BoxFill::hexa))));
@@ -339,6 +346,169 @@ void check_analytic_box(const std::vector<Json>& events, const char* precision) 
       CHECK(std::abs(e["D"][k].get<double>() - incidences[k]) <= 64 * eps * incidences[k]);
     }
   }
+}
+
+// The autan-run executable on `ranks` ranks, under the launcher above one: its run directory,
+// none for an invalid input; its standard error in `err` when given. Its exit status is checked
+// against `expected_status` unless that is negative.
+fs::path run_on_ranks(const Json& doc, int ranks, int expected_status = 0,
+                      std::string* err = nullptr) {
+  std::random_device random;
+  const fs::path dir = fs::temp_directory_path() / ("autan_euler_mpi-" + std::to_string(random()));
+  fs::create_directories(dir);
+  const std::string err_file = (dir / "stderr").string();
+  // solver-input.md, `devices`: one rank per device, so the input counts the ranks.
+  Json with_count = doc;
+  if (with_count["devices"]["count"] == 1) with_count["devices"]["count"] = ranks;
+  std::ofstream(dir / "solver-input.json") << with_count.dump();
+  std::vector<std::string> args;
+#ifdef AUTAN_MPIEXEC
+  if (ranks > 1) args = {AUTAN_MPIEXEC, AUTAN_MPIEXEC_NUMPROC_FLAG, std::to_string(ranks)};
+#endif
+  REQUIRE((ranks == 1 || !args.empty()));
+  args.insert(args.end(), {AUTAN_RUN, "--input", (dir / "solver-input.json").string(), "--runs",
+                           (dir / "runs").string()});
+  std::vector<char*> argv;
+  for (auto& a : args) argv.push_back(a.data());
+  argv.push_back(nullptr);
+  posix_spawn_file_actions_t actions;
+  posix_spawn_file_actions_init(&actions);
+  posix_spawn_file_actions_addopen(&actions, 2, err_file.c_str(), O_WRONLY | O_CREAT | O_TRUNC,
+                                   0644);
+  pid_t pid = 0;
+  REQUIRE(posix_spawn(&pid, args[0].c_str(), &actions, nullptr, argv.data(), environ) == 0);
+  posix_spawn_file_actions_destroy(&actions);
+  int status = 0;
+  REQUIRE(waitpid(pid, &status, 0) == pid);
+  if (err != nullptr) *err = read(err_file);
+  REQUIRE(WIFEXITED(status));
+  if (expected_status >= 0) CHECK(WEXITSTATUS(status) == expected_status);
+  fs::path run;
+  if (fs::exists(dir / "runs")) {
+    for (const auto& entry : fs::directory_iterator(dir / "runs")) run = entry.path();
+  }
+  return run;
+}
+
+// A positive control of D2's gate 7 (#259, amendment of 2026-11-09): the conservation check on,
+// its selected face at `at` (AUTAN_CONSERVATION_FACE) and every face's flux written
+// (AUTAN_CONSERVATION_FACES), files named after the configuration in AUTAN_GATE7_EVIDENCE, a
+// temporary directory without it. A file an earlier run left there is removed first, so the
+// evidence is this run's. tools/gate7_control.py compares the intact build's evidence with a
+// mutant's (tests/physics/gate7_mutants.json, whose mutants drop the face at `at`).
+class Gate7Control {
+ public:
+  Gate7Control(std::string name, const std::array<double, 3>& at) : name_(std::move(name)) {
+    const char* dir = std::getenv("AUTAN_GATE7_EVIDENCE");
+    dir_ = dir != nullptr ? fs::path(dir)
+                          : fs::temp_directory_path() /
+                                ("autan_gate7-" + std::to_string(std::random_device()()));
+    fs::create_directories(dir_);
+    for (const char* ext : {".json", ".faces.csv", ".gate7.py.out", ".gate7_report.py.out"}) {
+      fs::remove(dir_ / (name_ + ext));
+    }
+    std::ostringstream point;
+    point << std::setprecision(17) << at[0] << ',' << at[1] << ',' << at[2];
+    setenv("AUTAN_CONSERVATION", "1", 1);
+    setenv("AUTAN_CONSERVATION_FACE", point.str().c_str(), 1);
+    setenv("AUTAN_CONSERVATION_FACES", (dir_ / (name_ + ".faces.csv")).c_str(), 1);
+  }
+  ~Gate7Control() {
+    unsetenv("AUTAN_CONSERVATION");
+    unsetenv("AUTAN_CONSERVATION_FACE");
+    unsetenv("AUTAN_CONSERVATION_FACES");
+  }
+  Gate7Control(const Gate7Control&) = delete;
+  Gate7Control& operator=(const Gate7Control&) = delete;
+
+  struct Verdict {
+    int status;
+    std::string line;
+  };
+
+  // tools/gate7.py on the event `run_dir` logged on the state it started from: its exit status
+  // (0: PASS) and verdict line; it writes <name>.json, the evidence, before it decides.
+  [[nodiscard]] Verdict at_start(const fs::path& run_dir) const {
+    return tool("gate7.py", "'" + run_dir.string() + "' --at start --evidence '" +
+                                (dir_ / (name_ + ".json")).string() + "'");
+  }
+
+  // tools/gate7_report.py on the faces file the start event wrote.
+  [[nodiscard]] Verdict report() const {
+    return tool("gate7_report.py", "'" + (dir_ / (name_ + ".faces.csv")).string() + "'");
+  }
+
+ private:
+  [[nodiscard]] Verdict tool(const char* script, const std::string& args) const {
+    const fs::path path = data_dir / ".." / ".." / "tools" / script;
+    const fs::path line = dir_ / (name_ + "." + script + ".out");
+    const std::string command = std::string("'") + AUTAN_PYTHON + "' '" + path.string() + "' " +
+                                args + " > '" + line.string() + "'";
+    const int status = std::system(command.c_str());
+    return {.status = WIFEXITED(status) ? WEXITSTATUS(status) : -1, .line = read(line)};
+  }
+
+  std::string name_;
+  fs::path dir_;
+};
+
+using Launch = std::function<fs::path(const Json&)>;
+
+// The autan-run executable on `ranks` ranks: no assertion on its exit status comes before gate
+// 7's, tools/gate7_control.py judges the run's status from the evidence.
+Launch on_ranks(int ranks) {
+  return [ranks](const Json& doc) { return run_on_ranks(doc, ranks, -1); };
+}
+
+// Gate 7's control on the analytic box: one explicit step from the uniform state, the start
+// event through tools/gate7.py, then that event's analytic sums. M2 drops the face at
+// (0.5, 0.25, 0.25) from the planar loop.
+void box_gate7(const char* precision, const std::string& name, const Launch& launch) {
+  const Gate7Control control(name, {0.5, 0.25, 0.25});
+  const fs::path dir = launch(analytic_box(precision, 1, name));
+  const auto gate = control.at_start(dir);
+  INFO(gate.line);
+  REQUIRE(gate.status == 0);
+  check_analytic_box(conservation_events(dir), precision);
+  // The faces file, through the report: every one of the 12 interior faces carries
+  // |F| = (1, 1, 1, 1, 5.5) / 4 against D = (12, 12, 12, 12, 66), so each ratio, median and
+  // minimum is 1/48 to the flux precision.
+  const auto report = control.report();
+  INFO(report.line);
+  REQUIRE(report.status == 0);
+  const auto out = Json::parse(report.line);
+  CHECK(out["faces"] == 12);
+  const double eps = std::string(precision) == "fp64" ? 0x1p-52 : 0x1p-23;
+  const auto near = [&](const Json& v) {
+    return std::abs(v.get<double>() - 1.0 / 48) <= 64 * eps / 48;
+  };
+  REQUIRE(out["equations"].size() == 5);
+  for (const auto& e : out["equations"]) {
+    INFO(e.dump());
+    CHECK(e["status"] == "active");
+    CHECK(near(e["median"]));
+    CHECK(near(e["min"]));
+  }
+  CHECK(near(out["median_of_max"]));
+}
+
+// Gate 7's control on hybrid MMS level 16: one steady step continuing the campaign's R1 run, the
+// directory in AUTAN_GATE7_R1_<suffix>, its solver input in AUTAN_GATE7_SI_<suffix>. M1 drops
+// the face between two hexahedra at (0.5, 0.46875, 0.15625) from the fused Jacobian loop.
+void hybrid16_gate7(const std::string& suffix, const std::string& name, const Launch& launch) {
+  const char* r1 = std::getenv(("AUTAN_GATE7_R1_" + suffix).c_str());
+  const char* si = std::getenv(("AUTAN_GATE7_SI_" + suffix).c_str());
+  INFO("AUTAN_GATE7_R1_" << suffix << " and AUTAN_GATE7_SI_" << suffix << " must be set");
+  REQUIRE(r1 != nullptr);
+  REQUIRE(si != nullptr);
+  Json doc = Json::parse(read(si));
+  doc["start"] = continue_from(r1);
+  doc["time"]["max_iterations"] =
+      Json::parse(read(fs::path(r1) / "run.json"))["iterations"].get<std::int64_t>() + 1;
+  const Gate7Control control(name, {0.5, 0.46875, 0.15625});
+  const auto gate = control.at_start(launch(doc));
+  INFO(gate.line);
+  REQUIRE(gate.status == 0);
 }
 
 }  // namespace
@@ -635,7 +805,7 @@ TEST_CASE("the conservation check gives the analytic sums of a uniform flow", "[
   INFO(out.err);
   REQUIRE(out.status == ExitStatus::finished);
   const auto events = conservation_events(out.run);
-  CHECK(events.size() == 2);
+  CHECK(events.size() == 3);
   check_analytic_box(events, precision);
 }
 
@@ -656,7 +826,7 @@ TEST_CASE("the conservation check closes on a manufactured solution", "[euler]")
   // Converged: past the first-order start, so the check also ran on second-order steps.
   REQUIRE(Json::parse(read(out.run / "run.json"))["status"] == "converged");
   const auto events = conservation_events(out.run);
-  CHECK(events.size() == history(out.run).size());
+  CHECK(events.size() == history(out.run).size() + 1);
   check_conservation_closes(events,
                             doc["mesh_info"]["quality"]["max_faces_per_cell"].get<std::int64_t>());
   // The check reads the state and changes nothing the run writes.
@@ -673,6 +843,39 @@ TEST_CASE("the conservation check closes on a manufactured solution", "[euler]")
       return std::bit_cast<std::uint64_t>(x) == std::bit_cast<std::uint64_t>(y);
     }));
   }
+}
+
+// D2 gate 7's controls, one test per configuration: each one's mutant must fail its gate 7
+// assertion, and nothing before it (tests/physics/gate7_mutants.json).
+TEST_CASE("gate 7 passes on the analytic box at its start on 1 rank in fp64", "[euler]") {
+  box_gate7("fp64", "box-1-fp64", on_ranks(1));
+}
+
+TEST_CASE("gate 7 passes on the analytic box at its start on 1 rank in fp32+acc64", "[euler]") {
+  box_gate7("fp32+acc64", "box-1-fp32", on_ranks(1));
+}
+
+TEST_CASE("gate 7 passes on hybrid MMS level 16 at R1's solution on 1 rank in fp64", "[.gate7]") {
+  hybrid16_gate7("FP64", "hybrid16-1-fp64", on_ranks(1));
+}
+
+TEST_CASE("gate 7 passes on hybrid MMS level 16 at R1's solution on 1 rank in fp32+acc64",
+          "[.gate7]") {
+  hybrid16_gate7("FP32", "hybrid16-1-fp32", on_ranks(1));
+}
+
+TEST_CASE("gate 7 passes on the fixture hybrid mesh at its steady start on 1 rank in fp64",
+          "[euler]") {
+  // M1 drops the face between two prisms at (0.75, 0.375, 0.125) from the fused Jacobian loop.
+  const Gate7Control control("fixture-hybrid-1-fp64", {0.75, 0.375, 0.125});
+  const auto doc = input("hybrid-verification.solver-input.json", [](Json& d) {
+    d["precision"] = "fp64";
+    d["reproducibility"] = "ranks";
+    d["time"]["max_iterations"] = 1;
+  });
+  const auto gate = control.at_start(on_ranks(1)(doc));
+  INFO(gate.line);
+  REQUIRE(gate.status == 0);
 }
 
 TEST_CASE("the multigrid builds the levels autan-mesh-info publishes", "[euler]") {
@@ -1241,48 +1444,6 @@ TEST_CASE("cases outside the Euler physics are refused before any directory exis
 #ifdef AUTAN_MPIEXEC
 namespace {
 
-// autan-run under the launcher on `ranks` ranks: its run directory, none for an invalid input;
-// its standard error in `err` when given.
-fs::path run_on_ranks(const Json& doc, int ranks, int expected_status = 0,
-                      std::string* err = nullptr) {
-  std::random_device random;
-  const fs::path dir = fs::temp_directory_path() / ("autan_euler_mpi-" + std::to_string(random()));
-  fs::create_directories(dir);
-  const std::string err_file = (dir / "stderr").string();
-  posix_spawn_file_actions_t actions;
-  posix_spawn_file_actions_init(&actions);
-  posix_spawn_file_actions_addopen(&actions, 2, err_file.c_str(), O_WRONLY | O_CREAT | O_TRUNC,
-                                   0644);
-  // solver-input.md, `devices`: one rank per device, so the input counts the ranks.
-  Json with_count = doc;
-  if (with_count["devices"]["count"] == 1) with_count["devices"]["count"] = ranks;
-  std::ofstream(dir / "solver-input.json") << with_count.dump();
-  std::vector<std::string> args{AUTAN_MPIEXEC,
-                                AUTAN_MPIEXEC_NUMPROC_FLAG,
-                                std::to_string(ranks),
-                                AUTAN_RUN,
-                                "--input",
-                                (dir / "solver-input.json").string(),
-                                "--runs",
-                                (dir / "runs").string()};
-  std::vector<char*> argv;
-  for (auto& a : args) argv.push_back(a.data());
-  argv.push_back(nullptr);
-  pid_t pid = 0;
-  REQUIRE(posix_spawn(&pid, AUTAN_MPIEXEC, &actions, nullptr, argv.data(), environ) == 0);
-  posix_spawn_file_actions_destroy(&actions);
-  int status = 0;
-  REQUIRE(waitpid(pid, &status, 0) == pid);
-  if (err != nullptr) *err = read(err_file);
-  REQUIRE(WIFEXITED(status));
-  CHECK(WEXITSTATUS(status) == expected_status);
-  fs::path run;
-  if (fs::exists(dir / "runs")) {
-    for (const auto& entry : fs::directory_iterator(dir / "runs")) run = entry.path();
-  }
-  return run;
-}
-
 // Two runs of reproducibility "ranks" on different rank counts: the same history text and the
 // same bit patterns in every field (a signed zero or a NaN cannot pass for an equal value).
 void check_bit_for_bit(const fs::path& one, const fs::path& many) {
@@ -1696,7 +1857,7 @@ TEST_CASE("the conservation check gives the analytic sums of a uniform flow on s
   const fs::path many = run_on_ranks(analytic_box(precision, 2), ranks);
   REQUIRE(!many.empty());
   const auto events = conservation_events(many);
-  CHECK(events.size() == 2);
+  CHECK(events.size() == 3);
   check_analytic_box(events, precision);
 }
 
@@ -1714,7 +1875,7 @@ TEST_CASE("the conservation check closes on a manufactured solution on several r
   const fs::path many = run_on_ranks(doc, ranks);
   REQUIRE(!many.empty());
   const auto events = conservation_events(many);
-  CHECK(events.size() == 3);
+  CHECK(events.size() == 4);
   check_conservation_closes(events,
                             doc["mesh_info"]["quality"]["max_faces_per_cell"].get<std::int64_t>());
   unsetenv("AUTAN_CONSERVATION");
@@ -1722,6 +1883,25 @@ TEST_CASE("the conservation check closes on a manufactured solution on several r
   REQUIRE(!off.empty());
   CHECK(conservation_events(off).empty());
   check_bit_for_bit(many, off);
+}
+
+TEST_CASE("gate 7 passes on the analytic box at its start on 4 ranks in fp64", "[euler][mpi]") {
+  box_gate7("fp64", "box-4-fp64", on_ranks(4));
+}
+
+TEST_CASE("gate 7 passes on the analytic box at its start on 4 ranks in fp32+acc64",
+          "[euler][mpi]") {
+  box_gate7("fp32+acc64", "box-4-fp32", on_ranks(4));
+}
+
+// Hidden as the 1-rank ones: an [mpi] tag would select them in the MPI jobs.
+TEST_CASE("gate 7 passes on hybrid MMS level 16 at R1's solution on 4 ranks in fp64", "[.gate7]") {
+  hybrid16_gate7("FP64", "hybrid16-4-fp64", on_ranks(4));
+}
+
+TEST_CASE("gate 7 passes on hybrid MMS level 16 at R1's solution on 4 ranks in fp32+acc64",
+          "[.gate7]") {
+  hybrid16_gate7("FP32", "hybrid16-4-fp32", on_ranks(4));
 }
 #endif
 
