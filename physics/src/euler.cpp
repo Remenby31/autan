@@ -6,17 +6,41 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <vector>
 
+#include "autan/core/error.hpp"
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "euler_cpu.hpp"
 
 namespace autan::physics {
+
+std::optional<GhostStencil> ghost_stencil(const Scheme& scheme) {
+  if (scheme.gradient_fit == GradientFit::quadratic) return std::nullopt;
+  return scheme.gradient == GradientStencil::vertex ? GhostStencil::vertex : GhostStencil::face2;
+}
+
+namespace {
+
+// `mesh`, once its ghosts hold the stencil of `scheme`: E0148 otherwise, so that no owned cell
+// computes on a truncated stencil.
+const Mesh& holding(const Mesh& mesh, const Scheme& scheme, std::optional<GhostStencil> ghosts) {
+  if (!ghosts && mesh.n_cells() == mesh.n_owned_cells()) return mesh;
+  const auto needed = ghost_stencil(scheme);
+  if (!needed || *needed > ghosts.value_or(GhostStencil::face2)) {
+    throw Error(ErrorCode::partition_stencil_not_local,
+                needed ? "the gradient stencil reaches beyond the partition's ghost stencil"
+                       : "the quadratic gradient's two vertex rings are not local on a partition");
+  }
+  return mesh;
+}
+
+}  // namespace
 
 namespace ek = autan::kernels::euler;
 
@@ -65,6 +89,7 @@ struct Euler<P>::Impl {
   // against their global orientation; face loops then gather (no scatter order).
   kernels::GlobalOrder order;
   std::vector<std::uint8_t> reversed;
+  std::vector<std::int64_t> cell_key, face_key;  // global ids, under keys only
   bool gather = false;
   bool all_planar = false;
   bool planar = false;
@@ -130,6 +155,8 @@ struct Euler<P>::Impl {
     if (keys != nullptr) {
       order = kernels::global_order(mesh, *keys);
       reversed.assign(keys->reversed.begin(), keys->reversed.end());
+      cell_key.assign(keys->cell.begin(), keys->cell.end());
+      face_key.assign(keys->face.begin(), keys->face.end());
       topo.cell_faces = order.cell_faces.data();
       topo.incidence_twin = order.twin.data();
       topo.face_reversed = reversed.data();
@@ -220,9 +247,10 @@ struct Euler<P>::Impl {
   }
 
   // The linear gradients' tangent through the boundary values of the cells whose fit keeps every
-  // boundary face: sum over those entries of dprim_b (x) w, dprim_b = d(prim_b)/d(prim) dW of the
-  // face's owner. A quadratic band cell (band = 1) reads no such value.
-  void kept_boundaries_tangent(ek::Data<P> data) {
+  // boundary face, added to `out`: sum over those entries of dprim_b (x) w, dprim_b =
+  // d(prim_b)/d(prim) dW of the face's owner. Unless `linear`, a quadratic band cell (band = 1)
+  // reads no such value.
+  void kept_boundaries_tangent(ek::Data<P> data, Gr* out, bool linear) {
     const auto nc = static_cast<std::size_t>(topo.n_cells);
     const auto nf = static_cast<std::size_t>(topo.n_faces);
     const auto ni = static_cast<std::size_t>(topo.n_interior_faces);
@@ -272,7 +300,7 @@ struct Euler<P>::Impl {
     }
     const bool quadratic = scheme.gradient_fit == GradientFit::quadratic;
     for (const std::size_t c : kept_cells) {
-      if (quadratic && band[c] > 0.5) continue;
+      if (!linear && quadratic && band[c] > 0.5) continue;
       for (auto k = static_cast<std::size_t>(stencil.offsets[c]);
            k < static_cast<std::size_t>(stencil.offsets[c + 1]); ++k) {
         const index_t e = stencil.entries[k];
@@ -280,7 +308,7 @@ struct Euler<P>::Impl {
         const auto b = static_cast<std::size_t>(-e - 1) - ni;
         for (std::size_t i = 0; i < 5; ++i) {
           for (std::size_t u = 0; u < 3; ++u) {
-            auto& g = grad_tan[(3 * i + u) * nc + c];
+            auto& g = out[(3 * i + u) * nc + c];
             g = static_cast<Gr>(static_cast<double>(g) +
                                 static_cast<double>(stencil_lsq_weight[u * nst + k]) *
                                     prim_b_tan[i * (nf - ni) + b]);
@@ -288,6 +316,21 @@ struct Euler<P>::Impl {
         }
       }
     }
+  }
+
+  // The tangents' arrays, allocated together on the first tangent call: the residual does not
+  // use them.
+  void tangent_scratch() {
+    const auto nc = static_cast<std::size_t>(topo.n_cells);
+    if (!prim_tan.empty()) return;
+    prim_tan.assign(5 * nc, State(0));
+    zero_state.assign(5 * nc, State(0));
+    zero_grad.assign(15 * nc, Gr(0));
+    grad_tan.assign(15 * nc, Gr(0));
+    grad_band_tan.assign(15 * nc, Gr(0));
+    wmin_tan.assign(5 * nc, State(0));
+    wmax_tan.assign(5 * nc, State(0));
+    band_tan.assign(nc, typename decltype(band_tan)::value_type(0));
   }
 
   // Least-squares weights over the stencil, 1/|d|^2 weighting as kernels::cell_stencil, but
@@ -434,8 +477,20 @@ struct Euler<P>::Impl {
       }
       std::sort(points.begin(), points.end());
       points.erase(std::unique(points.begin(), points.end()), points.end());
+      const auto boundary_points = static_cast<std::ptrdiff_t>(points.size());
       for (const auto e : cells) {
         if (e != static_cast<index_t>(c)) points.push_back(e);
+      }
+      if (!cell_key.empty()) {
+        // Under global keys the boundary faces, then the cells, in ascending global id: the fit
+        // sums its entries in that order, the same in any cell order (runtime.md, Ranks).
+        std::sort(points.begin(), points.begin() + boundary_points, [&](index_t a, index_t b) {
+          return face_key[static_cast<std::size_t>(-a - 1)] <
+                 face_key[static_cast<std::size_t>(-b - 1)];
+        });
+        std::sort(points.begin() + boundary_points, points.end(), [&](index_t a, index_t b) {
+          return cell_key[static_cast<std::size_t>(a)] < cell_key[static_cast<std::size_t>(b)];
+        });
       }
       const auto xc = centre(static_cast<index_t>(c));
       auto offset = [&](index_t e) {
@@ -673,8 +728,8 @@ struct Euler<P>::Impl {
 
 template <class P>
 Euler<P>::Euler(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme,
-                const kernels::GlobalKeys* keys)
-    : impl_(std::make_unique<Impl>(mesh, geometry, gas, scheme, keys)) {}
+                const kernels::GlobalKeys* keys, std::optional<GhostStencil> ghosts)
+    : impl_(std::make_unique<Impl>(holding(mesh, scheme, ghosts), geometry, gas, scheme, keys)) {}
 
 template <class P>
 Euler<P>::~Euler() = default;
@@ -743,6 +798,41 @@ void Euler<P>::linear_gradient(std::span<typename P::grad> out) {
   d.wmin = lo.data();
   d.wmax = hi.data();
   ek::cpu::gradients(d);
+}
+
+template <class P>
+void Euler<P>::linear_gradient_tangent(std::span<const State> s, std::span<const State> du,
+                                       std::span<typename P::grad> out) {
+  auto& m = *impl_;
+  if (out.size() != m.grad.size()) throw std::invalid_argument("gradient array size");
+  m.tangent_scratch();
+  auto d = m.d;
+  d.u = const_cast<State*>(s.data());
+  d.u_tan = const_cast<State*>(du.data());
+  d.prim_tan = m.prim_tan.data();
+  d.source_tan = m.zero_state.data();
+  ek::cpu::primitives_tangent(d);
+  m.fill_ghosts(m.prim_tan, 5);
+  d.grad_tan = out.data();
+  d.wmin_tan = m.wmin_tan.data();
+  d.wmax_tan = m.wmax_tan.data();
+  ek::cpu::gradients_tangent(d);
+  if (m.kept_boundaries > 0) m.kept_boundaries_tangent(d, out.data(), true);
+}
+
+template <class P>
+void Euler<P>::primitive_tangent(std::span<const State> s, std::span<const State> du,
+                                 std::span<State> out) {
+  auto& m = *impl_;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  if (out.size() != 5 * nc) throw std::invalid_argument("primitive array size");
+  m.tangent_scratch();
+  auto d = m.d;
+  d.u = const_cast<State*>(s.data());
+  d.u_tan = const_cast<State*>(du.data());
+  d.prim_tan = out.data();
+  d.source_tan = m.zero_state.data();
+  ek::cpu::primitives_tangent(d);
 }
 
 template <class P>
@@ -904,13 +994,7 @@ template <class P>
 void Euler<P>::first_order_tangent(std::span<const State> u, std::span<const State> du,
                                    std::span<Res> dres) {
   auto& m = *impl_;
-  // The tangent's own arrays, allocated on its first call: the residual does not use them.
-  if (m.prim_tan.empty()) {
-    const auto nc = static_cast<std::size_t>(m.topo.n_cells);
-    m.prim_tan.assign(5 * nc, State(0));
-    m.zero_state.assign(5 * nc, State(0));
-    m.zero_grad.assign(15 * nc, typename P::grad(0));
-  }
+  m.tangent_scratch();
   auto d = m.d;
   d.u = const_cast<State*>(u.data());
   d.grad = m.zero_grad.data();
@@ -936,17 +1020,7 @@ void Euler<P>::gradient_tangent(std::span<const State> s, std::span<const State>
                                 std::span<Res> dres, Faces faces) {
   auto& m = *impl_;
   if (!m.scheme.second_order) return;
-  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
-  if (m.grad_tan.empty()) {
-    m.prim_tan.assign(5 * nc, State(0));
-    m.zero_state.assign(5 * nc, State(0));
-    m.zero_grad.assign(15 * nc, typename P::grad(0));
-    m.grad_tan.assign(15 * nc, typename P::grad(0));
-    m.grad_band_tan.assign(15 * nc, typename P::grad(0));
-    m.wmin_tan.assign(5 * nc, State(0));
-    m.wmax_tan.assign(5 * nc, State(0));
-    m.band_tan.assign(nc, typename decltype(m.band_tan)::value_type(0));
-  }
+  m.tangent_scratch();
   // dW = dW/dU du, then the gradients' tangent: a weighted sum of dW over each stencil, whose
   // boundary values the generated loops hold (boundary_states is frozen); the cells whose linear
   // fit keeps every boundary face add those values' tangent.
@@ -970,7 +1044,7 @@ void Euler<P>::gradient_tangent(std::span<const State> s, std::span<const State>
   } else {
     ek::cpu::gradients_tangent(d);
   }
-  if (m.kept_boundaries > 0) m.kept_boundaries_tangent(d);
+  if (m.kept_boundaries > 0) m.kept_boundaries_tangent(d, m.grad_tan.data(), false);
   m.fill_ghosts(m.grad_tan, 15);
   // The fluxes with only the gradients moving: dW and the limiter held.
   d.prim_tan = m.zero_state.data();

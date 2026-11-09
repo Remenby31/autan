@@ -53,6 +53,7 @@ def one_part(document: dict[str, Any]) -> dict[str, Any]:
     return {
         "ranks": 1,
         "groups": "none",
+        "ghost_stencil": "face2",
         "cells_by_rank": [counts["cells"]],
         "ghosts_by_rank": [ghosts],
         "faces_by_rank": [counts["faces"]],
@@ -85,6 +86,7 @@ def prepared(document: dict[str, Any], *, scale: float = 1.0, ranks: int = 1) ->
         document["partition"] = {
             "ranks": ranks,
             "groups": "none",
+            "ghost_stencil": "face2",
             "cells_by_rank": split(counts["cells"]),
             "ghosts_by_rank": [0] * ranks,
             "faces_by_rank": split(counts["faces"]),

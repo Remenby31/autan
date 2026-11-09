@@ -275,13 +275,11 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
 
     cpu = memory(device_kind="cpu")
     assert names(cpu) >= {"mesh", "physics", "jacobian", "multigrid", "solution output"}
-    # The inviscid Krylov operator's derivative of the boundary values the fit keeps: neither a
-    # viscous run's (above) nor a Gauss-Seidel run's.
-    inviscid = CRM_HL.replace("autan.SA()", "autan.Inviscid()").replace(".wall()", ".slip()")
-    assert "boundary state tangent" in names(memory(inviscid, device_kind="cpu"))
-    assert "boundary state tangent" not in names(cpu)
-    gs_inviscid = inviscid + "case.time = autan.Steady(linear_solver='gauss-seidel')\n"
-    assert "boundary state tangent" not in names(memory(gs_inviscid, device_kind="cpu"))
+    # The steady operator's gradient term and its derivative of the boundary values the fit keeps,
+    # on every steady CPU path, viscous included.
+    assert {"gradient tangent", "boundary state tangent"} <= names(cpu)
+    gauss_seidel = CRM_HL + "case.time = autan.Steady(linear_solver='gauss-seidel')\n"
+    assert "boundary state tangent" in names(memory(gauss_seidel, device_kind="cpu"))
     assert cpu.bytes_device == 0
     # The peak: every persistent component and the largest transient one.
     persistent = sum(c.bytes_host for c in cpu.components if not c.transient)
@@ -313,6 +311,13 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     lines = autan.load(write_case(CRM_HL + "case.time = autan.Steady(linear_solver='lines')\n"))
     assert "E0212" in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cpu"))
     assert "E0212" not in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cuda"))
+    # Nor is a partition holding the vertex stencil's ghosts that of a face2 run.
+    vertex = prepared(mesh_document("crm-hl"), ranks=4)
+    vertex["partition"]["ghost_stencil"] = "vertex"
+    on_vertex = autan.MeshInfo.from_document(vertex, autan.Location())
+    assert "E0212" in diagnostic_codes(
+        autan.load(write_case(CRM_HL)).plan(on_vertex, gpus=4, device_kind="cuda")
+    )
     by_name = {c.name: c for c in four.components}
     assert by_name["mesh"] == {c.name: c for c in cuda.components}["mesh"]
     assert four.bytes_device < cuda.bytes_device / 3
@@ -471,6 +476,7 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     split["partition"] = {
         "ranks": 2,
         "groups": "none",
+        "ghost_stencil": "face2",
         "cells_by_rank": [7, 3],
         "ghosts_by_rank": [3, 2],
         "faces_by_rank": [30, 18],

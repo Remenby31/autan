@@ -311,6 +311,11 @@ def partition_groups(spec: CaseSpec, device_kind: DeviceKind) -> str:
     return "lines" if lines and device_kind == "cpu" else "none"
 
 
+# The ghost stencil a run's partition holds: the one its physics declares, face2 for every scheme
+# a case selects (docs/contracts/mesh-info.md).
+PARTITION_GHOST_STENCIL = "face2"
+
+
 def _check_prepared(
     case: Case,
     spec: CaseSpec,
@@ -329,19 +334,31 @@ def _check_prepared(
             f"the case's mesh_unit is {scale:g} m"
         )
     partition = mesh.partition
-    if gpus == 1 and extracts(spec, mesh, 1) and (partition is None or partition.ranks != 1):
-        problems.append(
-            'a run on one rank with periodic pairs or reproducibility "ranks" needs the '
-            "MeshInfo's one-part partition"
-        )
+    ghost_stencil = PARTITION_GHOST_STENCIL
+    if gpus == 1 and extracts(spec, mesh, 1):
+        if partition is None or partition.ranks != 1:
+            problems.append(
+                'a run on one rank with periodic pairs or reproducibility "ranks" needs the '
+                "MeshInfo's one-part partition"
+            )
+        elif partition.ghost_stencil != ghost_stencil:
+            problems.append(
+                f"the one-part partition holds {partition.ghost_stencil!r} ghosts, "
+                f"the run's physics reads {ghost_stencil!r}"
+            )
     if gpus > 1:
         groups = partition_groups(spec, device_kind)
         if partition is None:
             problems.append(f"a run on {gpus} ranks needs the MeshInfo's partition for {gpus}")
-        elif (partition.ranks, partition.groups) != (gpus, groups):
+        elif (partition.ranks, partition.groups, partition.ghost_stencil) != (
+            gpus,
+            groups,
+            ghost_stencil,
+        ):
             problems.append(
-                f"the partition is for {partition.ranks} ranks with groups {partition.groups!r}, "
-                f"the run is on {gpus} with groups {groups!r}"
+                f"the partition is for {partition.ranks} ranks with groups {partition.groups!r} "
+                f"and {partition.ghost_stencil!r} ghosts, the run is on {gpus} with groups "
+                f"{groups!r} and {ghost_stencil!r} ghosts"
             )
     found.extend(diagnostic("E0212", problem, location=case.locate("mesh")) for problem in problems)
 

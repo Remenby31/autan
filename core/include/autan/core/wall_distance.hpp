@@ -7,6 +7,7 @@
 
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
+#include "autan/core/wall_distance_query.hpp"
 
 namespace autan {
 
@@ -31,14 +32,15 @@ class WallSurface {
 
   [[nodiscard]] std::size_t triangles() const noexcept { return a_.size(); }
 
+  /// Its arrays, for the query of wall_distance_query.hpp (and its device
+  /// copy, DeviceWallSurface).
+  [[nodiscard]] wall::View view() const noexcept;
+  [[nodiscard]] std::size_t n_nodes() const noexcept { return nodes_.size(); }
+  [[nodiscard]] std::size_t n_directions() const noexcept { return directions_.size(); }
+
  private:
-  struct Node {
-    std::array<double, 3> lo, hi;
-    std::int64_t first;  ///< leaf: first triangle; inner: left child (right = first + 1)
-    std::int64_t count;  ///< leaf: triangle count; inner: 0
-  };
+  using Node = wall::Node;
   void build(std::vector<std::int64_t>& order);
-  [[nodiscard]] double nearest(const std::array<double, 3>& point, double best) const;
 
   std::vector<std::array<double, 3>> a_, b_, c_;
   std::vector<Node> nodes_;

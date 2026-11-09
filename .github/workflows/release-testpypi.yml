@@ -100,9 +100,13 @@ jobs:
       - name: Install with install.sh and check the version installed
         env:
           VERSION: ${{ needs.version.outputs.version }}
+          AUTAN_GITHUB_TOKEN: ${{ github.token }}
+        # The token goes through stdin, not env's arguments, to stay out of the process list.
         run: |
           home=$(mktemp -d)
-          env -i HOME="$home" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-            AUTAN_VERSION="$VERSION" AUTAN_FIND_LINKS="$PWD/testpypi" sh install.sh
+          printf '%s\n' "$AUTAN_GITHUB_TOKEN" |
+            env -i HOME="$home" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+              AUTAN_VERSION="$VERSION" AUTAN_FIND_LINKS="$PWD/testpypi" sh -c \
+              'IFS= read -r AUTAN_GITHUB_TOKEN; export AUTAN_GITHUB_TOKEN; exec sh install.sh'
           "$home/.local/bin/autan" version --json | tee version.json
           grep -q "\"autan\": \"$VERSION\"" version.json

@@ -19,6 +19,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -135,9 +136,9 @@ Json continue_from(const fs::path& previous, const std::string& mode = "continue
   picosha2::hash256_hex_string(read(previous / "solution.cgns"), hash);
   Json reference = nullptr;
   Json woken = nullptr;
-  if (info["time"].is_null() && mode == "continue") {
-    // case-schema.md#time: the equations below 1e-12 of the largest at
-    // iteration 1 that went above that floor.
+  if (info["time"].is_null()) {
+    // case-schema.md#time: a steady continue or warm start takes the reference;
+    // continue also the equations below 1e-12 of its largest that went above that floor.
     const auto lines = history(previous);
     reference = lines[0]["residuals"];
     double largest = 0.0;
@@ -150,7 +151,7 @@ Json continue_from(const fs::path& previous, const std::string& mode = "continue
       if (f.get<double>() < 1e-12 * largest && left) names.push_back(name);
     }
     std::ranges::sort(names);
-    woken = Json(names);
+    woken = mode == "warm" ? Json::array() : Json(names);
   }
   return Json{{"run", previous.string()},         {"run_id", info["run_id"]},
               {"identity", info["identity"]},     {"mode", mode},
@@ -183,6 +184,64 @@ std::vector<double> field(const fs::path& run, const char* name,
   cg_close(fn);
   REQUIRE(!values.empty());
   return values;
+}
+
+// Every data array a run computes in its solution.cgns, keyed "node/name": the fields of each
+// FlowSolution_t (FlowSolution, RestartState) and the arrays of the WallSolution subregion
+// (results.md, solution.cgns).
+std::map<std::string, std::vector<double>> data_arrays(const fs::path& run) {
+  std::map<std::string, std::vector<double>> out;
+  int fn = 0;
+  REQUIRE(cg_open((run / "solution.cgns").string().c_str(), CG_MODE_READ, &fn) == CG_OK);
+  char zone_name[33];
+  cgsize_t size[3];
+  REQUIRE(cg_zone_read(fn, 1, 1, zone_name, size) == CG_OK);
+  int solutions = 0;
+  REQUIRE(cg_nsols(fn, 1, 1, &solutions) == CG_OK);
+  for (int s = 1; s <= solutions; ++s) {
+    char sol_name[33];
+    CGNS_ENUMT(GridLocation_t) location{};
+    REQUIRE(cg_sol_info(fn, 1, 1, s, sol_name, &location) == CG_OK);
+    int fields = 0;
+    REQUIRE(cg_nfields(fn, 1, 1, s, &fields) == CG_OK);
+    for (int f = 1; f <= fields; ++f) {
+      CGNS_ENUMT(DataType_t) type{};
+      char name[33];
+      REQUIRE(cg_field_info(fn, 1, 1, s, f, &type, name) == CG_OK);
+      std::vector<double> values(static_cast<std::size_t>(size[1]));
+      const cgsize_t first = 1;
+      REQUIRE(cg_field_read(fn, 1, 1, s, name, CGNS_ENUMV(RealDouble), &first, &size[1],
+                            values.data()) == CG_OK);
+      out[std::string(sol_name) + "/" + name] = std::move(values);
+    }
+  }
+  int regions = 0;
+  REQUIRE(cg_nsubregs(fn, 1, 1, &regions) == CG_OK);
+  for (int r = 1; r <= regions; ++r) {
+    char name[33];
+    int dimension = 0, bc_name_length = 0, gc_name_length = 0;
+    CGNS_ENUMT(GridLocation_t) location{};
+    CGNS_ENUMT(PointSetType_t) set{};
+    cgsize_t points = 0;
+    REQUIRE(cg_subreg_info(fn, 1, 1, r, name, &dimension, &location, &set, &points, &bc_name_length,
+                           &gc_name_length) == CG_OK);
+    if (std::string(name) != "WallSolution") continue;
+    REQUIRE(cg_goto(fn, 1, "Zone_t", 1, "ZoneSubRegion_t", r, "end") == CG_OK);
+    int arrays = 0;
+    REQUIRE(cg_narrays(&arrays) == CG_OK);
+    for (int a = 1; a <= arrays; ++a) {
+      char array_name[33];
+      CGNS_ENUMT(DataType_t) type{};
+      int dims = 0;
+      cgsize_t extent[12];
+      REQUIRE(cg_array_info(a, array_name, &type, &dims, extent) == CG_OK);
+      std::vector<double> values(static_cast<std::size_t>(extent[0]));
+      REQUIRE(cg_array_read_as(a, CGNS_ENUMV(RealDouble), values.data()) == CG_OK);
+      out[std::string("WallSolution/") + array_name] = std::move(values);
+    }
+  }
+  cg_close(fn);
+  return out;
 }
 
 // The case of hybrid.solver-input.json made inviscid, with the freestream along x so that it is
@@ -437,6 +496,38 @@ TEST_CASE("a continued steady run ends its first-order start where the uninterru
     INFO("iteration " << i + 1);
     CHECK(chain[i]["residuals"] == expected[i]["residuals"]);
   }
+}
+
+TEST_CASE("the history marks provisional exactly the steps of the first-order start", "[euler]") {
+  // results.md#history: a steady line carries `provisional`, true for the first-order start's
+  // steps (euler.md#time-stepping). A uniform flow's start ends on its stall, before the cap, and
+  // the stalling step is not counted by FirstOrderStart: n < 201 marked lines, a prefix, and
+  // n - 1 counted steps in the restart state, second order on.
+  const auto out = run(input("hybrid.solver-input.json", [](Json& d) {
+    inviscid_along_x(d, "fp64");
+    d["time"]["max_iterations"] = 250;
+  }));
+  INFO(out.err);
+  REQUIRE(out.status == ExitStatus::finished);
+  const auto lines = history(out.run);
+  std::size_t marked = 0;
+  while (marked < lines.size() && lines[marked]["provisional"] == true) ++marked;
+  for (std::size_t i = marked; i < lines.size(); ++i) CHECK(lines[i]["provisional"] == false);
+  REQUIRE(marked >= 1);
+  REQUIRE(marked < lines.size());
+  CHECK(field(out.run, "SolverSecondOrder", "RestartState").front() == 1.0);
+  const double counted = field(out.run, "SolverFirstOrderSteps", "RestartState").front();
+  CHECK(marked < 201);
+  CHECK(counted == static_cast<double>(marked - 1));
+  // Unsteady lines leave it out.
+  const auto steps = run(input("hybrid.solver-input.json", [](Json& d) {
+    inviscid_along_x(d, "fp64");
+    d["time"] = {{"kind", "unsteady"},      {"steps", 3},
+                 {"dt", nullptr},           {"cfl", 0.8},
+                 {"average_from", nullptr}, {"checkpoint", {{"seconds", 1800.0}}}};
+  }));
+  REQUIRE(steps.status == ExitStatus::finished);
+  for (const auto& line : history(steps.run)) CHECK_FALSE(line.contains("provisional"));
 }
 
 TEST_CASE("checkpoints change no Euler result", "[euler]") {
@@ -816,9 +907,9 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
 
 TEST_CASE("a Navier-Stokes case outside the physics' scope is refused before any directory exists",
           "[navier-stokes]") {
-  // The viscous terms fill no ghosts of their own, steady or not: E0706 at `periodic`. Their face
-  // loops and boundary fit follow the local order, so reproducibility "ranks", which promises the
-  // same bits in every cell order, is refused too: E1109 (#587), laminar and SA alike.
+  // The viscous terms fill no ghosts of their own, steady or not: E0706 at `periodic`. Under
+  // reproducibility "ranks" the steady multigrid still sums in local cell order: E1109, laminar
+  // and SA alike.
   const auto [model, ranks] =
       GENERATE(std::pair{"laminar", false}, std::pair{"laminar", true}, std::pair{"sa", true});
   INFO(model << (ranks ? " under reproducibility ranks" : " through periodic pairs"));
@@ -832,7 +923,7 @@ TEST_CASE("a Navier-Stokes case outside the physics' scope is refused before any
     // The hybrid case is SA; laminar_along_x makes it laminar.
     if (std::string(model) == "laminar") laminar_along_x(d, "fp64");
     d["reproducibility"] = "ranks";
-    d["time"]["linear_solver"] = "gauss-seidel";
+    d["time"]["linear_solver"] = "multigrid";
   });
   const auto out = run(doc);
   INFO(out.err);
@@ -841,6 +932,72 @@ TEST_CASE("a Navier-Stokes case outside the physics' scope is refused before any
   const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
   CHECK(diagnostic["code"] == (ranks ? "E1109" : "E0706"));
   CHECK(diagnostic["location"]["path"] == (ranks ? "reproducibility" : "periodic"));
+}
+
+TEST_CASE(
+    "a Navier-Stokes case under reproducibility ranks gives the same bits in every cell order",
+    "[navier-stokes]") {
+  // case-schema.md, reproducibility: "ranks" repeats the bits in any cell order. The hybrid case,
+  // SA and laminar, keeps its no-slip wall so that the viscous boundary fit is built. Steady runs
+  // go past the second-order switch, so that the Jacobian, SA's assembly and its sweeps are
+  // exercised; laminar flow also runs unsteady. The history and every data array of solution.cgns
+  // (fields, restart state, wall values), computed in RCM order and in input order, are the same
+  // bits (#587).
+  const auto [model, linear, steady] =
+      GENERATE(std::tuple{"laminar", "gauss-seidel", true}, std::tuple{"laminar", "lines", true},
+               std::tuple{"sa", "gauss-seidel", true}, std::tuple{"sa", "lines", true},
+               std::tuple{"laminar", "", false});
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  INFO(model << " " << linear << (steady ? " steady " : " unsteady ") << precision);
+  // input() writes the mesh information of the cell order in force: set it first.
+  auto in_order = [&](const char* order) {
+    REQUIRE(setenv("AUTAN_CELL_ORDER", order, 1) == 0);
+    const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+      d["precision"] = precision;
+      if (std::string(model) == "laminar") {
+        d["physics"]["turbulence"]["model"] = "laminar";
+        d["physics"]["turbulence"]["nu_tilde_ratio"] = nullptr;
+        d["freestream"]["nu_tilde"] = nullptr;
+        for (auto& z : d["cell_zones"]) z["initial"]["nu_tilde"] = nullptr;
+      }
+      d["reproducibility"] = "ranks";
+      if (steady) {
+        d["time"]["linear_solver"] = linear;
+        d["time"]["max_iterations"] = 400;
+      } else {
+        d["time"] = {{"kind", "unsteady"}, {"steps", 20},
+                     {"dt", nullptr},      {"cfl", 0.8},
+                     {"average_from", 10}, {"checkpoint", {{"seconds", 1800.0}}}};
+      }
+    });
+    const auto out = run(doc);
+    unsetenv("AUTAN_CELL_ORDER");
+    INFO(out.err);
+    REQUIRE(out.status == ExitStatus::finished);
+    const Json info = Json::parse(read(out.run / "run.json"));
+    REQUIRE((info["status"] == "completed" || info["status"] == "converged"));
+    if (steady) REQUIRE(field(out.run, "SolverSecondOrder", "RestartState").front() == 1.0);
+    return out.run;
+  };
+  const auto rcm = in_order("rcm"), plain = in_order("input");
+  CHECK(read(rcm / "history.jsonl") == read(plain / "history.jsonl"));
+  auto bits = [](const std::vector<double>& v) {
+    std::vector<std::uint64_t> out(v.size());
+    std::ranges::transform(v, out.begin(),
+                           [](double x) { return std::bit_cast<std::uint64_t>(x); });
+    return out;
+  };
+  const auto a = data_arrays(rcm), b = data_arrays(plain);
+  REQUIRE(a.contains("FlowSolution/Density"));
+  REQUIRE(a.contains("WallSolution/WallShearStressX"));
+  REQUIRE(a.contains("RestartState/SolverPenalty") == steady);
+  REQUIRE(a.contains("FlowSolution/TurbulentSANuTilde") == (std::string(model) == "sa"));
+  CHECK(a.size() == b.size());
+  for (const auto& [name, values] : a) {
+    INFO(name);
+    REQUIRE(b.contains(name));
+    CHECK(bits(values) == bits(b.at(name)));
+  }
 }
 
 TEST_CASE("a case with an initial-state file starts from the file's states", "[euler]") {
@@ -1868,9 +2025,9 @@ TEST_CASE("a continued Spalart-Allmaras run repeats the uninterrupted one bit fo
     REQUIRE(r.status == ExitStatus::finished);
     return r.run;
   };
-  // A few steps past the switch to second order (step 35 in fp64, 155 in fp32+acc64); the
+  // A few steps past the switch to second order (step 35 in fp64, 192 in fp32+acc64); the
   // checks below fail if it moves past the budget.
-  const int budget = std::string(precision) == "fp64" ? 40 : 160;
+  const int budget = std::string(precision) == "fp64" ? 40 : 200;
   const auto whole = finished(doc(budget));
   const auto steps = static_cast<int>(history(whole).size());
   REQUIRE(field(whole, "SolverSecondOrder", "RestartState").front() == 1.0);

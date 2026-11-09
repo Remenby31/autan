@@ -356,8 +356,9 @@ struct Prepared {
   std::map<std::string, index_t> face_zone;  // boundary zone name -> Mesh::face_zones() index
   std::vector<std::vector<index_t>> monitor_zones;
   const PhysicsFactory* factory = nullptr;
-  std::string cell_order;                   // "rcm" (default) or "input", from AUTAN_CELL_ORDER
-  const PartitionGroups* groups = nullptr;  // the physics' groups; null or empty: none
+  std::string cell_order;                     // "rcm" (default) or "input", from AUTAN_CELL_ORDER
+  const PartitionGroups* groups = nullptr;    // the physics' groups; null or empty: none
+  GhostStencil ghosts = GhostStencil::face2;  // the stencil the physics declares
   std::vector<Diagnostic> memory_warnings = {};  // W0712, W0713: the memory check's warnings
   std::optional<StartState> start;               // input.start, read and checked
   Json start_averaging;                          // `continue`: the previous run's averaging
@@ -1502,6 +1503,21 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
                                   .data_json = data.dump()});
     }
   }
+  if (entry != nullptr && entry->ghosts) {
+    const std::optional<GhostStencil> ghosts = entry->ghosts(p.input);
+    // A part with ghosts: on several ranks or with periodic pairs. Under reproducibility "ranks" on
+    // one rank without pairs, the one part has none, and every stencil is the mesh's.
+    const bool partitioned = ranks > 1 || !p.input.periodic.empty();
+    if (!ghosts && partitioned) {
+      throw InputError(Diagnostic{
+          .code = "E0148",
+          .message = "the physics' stencil is wider than any partition's ghosts, and this run "
+                     "computes on a partition",
+          .path = "physics",
+          .data_json = nlohmann::json{{"path", "physics"}, {"ranks", ranks}}.dump()});
+    }
+    if (ghosts) p.ghosts = *ghosts;
+  }
   if (entry != nullptr && ranks > 1 && !entry->several_ranks) {
     throw InputError(Diagnostic{
         .code = "E0706",
@@ -1794,7 +1810,8 @@ class Run final : public Log {
                                  .group_offsets = group_offsets_,
                                  .group_cells = group_cells_,
                                  .cell_group_colours = group_colours_,
-                                 .n_group_colours = n_group_colours_};
+                                 .n_group_colours = n_group_colours_,
+                                 .ghost_stencil = local_ ? std::optional(p_.ghosts) : std::nullopt};
     std::string status = "running";
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
@@ -1866,7 +1883,7 @@ class Run final : public Log {
         ordered[c] = parts[at(ordered_->new_to_old[c])];
       parts = std::move(ordered);
     }
-    LocalPartition part = extract_partition(mesh, geometry_, parts, n, comm_.rank());
+    LocalPartition part = extract_partition(mesh, geometry_, parts, n, comm_.rank(), p_.ghosts);
     comm_.fill_ghosts(part);
     return part;
   }
@@ -2150,22 +2167,24 @@ class Run final : public Log {
     const bool steady = in.time.kind == "steady";
     const std::int64_t budget = steady ? in.time.max_iterations : in.time.steps;
     const auto equations = residual_names(in);
-    // Steady convergence is measured against iteration 1 of the original run
-    // (solver-input.md, `start`); a `continue` goes on counting and timing.
+    // Steady convergence is measured against the run's reference (case-schema.md#time): its own
+    // iteration 1, or the one `start` carries for a `continue` or a steady `warm` from a steady
+    // run; only a `continue` goes on counting and timing.
+    const bool inherited = in.start && in.start->residual_reference;
     std::vector<double> first;
+    if (inherited) first = *in.start->residual_reference;
     // The equations that left their floor, in the chain so far: a checkpoint carries them.
     std::set<std::string> woken;
-    if (continued() && in.start->woken)
+    if (inherited && in.start->woken)
       woken.insert(in.start->woken->begin(), in.start->woken->end());
     RoundOffExemption exempt(
-        equations, continued() && in.start->woken ? *in.start->woken : std::vector<std::string>{});
+        equations, inherited && in.start->woken ? *in.start->woken : std::vector<std::string>{});
     // One round-off plateau per equation, counted from this run's first step.
     std::vector<ResidualPlateau> plateaus(equations.size());
     double time = 0.0, average_start = 0.0;
     std::int64_t from = 1;
     if (continued()) {
       const Start& s = *in.start;
-      if (s.residual_reference) first = *s.residual_reference;
       if (s.time) time = *s.time;
       from = s.iterations + 1;
       if (!info_["averaging"].is_null()) average_start = info_["averaging"]["from_time"];
@@ -2227,6 +2246,7 @@ class Run final : public Log {
                   {"time", steady ? Json(nullptr) : Json(step_time)},
                   {"residuals", residuals},
                   {"monitors", Json::object()}};
+      if (steady) record["provisional"] = report.provisional;
       for (std::size_t m = 0; m < in.monitors.size(); ++m) {
         const auto& monitor = in.monitors[m];
         if (it % monitor.every != 0) continue;
@@ -2717,9 +2737,11 @@ class Run final : public Log {
 }  // namespace
 
 void PhysicsRegistry::add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope,
-                          bool several_ranks, PartitionGroups groups, RestartNames restart) {
-  entries_.emplace_back(std::move(key), Entry{std::move(factory), std::move(scope), several_ranks,
-                                              std::move(groups), std::move(restart)});
+                          bool several_ranks, PartitionGroups groups, RestartNames restart,
+                          GhostStencils ghosts) {
+  entries_.emplace_back(
+      std::move(key), Entry{std::move(factory), std::move(scope), several_ranks, std::move(groups),
+                            std::move(restart), std::move(ghosts)});
 }
 
 const PhysicsRegistry::Entry* PhysicsRegistry::find(const SolverInput& in) const {

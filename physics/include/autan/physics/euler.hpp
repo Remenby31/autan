@@ -4,10 +4,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
 #include "autan/core/geometry.hpp"
+#include "autan/core/ghost_stencil.hpp"
 #include "autan/core/mesh.hpp"
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
@@ -66,6 +68,11 @@ struct Scheme {
   std::array<double, 5> reference{1.0, 0.0, 0.0, 0.0, 2.5};
 };
 
+/// The ghost stencil a partition must hold for `scheme` to compute its owned cells as on the
+/// whole mesh: face2, or vertex for GradientStencil::vertex; none for the quadratic fit, whose two
+/// vertex rings no partition holds.
+std::optional<GhostStencil> ghost_stencil(const Scheme& scheme);
+
 /// Fills the ghost cells of a partitioned mesh from their owners: each pointer is one component
 /// of n_cells values, owned cells then ghosts (at most 16 per call). The runtime's GhostExchange
 /// behind it; a mesh without ghosts needs none.
@@ -90,9 +97,12 @@ class Euler {
   /// and stencil entries in global order and every face is evaluated in its global orientation,
   /// so that the residual and the Jacobian of each owned cell have the same bits on any number
   /// of ranks and in any cell order (solver-input.md, reproducibility "ranks"). The spans must
-  /// outlive the constructor only.
+  /// outlive the constructor only. On a partition, `ghosts` is the stencil its ghosts hold
+  /// (LocalPartition::ghosts), face2 when not given for a mesh with ghosts; none for a whole
+  /// mesh without ghosts. A scheme that needs more (ghost_stencil) is E0148, ghosts or not.
   Euler(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme,
-        const kernels::GlobalKeys* keys = nullptr);
+        const kernels::GlobalKeys* keys = nullptr,
+        std::optional<GhostStencil> ghosts = std::nullopt);
   ~Euler();
   Euler(const Euler&) = delete;
   Euler& operator=(const Euler&) = delete;
@@ -149,6 +159,13 @@ class Euler {
   /// `out` (15 x n_cells, the reconstruction's layout), the reconstruction's own under
   /// GradientFit::linear.
   void linear_gradient(std::span<typename P::grad> out);
+  /// After residual(s) or residual_and_jacobian(s): the tangent of linear_gradient's gradient,
+  /// d grad W/dU du, into `out` (its layout), the boundary values the fit keeps following their
+  /// owner cell as in gradient_tangent.
+  void linear_gradient_tangent(std::span<const State> s, std::span<const State> du,
+                               std::span<typename P::grad> out);
+  /// The primitives' tangent dW/dU du (5 x n_cells) at the state s.
+  void primitive_tangent(std::span<const State> s, std::span<const State> du, std::span<State> out);
   /// Sets the volume source s (5 x n_cells), per unit volume; zero by default.
   void set_source(std::span<const double> source);
 

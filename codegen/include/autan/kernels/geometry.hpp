@@ -86,8 +86,9 @@ enum class StencilKind : std::uint8_t { vertex, face2 };
 /// it (3 x size, structure of arrays, as PackedGeometry::lsq_weight). Entries of a cell are its
 /// stencil cells in increasing order, then its boundary faces in increasing order. Ghost cells get
 /// the stencil their known faces give, so every owned -> ghost entry has its twin (the adjoint's
-/// partial sums for the reverse halo exchange); LSQ weights are those of owned cells. A ghost
-/// layer as deep as the stencil is the partitioner's job.
+/// partial sums for the reverse halo exchange); LSQ weights are those of owned cells. On a
+/// partition, the stencil of an owned cell is complete when the partition holds its kind's ghosts
+/// (autan::GhostStencil).
 struct CellStencil {
   std::vector<offset_t> offsets;
   std::vector<index_t> entries;
@@ -98,7 +99,8 @@ struct CellStencil {
 };
 
 /// With `keys`, a cell's entries are its stencil cells by global cell id, then its boundary faces
-/// by global face id, and the LSQ weights are summed in that order.
+/// by global face id, each with its cell's translation, and the LSQ weights are summed in that
+/// order.
 CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& geometry, StencilKind kind,
                          const GlobalKeys* keys = nullptr);
 
