@@ -482,8 +482,14 @@ TEST_CASE("Every ghost receives its owner's row", "[halo][rows]") {
     const autan::CellRows ghosts =
         autan::forward_rows(s.local.halo, rows_of(m, n_owned, stride), MPI_COMM_WORLD);
     const auto n_ghosts = at(m.n_cells() - n_owned);
-    REQUIRE(ghosts.offsets.size() == n_ghosts + 1);
     CHECK(ghosts.stride == stride);
+    std::vector<autan::offset_t> want_offsets{0};
+    for (std::size_t g = 0; g < n_ghosts; ++g) {
+      want_offsets.push_back(want_offsets.back() + m.cell_global_id()[at(n_owned) + g] % 4);
+    }
+    REQUIRE(ghosts.offsets == want_offsets);
+    REQUIRE(ghosts.keys.size() == at(want_offsets.back()));
+    REQUIRE(ghosts.values.size() == at(want_offsets.back()) * at(stride));
     for (std::size_t g = 0; g < n_ghosts; ++g) {
       const autan::CellRows want = row_of(m.cell_global_id()[at(n_owned) + g], stride);
       const auto first = at(ghosts.offsets[g]), last = at(ghosts.offsets[g + 1]);
@@ -497,7 +503,8 @@ TEST_CASE("Every ghost receives its owner's row", "[halo][rows]") {
     }
   }
   // Every rank refuses together: a stride that differs on one rank (E0144), rows whose sizes do
-  // not match (E0140).
+  // not match (E0140). On one rank: halo offsets that leave their list (E0144), and 2048 slots
+  // of one entry at 2^20 values, 2^31 values in one message (E0140).
   if (world_size() > 1) {
     require_everywhere(autan::ErrorCode::halo_inconsistent, [&] {
       (void)autan::forward_rows(s.local.halo, rows_of(m, n_owned, world_rank() == 0 ? 2 : 3),
@@ -509,6 +516,19 @@ TEST_CASE("Every ghost receives its owner's row", "[halo][rows]") {
     if (world_rank() == 0) bad.values.push_back(0.0);
     (void)autan::forward_rows(s.local.halo, bad, MPI_COMM_WORLD);
   });
+  autan::HaloPattern self;
+  self.neighbours = {0};
+  self.send_cells = {0};
+  self.send_offsets = {1, 2};
+  self.recv_offsets = {0, 1};
+  require_everywhere(autan::ErrorCode::halo_inconsistent,
+                     [&] { (void)autan::forward_rows(self, row_of(1, 1), MPI_COMM_SELF); });
+  constexpr index_t slots = 2048;
+  self.send_cells.assign(slots, 0);
+  self.send_offsets = {0, slots};
+  self.recv_offsets = {0, slots};
+  require_everywhere(autan::ErrorCode::partition_invalid_request,
+                     [&] { (void)autan::forward_rows(self, row_of(1, 1 << 20), MPI_COMM_SELF); });
 }
 
 TEST_CASE("Graph levels exchange their nodes and edges through HaloExchange", "[halo][graph]") {

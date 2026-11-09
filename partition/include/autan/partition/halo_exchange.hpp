@@ -80,8 +80,9 @@ struct CellRows {
 /// rank as several periodic images, is sent once per ghost; an image of the rank's own cell gets
 /// that cell's row as is, its keys the caller's to rebase (Mesh::ghost_translation). Collective
 /// over `comm` (size pattern.n_ranks, rank pattern.rank), host memory, the same bits on every
-/// run. Throws E0144 if the ranks disagree on the halo or on the stride, and E0140 for rows that
-/// do not match their sizes or a message beyond the MPI count range, on every rank.
+/// run. Throws E0144 if the ranks disagree on the halo or on the stride, or the halo's offsets
+/// leave their lists, and E0140 for rows that do not match their sizes, a message beyond the MPI
+/// count range or rows that do not fit in memory, on every rank.
 CellRows forward_rows(const HaloPattern& pattern, const CellRows& owned, MPI_Comm comm);
 
 /// Fills the ghost cell volumes and centroids of a host Geometry from their
