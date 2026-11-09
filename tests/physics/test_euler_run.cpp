@@ -1745,13 +1745,21 @@ TEST_CASE("the steady CFL penalty halves after a rise of the relative residual a
     return drop;
   };
   auto relative = [&](std::size_t i) { return relative_by(i, true); };
-  // The restart state holds the last step's relative residual. Ringleb's momentum references
-  // differ, so the rule shows in it: each component against its own reference gives another value.
-  const double last = relative(h.size() - 1), own = relative_by(h.size() - 1, false);
-  INFO("last relative residual " << last << ", against own references " << own);
-  REQUIRE(std::abs(last - own) > 1e-6 * last);
-  CHECK(std::abs(field(whole.run, "SolverPreviousDrop", "RestartState").front() - last) <=
-        4 * std::numeric_limits<double>::epsilon() * last);
+  // A run's restart state holds its last step's relative residual. At a step where the momentum
+  // sets it and the two rules differ, the run stopped there shows the rule.
+  std::size_t shown = first + 1;
+  while (shown < h.size() &&
+         std::abs(relative(shown) - relative_by(shown, false)) <= 1e-6 * relative(shown)) {
+    ++shown;
+  }
+  REQUIRE(shown < h.size());
+  const double expected = relative(shown);
+  INFO("line " << shown + 1 << ": relative residual " << expected << ", against own references "
+               << relative_by(shown, false));
+  const auto at_shown = run(ringleb_slab(0.0, h[shown]["iteration"].get<std::int64_t>()));
+  REQUIRE(at_shown.status == ExitStatus::finished);
+  CHECK(std::abs(field(at_shown.run, "SolverPreviousDrop", "RestartState").front() - expected) <=
+        4 * std::numeric_limits<double>::epsilon() * expected);
   std::set<std::int64_t> warned;
   {
     std::ifstream log_in(whole.run / "log.jsonl");
