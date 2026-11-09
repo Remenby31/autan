@@ -41,6 +41,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -56,6 +57,7 @@ import numpy as np
 from oracle import kernels as kr
 from oracle import sequences as q
 from oracle import topology as t
+from oracle import vvexport as vx
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -65,6 +67,10 @@ SCHEMA = "autan.adr0003-instance/3"
 AUX_SCHEMA = "autan.adr0003-auxiliary/1"
 SPEC_KEYS = ("id", "kind", "n", "perturbation", "seed", "fields", "policies", "methods")
 KINDS = ("hex", "tet", "hybrid", "poly")
+# Stage 2 (ADR 0003): a vv family level read from its mesh file, its primal cells from its export
+# (vvexport.py), both named in the spec by file name and SHA-256 under the run's data directory.
+VV_SOURCE = "vv-export"
+VV_KINDS = ("tet", "poly", "agglomerated")
 POLICIES = ("fp64", "fp32+acc64", "fp32")
 METHODS = ("lsq", "gg")
 PREFLIGHT = ("manifest", "start", "library")  # stages before any check has run
@@ -116,8 +122,25 @@ def spec_issues(spec: Any) -> list[str]:
             return issues
         if not isinstance(spec["id"], str) or not spec["id"]:
             issues.append("invalid: the instance id is not a non-empty string")
-        if spec["kind"] not in KINDS:
+        vv = spec.get("source") == VV_SOURCE
+        if "source" in spec and not vv:
+            issues.append(f"invalid: unsupported source {spec['source']!r}")
+        if spec["kind"] not in (VV_KINDS if vv else KINDS):
             issues.append(f"invalid: unsupported kind {spec['kind']!r}")
+        if vv:
+            files = spec.get("files")
+            for role in ("mesh", "cells"):
+                f = files.get(role) if isinstance(files, dict) else None
+                if (
+                    not isinstance(f, dict)
+                    or not isinstance(f.get("name"), str)
+                    or not f["name"]
+                    or "/" in f["name"]
+                    or f["name"].startswith(".")
+                    or not isinstance(f.get("sha256"), str)
+                    or not SHA.fullmatch(f["sha256"])
+                ):
+                    issues.append(f"invalid: the {role} file is not named with its SHA-256")
         if not _count(spec["n"]) or spec["n"] <= 0:
             issues.append(f"invalid: N must be a positive integer, got {spec['n']!r}")
         if not _finite(spec["perturbation"]) or spec["perturbation"] < 0:
@@ -160,6 +183,7 @@ def run_instance(
     manifest_sha256: str,
     reuse_geometry: bool = True,
     checkpoint: Callable[[dict[str, Any]], None] = _ignore,
+    data_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Run the declared checks on one instance and return its record; never raises.
     `checkpoint(record)` is called after every step."""
@@ -183,9 +207,47 @@ def run_instance(
             return record
         record["stage"] = "check 1"
         kind, n, p, seed = spec["kind"], spec["n"], spec["perturbation"], spec["seed"]
-        m = s.mesh(meshes.build(kind, n, p, seed=seed))
-        read = t.read_mesh(m)
-        pts, cells, ag = meshes.cells(kind, n, p, seed=seed)
+        if spec.get("source") == VV_SOURCE:
+            if data_dir is None:
+                record["invalid"].append("invalid: a vv-export instance needs a data directory")
+                checkpoint(record)
+                return record
+            files = spec["files"]
+            # Each file read once: the bytes hashed are the bytes used. The mesh reader gets a
+            # private, read-only copy of the verified bytes, never the shared file.
+            data: dict[str, bytes] = {}
+            for role in ("mesh", "cells"):
+                path = data_dir / files[role]["name"]
+                data[role] = path.read_bytes() if path.is_file() else b""
+                if vx.sha256(data[role]) != files[role]["sha256"]:
+                    record["invalid"].append(f"invalid: the {role} file is not the declared one")
+            if record["invalid"]:
+                checkpoint(record)
+                return record
+            try:
+                pts, cells, ag = vx.load_bytes(data["cells"], files["mesh"]["sha256"])
+                vx.check_primal(pts, cells)
+            except vx.Invalid as e:
+                record["invalid"].append(f"invalid: export: {e}")
+                checkpoint(record)
+                return record
+            private = Path(tempfile.mkdtemp(prefix="oracle-vv-"))
+            try:
+                snapshot = private / files["mesh"]["name"]
+                snapshot.write_bytes(data["mesh"])
+                snapshot.chmod(0o400)
+                m = s.read(str(snapshot))
+            finally:
+                shutil.rmtree(private, ignore_errors=True)
+            read = t.read_mesh(m)
+            if read.points.shape != pts.shape or not np.array_equal(read.points, pts):
+                record["invalid"].append("invalid: the export's points are not the mesh's vertices")
+                checkpoint(record)
+                return record
+        else:
+            m = s.mesh(meshes.build(kind, n, p, seed=seed))
+            read = t.read_mesh(m)
+            pts, cells, ag = meshes.cells(kind, n, p, seed=seed)
         record["cells"] = m.n_cells
         record["check1"] = t.compare(t.derive(pts, cells, ag), read)
         checkpoint(record)
@@ -576,6 +638,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     run.add_argument("--instance", required=True)
     run.add_argument("--rebuild-geometry", action="store_true", help="equivalence check only")
+    run.add_argument("--data", help="directory of the files a vv-export instance names")
     aux.add_argument("pytest_args", nargs=argparse.REMAINDER, help="-- then the pytest arguments")
     args = ap.parse_args(argv)
     out = Path(args.out)
@@ -624,6 +687,7 @@ def main(argv: list[str] | None = None) -> int:
         record = run_instance(
             spec, args.library_sha256, manifest_sha256,
             reuse_geometry=not args.rebuild_geometry, checkpoint=lambda r: _replace(out, r),
+            data_dir=Path(args.data) if args.data else None,
         )  # fmt: skip
         record["passed"] = passed(record, spec)
     except Exception:  # noqa: BLE001  a manifest or selection error is an invalid record too
