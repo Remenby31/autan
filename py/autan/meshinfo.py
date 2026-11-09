@@ -172,6 +172,7 @@ class Lines(_Strict):
 
 
 class Multigrid(_Strict):
+    order: Literal["rcm", "input"]
     cells_by_level: Annotated[tuple[Positive, ...], Field(min_length=1)]
     edges_by_level: Annotated[tuple[Count, ...], Field(min_length=1)]
 

@@ -533,15 +533,21 @@ TEST_CASE("a verification case converges to its discrete solution", "[euler]") {
 
 TEST_CASE("the multigrid builds the levels autan-mesh-info publishes", "[euler]") {
   // mesh-info.md, quality.multigrid: the hierarchy a steady multigrid run builds on one rank, in
-  // the cell order it computes in, against the run's own log of it.
+  // the cell order it computes in, against the run's own log of it and the MeshInfo it was
+  // planned with. On a partition (here reproducibility "ranks") the run builds it on the mesh as
+  // read: autan-mesh-info --multigrid-order input, whatever order the run computes in.
   const char* order = GENERATE("rcm", "input");
-  CAPTURE(order);
+  const char* reproducibility = GENERATE("run", "ranks");
+  CAPTURE(order, reproducibility);
   REQUIRE(setenv("AUTAN_CELL_ORDER", order, 1) == 0);
-  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+  const bool partitioned = std::string(reproducibility) == "ranks";
+  Json doc = input("hybrid.solver-input.json", [&](Json& d) {
     inviscid_along_x(d, "fp64");
+    d["reproducibility"] = reproducibility;
     d["time"]["linear_solver"] = "multigrid";
     d["time"]["max_iterations"] = 1;
   });
+  if (partitioned) doc = autan_test::planned(doc, mesh_path, order, "input");
   const auto out = run(doc);
   unsetenv("AUTAN_CELL_ORDER");
   INFO(out.err);
@@ -554,8 +560,9 @@ TEST_CASE("the multigrid builds the levels autan-mesh-info publishes", "[euler]"
     if (event["source"] == "linear" && event["data"].contains("edges")) built = event["data"];
   }
   REQUIRE(built.is_object());
-  const Json& published = doc["mesh_info"]["quality"]["multigrid"];
   CHECK(doc["mesh_info"]["quality"]["lines"]["order"] == order);
+  const Json& published = doc["mesh_info"]["quality"]["multigrid"];
+  CHECK(published["order"] == (partitioned ? "input" : order));
   CHECK(built["nodes"] == published["cells_by_level"]);
   CHECK(built["edges"] == published["edges_by_level"]);
 }
@@ -806,13 +813,12 @@ TEST_CASE("a case runs the convective flux its physics names", "[euler]") {
 
 TEST_CASE("steady cases the steady solver cannot run are refused before any directory exists",
           "[euler]") {
-  // The multigrid agglomerates one mesh's cells and takes no image ghosts: E0706 at
-  // `time.linear_solver`. The multigrid sums in local cell order: reproducibility "ranks" is
-  // E1109. The coupled turbulence step is SA's and the matrix-free step laminar flow's
-  // (case-schema.md#time): E0426 and E0429 on inviscid flow. Neither is written for the
+  // The multigrid agglomerates the mesh as read and takes no image ghosts: E0706 at
+  // `time.linear_solver`. The coupled turbulence step is SA's and the matrix-free step laminar
+  // flow's (case-schema.md#time): E0426 and E0429 on inviscid flow. Neither is written for the
   // Navier-Stokes physics yet: E0426 and E0429 on SA and laminar flow as well.
   const std::string reason =
-      GENERATE("periodic", "ranks", "coupled", "matrix-free", "coupled sa", "matrix-free laminar");
+      GENERATE("periodic", "coupled", "matrix-free", "coupled sa", "matrix-free laminar");
   CAPTURE(reason);
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
     d["time"]["max_iterations"] = 2;
@@ -825,7 +831,6 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
       d["time"]["matrix_free"] = true;
     } else {
       inviscid_along_x(d, "fp64");
-      if (reason == "ranks") d["reproducibility"] = "ranks";
       if (reason == "coupled") d["time"]["coupled_turbulence"] = true;
       if (reason == "matrix-free") d["time"]["matrix_free"] = true;
     }
@@ -837,7 +842,6 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
   const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
   const std::map<std::string, std::pair<std::string, std::string>> expected = {
       {"periodic", {"E0706", "time.linear_solver"}},
-      {"ranks", {"E1109", "reproducibility"}},
       {"coupled", {"E0426", "time.coupled_turbulence"}},
       {"matrix-free", {"E0429", "time.matrix_free"}},
       {"coupled sa", {"E0426", "time.coupled_turbulence"}},
@@ -850,7 +854,8 @@ TEST_CASE("a Navier-Stokes case outside the physics' scope is refused before any
           "[navier-stokes]") {
   // The viscous terms fill no ghosts of their own, steady or not: E0706 at `periodic`. Their face
   // loops and boundary fit follow the local order, so reproducibility "ranks", which promises the
-  // same bits in every cell order, is refused too: E1109 (#587), laminar and SA alike.
+  // same bits in every cell order, is refused too: E1109 (#587), laminar and SA alike, with the
+  // multigrid that the Euler physics runs under "ranks".
   const auto [model, ranks] =
       GENERATE(std::pair{"laminar", false}, std::pair{"laminar", true}, std::pair{"sa", true});
   INFO(model << (ranks ? " under reproducibility ranks" : " through periodic pairs"));
@@ -864,7 +869,7 @@ TEST_CASE("a Navier-Stokes case outside the physics' scope is refused before any
     // The hybrid case is SA; laminar_along_x makes it laminar.
     if (std::string(model) == "laminar") laminar_along_x(d, "fp64");
     d["reproducibility"] = "ranks";
-    d["time"]["linear_solver"] = "gauss-seidel";
+    d["time"]["linear_solver"] = "multigrid";
   });
   const auto out = run(doc);
   INFO(out.err);
@@ -1286,10 +1291,22 @@ TEST_CASE("ranks that disagree on planar faces all run the full loops", "[euler]
   check_bit_for_bit(one.run, many);
 }
 
-TEST_CASE("a steady multigrid case on several ranks is refused before any directory exists",
-          "[euler][mpi]") {
-  // The multigrid agglomerates one mesh's cells: E0706 at `time.linear_solver`, exit 2.
-  const auto doc = input("hybrid.solver-input.json", [&](Json& d) { inviscid_along_x(d, "fp64"); });
+TEST_CASE(
+    "a steady multigrid case the partitioned multigrid cannot run is refused on several ranks",
+    "[euler][mpi]") {
+  // Before any directory exists, exit 2: periodic pairs, whose image ghosts the agglomeration
+  // does not take (E0706 at `time.linear_solver`), and Navier-Stokes, which runs on one rank
+  // (E0706 at `physics`).
+  const char* reason = GENERATE("periodic", "laminar");
+  CAPTURE(reason);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    if (std::string(reason) == "periodic") {
+      periodic_box(d, "fp64");
+    } else {
+      laminar_along_x(d, "fp64");
+    }
+    d["time"]["linear_solver"] = "multigrid";
+  });
   std::string err;
   CHECK(run_on_ranks(doc, 2, 2, &err).empty());
   INFO(err);
@@ -1303,7 +1320,8 @@ TEST_CASE("a steady multigrid case on several ranks is refused before any direct
     }
   }
   CHECK(diagnostic["code"] == "E0706");
-  CHECK(diagnostic["location"]["path"] == "time.linear_solver");
+  CHECK(diagnostic["location"]["path"] ==
+        (std::string(reason) == "periodic" ? "time.linear_solver" : "physics"));
 }
 
 TEST_CASE("a steady run whose state is not physical on some ranks stops every rank",
@@ -1332,29 +1350,30 @@ TEST_CASE("a steady run whose state is not physical on some ranks stops every ra
   CHECK((*d107)["data"]["zone"] == "lower");
 }
 
-TEST_CASE("a steady Gauss-Seidel or lines case on several ranks converges to the one-rank solution",
-          "[euler][mpi]") {
+TEST_CASE("a steady case on several ranks converges to the one-rank solution", "[euler][mpi]") {
   // Gauss-Seidel sweeps the runtime's colours by global id, and the step length, the worst cell
   // and the norms reduce over the ranks, so N ranks run the one-rank algorithm. "lines" sweeps
   // the multigrid's fine lines, kept whole by the partition, over the runtime's colouring of the
-  // lines. Under reproducibility "run" the face sums follow local order, so the bits differ and a
-  // fixed rank count repeats bit for bit. Converged in fp64, the fields agree within 1e-9 of their
-  // magnitude (the largest speed for velocity components). In fp32+acc64 the runs stop near the
-  // round-off floor, where the state drifts with the summation order (partition, cell order,
-  // processor), so the N-rank state is held to the stop rule instead (case-schema.md#time): one
-  // rank, started from it, reports for each equation a residual within the one-rank run's
-  // threshold, the larger of its iteration-1 residual times 10^-orders and the floor, plus the
-  // floor, which the contract places above the round-off of evaluating a residual, here of one
-  // state in another summation order. Under
-  // "ranks" every sum follows the global order: bit for bit. Two zones at different states on the
-  // hybrid mesh, farfield around.
+  // lines. The multigrid on a partition cycles over the hierarchy of the mesh as read, its lines
+  // kept whole, every sum in global order (#259 D2); on one rank under "run" it is the
+  // one-rank multigrid of the physics' cell order. Under reproducibility "run" the face sums follow
+  // local order, so the bits differ and a fixed rank count repeats bit for bit. Converged in fp64,
+  // the fields agree within 1e-9 of their magnitude (the largest speed for velocity components). In
+  // fp32+acc64 the runs stop near the round-off floor, where the state drifts with the summation
+  // order (partition, cell order, processor), so the N-rank state is held to the stop rule instead
+  // (case-schema.md#time): one rank, started from it, reports for each equation a residual within
+  // the one-rank run's threshold, the larger of its iteration-1 residual times 10^-orders and the
+  // floor, plus the floor, which the contract places above the round-off of evaluating a residual,
+  // here of one state in another summation order. Under "ranks" every sum follows the global order:
+  // bit for bit, and for the multigrid in either cell order too. Two zones at different states on
+  // the hybrid mesh, farfield around.
   const int ranks = GENERATE(2, 4);
-  const char* linear = GENERATE("gauss-seidel", "lines");
+  const char* linear = GENERATE("gauss-seidel", "lines", "multigrid");
   const char* reproducibility = GENERATE("run", "ranks");
   const char* precision = GENERATE("fp64", "fp32+acc64");
   const bool fp64 = std::string(precision) == "fp64";
   CAPTURE(ranks, linear, reproducibility, precision);
-  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+  const auto edit = [&](Json& d) {
     d["reproducibility"] = reproducibility;
     inviscid_along_x(d, precision);
     for (auto& b : d["boundaries"]) b["kind"] = "farfield";
@@ -1364,7 +1383,8 @@ TEST_CASE("a steady Gauss-Seidel or lines case on several ranks converges to the
     d["time"]["linear_solver"] = linear;
     d["time"]["max_iterations"] = 2000;
     d["time"]["residual_orders"] = fp64 ? 10.0 : 5.0;
-  });
+  };
+  const auto doc = input("hybrid.solver-input.json", edit);
   const auto one = run(doc);
   INFO(one.err);
   REQUIRE(one.status == ExitStatus::finished);
@@ -1374,7 +1394,8 @@ TEST_CASE("a steady Gauss-Seidel or lines case on several ranks converges to the
   CHECK(Json::parse(read(many / "run.json"))["status"] == "converged");
   {
     // Each rank owns the cells, and holds the ghosts, of autan-mesh-info --ranks N, with
-    // --groups lines when the case forms the lines (mesh-info.md, partition).
+    // --groups lines when the case forms the lines, as "lines" and the multigrid do (mesh-info.md,
+    // partition).
     Json partitioned;
     std::ifstream log_in(many / "log.jsonl");
     for (std::string line; std::getline(log_in, line);) {
@@ -1382,8 +1403,8 @@ TEST_CASE("a steady Gauss-Seidel or lines case on several ranks converges to the
       if (event["source"] == "mpi") partitioned = event["data"];
     }
     const autan::Mesh mesh = autan::io::read_mesh(mesh_path);
-    const auto groups =
-        std::string(linear) == "lines" ? autan::io::RankGroups::lines : autan::io::RankGroups::none;
+    const auto groups = std::string(linear) == "gauss-seidel" ? autan::io::RankGroups::none
+                                                              : autan::io::RankGroups::lines;
     const auto counts =
         autan::io::run_counts(mesh, 1.0, autan::io::CellOrder::rcm,
                               autan::io::RanksRequest{.ranks = ranks, .groups = groups});
@@ -1431,9 +1452,20 @@ TEST_CASE("a steady Gauss-Seidel or lines case on several ranks converges to the
       CHECK(r.get<double>() <= bound);
     }
   }
-  if (std::string(reproducibility) == "ranks") check_bit_for_bit(one.run, many);
+  if (std::string(reproducibility) == "ranks") {
+    check_bit_for_bit(one.run, many);
+    if (std::string(linear) == "multigrid") {
+      // The mesh's own order on N ranks: the partition and the physics' cells differ from RCM's.
+      REQUIRE(setenv("AUTAN_CELL_ORDER", "input", 1) == 0);
+      const fs::path read_order = run_on_ranks(input("hybrid.solver-input.json", edit), ranks);
+      unsetenv("AUTAN_CELL_ORDER");
+      REQUIRE(!read_order.empty());
+      check_bit_for_bit(one.run, read_order);
+    }
+  }
   const fs::path again = run_on_ranks(doc, ranks);
-  CHECK(read(again / "history.jsonl") == read(many / "history.jsonl"));
+  REQUIRE(!again.empty());
+  check_bit_for_bit(many, again);
 }
 
 TEST_CASE("steady Gauss-Seidel steps through periodic pairs follow the one-rank steps",

@@ -21,18 +21,24 @@ inline std::string run_cell_order() {
 }
 
 // `doc` with the mesh_info `autan prepare` plans it with (solver-input.md): autan-mesh-info's
-// document for its mesh at its mesh.scale, lines in `order`. An input whose mesh cannot be read
-// takes the document of `readable`, so that the run reaches the mesh and fails there.
+// document for its mesh at its mesh.scale, lines in `order`, the multigrid hierarchy in
+// `multigrid_order` (default `order`). An input whose mesh cannot be read takes the document of
+// `readable`, so that the run reaches the mesh and fails there.
 inline nlohmann::json planned(nlohmann::json doc, const std::filesystem::path& readable,
-                              const std::string& order = run_cell_order()) {
+                              const std::string& order = run_cell_order(),
+                              const std::string& multigrid_order = {}) {
   std::filesystem::path mesh = doc["mesh"]["path"].get<std::string>();
   if (!std::filesystem::exists(mesh)) mesh = readable;
   const autan::Mesh m = autan::io::read_mesh(mesh);
   // An input whose scale the reader refuses is planned at 1: it fails at mesh.scale first.
   const nlohmann::json given = doc["mesh"].value("scale", nlohmann::json());
   const double scale = given.is_number() && given.get<double>() > 0.0 ? given.get<double>() : 1.0;
-  const auto counts = autan::io::run_counts(
-      m, scale, order == "input" ? autan::io::CellOrder::input : autan::io::CellOrder::rcm);
+  const auto as_order = [](const std::string& o) {
+    return o == "input" ? autan::io::CellOrder::input : autan::io::CellOrder::rcm;
+  };
+  const auto counts =
+      autan::io::run_counts(m, scale, as_order(order), std::nullopt,
+                            as_order(multigrid_order.empty() ? order : multigrid_order));
   const std::string hash = autan::io::mesh_hash(mesh);
   // The sidecar's groups as autan-mesh-info gives them; a sidecar the reader refuses is left to
   // the run, which refuses it in turn.

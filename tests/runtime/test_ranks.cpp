@@ -1,6 +1,9 @@
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <vector>
 
 #include <catch2/catch_session.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -41,6 +44,45 @@ TEST_CASE("argmin takes the least value and, among equals, the least id", "[runt
 TEST_CASE("max over the ranks, in double", "[runtime][ranks]") {
   CHECK(comm->max(static_cast<double>(comm->rank()) + 0.5) ==
         static_cast<double>(comm->size()) - 0.5);
+}
+
+TEST_CASE("all_gather concatenates every rank's values in rank order", "[runtime][ranks]") {
+  // Rank r gives r values 10 r + k: rank 0 gives none.
+  const int r = comm->rank(), n = comm->size();
+  std::vector<double> mine;
+  for (int k = 0; k < r; ++k) mine.push_back(10.0 * r + k);
+  std::vector<double> expected;
+  for (int q = 0; q < n; ++q) {
+    for (int k = 0; k < q; ++k) expected.push_back(10.0 * q + k);
+  }
+  CHECK(comm->all_gather(mine) == expected);
+  CHECK(comm->all_gather({}).empty());
+}
+
+TEST_CASE("halo_exchange fills a pattern's ghosts from their owners", "[runtime][ranks]") {
+  // A ring: rank r owns items 10 r and 10 r + 1 and holds as its one ghost the second item of
+  // rank r + 1 (mod n), itself on one rank.
+  const int r = comm->rank(), n = comm->size();
+  const int next = (r + 1) % n, previous = (r + n - 1) % n;
+  autan::HaloPattern pattern;
+  pattern.rank = r;
+  pattern.n_ranks = n;
+  pattern.neighbours = {previous, next};
+  std::ranges::sort(pattern.neighbours);
+  const auto [last, end] = std::ranges::unique(pattern.neighbours);
+  pattern.neighbours.erase(last, end);
+  for (const int q : pattern.neighbours) {
+    if (q == previous) pattern.send_cells.push_back(1);
+    pattern.send_offsets.push_back(static_cast<autan::index_t>(pattern.send_cells.size()));
+    pattern.recv_offsets.push_back(pattern.recv_offsets.back() + (q == next ? 1 : 0));
+  }
+  std::array<double, 3> a{10.0 * r, 10.0 * r + 1, -1.0}, b{-10.0 * r, -10.0 * r - 1, -1.0};
+  std::array<double*, 2> components{a.data(), b.data()};
+  const auto exchange = comm->halo_exchange(pattern, 2);
+  exchange->forward(std::span<double* const>(components), autan::MemorySpace::host, nullptr);
+  CHECK(a[2] == 10.0 * next + 1);
+  CHECK(b[2] == -10.0 * next - 1);
+  CHECK(a[0] == 10.0 * r);
 }
 
 int main(int argc, char** argv) {

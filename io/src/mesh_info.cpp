@@ -451,7 +451,9 @@ std::string mesh_info_json(const Mesh& mesh, const std::string& sha256, std::int
           {"cells", run.line_cells},
           {"long_cells", run.long_line_cells}}},
         {"multigrid",
-         {{"cells_by_level", run.multigrid_cells}, {"edges_by_level", run.multigrid_edges}}}}},
+         {{"order", run.multigrid_order},
+          {"cells_by_level", run.multigrid_cells},
+          {"edges_by_level", run.multigrid_edges}}}}},
   };
   if (run.partition) {
     const auto& p = *run.partition;

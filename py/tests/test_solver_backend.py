@@ -624,12 +624,23 @@ def test_two_ranks_run_and_stop_through_the_launcher(
     hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
 ) -> None:
     case, _ = hybrid
-    # mesh-info.md: a run on two ranks is planned with the partition of that run.
+    # mesh-info.md: a run on two ranks is planned with the partition of that run, its multigrid's
+    # lines kept whole and its hierarchy built on the mesh as read.
     assert MESH_INFO is not None
     meshinfo = tmp_path / "hybrid.meshinfo.json"
     meshinfo.write_text(
         subprocess.run(
-            [str(MESH_INFO), "--json", "--ranks", "2", str(MESH)],
+            [
+                str(MESH_INFO),
+                "--json",
+                "--ranks",
+                "2",
+                "--groups",
+                "lines",
+                "--multigrid-order",
+                "input",
+                str(MESH),
+            ],
             capture_output=True,
             text=True,
             check=True,

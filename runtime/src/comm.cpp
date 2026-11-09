@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <initializer_list>
+#include <limits>
 #include <string_view>
 
 #include "autan/core/error.hpp"
@@ -28,11 +29,11 @@ int environment(std::initializer_list<const char*> names) {
 int launched_size() { return environment({"OMPI_COMM_WORLD_SIZE", "PMI_SIZE"}); }
 int launched_rank() { return environment({"OMPI_COMM_WORLD_RANK", "PMI_RANK", "PMIX_RANK"}); }
 
-// Fills the periodic images of owned cells, the one ghost a part of a
-// single-rank run can hold (partitioning.md); without a part, nothing.
+// Fills the ghosts a pattern of a single rank sends to itself: the periodic images of owned
+// cells, the one ghost a part of a single-rank run can hold (partitioning.md).
 class SelfExchange final : public GhostExchange {
  public:
-  explicit SelfExchange(const LocalPartition& part) : part_(part) {}
+  SelfExchange(const HaloPattern& halo, index_t n_owned) : halo_(halo), n_owned_(n_owned) {}
   void forward(std::span<float* const> components, MemorySpace space, void* stream) override {
     run(components, space, stream);
   }
@@ -46,15 +47,15 @@ class SelfExchange final : public GhostExchange {
   template <class T>
   void run(std::span<T* const> components, MemorySpace space, void* stream) {
     if (space == MemorySpace::host) {
-      forward_self(part_.halo, part_.mesh.n_owned_cells(), components);
+      forward_self(halo_, n_owned_, components);
       return;
     }
-    if (!device_)
-      device_ = std::make_unique<DeviceSelfForward>(part_.halo, part_.mesh.n_owned_cells());
+    if (!device_) device_ = std::make_unique<DeviceSelfForward>(halo_, n_owned_);
     device_->forward(components, stream);
   }
 
-  const LocalPartition& part_;
+  const HaloPattern& halo_;
+  index_t n_owned_;
   std::unique_ptr<DeviceSelfForward> device_;
 };
 
@@ -68,6 +69,9 @@ class Single final : public Comm {
   [[nodiscard]] double min(double value) override { return value; }
   [[nodiscard]] std::int64_t max(std::int64_t value) override { return value; }
   [[nodiscard]] double max(double value) override { return value; }
+  [[nodiscard]] std::vector<double> all_gather(std::span<const double> values) override {
+    return {values.begin(), values.end()};
+  }
   [[nodiscard]] std::string broadcast(std::string text) override { return text; }
   [[nodiscard]] std::vector<double> gather(std::span<const std::int64_t> ids,
                                            std::span<const double> values,
@@ -78,7 +82,11 @@ class Single final : public Comm {
   }
   [[noreturn]] void abort(int status) override { std::exit(status); }
   [[nodiscard]] std::unique_ptr<GhostExchange> ghost_exchange(const LocalPartition& part) override {
-    return std::make_unique<SelfExchange>(part);
+    return std::make_unique<SelfExchange>(part.halo, part.mesh.n_owned_cells());
+  }
+  [[nodiscard]] std::unique_ptr<GhostExchange> halo_exchange(const HaloPattern& pattern,
+                                                             index_t n_owned) override {
+    return std::make_unique<SelfExchange>(pattern, n_owned);
   }
   void fill_ghosts(LocalPartition& part) override { fill_ghost_geometry(part); }
 };
@@ -96,7 +104,8 @@ void check(int status, const char* what) {
 // the same order).
 class MpiGhosts final : public GhostExchange {
  public:
-  MpiGhosts(const LocalPartition& part, MPI_Comm comm) : part_(part), comm_(comm) {}
+  MpiGhosts(const HaloPattern& halo, index_t n_owned, MPI_Comm comm)
+      : halo_(halo), n_owned_(n_owned), comm_(comm) {}
   void forward(std::span<float* const> components, MemorySpace space, void* stream) override {
     exchange(space).forward(components, stream);
   }
@@ -108,12 +117,13 @@ class MpiGhosts final : public GhostExchange {
   HaloExchange& exchange(MemorySpace space) {
     auto& slot = space == MemorySpace::host ? host_ : device_;
     if (!slot) {
-      slot = std::make_unique<HaloExchange>(part_.halo, part_.mesh.n_owned_cells(), comm_, space);
+      slot = std::make_unique<HaloExchange>(halo_, n_owned_, comm_, space);
     }
     return *slot;
   }
 
-  const LocalPartition& part_;
+  const HaloPattern& halo_;
+  index_t n_owned_;
   MPI_Comm comm_;
   std::unique_ptr<HaloExchange> host_, device_;
 };
@@ -167,6 +177,32 @@ class World final : public Comm {
           "MPI_Allreduce");
     return value;
   }
+  [[nodiscard]] std::vector<double> all_gather(std::span<const double> values) override {
+    // MPI counts and displacements are int: every rank checks the same gathered sizes, so all
+    // refuse together a gather beyond them.
+    const auto mine = static_cast<std::int64_t>(values.size());
+    std::vector<std::int64_t> sizes(static_cast<std::size_t>(size_));
+    check(MPI_Allgather(&mine, 1, MPI_INT64_T, sizes.data(), 1, MPI_INT64_T, MPI_COMM_WORLD),
+          "MPI_Allgather");
+    std::vector<int> counts(sizes.size()), displs(sizes.size());
+    std::int64_t total = 0;
+    for (std::size_t r = 0; r < sizes.size(); ++r) {
+      displs[r] = static_cast<int>(total);
+      counts[r] = static_cast<int>(sizes[r]);
+      total += sizes[r];
+      if (total > std::numeric_limits<int>::max()) {
+        throw Error(ErrorCode::halo_inconsistent,
+                    "an all-gather of more than " +
+                        std::to_string(std::numeric_limits<int>::max()) + " values");
+      }
+    }
+    const int count = counts[static_cast<std::size_t>(rank_)];
+    std::vector<double> out(static_cast<std::size_t>(total));
+    check(MPI_Allgatherv(values.data(), count, MPI_DOUBLE, out.data(), counts.data(), displs.data(),
+                         MPI_DOUBLE, MPI_COMM_WORLD),
+          "MPI_Allgatherv");
+    return out;
+  }
   [[nodiscard]] std::string broadcast(std::string text) override {
     auto n = static_cast<std::int64_t>(text.size());
     check(MPI_Bcast(&n, 1, MPI_INT64_T, 0, MPI_COMM_WORLD), "MPI_Bcast");
@@ -206,7 +242,11 @@ class World final : public Comm {
     std::exit(status);
   }
   [[nodiscard]] std::unique_ptr<GhostExchange> ghost_exchange(const LocalPartition& part) override {
-    return std::make_unique<MpiGhosts>(part, MPI_COMM_WORLD);
+    return std::make_unique<MpiGhosts>(part.halo, part.mesh.n_owned_cells(), MPI_COMM_WORLD);
+  }
+  [[nodiscard]] std::unique_ptr<GhostExchange> halo_exchange(const HaloPattern& pattern,
+                                                             index_t n_owned) override {
+    return std::make_unique<MpiGhosts>(pattern, n_owned, MPI_COMM_WORLD);
   }
   void fill_ghosts(LocalPartition& part) override {
     HaloExchange exchange(part.halo, part.mesh.n_owned_cells(), MPI_COMM_WORLD, MemorySpace::host);

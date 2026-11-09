@@ -1526,7 +1526,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
   }
   const Geometry& geometry = geometry_of(p);
   if (p.groups != nullptr && *p.groups) {
-    p.cell_groups = (*p.groups)(p.input, p.mesh, geometry);
+    p.cell_groups = (*p.groups)(p.input, p.mesh, geometry, ranks);
     p.group_colours = colour_cells(p.mesh, p.cell_groups.offsets, p.cell_groups.cells);  // E0140
   }
   // Every rank partitions the same mesh with the same seed (E0140 to E0143).
@@ -1776,25 +1776,31 @@ class Run final : public Log {
     const std::vector<io::Field>* initial = local_initial_ ? &*local_initial_
                                             : p_.initial   ? &*p_.initial
                                                            : nullptr;
-    const PhysicsContext context{.mesh = physics_mesh(),
-                                 .geometry = physics_geometry(),
-                                 .input = p_.input,
-                                 .log = *this,
-                                 .start = start,
-                                 .ghosts = *ghosts_,
-                                 .ranks = comm_,
-                                 .boundary_states = local_states_,
-                                 .initial = initial,
-                                 .device = gpu_ ? gpu_->index() : -1,
-                                 .stream = gpu_ ? gpu_->stream() : nullptr,
-                                 .face_global_id = face_global_id_,
-                                 .face_reversed = face_reversed_,
-                                 .cell_colours = colours_,
-                                 .n_colours = n_colours_,
-                                 .group_offsets = group_offsets_,
-                                 .group_cells = group_cells_,
-                                 .cell_group_colours = group_colours_,
-                                 .n_group_colours = n_group_colours_};
+    const PhysicsContext context{
+        .mesh = physics_mesh(),
+        .geometry = physics_geometry(),
+        .input = p_.input,
+        .log = *this,
+        .start = start,
+        .ghosts = *ghosts_,
+        .ranks = comm_,
+        .boundary_states = local_states_,
+        .initial = initial,
+        .device = gpu_ ? gpu_->index() : -1,
+        .stream = gpu_ ? gpu_->stream() : nullptr,
+        .face_global_id = face_global_id_,
+        .face_reversed = face_reversed_,
+        .cell_colours = colours_,
+        .n_colours = n_colours_,
+        .group_offsets = group_offsets_,
+        .group_cells = group_cells_,
+        .cell_group_colours = group_colours_,
+        .n_group_colours = n_group_colours_,
+        .setup = groups_.setup.get(),
+        .cell_parts = read_parts_,
+        .halo_exchange = [this](const HaloPattern& pattern, index_t n_owned) {
+          return comm_.halo_exchange(pattern, n_owned);
+        }};
     std::string status = "running";
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
@@ -1853,6 +1859,10 @@ class Run final : public Log {
   std::optional<LocalPartition> make_part() {
     const Mesh& mesh = compute_mesh();
     const std::int32_t n = comm_.size();
+    // What the physics built on the mesh as read also takes its cells' parts in that order.
+    if (groups_.setup) {
+      read_parts_ = n > 1 ? p_.parts : std::vector<std::int32_t>(at(p_.mesh.n_cells()), 0);
+    }
     // Reproducibility "ranks" computes on a partition, one part on one rank,
     // so that a physics finds the same global keys on any number of ranks.
     if (n == 1 && mesh.periodic_pairs().empty() && p_.input.reproducibility != "ranks")
@@ -2685,7 +2695,8 @@ class Run final : public Log {
   double renumber_seconds_ = 0.0;
   std::string hash_cache_problem_;  // rank 0: why the executable hash cache was not used
   std::optional<Ordered> ordered_;
-  CellGroups groups_;  // the physics' groups, over p_.mesh's cells
+  CellGroups groups_;                     // the physics' groups, over p_.mesh's cells
+  std::vector<std::int32_t> read_parts_;  // with groups_.setup: each p_.mesh cell's rank
   Geometry geometry_;
   std::optional<LocalPartition> local_;
   std::map<index_t, std::vector<double>> local_states_;  // boundary_states, physics order

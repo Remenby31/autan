@@ -456,9 +456,9 @@ Fix: Put the groups file next to the mesh.
 
 **MeshInfo prepared for another run** (error)
 
-The MeshInfo's derived counts are not for this run: its lines were computed at another scale than the case's `mesh_unit`, or a run on several ranks has no partition for that rank count and the groups its linear solver keeps whole, or a run on one rank with periodic pairs or reproducibility `"ranks"` has no one-part partition. The message names the difference.
+The MeshInfo's derived counts are not for this run: its lines were computed at another scale than the case's `mesh_unit`, or a run on several ranks has no partition for that rank count and the groups its linear solver keeps whole, or a run on one rank with periodic pairs or reproducibility `"ranks"` has no one-part partition, or a steady CPU run with the multigrid builds its hierarchy in another cell order than `quality.multigrid`: the mesh as read on a partition (several ranks, or reproducibility `"ranks"`), its cell order on one rank. The message names the difference.
 
-Fix: Run `autan-mesh-info --json --scale <metres per mesh unit>` again, with `--ranks N` (and `--groups lines` for a steady CPU run with the lines solver) for a run on N ranks.
+Fix: Run `autan-mesh-info --json --scale <metres per mesh unit>` again, with `--ranks N` (and `--groups lines` for a steady CPU run with the lines solver or the multigrid) for a run on N ranks, and `--multigrid-order input` for a steady CPU run with the multigrid on a partition.
 
 ## E0301
 

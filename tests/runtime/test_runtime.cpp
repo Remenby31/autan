@@ -1324,6 +1324,7 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
           auto& edges = m["quality"]["multigrid"]["edges_by_level"][0];
           edges = edges.get<int>() + 1;
         },
+        [](Json& m) { m["quality"]["multigrid"]["order"] = "metis"; },
         [](Json& m) {
           const int cells = m["counts"]["cells"].get<int>();
           m["partition"] = {{"ranks", 2},

@@ -255,11 +255,38 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
                 "max_non_orthogonality_deg": 0.0,
                 "max_faces_per_cell": 6,
                 "lines": {"order": "rcm", "scale": 1.0, "cells": 0, "long_cells": 0},
-                "multigrid": {"cells_by_level": [10], "edges_by_level": [20]},
+                "multigrid": {"order": "rcm", "cells_by_level": [10], "edges_by_level": [20]},
             },
         },
         autan.Location(),
     )
+
+
+@pytest.mark.parametrize(
+    ("gpus", "physics", "builds"),
+    [
+        (2, "Inviscid()", "input"),
+        (1, 'Inviscid(), reproducibility="ranks"', "input"),
+        (1, "Inviscid()", "rcm"),
+        (1, 'Laminar(), reproducibility="ranks"', "rcm"),
+    ],
+)
+def test_the_multigrid_hierarchy_is_for_the_cell_order_the_run_builds_it_in(
+    write_case: Callable[[str], Path], gpus: int, physics: str, builds: str
+) -> None:
+    # mesh-info.md, quality.multigrid: a steady CPU multigrid run of inviscid flow on a partition
+    # (several ranks, or reproducibility "ranks") builds its hierarchy on the mesh as read, any
+    # other on one rank in its cell order, quality.lines' ("rcm" here); a hierarchy in another
+    # order is for another run (E0212).
+    case = autan.load(write_case(TINY.replace("Inviscid())", physics + ")")))
+    document = prepared(tiny_mesh(20).document(), ranks=gpus)
+    if gpus > 1:
+        document["partition"]["groups"] = "lines"
+    for order in ("rcm", "input"):
+        document["quality"]["multigrid"]["order"] = order
+        mesh = autan.MeshInfo.from_document(document, autan.Location())
+        codes = diagnostic_codes(case.plan(mesh, gpus=gpus, device_kind="cpu"))
+        assert ("E0212" in codes) == (order != builds)
 
 
 def test_the_memory_estimate_counts_what_each_run_allocates(
@@ -422,7 +449,7 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     # The multigrid's levels from quality.multigrid: one coarse level of 2 nodes and 1 edge adds
     # 1000 per node and 410 per edge, and moves the dense LU from 5 x 10 to 5 x 2 unknowns.
     two_levels: dict[str, Any] = tiny_mesh(20).document()
-    two_levels["quality"]["multigrid"] = {"cells_by_level": [10, 2], "edges_by_level": [20, 1]}
+    two_levels["quality"]["multigrid"] |= {"cells_by_level": [10, 2], "edges_by_level": [20, 1]}
     deeper = autan.load(write_case(TINY)).plan(
         autan.MeshInfo.from_document(two_levels, autan.Location()), device_kind="cpu"
     )
@@ -449,6 +476,7 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     assert "E0212" in diagnostic_codes(ranks)
     whole: dict[str, Any] = tiny_mesh(20).document()
     whole["partition"] = one_part(whole)
+    whole["quality"]["multigrid"]["order"] = "input"
     parted = autan.load(
         write_case(TINY.replace("Inviscid())", 'Inviscid(), reproducibility="ranks")'))
     ).plan(autan.MeshInfo.from_document(whole, autan.Location()), device_kind="cpu")
@@ -530,7 +558,7 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     assert setup == 69 * 20 + 48 * 1 + 296 * 10 + 156 * 2 + 144 * 20
     # A coarse level of 1 cell and no edge leaves the line grouping the largest.
     single: dict[str, Any] = tiny_mesh(20).document()
-    single["quality"]["multigrid"] = {"cells_by_level": [10, 1], "edges_by_level": [20, 0]}
+    single["quality"]["multigrid"] |= {"cells_by_level": [10, 1], "edges_by_level": [20, 0]}
     coarse = autan.load(write_case(TINY)).plan(
         autan.MeshInfo.from_document(single, autan.Location()), device_kind="cpu"
     )

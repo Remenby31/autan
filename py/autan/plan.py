@@ -306,9 +306,30 @@ def _vortex_conditions(spec: CaseSpec, boundaries: list[BoundaryResolution]) -> 
 
 def partition_groups(spec: CaseSpec, device_kind: DeviceKind) -> str:
     """The groups a run's partition keeps whole: the line smoother's lines of a steady CPU run
-    with ``linear_solver = "lines"``, none otherwise (docs/contracts/mesh-info.md)."""
-    lines = isinstance(spec.time, Steady) and spec.time.linear_solver == "lines"
+    with ``linear_solver = "lines"`` or ``"multigrid"``, whose fine lines stay whole on each
+    rank, none otherwise (docs/contracts/mesh-info.md)."""
+    lines = isinstance(spec.time, Steady) and spec.time.linear_solver in ("lines", "multigrid")
     return "lines" if lines and device_kind == "cpu" else "none"
+
+
+def _multigrid_order(
+    spec: CaseSpec, mesh: MeshInfo, gpus: int, device_kind: DeviceKind
+) -> str | None:
+    """The cell order a run's multigrid builds its hierarchy in: for inviscid flow on a partition
+    (several ranks, or reproducibility "ranks"; the multigrid refuses periodic pairs) the mesh as
+    read, else the run's cell order (viscous flow runs the multigrid on one rank, and refuses
+    "ranks"); None when the run builds no hierarchy (a steady CPU run with
+    ``linear_solver = "multigrid"`` does)."""
+    if not (
+        isinstance(spec.time, Steady)
+        and spec.time.linear_solver == "multigrid"
+        and device_kind == "cpu"
+    ):
+        return None
+    partitioned = gpus > 1 or spec.physics.reproducibility == "ranks"
+    if partitioned and isinstance(spec.physics.turbulence, Inviscid):
+        return "input"
+    return mesh.quality.lines.order
 
 
 def _check_prepared(
@@ -319,14 +340,20 @@ def _check_prepared(
     device_kind: DeviceKind,
     found: list[Diagnostic],
 ) -> None:
-    """The MeshInfo's derived counts are for the run planned: its scale, and on several ranks
-    the same partition (mesh-info.md)."""
+    """The MeshInfo's derived counts are for the run planned: its scale, its multigrid's cell
+    order, and on several ranks the same partition (mesh-info.md)."""
     problems = []
     scale = metres_per(spec.mesh_unit)
     if mesh.quality.lines.scale != scale:
         problems.append(
             f"quality.lines was computed at scale {mesh.quality.lines.scale:g}, "
             f"the case's mesh_unit is {scale:g} m"
+        )
+    want = _multigrid_order(spec, mesh, gpus, device_kind)
+    if want is not None and mesh.quality.multigrid.order != want:
+        problems.append(
+            f"quality.multigrid was built in cell order {mesh.quality.multigrid.order!r}, "
+            f"the run builds its hierarchy in {want!r}"
         )
     partition = mesh.partition
     if gpus == 1 and extracts(spec, mesh, 1) and (partition is None or partition.ranks != 1):

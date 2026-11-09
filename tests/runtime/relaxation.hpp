@@ -664,12 +664,14 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
   auto asked = std::make_shared<int>(0);
   autan::runtime::PartitionGroups groups;
   if (options.groups == -1) {
-    groups = [](const autan::runtime::SolverInput&, const autan::Mesh&, const autan::Geometry&) {
-      return autan::runtime::CellGroups{.offsets = {0, 2}, .cells = {0, 0}};
+    groups = [](const autan::runtime::SolverInput&, const autan::Mesh&, const autan::Geometry&,
+                int) {
+      return autan::runtime::CellGroups{.offsets = {0, 2}, .cells = {0, 0}, .setup = nullptr};
     };
   }
   if (options.groups == -2) {
-    groups = [](const autan::runtime::SolverInput&, const autan::Mesh&, const autan::Geometry&) {
+    groups = [](const autan::runtime::SolverInput&, const autan::Mesh&, const autan::Geometry&,
+                int) {
       const char* rank = launcher_rank();
       if (rank == nullptr) throw std::runtime_error("no launcher rank");
       if (std::string(rank) == "1")
@@ -680,7 +682,7 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
   if (options.groups > 0) {
     groups = [n = options.groups, group_sizes, asked](const autan::runtime::SolverInput&,
                                                       const autan::Mesh& mesh,
-                                                      const autan::Geometry&) {
+                                                      const autan::Geometry&, int) {
       ++*asked;
       autan::runtime::CellGroups g;
       g.offsets.push_back(0);

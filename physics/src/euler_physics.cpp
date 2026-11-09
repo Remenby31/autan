@@ -31,6 +31,7 @@
 #include "autan/solvers/agglomeration.hpp"
 #include "autan/solvers/line_smoother.hpp"
 #include "autan/solvers/multigrid.hpp"
+#include "partition_multigrid.hpp"
 
 namespace autan::physics {
 
@@ -188,17 +189,25 @@ class EulerPhysics final : public runtime::Physics {
       // Under reproducibility "ranks", each row sums its neighbours in global face order.
       if (keys_) matrix_->order_rows(*keys_);
       if (in.time.linear_solver == "multigrid") {
-        multigrid_.emplace(mesh, ctx.geometry);
+        // On a partition (several ranks, or reproducibility "ranks"), the hierarchy of the mesh
+        // as read, from euler_groups: the same bits on any number of ranks and in either order.
+        if (ctx.setup != nullptr) {
+          partitioned_.emplace(ctx);
+        } else {
+          multigrid_.emplace(mesh, ctx.geometry);
+        }
+        const auto& levels = partitioned_ ? partitioned_->levels() : multigrid_->levels();
+        const bool lu =
+            partitioned_ ? partitioned_->direct_coarsest() : multigrid_->direct_coarsest();
         nlohmann::json nodes = nlohmann::json::array(), edges = nlohmann::json::array();
-        for (const auto& l : multigrid_->levels()) {
+        for (const auto& l : levels) {
           nodes.push_back(l.n_nodes);
           edges.push_back(l.owner.size());
         }
-        ctx.log.write("info", "linear", "agglomeration multigrid", {},
-                      nlohmann::json{{"nodes", nodes},
-                                     {"edges", edges},
-                                     {"coarsest", multigrid_->direct_coarsest() ? "lu" : "sweeps"}}
-                          .dump());
+        ctx.log.write(
+            "info", "linear", "agglomeration multigrid", {},
+            nlohmann::json{{"nodes", nodes}, {"edges", edges}, {"coarsest", lu ? "lu" : "sweeps"}}
+                .dump());
       } else if (in.time.linear_solver == "lines") {
         // The multigrid's fine lines, kept whole by the partition, swept over the runtime's
         // colouring of the lines by global id: the same sweeps on any number of ranks.
@@ -1008,6 +1017,25 @@ class EulerPhysics final : public runtime::Physics {
             },
             [&](std::span<const double> r, std::span<double> z) { multigrid_->cycle(r, z); },
             krylov_residual_, du_, linear_max_cycles, linear_tolerance);
+      } else if (partitioned_) {
+        // As Multigrid::solve, with the inner products and largest entries of the line sweeps'
+        // GCR: exact sums and maxima over the owned cells of every rank. set_operator throws on
+        // every rank when a block is singular on any.
+        partitioned_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
+        if (krylov_v_.size() != rhs_.size()) krylov_v_.assign(rhs_.size(), 0.0);
+        krylov_residual_ = rhs_;
+        linear = gcr_.solve(
+            [&](std::span<const double> v, std::span<double> y) {
+              std::copy(v.begin(), v.end(), krylov_v_.begin());
+              fill_ghosts(krylov_v_);
+              matrix_->multiply(krylov_v_, y);
+              add_boundary_gradient_term(krylov_v_, y);
+            },
+            [&](std::span<const double> r, std::span<double> z) { partitioned_->cycle(r, z); },
+            krylov_residual_, du_, linear_max_cycles, linear_tolerance,
+            {.dot = [this](std::span<const double> u,
+                           std::span<const double> v) { return owned_dot(u, v); },
+             .max_abs = [this](std::span<const double> u) { return owned_max_abs(u); }});
       } else if (lines_) {
         // GCR preconditioned by the line sweeps, as the multigrid's outer iteration; its inner
         // products are exact sums over the owned cells of every rank.
@@ -1491,6 +1519,7 @@ class EulerPhysics final : public runtime::Physics {
   FirstOrderStart first_order_;
   std::optional<BlockMatrix> matrix_;               // steady runs only
   std::optional<solvers::Multigrid> multigrid_;     // linear_solver = "multigrid"
+  std::optional<PartitionMultigrid> partitioned_;   // and on a partition
   std::optional<solvers::LineSmoother> lines_;      // linear_solver = "lines"
   solvers::Gcr gcr_;                                // and its outer iteration
   std::vector<double> krylov_residual_, krylov_v_;  // the GCR's residual; a vector with ghosts
@@ -1552,26 +1581,12 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
       }
     }
   }
-  // Under reproducibility "ranks" Gauss-Seidel and "lines" sum each row in global face order;
-  // the multigrid still agglomerates, smooths and sums in local cell order.
-  if (in.reproducibility == "ranks" && in.time.kind == "steady" &&
-      in.time.linear_solver == "multigrid") {
+  // The multigrid agglomerates the mesh as read, whose cells have no periodic images.
+  if (in.time.kind == "steady" && in.time.linear_solver == "multigrid" && !in.periodic.empty()) {
     return runtime::PhysicsRefusal{
         .message =
-            "the steady multigrid does not give the same bits on any number of ranks yet; "
-            "linear_solver = \"gauss-seidel\" or \"lines\" does",
-        .path = "reproducibility",
-        .data_json = "{}",
-        .code = "E1109"};
-  }
-  // The multigrid agglomerates one mesh's cells: on a partition, or with periodic image ghosts,
-  // it would be another algorithm. Gauss-Seidel sweeps colours by global id, the same anywhere.
-  if (in.time.kind == "steady" && in.time.linear_solver == "multigrid" &&
-      (ranks > 1 || !in.periodic.empty())) {
-    return runtime::PhysicsRefusal{
-        .message =
-            "the steady multigrid runs on one rank without periodic pairs; set "
-            "linear_solver = \"lines\" or \"gauss-seidel\" until the distributed multigrid lands",
+            "the steady multigrid runs without periodic pairs; set "
+            "linear_solver = \"lines\" or \"gauss-seidel\"",
         .path = "time.linear_solver",
         .data_json = nlohmann::json{{"ranks", ranks}, {"pairs", in.periodic.size()}}.dump()};
   }
@@ -1799,14 +1814,21 @@ std::vector<std::string> euler_restart_names(const runtime::SolverInput& in, boo
 
 }  // namespace
 
-// linear_solver = "lines": the multigrid's fine lines, computed on the global mesh, which the
-// partition keeps whole.
+// linear_solver = "lines", and "multigrid" on a partition: the multigrid's fine lines, computed
+// on the global mesh, which the partition keeps whole; for the multigrid, its hierarchy too.
 runtime::CellGroups euler_groups(const runtime::SolverInput& in, const Mesh& mesh,
-                                 const Geometry& geometry) {
-  if (in.time.kind != "steady" || in.time.linear_solver != "lines") return {};
-  auto lines = smoother_lines(mesh, geometry);
-  if (lines.cells.empty()) return {};
-  return {std::move(lines.offsets), std::move(lines.cells)};
+                                 const Geometry& geometry, int ranks) {
+  if (in.time.kind != "steady") return {};
+  const bool partitioned =
+      in.time.linear_solver == "multigrid" && (ranks > 1 || in.reproducibility == "ranks");
+  if (in.time.linear_solver != "lines" && !partitioned) return {};
+  runtime::CellGroups groups;
+  if (auto lines = smoother_lines(mesh, geometry); !lines.cells.empty()) {
+    groups.offsets = std::move(lines.offsets);
+    groups.cells = std::move(lines.cells);
+  }
+  if (partitioned) groups.setup = partition_hierarchy(mesh, geometry);
+  return groups;
 }
 
 void register_euler(runtime::PhysicsRegistry& registry) {

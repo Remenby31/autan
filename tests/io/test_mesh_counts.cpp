@@ -32,9 +32,10 @@ autan::CellwiseMesh box(int n, double stretch) {
 }
 
 autan::io::MeshInfoRun counts(autan::CellwiseMesh cw, CellOrder order,
-                              std::optional<autan::io::RanksRequest> ranks = std::nullopt) {
+                              std::optional<autan::io::RanksRequest> ranks = std::nullopt,
+                              std::optional<CellOrder> multigrid_order = std::nullopt) {
   const autan::Mesh mesh = autan::assemble(autan::to_face_based(std::move(cw)));
-  return autan::io::run_counts(mesh, 1.0, order, ranks);
+  return autan::io::run_counts(mesh, 1.0, order, ranks, multigrid_order);
 }
 
 // The face2 stencil of the n^3 hexahedra of a box, from its definition (kernels::StencilKind):
@@ -206,8 +207,19 @@ TEST_CASE("MeshInfo counts the cells in the smoother's lines", "[mesh-info]") {
   CAPTURE(n, order == CellOrder::rcm);
   const auto flat = counts(box(n, 10.0), order);
   CHECK(flat.line_order == (order == CellOrder::rcm ? "rcm" : "input"));
+  CHECK(flat.multigrid_order == flat.line_order);
   CHECK(flat.line_cells == n * n * n);
   CHECK(flat.long_line_cells == (n >= 4 ? n * n * n : 0));
+  // A run on a partition builds its hierarchy on the mesh as read, whatever order it computes
+  // its lines in: the levels of the input order beside the lines of the run's.
+  const auto partitioned = counts(box(n, 10.0), order, std::nullopt, CellOrder::input);
+  const auto as_read = counts(box(n, 10.0), CellOrder::input);
+  CHECK(partitioned.line_order == flat.line_order);
+  CHECK(partitioned.line_cells == flat.line_cells);
+  CHECK(partitioned.long_line_cells == flat.long_line_cells);
+  CHECK(partitioned.multigrid_order == "input");
+  CHECK(partitioned.multigrid_cells == as_read.multigrid_cells);
+  CHECK(partitioned.multigrid_edges == as_read.multigrid_edges);
   const auto cubes = counts(box(n, 1.0), order);
   CHECK(cubes.line_cells == 0);
   CHECK(cubes.long_line_cells == 0);
