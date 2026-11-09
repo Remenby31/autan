@@ -96,8 +96,8 @@ if(AUTAN_ENABLE_CGNS)
   # solver.binary_sha256) through a cache in the build tree.
   set(hash_cache "AUTAN_BINARY_HASH_CACHE=${PROJECT_BINARY_DIR}/binary-hash-cache")
   catch_discover_tests(autan_euler_run_tests TEST_SPEC "~[gpu]~[mpi]~[long]" PROPERTIES ENVIRONMENT ${hash_cache})
-  # [long]: past the default per-test timeout (600 s). The reproducibility-ranks case took up to
-  # 720 s on CI (clang-20, 3 runs on main); twice that.
+  # [long]: cases that take longer than the default per-test timeout (600 s) on CI's hosted
+  # runners; 1500 s is about twice the longest measured.
   catch_discover_tests(
     autan_euler_run_tests
     TEST_SPEC "[long]~[gpu]~[mpi]"
