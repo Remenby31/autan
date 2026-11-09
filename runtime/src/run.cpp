@@ -359,6 +359,7 @@ struct Prepared {
   std::string cell_order;                     // "rcm" (default) or "input", from AUTAN_CELL_ORDER
   const PartitionGroups* groups = nullptr;    // the physics' groups; null or empty: none
   GhostStencil ghosts = GhostStencil::face2;  // the stencil the physics declares
+  const RestartScalars* scalars = nullptr;    // its SolverState arrays; null or empty: none
   std::vector<Diagnostic> memory_warnings = {};  // W0712, W0713: the memory check's warnings
   std::optional<StartState> start;               // input.start, read and checked
   Json start_averaging;                          // `continue`: the previous run's averaging
@@ -521,6 +522,12 @@ void load_start(Prepared& p, const PhysicsRegistry::Entry* entry) {
       if (named("RestartState") != restart) {
         unusable("RestartState holds other arrays than the physics writes");
       }
+      const auto scalars = entry != nullptr && entry->scalars
+                               ? entry->scalars(p.input, averaged)
+                               : std::vector<std::pair<std::string, std::int64_t>>{};
+      if (io::solver_state_arrays(snapshot->path()) != scalars) {
+        unusable("SolverState holds other arrays or lengths than the physics writes");
+      }
     }
     stored = io::read_solution(snapshot->path(), start.mode == "continue");
   } catch (const Error& e) {
@@ -571,7 +578,8 @@ void load_start(Prepared& p, const PhysicsRegistry::Entry* entry) {
   if (names != field_names(p.input)) {
     start_mismatch("E0708", "the previous run solved other variables", "start.run");
   }
-  StartState state{.fields = std::move(stored.fields), .mean_fields = {}, .restart_fields = {}};
+  StartState state{
+      .fields = std::move(stored.fields), .mean_fields = {}, .restart_fields = {}, .scalars = {}};
   if (start.mode == "continue") {
     // A continuation goes on in the order the run computed in (results.md,
     // cell_order): another order would change its bits from the restart on.
@@ -590,6 +598,7 @@ void load_start(Prepared& p, const PhysicsRegistry::Entry* entry) {
     p.start_binary = solver["binary_sha256"];
     state.mean_fields = std::move(stored.mean_fields);
     state.restart_fields = std::move(stored.restart_fields);
+    state.scalars = std::move(stored.solver_state);
   }
   p.start = std::move(state);
 }
@@ -1493,6 +1502,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
   const auto* entry = registry.find(p.input);
   p.factory = entry != nullptr ? &entry->factory : nullptr;
   p.groups = entry != nullptr ? &entry->groups : nullptr;
+  p.scalars = entry != nullptr ? &entry->scalars : nullptr;
   if (entry != nullptr && entry->scope) {
     if (auto refusal = entry->scope(p.input, ranks)) {
       auto data = nlohmann::json::parse(refusal->data_json);
@@ -1905,7 +1915,8 @@ class Run final : public Log {
   [[nodiscard]] StartState owned_start(const StartState& global) const {
     return StartState{.fields = owned_fields(global.fields),
                       .mean_fields = owned_fields(global.mean_fields),
-                      .restart_fields = owned_fields(global.restart_fields)};
+                      .restart_fields = owned_fields(global.restart_fields),
+                      .scalars = global.scalars};
   }
 
   // The mesh index of each owned cell of the physics' mesh.
@@ -2518,6 +2529,7 @@ class Run final : public Log {
       s.fields = physics_->fields(false);
       if (!info_["averaging"].is_null()) s.mean_fields = physics_->fields(true);
       s.restart_fields = physics_->restart_fields();
+      s.solver_state = physics_->restart_scalars();
       if (!s.wall_faces.empty()) s.wall_fields = physics_->wall_fields(physics_faces);
     } catch (const std::exception& e) {
       throw PhysicsFailure(e.what());
@@ -2527,6 +2539,16 @@ class Run final : public Log {
     for (const auto& f : s.fields) names.push_back(f.name);
     if (names != field_names(in))
       throw PhysicsFailure("the physics returned another set of fields");
+    // The SolverState a continue checks names and lengths of (E0707): what the entry registers.
+    std::vector<std::pair<std::string, std::int64_t>> scalars;
+    for (const auto& f : s.solver_state)
+      scalars.emplace_back(f.name, static_cast<std::int64_t>(f.values.size()));
+    const bool averaged = !s.mean_fields.empty();
+    if (scalars != (p_.scalars != nullptr && *p_.scalars
+                        ? (*p_.scalars)(in, averaged)
+                        : std::vector<std::pair<std::string, std::int64_t>>{})) {
+      throw PhysicsFailure("the physics returned other solver state arrays than it registers");
+    }
     // Rank 0 gathers every field, cells by mesh index, wall faces by slot.
     const auto ids = owned_ids();
     const auto gather = [&](std::vector<io::Field>& fields, std::span<const std::int64_t> where,
@@ -2738,10 +2760,10 @@ class Run final : public Log {
 
 void PhysicsRegistry::add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope,
                           bool several_ranks, PartitionGroups groups, RestartNames restart,
-                          GhostStencils ghosts) {
+                          GhostStencils ghosts, RestartScalars scalars) {
   entries_.emplace_back(
       std::move(key), Entry{std::move(factory), std::move(scope), several_ranks, std::move(groups),
-                            std::move(restart), std::move(ghosts)});
+                            std::move(restart), std::move(ghosts), std::move(scalars)});
 }
 
 const PhysicsRegistry::Entry* PhysicsRegistry::find(const SolverInput& in) const {
