@@ -429,6 +429,88 @@ TEST_CASE("A halo pattern that does not fit the communicator is rejected", "[hal
 #endif
 }
 
+namespace {
+
+// The row of the cell with global id `id`: id % 4 entries (an empty row every fourth cell), entry j
+// keyed 10 id + j with values id + j / 4 + v / 16, v < stride, all exact in double.
+autan::CellRows row_of(std::int64_t id, int stride) {
+  autan::CellRows r;
+  r.stride = stride;
+  for (std::int64_t j = 0; j < id % 4; ++j) {
+    r.keys.push_back(10 * id + j);
+    for (int v = 0; v < stride; ++v)
+      r.values.push_back(static_cast<double>(id) + static_cast<double>(j) / 4.0 + v / 16.0);
+  }
+  r.offsets.push_back(static_cast<autan::offset_t>(r.keys.size()));
+  return r;
+}
+
+// The rows of `mesh`'s first `n` cells, by global id, as one CellRows.
+autan::CellRows rows_of(const autan::Mesh& mesh, index_t n, int stride) {
+  autan::CellRows all;
+  all.stride = stride;
+  for (index_t c = 0; c < n; ++c) {
+    const autan::CellRows r = row_of(mesh.cell_global_id()[at(c)], stride);
+    all.keys.insert(all.keys.end(), r.keys.begin(), r.keys.end());
+    all.values.insert(all.values.end(), r.values.begin(), r.values.end());
+    all.offsets.push_back(static_cast<autan::offset_t>(all.keys.size()));
+  }
+  return all;
+}
+
+void require_everywhere(autan::ErrorCode expected, const std::function<void()>& action) {
+  try {
+    action();
+    FAIL("expected " << autan::error_code_string(expected));
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == expected);
+  }
+}
+
+}  // namespace
+
+TEST_CASE("Every ghost receives its owner's row", "[halo][rows]") {
+  // forward_rows: each ghost's row is the one its owner gives for that cell, of any length,
+  // empty rows included; periodic images (messages to self) and cells sent to several ranks
+  // get theirs too. The rows are a function of the global id, so the expected row is known.
+  const MeshKind kind =
+      GENERATE(MeshKind::tetra, MeshKind::hybrid, MeshKind::polyhedral, MeshKind::periodic);
+  Setup s = setup(kind);
+  const autan::Mesh& m = s.local.mesh;
+  const index_t n_owned = m.n_owned_cells();
+  for (const int stride : {0, 3}) {
+    const autan::CellRows ghosts =
+        autan::forward_rows(s.local.halo, rows_of(m, n_owned, stride), MPI_COMM_WORLD);
+    const auto n_ghosts = at(m.n_cells() - n_owned);
+    REQUIRE(ghosts.offsets.size() == n_ghosts + 1);
+    CHECK(ghosts.stride == stride);
+    for (std::size_t g = 0; g < n_ghosts; ++g) {
+      const autan::CellRows want = row_of(m.cell_global_id()[at(n_owned) + g], stride);
+      const auto first = at(ghosts.offsets[g]), last = at(ghosts.offsets[g + 1]);
+      CHECK(std::vector<std::int64_t>(ghosts.keys.begin() + static_cast<std::ptrdiff_t>(first),
+                                      ghosts.keys.begin() + static_cast<std::ptrdiff_t>(last)) ==
+            want.keys);
+      CHECK(std::vector<double>(
+                ghosts.values.begin() + static_cast<std::ptrdiff_t>(first * at(stride)),
+                ghosts.values.begin() + static_cast<std::ptrdiff_t>(last * at(stride))) ==
+            want.values);
+    }
+  }
+  // Every rank refuses together: a stride that differs on one rank (E0144), rows whose sizes do
+  // not match (E0140).
+  if (world_size() > 1) {
+    require_everywhere(autan::ErrorCode::halo_inconsistent, [&] {
+      (void)autan::forward_rows(s.local.halo, rows_of(m, n_owned, world_rank() == 0 ? 2 : 3),
+                                MPI_COMM_WORLD);
+    });
+  }
+  require_everywhere(autan::ErrorCode::partition_invalid_request, [&] {
+    autan::CellRows bad = rows_of(m, n_owned, 3);
+    if (world_rank() == 0) bad.values.push_back(0.0);
+    (void)autan::forward_rows(s.local.halo, bad, MPI_COMM_WORLD);
+  });
+}
+
 TEST_CASE("Graph levels exchange their nodes and edges through HaloExchange", "[halo][graph]") {
   // The dual graph of a box, METIS parts, coarse nodes of 4 consecutive cells: after a forward
   // exchange of the node ids and of the edge ids, every ghost holds its own id.

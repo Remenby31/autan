@@ -422,4 +422,135 @@ void exchange_ghost_geometry(HaloExchange& exchange, const Mesh& mesh, Geometry&
   }
 }
 
+CellRows forward_rows(const HaloPattern& pattern, const CellRows& owned, MPI_Comm comm) {
+  int size = 0;
+  int rank = 0;
+  MPI_Comm_size(comm, &size);
+  MPI_Comm_rank(comm, &rank);
+  agree(comm, size == pattern.n_ranks && rank == pattern.rank, ErrorCode::halo_inconsistent,
+        "rank " + std::to_string(rank) + " of " + std::to_string(size) +
+            " holds the halo pattern of part " + std::to_string(pattern.rank) + " of " +
+            std::to_string(pattern.n_ranks));
+  int least = owned.stride;
+  int most = owned.stride;
+  MPI_Allreduce(MPI_IN_PLACE, &least, 1, MPI_INT, MPI_MIN, comm);
+  MPI_Allreduce(MPI_IN_PLACE, &most, 1, MPI_INT, MPI_MAX, comm);
+  agree(comm, least == most, ErrorCode::halo_inconsistent,
+        "the ranks send rows of " + std::to_string(least) + " to " + std::to_string(most) +
+            " values an entry");
+
+  const std::size_t n_rows = owned.offsets.empty() ? 0 : owned.offsets.size() - 1;
+  bool rows_ok = owned.stride >= 0 && !owned.offsets.empty() && owned.offsets.front() == 0 &&
+                 std::ranges::is_sorted(owned.offsets) &&
+                 owned.keys.size() == at(owned.offsets.back()) &&
+                 owned.values.size() == owned.keys.size() * at(std::max(owned.stride, 0));
+  for (const index_t c : pattern.send_cells) rows_ok = rows_ok && c >= 0 && at(c) < n_rows;
+  agree(comm, rows_ok, ErrorCode::partition_invalid_request,
+        "rows that do not match their sizes, or a sent cell without a row");
+
+  // Each rank's slot count to every other must equal that rank's ghost count from it.
+  const auto n_neighbours = pattern.neighbours.size();
+  bool shape_ok = pattern.send_offsets.size() == n_neighbours + 1 &&
+                  pattern.recv_offsets.size() == n_neighbours + 1;
+  std::vector<int> slots_to(at(size), 0);
+  std::vector<int> slots_from(at(size), 0);
+  std::vector<int> send_at(at(size), 0);
+  std::vector<int> recv_at(at(size), 0);
+  for (std::size_t i = 0; shape_ok && i < n_neighbours; ++i) {
+    const std::int32_t q = pattern.neighbours[i];
+    shape_ok = q >= 0 && q < size && (i == 0 || q > pattern.neighbours[i - 1]);
+    if (!shape_ok) break;
+    slots_to[at(q)] = pattern.send_offsets[i + 1] - pattern.send_offsets[i];
+    slots_from[at(q)] = pattern.recv_offsets[i + 1] - pattern.recv_offsets[i];
+    send_at[at(q)] = pattern.send_offsets[i];
+    recv_at[at(q)] = pattern.recv_offsets[i];
+  }
+  std::vector<int> announced(at(size), 0);
+  MPI_Alltoall(slots_to.data(), 1, MPI_INT, announced.data(), 1, MPI_INT, comm);
+  agree(comm, shape_ok && announced == slots_from, ErrorCode::halo_inconsistent,
+        "rank " + std::to_string(rank) + " expects ghost rows its neighbours do not send");
+
+  // The row length of each slot, in send order, then of each ghost, in ghost order.
+  const std::size_t n_sent = pattern.send_cells.size();
+  const std::size_t n_ghosts = pattern.recv_offsets.empty() ? 0 : at(pattern.recv_offsets.back());
+  std::vector<std::int64_t> sent_length(n_sent);
+  for (std::size_t k = 0; k < n_sent; ++k) {
+    const auto c = at(pattern.send_cells[k]);
+    sent_length[k] = owned.offsets[c + 1] - owned.offsets[c];
+  }
+  std::vector<std::int64_t> ghost_length(n_ghosts);
+  MPI_Alltoallv(sent_length.data(), slots_to.data(), send_at.data(), MPI_INT64_T,
+                ghost_length.data(), slots_from.data(), recv_at.data(), MPI_INT64_T, comm);
+
+  // Entries per peer, both ways, within the MPI count range at `stride` values each.
+  const std::int64_t width = std::max(owned.stride, 1);
+  std::vector<std::int64_t> entries_to(at(size), 0);
+  std::vector<std::int64_t> entries_from(at(size), 0);
+  for (std::size_t i = 0; i < n_neighbours; ++i) {
+    const auto q = at(pattern.neighbours[i]);
+    for (auto k = pattern.send_offsets[i]; k < pattern.send_offsets[i + 1]; ++k)
+      entries_to[q] += sent_length[at(k)];
+    for (auto g = pattern.recv_offsets[i]; g < pattern.recv_offsets[i + 1]; ++g)
+      entries_from[q] += ghost_length[at(g)];
+  }
+  std::int64_t total_to = 0;
+  std::int64_t total_from = 0;
+  for (int q = 0; q < size; ++q) {
+    total_to += entries_to[at(q)];
+    total_from += entries_from[at(q)];
+  }
+  const std::int64_t limit = std::numeric_limits<int>::max();
+  agree(comm, total_to * width <= limit && total_from * width <= limit,
+        ErrorCode::partition_invalid_request,
+        "ghost rows of " + std::to_string(std::max(total_to, total_from)) +
+            " entries exceed the MPI count range");
+
+  std::vector<int> key_count_to(at(size)), key_count_from(at(size));
+  std::vector<int> key_at_to(at(size)), key_at_from(at(size));
+  std::vector<int> value_count_to(at(size)), value_count_from(at(size));
+  std::vector<int> value_at_to(at(size)), value_at_from(at(size));
+  std::int64_t to = 0;
+  std::int64_t from = 0;
+  for (int q = 0; q < size; ++q) {
+    const auto u = at(q);
+    key_count_to[u] = static_cast<int>(entries_to[u]);
+    key_count_from[u] = static_cast<int>(entries_from[u]);
+    key_at_to[u] = static_cast<int>(to);
+    key_at_from[u] = static_cast<int>(from);
+    value_count_to[u] = static_cast<int>(entries_to[u] * owned.stride);
+    value_count_from[u] = static_cast<int>(entries_from[u] * owned.stride);
+    value_at_to[u] = static_cast<int>(to * owned.stride);
+    value_at_from[u] = static_cast<int>(from * owned.stride);
+    to += entries_to[u];
+    from += entries_from[u];
+  }
+
+  // Packed in send order, which runs over the neighbours in increasing rank.
+  std::vector<std::int64_t> keys;
+  std::vector<double> values;
+  keys.reserve(at(total_to));
+  values.reserve(at(total_to * owned.stride));
+  for (const index_t c : pattern.send_cells) {
+    const auto first = at(owned.offsets[at(c)]);
+    const auto last = at(owned.offsets[at(c) + 1]);
+    keys.insert(keys.end(), owned.keys.begin() + static_cast<std::ptrdiff_t>(first),
+                owned.keys.begin() + static_cast<std::ptrdiff_t>(last));
+    values.insert(values.end(),
+                  owned.values.begin() + static_cast<std::ptrdiff_t>(first * at(owned.stride)),
+                  owned.values.begin() + static_cast<std::ptrdiff_t>(last * at(owned.stride)));
+  }
+
+  CellRows out;
+  out.stride = owned.stride;
+  out.offsets.assign(n_ghosts + 1, 0);
+  for (std::size_t g = 0; g < n_ghosts; ++g) out.offsets[g + 1] = out.offsets[g] + ghost_length[g];
+  out.keys.resize(at(total_from));
+  out.values.resize(at(total_from * owned.stride));
+  MPI_Alltoallv(keys.data(), key_count_to.data(), key_at_to.data(), MPI_INT64_T, out.keys.data(),
+                key_count_from.data(), key_at_from.data(), MPI_INT64_T, comm);
+  MPI_Alltoallv(values.data(), value_count_to.data(), value_at_to.data(), MPI_DOUBLE,
+                out.values.data(), value_count_from.data(), value_at_from.data(), MPI_DOUBLE, comm);
+  return out;
+}
+
 }  // namespace autan

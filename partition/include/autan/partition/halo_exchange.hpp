@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <vector>
 
 #include <mpi.h>
 
@@ -64,6 +65,24 @@ class HaloExchange {
   struct State;
   std::unique_ptr<State> state_;
 };
+
+/// Variable-length rows of cells as CSR: row c holds the entries offsets[c] .. offsets[c + 1],
+/// each a key and `stride` values (values[stride * e ..]); a row may be empty.
+struct CellRows {
+  std::vector<offset_t> offsets{0};
+  std::vector<std::int64_t> keys;
+  std::vector<double> values;
+  int stride = 0;
+};
+
+/// The row of every ghost of `pattern`, in ghost order (row g for cell n_owned + g): the row its
+/// owner gives in `owned`, one row per owned cell. A cell sent to several ranks, or to the same
+/// rank as several periodic images, is sent once per ghost; an image of the rank's own cell gets
+/// that cell's row as is, its keys the caller's to rebase (Mesh::ghost_translation). Collective
+/// over `comm` (size pattern.n_ranks, rank pattern.rank), host memory, the same bits on every
+/// run. Throws E0144 if the ranks disagree on the halo or on the stride, and E0140 for rows that
+/// do not match their sizes or a message beyond the MPI count range, on every rank.
+CellRows forward_rows(const HaloPattern& pattern, const CellRows& owned, MPI_Comm comm);
 
 /// Fills the ghost cell volumes and centroids of a host Geometry from their
 /// owners, with a forward exchange on the host, and moves the centroids of
