@@ -461,7 +461,7 @@ autan::CellRows rows_of(const autan::Mesh& mesh, index_t n, int stride) {
 void require_everywhere(autan::ErrorCode expected, const std::function<void()>& action) {
   try {
     action();
-    FAIL("expected " << autan::error_code_string(expected));
+    FAIL_CHECK("expected " << autan::error_code_string(expected));
   } catch (const autan::Error& e) {
     CHECK(e.code() == expected);
   }
@@ -529,12 +529,21 @@ TEST_CASE("Every ghost receives its owner's row", "[halo][rows]") {
   self.recv_offsets = {0, 1};
   require_everywhere(autan::ErrorCode::halo_inconsistent,
                      [&] { (void)autan::forward_rows(self, row_of(1, 1), MPI_COMM_SELF); });
-  constexpr index_t slots = 2048;
-  self.send_cells.assign(slots, 0);
-  self.send_offsets = {0, slots};
-  self.recv_offsets = {0, slots};
+  autan::HaloPattern large;
+  large.rank = world_rank();
+  large.n_ranks = world_size();
+  autan::CellRows one;
+  one.stride = 1 << 20;
+  if (world_rank() == 0) {
+    constexpr index_t slots = 2048;
+    large.neighbours = {0};
+    large.send_cells.assign(slots, 0);
+    large.send_offsets = {0, slots};
+    large.recv_offsets = {0, slots};
+    one = row_of(1, 1 << 20);
+  }
   require_everywhere(autan::ErrorCode::partition_invalid_request,
-                     [&] { (void)autan::forward_rows(self, row_of(1, 1 << 20), MPI_COMM_SELF); });
+                     [&] { (void)autan::forward_rows(large, one, MPI_COMM_WORLD); });
 }
 
 TEST_CASE("Graph levels exchange their nodes and edges through HaloExchange", "[halo][graph]") {
