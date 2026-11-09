@@ -2444,8 +2444,8 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
     });
     require_error(o, "E0134");
     const Json refusal = Json::parse(o.err.substr(0, o.err.find('\n')));
-    CHECK(refusal["data"]["node"] == node);
-    CHECK(refusal["location"]["path"] == "start.run");
+    CHECK(refusal.at("data").at("node") == node);
+    CHECK(refusal.at("location").at("path") == "start.run");
   }
   SECTION("the previous run was computed on another mesh") {
     // The same cells, but another file: its hash differs.
@@ -3725,8 +3725,8 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
                        "run.json"));
   CHECK(f["status"] == "failed");
   CHECK(f["iterations"] == 3);
-  CHECK(f["diagnostics"][0]["code"] == "E0704");
-  CHECK(f["diagnostics"][0]["data"]["rank"] == ranks - 1);
+  CHECK(f.at("diagnostics").at(0).at("code") == "E0704");
+  CHECK(f.at("diagnostics").at(0).at("data").at("rank") == ranks - 1);
 
   // The same failure in the final monitor record (loads() called only by
   // finish, `every` beyond the run), the others inside the collective sum of
@@ -3741,8 +3741,8 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
                        "run.json"));
   CHECK(g["status"] == "failed");
   CHECK(g["monitors"].is_null());
-  CHECK(g["diagnostics"][0]["code"] == "E0704");
-  CHECK(g["diagnostics"][0]["data"]["rank"] == ranks - 1);
+  CHECK(g.at("diagnostics").at(0).at("code") == "E0704");
+  CHECK(g.at("diagnostics").at(0).at("data").at("rank") == ranks - 1);
 
   // A stop file the last rank creates during iteration 5: rank 0 sees it, and
   // all stop before iteration 6.
