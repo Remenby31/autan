@@ -28,7 +28,7 @@ Each gate is checked on run 1. The values come from `main` 179e316c, #597's B4 h
 |---|---|
 | green | Every gate passes and the two runs are identical. |
 | red | A gate fails, the runs differ, a run exits non-zero, or a run cannot be measured: a build failure, a crash, a non-finite or truncated history or monitor, a missing binary fingerprint, or a foreign commit. Inputs the enqueue refuses (the mesh's sha256, a failed fetch) give a red verdict without a job. |
-| void | A named infrastructure failure only: the night's deadline (06:30 UTC the next day), which stops the build or the runs, or a cgroup OOM kill that the job's own counter records. The case runs a fixed 20 000 steps, so a missed deadline measures the queue and the host's load, not the numerics; the verdict gives the steps reached, the steps per minute, the queue start and the publication time. |
+| void | A named infrastructure failure only: the night's deadline (06:30 UTC the next day), which stops the build or the runs; a job still pending in the queue at 07:00, which the watchdog withdraws; or a cgroup OOM kill that the job's own counter records. The case runs a fixed 20 000 steps, so a missed deadline measures the queue and the host's load, not the numerics; the verdict gives the steps reached, the steps per minute, the queue start and the publication time. |
 | MISSING | No verdict by 07:00 UTC. |
 
 **Reading the results:** every morning, V&V reads `spark-5512:~/cfd/vv-guard/STATUS`, one line per night, with the orchestrator as backup. A red or MISSING night, or a second void in a row (`STATUS` flags it), gets an issue with both runs' paths. The host has no `gh`, so this step is manual.

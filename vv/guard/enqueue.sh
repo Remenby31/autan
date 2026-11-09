@@ -10,14 +10,17 @@ G=${AUTAN_GUARD_ROOT:-$HOME/cfd/vv-guard}
 MESH_SHA256=ceb75abce31f12437e954107467e3e2ca4acbf66b1059b4a24d910b86ae7a59e
 exec 9> "$G/.enqueue.lock"
 flock -n 9 || exit 0
-if [ "$(date -u +%H%M)" -lt 2330 ]; then night=$(date -u -d yesterday +%F); else night=$(date -u +%F); fi
+now=$(date -u +%s)
+if [ "$(date -u -d "@$now" +%H%M)" -lt 2330 ]; then now=$((now - 86400)); fi
+night=$(date -u -d "@$now" +%F)
 dir=$G/$night
 publish() {
   [ -e "$dir/ENQUEUED" ] && return 0
   local name="05-guard-$night.job" q=$HOME/cfd/queue
   if [ ! -e "$q/pending/$name" ] && [ ! -e "$q/running/$name" ] && [ ! -e "$q/done/$name" ]; then
     date -u +%FT%TZ > "$dir/PUBLISHED"
-    cp "$dir/job.file" "$q/pending/.$name.tmp" && mv "$q/pending/.$name.tmp" "$q/pending/$name"
+    cp "$dir/job.file" "$q/pending/.$name.tmp" || return 1
+    mv "$q/pending/.$name.tmp" "$q/pending/$name" || return 1
   fi
   touch "$dir/ENQUEUED"
 }
