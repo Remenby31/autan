@@ -48,43 +48,78 @@
       "name": "wing.slat",
       "type": "wall",
       "native_type": "BCWall",
-      "faces": 402000
+      "faces": 402000,
+      "first_cell_height": {
+        "min": 1.9999999999999998e-05,
+        "median": 4.9999999999999996e-05,
+        "max": 0.00019999999999999998
+      }
     },
     {
       "name": "wing.main",
       "type": "wall",
       "native_type": "BCWall",
-      "faces": 812000
+      "faces": 812000,
+      "first_cell_height": {
+        "min": 1.9999999999999998e-05,
+        "median": 4.9999999999999996e-05,
+        "max": 0.00019999999999999998
+      }
     },
     {
       "name": "wing.flap",
       "type": "wall",
       "native_type": "BCWall",
-      "faces": 388000
+      "faces": 388000,
+      "first_cell_height": {
+        "min": 1.9999999999999998e-05,
+        "median": 4.9999999999999996e-05,
+        "max": 0.00019999999999999998
+      }
     },
     {
       "name": "fuselage",
       "type": "wall",
       "native_type": "BCWall",
-      "faces": 655000
+      "faces": 655000,
+      "first_cell_height": {
+        "min": 1.9999999999999998e-05,
+        "median": 4.9999999999999996e-05,
+        "max": 0.00019999999999999998
+      }
     },
     {
       "name": "empennage",
       "type": "wall",
       "native_type": "BCWall",
-      "faces": 95000
+      "faces": 95000,
+      "first_cell_height": {
+        "min": 1.9999999999999998e-05,
+        "median": 4.9999999999999996e-05,
+        "max": 0.00019999999999999998
+      }
     },
     {
       "name": "symmetry",
       "type": "symmetry",
       "native_type": "BCSymmetryPlane",
-      "faces": 210000
+      "faces": 210000,
+      "first_cell_height": {
+        "min": 0.1,
+        "median": 0.4,
+        "max": 1.0
+      }
     },
     {
       "name": "farfield",
       "type": "farfield",
       "native_type": "BCFarfield",
-      "faces": 48000
+      "faces": 48000,
+      "first_cell_height": {
+        "min": 0.1,
+        "median": 0.4,
+        "max": 1.0
+      }
     }
   ],
   "cell_zones": [
@@ -132,7 +167,7 @@
   "partition": {
     "ranks": 1,
     "groups": "none",
-    "ghost_stencil": "face2",
+    "ghost_stencil": "vertex4",
     "cells_by_rank": [
       48200000
     ],

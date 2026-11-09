@@ -268,50 +268,60 @@ class Covering {
   std::vector<Shift> offset_;
 };
 
-// The cells and faces (representing face, home shift) around the node copies of `cells`: from a
-// cell holding the node, the walk crosses every face that holds it.
+// The cells within `depth` vertex rings of `cells`, the node copies of the cells within one ring
+// fewer, and every face (representing face, home shift) around those nodes: from a cell holding a
+// node, the walk crosses every face that holds it.
 struct Rings {
   std::set<Key> cells;
+  std::set<Key> nodes;
   std::set<Key> faces;
 };
-Rings rings_of(const Mesh& global, Covering& cover, std::span<const index_t> cells) {
-  std::set<Key> nodes;
+Rings rings_of(const Mesh& global, Covering& cover, std::span<const index_t> cells, int depth) {
   Rings out;
+  std::vector<Key> frontier;
+  for (const index_t c : cells) {
+    out.cells.insert({c, Shift{}});
+    frontier.push_back({c, Shift{}});
+  }
   std::vector<Key> stack;
   std::set<Key> visited;
-  for (const index_t c : cells) {
-    for (const index_t f : global.cell_faces(c)) {
-      for (const index_t p : global.face_nodes(f)) {
-        const Key node = cover.canonical_node(p, Shift{});
-        if (!nodes.insert(node).second) continue;
-        visited.clear();
-        visited.insert({c, Shift{}});
-        stack.assign(1, {c, Shift{}});
-        while (!stack.empty()) {
-          const Key u = stack.back();
-          stack.pop_back();
-          out.cells.insert(u);
-          for (const index_t g : global.cell_faces(u.entity)) {
-            bool holds = false;
-            for (const index_t q : global.face_nodes(g))
-              holds = holds || cover.canonical_node(q, u.shift) == node;
-            if (!holds) continue;
-            const auto side = cover.across(g, u);
-            out.faces.insert({side.face, side.home});
-            if (side.other.entity != no_cell && visited.insert(side.other).second)
-              stack.push_back(side.other);
+  for (int ring = 0; ring < depth; ++ring) {
+    std::vector<Key> next;
+    for (const Key& from : frontier) {
+      for (const index_t f : global.cell_faces(from.entity)) {
+        for (const index_t p : global.face_nodes(f)) {
+          const Key node = cover.canonical_node(p, from.shift);
+          if (!out.nodes.insert(node).second) continue;
+          visited.clear();
+          visited.insert(from);
+          stack.assign(1, from);
+          while (!stack.empty()) {
+            const Key u = stack.back();
+            stack.pop_back();
+            if (out.cells.insert(u).second) next.push_back(u);
+            for (const index_t g : global.cell_faces(u.entity)) {
+              bool holds = false;
+              for (const index_t q : global.face_nodes(g))
+                holds = holds || cover.canonical_node(q, u.shift) == node;
+              if (!holds) continue;
+              const auto side = cover.across(g, u);
+              out.faces.insert({side.face, side.home});
+              if (side.other.entity != no_cell && visited.insert(side.other).second)
+                stack.push_back(side.other);
+            }
           }
         }
       }
     }
+    frontier = std::move(next);
   }
   return out;
 }
 
 // The ghost copies part `q` holds: cells of the covering within one or two
-// faces of its owned cells, and with `vertex` the cells around their nodes, ordered by owning
-// part, then global cell, then shift. Ghosts in part q itself are periodic images of its own
-// cells. With `vertex`, `rings` receives the rings of `cells`.
+// faces of its owned cells, and with a vertex kind the cells within its vertex rings, ordered by
+// owning part, then global cell, then shift. Ghosts in part q itself are periodic images of its own
+// cells. With a vertex kind, `rings` receives the rings of `cells`.
 std::vector<Key> ghosts_of(const Mesh& global, Covering& cover, std::span<const std::int32_t> parts,
                            std::span<const index_t> cells, GhostStencil kind,
                            Rings* rings = nullptr) {
@@ -335,8 +345,8 @@ std::vector<Key> ghosts_of(const Mesh& global, Covering& cover, std::span<const 
     }
     frontier = std::move(next);
   }
-  if (kind == GhostStencil::vertex) {
-    Rings r = rings_of(global, cover, cells);
+  if (const int depth = vertex_rings(kind); depth > 0) {
+    Rings r = rings_of(global, cover, cells, depth);
     for (const Key& u : r.cells) {
       if (seen.insert(u).second) ghosts.push_back(u);
     }
@@ -349,11 +359,12 @@ std::vector<Key> ghosts_of(const Mesh& global, Covering& cover, std::span<const 
   return ghosts;
 }
 
-// Every node copy of an owned cell must keep all its faces on the part: as many (local face,
-// node) incidences as its class has (representing face, node) incidences in the global mesh,
-// each of which is one face copy around it. Else a cell or boundary face of its vertex
-// stencil would be missing, the cells around it not all meeting through its faces.
-void check_rings(const Mesh& global, Covering& cover, std::span<const index_t> owned,
+// Every node copy the rings walked around (those of the cells within one ring fewer) must keep
+// all its faces on the part: as many (local face, node) incidences as its class has
+// (representing face, node) incidences in the global mesh, each of which is one face copy around
+// it. Else a cell or boundary face of a vertex stencil would be missing, the cells around the
+// node not all meeting through its faces.
+void check_rings(const Mesh& global, Covering& cover, const std::set<Key>& nodes,
                  const std::set<Key>& faces) {
   std::vector<std::int32_t> degree(at(global.n_points()), 0);
   for (index_t f = 0; f < global.n_faces(); ++f) {
@@ -362,12 +373,7 @@ void check_rings(const Mesh& global, Covering& cover, std::span<const index_t> o
       ++degree[at(cover.canonical_node(p, Shift{}).entity)];
   }
   std::map<Key, std::int32_t> local;
-  for (const index_t c : owned) {
-    for (const index_t f : global.cell_faces(c)) {
-      for (const index_t p : global.face_nodes(f))
-        local.emplace(cover.canonical_node(p, Shift{}), 0);
-    }
-  }
+  for (const Key& node : nodes) local.emplace(node, 0);
   for (const Key& face : faces) {
     for (const index_t p : global.face_nodes(face.entity)) {
       const auto it = local.find(cover.canonical_node(p, face.shift));
@@ -377,7 +383,7 @@ void check_rings(const Mesh& global, Covering& cover, std::span<const index_t> o
   for (const auto& [node, count] : local) {
     if (count != degree[at(node.entity)]) {
       throw Error(ErrorCode::partition_stencil_not_local,
-                  "node " + std::to_string(node.entity) + " of an owned cell has " +
+                  "node " + std::to_string(node.entity) + " within the rings has " +
                       std::to_string(degree[at(node.entity)]) + " face incidences, " +
                       std::to_string(count) + " of them reachable through its faces");
     }
@@ -434,7 +440,7 @@ LocalPartition extract_partition(const Mesh& global, const Geometry& global_geom
   };
   for (const index_t c : owned) add_faces({c, Shift{}});
   for (const Key& g : first_layer) add_faces(g);
-  if (kind == GhostStencil::vertex) {
+  if (vertex_rings(kind) > 0) {
     // The rings' faces, and the boundary faces of their cells: a stencil that depends on whether
     // a cell has a boundary face reads it on the part as on the whole mesh.
     faces.insert(rings.faces.begin(), rings.faces.end());
@@ -444,7 +450,7 @@ LocalPartition extract_partition(const Mesh& global, const Geometry& global_geom
         if (side.other.entity == no_cell) faces.insert({side.face, side.home});
       }
     }
-    check_rings(global, cover, owned, faces);
+    check_rings(global, cover, rings.nodes, faces);
   }
 
   MeshInput in;

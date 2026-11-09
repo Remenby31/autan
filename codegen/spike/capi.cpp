@@ -561,15 +561,16 @@ int autan_spike_mesh_from_faces(std::int64_t n_points, const double* xyz, std::i
 }
 
 /// Part `rank` of `parts` (n_cells entries: one per cell of the unpartitioned `global`, checked
-/// by extract_partition) with the ghosts of `ghosts` (0 face, 1 face2, 2 vertex:
-/// autan::GhostStencil, autan::extract_partition). Ghost cells get the volume and translated
-/// centroid of their global cell, as the forward halo exchange of geometry would give them.
+/// by extract_partition) with the ghosts of `ghosts` (0 face, 1 face2, 2 vertex, 3 to 5 vertex2 to
+/// vertex4: autan::GhostStencil, autan::extract_partition). Ghost cells get the volume and
+/// translated centroid of their global cell, as the forward halo exchange of geometry would give
+/// them.
 int autan_spike_mesh_partition(const void* global, const std::int32_t* parts, std::int64_t n_cells,
                                std::int32_t n_parts, std::int32_t rank, std::int32_t ghosts,
                                void** out, char* err, std::size_t err_len) {
   const auto* g = static_cast<const SpikeMesh*>(global);
   return guarded(err, err_len, [&] {
-    if (ghosts < 0 || ghosts > 2) throw std::invalid_argument("ghosts is 0, 1 or 2");
+    if (ghosts < 0 || ghosts > 5) throw std::invalid_argument("ghosts is 0 to 5");
     auto lp = autan::extract_partition(
         g->mesh, g->geometry,
         std::span<const std::int32_t>(parts, static_cast<std::size_t>(n_cells)), n_parts, rank,

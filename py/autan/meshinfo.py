@@ -101,11 +101,45 @@ class GroupsSource(_Strict):
     provenance: dict[str, str]
 
 
+Length = Annotated[float, Field(strict=True, ge=0.0, allow_inf_nan=False)]
+
+
+class FirstCellHeight(_Strict):
+    """Over a zone's faces, the distance along each face's normal from its owner cell's centroid
+    to the face's centroid, in the file's units (mesh-info.md)."""
+
+    min: Length
+    median: Length
+    max: Length
+
+    @model_validator(mode="after")
+    def _ordered(self) -> Self:
+        if not self.min <= self.median <= self.max:
+            message = "first_cell_height must hold min <= median <= max"
+            raise ValueError(message)
+        return self
+
+
 class BoundaryZone(_Strict):
     name: Name
     type: BoundaryType | None
     native_type: str | None
     faces: Count
+    first_cell_height: FirstCellHeight | None
+
+    @model_validator(mode="after")
+    def _height_with_faces(self) -> Self:
+        h = self.first_cell_height
+        if (h is None) != (self.faces == 0):
+            message = "first_cell_height is null exactly for a zone without faces"
+            raise ValueError(message)
+        if h is not None and (
+            (self.faces == 1 and h.min != h.max)
+            or (self.faces == 2 and h.median != (h.min + h.max) / 2)
+        ):
+            message = "first_cell_height does not fit the zone's face count"
+            raise ValueError(message)
+        return self
 
 
 class CellZone(_Strict):
@@ -189,7 +223,7 @@ ByRank = Annotated[tuple[Count, ...], Field(min_length=1)]
 class Partition(_Strict):
     ranks: Annotated[int, Field(strict=True, ge=1)]
     groups: Literal["none", "lines"]
-    ghost_stencil: Literal["face2", "vertex"]
+    ghost_stencil: Literal["face2", "vertex", "vertex2", "vertex3", "vertex4"]
     cells_by_rank: ByRank
     ghosts_by_rank: ByRank
     faces_by_rank: ByRank
