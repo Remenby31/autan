@@ -936,7 +936,7 @@ TEST_CASE("a Navier-Stokes case outside the physics' scope is refused before any
 
 TEST_CASE(
     "a Navier-Stokes case under reproducibility ranks gives the same bits in every cell order",
-    "[navier-stokes]") {
+    "[navier-stokes][long]") {
   // case-schema.md, reproducibility: "ranks" repeats the bits in any cell order. The hybrid case,
   // SA and laminar, keeps its no-slip wall so that the viscous boundary fit is built. Steady runs
   // go past the second-order switch, so that the Jacobian, SA's assembly and its sweeps are

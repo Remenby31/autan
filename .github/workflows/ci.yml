@@ -141,8 +141,11 @@ jobs:
           -DCMAKE_CXX_FLAGS=${{ matrix.hardening }}
       - name: Build
         run: cmake --build build
+      # One test per hosted CPU: run one at a time, the tests took up to 1792 s and their jobs up
+      # to 1993 s of the 35-minute limit on main, so slow hosted runners cancelled jobs whose tests
+      # all passed. These are the tests gpu-tests already runs with -j 4 (no MPI, no GPU here).
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure -j "$(getconf _NPROCESSORS_ONLN)"
 
   mpi:
     # The multi-rank tests use no GPU: they run here, on every pull request including drafts,
