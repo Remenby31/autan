@@ -13,10 +13,13 @@
 #include "autan/core/cellwise.hpp"
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
+#include "autan/core/renumber.hpp"
 #include "autan/io/mesh_counts.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/kernels/geometry.hpp"
 #include "autan/partition/partition.hpp"
+#include "autan/solvers/agglomeration.hpp"
+#include "autan/solvers/multigrid.hpp"
 #include "fixtures.hpp"
 
 namespace {
@@ -311,18 +314,23 @@ TEST_CASE("MeshInfo counts a single-rank run's stencil entries and periodic ghos
 #ifdef AUTAN_HAVE_METIS
 TEST_CASE("MeshInfo counts each rank of a partitioned run", "[mesh-info]") {
   const int n = 4;
-  const auto groups = GENERATE(autan::io::RankGroups::none, autan::io::RankGroups::lines);
-  const auto [ghost_stencil, name] = GENERATE(std::pair{autan::GhostStencil::face2, "face2"},
-                                              std::pair{autan::GhostStencil::vertex, "vertex"},
-                                              std::pair{autan::GhostStencil::vertex4, "vertex4"});
-  CAPTURE(groups == autan::io::RankGroups::lines, name);
+  using autan::io::RankGroups;
+  const auto groups = GENERATE(RankGroups::none, RankGroups::lines, RankGroups::multigrid);
+  const auto [ghost_stencil, ghost_name] =
+      GENERATE(std::pair{autan::GhostStencil::face2, "face2"},
+               std::pair{autan::GhostStencil::vertex, "vertex"},
+               std::pair{autan::GhostStencil::vertex4, "vertex4"});
+  const char* name = groups == RankGroups::lines       ? "lines"
+                     : groups == RankGroups::multigrid ? "multigrid"
+                                                       : "none";
+  CAPTURE(name, ghost_name);
   const auto c = counts(box(n, 10.0), CellOrder::rcm,
                         autan::io::RanksRequest{.ranks = 3, .groups = groups}, ghost_stencil);
   REQUIRE(c.partition);
   const auto& p = *c.partition;
   CHECK(p.ranks == 3);
-  CHECK(p.groups == (groups == autan::io::RankGroups::lines ? "lines" : "none"));
-  CHECK(p.ghost_stencil == name);
+  CHECK(p.groups == name);
+  CHECK(p.ghost_stencil == ghost_name);
   REQUIRE(p.cells.size() == 3);
   std::int64_t owned = 0, ghosts = 0, sent = 0;
   for (std::size_t r = 0; r < 3; ++r) {
@@ -338,13 +346,47 @@ TEST_CASE("MeshInfo counts each rank of a partitioned run", "[mesh-info]") {
     CHECK(p.interior_faces[r] < p.faces[r]);
     CHECK(p.stencil_entries[r] > 0);
     // The lines are the box's columns: kept whole, each rank owns whole columns.
-    if (groups == autan::io::RankGroups::lines) CHECK(p.cells[r] % n == 0);
+    if (groups != RankGroups::none) CHECK(p.cells[r] % n == 0);
   }
   CHECK(owned == n * n * n);
   // Each ghost is one cell its owner sends.
   CHECK(sent == ghosts);
+  // mesh-info.md, partition.groups "multigrid": the partition keeps whole the lines of the
+  // multigrid's finest level, those of at least two cells of solvers::agglomerate's level 0 on the
+  // mesh in RCM order (#259 D2), in the cells as read.
+  if (groups == RankGroups::multigrid) {
+    const autan::Mesh mesh = autan::assemble(autan::to_face_based(box(n, 10.0)));
+    const auto geometry = autan::compute_geometry(mesh);
+    const auto new_to_old = autan::rcm_order(mesh);
+    autan::AssemblyMap map;
+    const autan::Mesh rcm = autan::renumber_cells(mesh, new_to_old, &map);
+    const auto levels =
+        autan::solvers::agglomerate(rcm, autan::renumber_geometry(geometry, new_to_old, map),
+                                    autan::solvers::MultigridOptions{}.agglomeration);
+    std::vector<autan::offset_t> offsets{0};
+    std::vector<autan::index_t> cells;
+    const auto& fine = levels.front();
+    for (std::size_t l = 0; l < fine.n_lines(); ++l) {
+      const auto b = fine.line_offsets[l], e = fine.line_offsets[l + 1];
+      if (e - b < 2) continue;
+      for (auto k = b; k < e; ++k) {
+        cells.push_back(
+            new_to_old[static_cast<std::size_t>(fine.line_nodes[static_cast<std::size_t>(k)])]);
+      }
+      offsets.push_back(static_cast<autan::offset_t>(cells.size()));
+    }
+    REQUIRE(cells.size() == static_cast<std::size_t>(n * n * n));
+    const auto parts = autan::partition_cells(mesh, 3,
+                                              {.cell_weights = autan::cell_cost_weights(mesh),
+                                               .group_offsets = offsets,
+                                               .group_cells = cells});
+    for (std::int32_t r = 0; r < 3; ++r) {
+      CAPTURE(r);
+      CHECK(p.cells[static_cast<std::size_t>(r)] == std::ranges::count(parts, r));
+    }
+  }
   // Each rank's rings over its local mesh, ghosts included, as the run partitions it.
-  if (groups == autan::io::RankGroups::none) {
+  if (groups == RankGroups::none) {
     const autan::Mesh mesh = autan::assemble(autan::to_face_based(box(n, 10.0)));
     const auto geometry = autan::compute_geometry(mesh);
     const auto parts = autan::partition_cells(

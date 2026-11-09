@@ -305,11 +305,12 @@ def _vortex_conditions(spec: CaseSpec, boundaries: list[BoundaryResolution]) -> 
 
 
 def partition_groups(spec: CaseSpec, device_kind: DeviceKind) -> str:
-    """The groups a run's partition keeps whole: the line smoother's lines of a steady CPU run
-    with ``linear_solver = "lines"`` or ``"multigrid"``, whose fine lines stay whole on each
-    rank, none otherwise (docs/contracts/mesh-info.md)."""
-    lines = isinstance(spec.time, Steady) and spec.time.linear_solver in ("lines", "multigrid")
-    return "lines" if lines and device_kind == "cpu" else "none"
+    """The groups a run's partition keeps whole (docs/contracts/mesh-info.md, partition.groups):
+    for a steady CPU run, the line smoother's lines with ``linear_solver = "lines"``, the
+    multigrid's finest lines with ``"multigrid"``; none otherwise."""
+    if not isinstance(spec.time, Steady) or device_kind != "cpu":
+        return "none"
+    return {"lines": "lines", "multigrid": "multigrid"}.get(spec.time.linear_solver, "none")
 
 
 def _multigrid_order(

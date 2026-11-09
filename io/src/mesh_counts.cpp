@@ -12,9 +12,27 @@
 #include "autan/kernels/geometry.hpp"
 #include "autan/partition/partition.hpp"
 #include "autan/solvers/agglomeration.hpp"
+#include "autan/solvers/multigrid.hpp"
 
 namespace autan::io {
 namespace {
+
+// The lines of the multigrid's finest level (solvers::agglomerate with the run's options on the
+// mesh as read, level 0) that hold at least two cells, in the hierarchy's order: the groups a
+// multigrid run on a partition keeps whole (mesh-info.md, partition.groups "multigrid").
+// The groups a multigrid run on a partition keeps whole (#259 D2): the finest lines of the
+// hierarchy it builds on the mesh in RCM order, the geometry carried by renumber_geometry as the
+// run carries it (physics' partition_hierarchy), in the cells of `mesh`.
+Lines multigrid_lines(const Mesh& mesh, const Geometry& geometry) {
+  const std::vector<index_t> new_to_old = rcm_order(mesh);
+  AssemblyMap map;
+  const Mesh rcm = renumber_cells(mesh, new_to_old, &map);
+  const std::vector<solvers::Level> levels = solvers::agglomerate(
+      rcm, renumber_geometry(geometry, new_to_old, map), solvers::MultigridOptions{}.agglomeration);
+  Lines lines = solvers::line_groups(levels.front());
+  for (index_t& c : lines.cells) c = new_to_old[static_cast<std::size_t>(c)];
+  return lines;
+}
 
 struct Stencils {
   std::int64_t face2 = 0, vertex = 0, band = 0, boundary_fit = 0;
@@ -311,14 +329,18 @@ MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
   Lines groups{.offsets = {}, .cells = {}};
   if (ranks->groups == RankGroups::lines) {
     groups = smoother_lines(mesh, geometry);
-    if (groups.cells.empty()) groups.offsets.clear();
+  } else if (ranks->groups == RankGroups::multigrid) {
+    groups = multigrid_lines(mesh, geometry);
   }
+  if (groups.cells.empty()) groups.offsets.clear();
   const std::vector<std::int32_t> parts = partition_cells(mesh, ranks->ranks,
                                                           {.cell_weights = cell_cost_weights(mesh),
                                                            .group_offsets = groups.offsets,
                                                            .group_cells = groups.cells});
   MeshInfoRun::Partition p{.ranks = ranks->ranks,
-                           .groups = ranks->groups == RankGroups::lines ? "lines" : "none",
+                           .groups = ranks->groups == RankGroups::lines       ? "lines"
+                                     : ranks->groups == RankGroups::multigrid ? "multigrid"
+                                                                              : "none",
                            .ghost_stencil = ghost_stencil,
                            .cells = {},
                            .ghosts = {},

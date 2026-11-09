@@ -223,7 +223,7 @@ ByRank = Annotated[tuple[Count, ...], Field(min_length=1)]
 
 class Partition(_Strict):
     ranks: Annotated[int, Field(strict=True, ge=1)]
-    groups: Literal["none", "lines"]
+    groups: Literal["none", "lines", "multigrid"]
     ghost_stencil: Literal["face2", "vertex", "vertex2", "vertex3", "vertex4"]
     cells_by_rank: ByRank
     ghosts_by_rank: ByRank
