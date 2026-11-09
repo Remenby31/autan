@@ -25,6 +25,10 @@ on:
         description: "Seed of the perturbation and of Gmsh"
         type: string
         default: "2026"
+      export_cells:
+        description: "Also write each level's primal cells, <level>.cells.json (tet, poly, agglomerated)"
+        type: boolean
+        default: false
   # A change to this workflow runs it with its defaults: the pull request gets the artifacts.
   pull_request:
     paths:
@@ -46,11 +50,14 @@ jobs:
           LEVELS: ${{ inputs.levels }}
           PERTURBATION: ${{ inputs.perturbation || '0.3' }}
           SEED: ${{ inputs.seed || '2026' }}
+          EXPORT_CELLS: ${{ inputs.export_cells || false }}
         run: |
           fail() { echo "::error::$1"; exit 1; }
           [[ $PERTURBATION =~ ^[0-9]+(\.[0-9]+)?$ ]] || fail "perturbation: a number, not '$PERTURBATION'"
           [[ $SEED =~ ^[0-9]+$ ]] || fail "seed: an integer, not '$SEED'"
           [[ -z $LEVELS || $LEVELS =~ ^[0-9]+(,[0-9]+)*$ ]] || fail "levels: comma-separated integers, not '$LEVELS'"
+          # The primal-cell export exists for tet, poly and agglomerated only, not for 'all'.
+          [[ $EXPORT_CELLS != true || $KIND =~ ^(tet|poly|agglomerated)$ ]] || fail "export_cells: kind tet, poly or agglomerated, not '$KIND'"
           # The bounds autan-vv meshes enforces, checked before four runners install anything.
           awk -v p="$PERTURBATION" 'BEGIN { exit !(p >= 0 && p < 1) }' || fail "perturbation: from 0 up to, not including, 1"
           IFS=, read -ra given <<< "$LEVELS"
@@ -94,6 +101,7 @@ jobs:
       LEVELS: ${{ matrix.levels }}
       PERTURBATION: ${{ matrix.perturbation }}
       SEED: ${{ matrix.seed }}
+      EXPORT_CELLS: ${{ inputs.export_cells || false }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -112,9 +120,11 @@ jobs:
         run: |
           out="$RUNNER_TEMP/meshes-$KIND"
           echo "OUT=$out" >> "$GITHUB_ENV"
+          extra=()
+          [[ $EXPORT_CELLS == true ]] && extra=(--export-cells)
           /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" \
             uv run --project vv --locked autan-vv meshes "$KIND" \
-            --levels "$LEVELS" --perturbation "$PERTURBATION" --seed "$SEED" --out "$out"
+            --levels "$LEVELS" --perturbation "$PERTURBATION" --seed "$SEED" --out "$out" "${extra[@]}"
           (cd "$out" && sha256sum -- * > SHA256SUMS)
       # Also after a failure: an out-of-memory kill or a full disk reads here.
       - name: Resources used

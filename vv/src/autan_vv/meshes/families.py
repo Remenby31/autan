@@ -25,6 +25,7 @@ import numpy as np
 
 from autan_vv.errors import VVError
 from autan_vv.meshes import ringleb, tube, vortex
+from autan_vv.meshes.cell_export import write_cell_export
 from autan_vv.meshes.dual import median_dual
 from autan_vv.meshes.facemesh import FaceMesh, FloatArray, IntArray, from_faces, merge_cells
 from autan_vv.meshes.fluent import write_fluent
@@ -34,6 +35,9 @@ if TYPE_CHECKING:
     from types import ModuleType
 
 KINDS = ("tet", "hex", "prism", "hybrid", "poly", "agglomerated")
+# The kinds whose primal cells can be exported (cell_export.py): the tetrahedra, and the median
+# dual's cells for `poly` and `agglomerated`.
+EXPORT_KINDS = ("tet", "poly", "agglomerated")
 BOX_ZONES = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
 # The y = 0 face is the wall of the RANS-SA manufactured solution (wall distance d = y).
 BC_TYPES = {name: ("wall" if name == "ymin" else "pressure-far-field") for name in BOX_ZONES}
@@ -532,27 +536,40 @@ def _write_msh(
     gmsh.model.remove()
 
 
-def _agglomerate(mesh: FaceMesh, primal_points: FloatArray, n: int) -> FaceMesh:
+def _agglomerate(mesh: FaceMesh, primal_points: FloatArray, n: int) -> tuple[FaceMesh, IntArray]:
     """Merge the dual cells whose primal vertex lies in the same box of a lattice of edge about 4/n,
-    in a checkerboard (at least two boxes per side)."""
+    in a checkerboard (at least two boxes per side). Returns the merged mesh and the map from each
+    dual cell to its merged cell."""
     m = max(n // 4, 2)
     box = np.minimum(np.floor(primal_points * m).astype(np.int64), m - 1)
     box_id = (box[:, 0] * m + box[:, 1]) * m + box[:, 2]
     merged = box.sum(axis=1) % 2 == 0
     key = np.where(merged, box_id, -1 - np.arange(mesh.n_cells))
-    _, cell_map = np.unique(key, return_inverse=True)
-    return merge_cells(mesh, cell_map.astype(np.int64), int(cell_map.max()) + 1)
+    _, inverse = np.unique(key, return_inverse=True)
+    cell_map: IntArray = inverse.astype(np.int64)
+    return merge_cells(mesh, cell_map, int(cell_map.max()) + 1), cell_map
 
 
 def generate_level(
-    kind: str, n: int, *, perturbation: float = 0.0, seed: int = 0, path: Path | None = None
+    kind: str,
+    n: int,
+    *,
+    perturbation: float = 0.0,
+    seed: int = 0,
+    path: Path | None = None,
+    cells_path: Path | None = None,
 ) -> tuple[FaceMesh, str]:
     """Generate one level with about n cells per edge; optionally write it to `path`.
 
     Returns the mesh and the Gmsh version (empty for `sod-tube`, written without Gmsh). `poly` and
     `sod-tube` are written as Fluent ASCII, the others as MSH 4.1 ASCII. The file holds exactly the
-    in-memory mesh: coordinates are rounded to the 16 significant digits Gmsh writes.
+    in-memory mesh: coordinates are rounded to the 16 significant digits Gmsh writes. With
+    `cells_path` (kinds in EXPORT_KINDS, with `path`), the level's primal cells are exported there
+    too (cell_export.py); the mesh written is the same with or without it.
     """
+    if cells_path is not None and (kind not in EXPORT_KINDS or path is None):
+        msg = f"a cell export needs a kind among {EXPORT_KINDS} and a mesh path, got {kind!r}"
+        raise VVError(msg, code="V0309")
     if kind not in (*KINDS, "ringleb", *vortex.KINDS, tube.KIND):
         msg = (
             f"unknown mesh kind {kind!r}; expected one of {KINDS}, 'ringleb', {vortex.KINDS}"
@@ -608,15 +625,29 @@ def generate_level(
             points = perturb(points, cells, boundary, perturbation, int(ss.generate_state(1)[0]))
         points = np.array([float(f"{v:.16g}") for v in points.ravel()]).reshape(-1, 3)
         if kind in ("poly", "agglomerated"):
-            mesh = median_dual(points, cells["tet"], boundary, BC_TYPES)
+            primal = median_dual(points, cells["tet"], boundary, BC_TYPES)
+            mesh, cell_map = primal, np.arange(primal.n_cells, dtype=np.int64)
             if kind == "agglomerated":
-                mesh = _agglomerate(mesh, points, n)
+                mesh, cell_map = _agglomerate(primal, points, n)
             if path is not None:
                 write_fluent(mesh, path, CELL_ZONE)
         else:
             mesh = _to_facemesh(points, cells, boundary)
+            primal, cell_map = mesh, np.arange(mesh.n_cells, dtype=np.int64)
             if path is not None:
                 _write_msh(gmsh, points, cells, boundary, path, periodic)
+        if cells_path is not None and path is not None:
+            write_cell_export(
+                cells_path,
+                kind=kind,
+                n=n,
+                perturbation=perturbation,
+                seed=seed,
+                mesh_path=path,
+                primal=primal,
+                cell_map=cell_map,
+                n_cells=mesh.n_cells,
+            )
     finally:
         gmsh.finalize()
     mesh.check()
@@ -624,9 +655,17 @@ def generate_level(
 
 
 def generate_family(
-    kind: str, levels: tuple[int, ...], out_dir: Path, *, perturbation: float = 0.0, seed: int = 0
+    kind: str,
+    levels: tuple[int, ...],
+    out_dir: Path,
+    *,
+    perturbation: float = 0.0,
+    seed: int = 0,
+    export_cells: bool = False,
 ) -> tuple[Family, list[FaceMesh]]:
-    """Generate all levels of a family into `out_dir`, write its `manifest.json`, return both."""
+    """Generate all levels of a family into `out_dir`, write its `manifest.json`, return both.
+    With `export_cells`, each level's primal cells go to `<level>.cells.json` beside its mesh; the
+    meshes and the manifest are the same bytes with or without it."""
     out_dir.mkdir(parents=True, exist_ok=True)
     records = []
     meshes = []
@@ -634,7 +673,10 @@ def generate_family(
     for n in levels:
         name = f"{kind}{'-dirty' if perturbation > 0 else ''}-n{n:03d}.msh"
         path = out_dir / name
-        mesh, version = generate_level(kind, n, perturbation=perturbation, seed=seed, path=path)
+        cells_path = path.with_name(f"{path.stem}.cells.json") if export_cells else None
+        mesh, version = generate_level(
+            kind, n, perturbation=perturbation, seed=seed, path=path, cells_path=cells_path
+        )
         meshes.append(mesh)
         if kind == "ringleb":
             ringleb.write_face_states(mesh, path, path.with_suffix(".states.json"))

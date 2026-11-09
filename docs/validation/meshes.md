@@ -77,6 +77,21 @@ Each family directory has `manifest.json` (schema `autan.mesh-family/1`): kind, 
 
 `min_subvolume_ratio` is the smallest (sub-tetrahedron / cell volume) of the decomposition used by the core (triangle fan around each face's mean point, apex at the cell's mean face point). It is slightly negative (≈ −0.005) on median-dual meshes because their faces are strongly non-planar; volumes and closure are still exact.
 
+## Primal-cell export
+
+`autan-vv meshes tet|poly|agglomerated --export-cells` also writes, beside each level's mesh `<level>.msh`, the file `<level>.cells.json` (schema `autan.vv-cell-export/1`). It holds each primal cell's outward polygons and the map from each primal cell to the cell of the mesh file, for a checker that reads the cells apart from the mesh. Without the flag, a family's files are byte-for-byte the same; with it, the meshes and `manifest.json` are unchanged and only the `.cells.json` files are added (`test_cell_export.py`).
+
+| Key | Value |
+|---|---|
+| `schema` | `"autan.vv-cell-export/1"` |
+| `kind`, `n`, `perturbation`, `seed` | the level's parameters |
+| `mesh` | `file`: the mesh file's name; `sha256`: its SHA-256; `n_cells`: its cells |
+| `points` | the mesh file's vertices, `[x, y, z]`: the coordinates the file holds, exactly |
+| `cells` | per primal cell, its polygons: lists of indices into `points`, oriented outward (counter-clockwise seen from outside) |
+| `map` | per primal cell, the index of the mesh-file cell that contains it |
+
+The primal cells are the tetrahedra for `tet` and the median dual's cells for `poly` and `agglomerated`. The map is the identity, except for `agglomerated`, where each mesh cell is the union of the median-dual cells mapped to it; their shared polygons are inside it, the others are its faces. The hosted `vv-meshes` workflow passes the flag when asked (`export_cells`), and its `SHA256SUMS` lists the `.cells.json` files with the meshes.
+
 ## Checks
 
 Every generated mesh is closed to 10⁻¹² relative and has positive cell volumes (`V0301` otherwise). Tests (`vv/tests/test_meshes.py`) also check, for every kind with and without perturbation: total volume 1 to 10⁻¹³, each box face of area 1 with outward normals, interior normals from owner to neighbour; the MSH file read back through Gmsh's own reader (physical names, element types, coordinates bit for bit); the Fluent file read back by an independent parser in the test, then checked for closure, volumes, zones and the core rule that every edge of every cell is used exactly twice in opposite directions.
