@@ -756,7 +756,7 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
             .path = "physics",
             .data_json = "{\"ranks\": " + std::to_string(ranks) + "}"};
       },
-      !options.one_rank, groups, relaxation_restart_names,
+      !options.one_rank, groups, relaxation_restart_names, {},
       [window = options.scalars](const autan::runtime::SolverInput& /*input*/, bool /*averaging*/) {
         return relaxation_scalars(window);
       });

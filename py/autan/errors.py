@@ -311,6 +311,15 @@ _CODES = [
         "Give it the `solution.cgns` of a run directory.",
     ),
     Code(
+        "E0148",
+        "Stencil not local to the partition",
+        "A stencil reaches a cell or face that the partition does not hold: the physics' stencil "
+        "is wider than the partition's ghost stencil, or the cells around a node of an owned "
+        "cell do not all meet through faces around it.",
+        "Run on one rank, or choose a scheme whose stencil the partition holds; a mesh whose "
+        "cells meet at a node only cannot run the vertex stencil on several ranks.",
+    ),
+    Code(
         "W0150",
         "Periodic nodes moved",
         "The nodes of a periodic pair matched within the tolerance but not exactly, so assembly "
@@ -401,12 +410,12 @@ _CODES = [
         "MeshInfo prepared for another run",
         "The MeshInfo's derived counts are not for this run: its lines were computed at another "
         "scale than the case's `mesh_unit`, or a run on several ranks has no partition for that "
-        "rank count and the groups its linear solver keeps whole, or a run on one rank with "
-        'periodic pairs or reproducibility `"ranks"` has no one-part partition. The message '
-        "names the difference.",
+        "rank count, the groups its linear solver keeps whole and the ghost stencil its physics "
+        'reads, or a run on one rank with periodic pairs or reproducibility `"ranks"` has no '
+        "such one-part partition. The message names the difference.",
         "Run `autan-mesh-info --json --scale <metres per mesh unit>` again, with "
         "`--ranks N` (and `--groups lines` for a steady CPU run with the lines solver) for a run "
-        "on N ranks.",
+        "on N ranks, and `--ghosts vertex` for a physics that reads the vertex stencil.",
     ),
     Code(
         "W0204",

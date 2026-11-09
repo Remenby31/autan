@@ -203,7 +203,7 @@ void count_ordered(const Mesh& mesh, const Geometry& geometry, MeshInfoRun& out)
 }  // namespace
 
 MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
-                       std::optional<RanksRequest> ranks) {
+                       std::optional<RanksRequest> ranks, GhostStencil ghosts) {
   // As prepare() does: the coordinates in metres before any geometry.
   std::optional<Mesh> metres;
   const Mesh& mesh = scale == 1.0 ? read : metres.emplace(scaled(read, scale));
@@ -224,8 +224,10 @@ MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
   // The stencil and ghosts are sets, the same in any cell order. On one rank, the run's partition
   // is its one part (Run::make_part): the mesh itself without periodic pairs, else the part
   // whose image ghosts make each periodic face interior.
+  const char* ghost_stencil = ghosts == GhostStencil::vertex ? "vertex" : "face2";
   MeshInfoRun::Partition one_part{.ranks = 1,
                                   .groups = "none",
+                                  .ghost_stencil = ghost_stencil,
                                   .cells = {},
                                   .ghosts = {},
                                   .faces = {},
@@ -272,7 +274,7 @@ MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
     one_part.sent_cells = {0};
   } else {
     const std::vector<std::int32_t> one(static_cast<std::size_t>(mesh.n_cells()), 0);
-    LocalPartition part = extract_partition(mesh, geometry, one, 1, 0);
+    LocalPartition part = extract_partition(mesh, geometry, one, 1, 0, ghosts);
     fill_ghost_geometry(part);
     out.periodic_ghosts = part.mesh.n_cells() - part.mesh.n_owned_cells();
     const Stencils st = stencils(part.mesh, part.geometry);
@@ -296,6 +298,7 @@ MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
                                                            .group_cells = groups.cells});
   MeshInfoRun::Partition p{.ranks = ranks->ranks,
                            .groups = ranks->groups == RankGroups::lines ? "lines" : "none",
+                           .ghost_stencil = ghost_stencil,
                            .cells = {},
                            .ghosts = {},
                            .faces = {},
@@ -309,7 +312,7 @@ MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
                            .sent_cells = {}};
   for (std::int32_t r = 0; r < ranks->ranks; ++r) {
     // Ghost cells hold no geometry here: the counts depend on the connectivity only.
-    const LocalPartition part = extract_partition(mesh, geometry, parts, ranks->ranks, r);
+    const LocalPartition part = extract_partition(mesh, geometry, parts, ranks->ranks, r, ghosts);
     count_part(p, part, stencils(part.mesh, part.geometry));
   }
   out.partition = std::move(p);

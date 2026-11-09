@@ -125,6 +125,10 @@ struct PhysicsContext {
   std::span<const index_t> group_cells;
   std::span<const std::int32_t> cell_group_colours;
   std::int32_t n_group_colours = 0;
+  /// On a partition, the stencil its ghost cells hold (LocalPartition::ghosts): the one the
+  /// physics declared (PhysicsRegistry::Entry::ghosts). Empty on the whole mesh, which holds
+  /// every stencil.
+  std::optional<GhostStencil> ghost_stencil;
 };
 
 // case-schema.md#time: the round-off floor is C * eps32 times an equation's flux scale, C = 0.5.
@@ -224,6 +228,10 @@ using RestartNames =
 /// these (E0707).
 using RestartScalars = std::function<std::vector<std::pair<std::string, std::int64_t>>(
     const SolverInput& input, bool averaging)>;
+/// The ghost stencil the physics' scheme reads for `input`: the partition of a run holds it,
+/// on several ranks, with periodic pairs or under reproducibility "ranks". nullopt: no partition
+/// holds it, and such a run is E0148 before its directory exists.
+using GhostStencils = std::function<std::optional<GhostStencil>(const SolverInput& input)>;
 
 /// The physics a build of autan-run provides; the first matching key wins.
 class PhysicsRegistry {
@@ -236,11 +244,12 @@ class PhysicsRegistry {
     bool several_ranks = false;
     PartitionGroups groups;  ///< empty: no group
     RestartNames restart;    ///< empty: no RestartState
+    GhostStencils ghosts;    ///< empty: face2
     RestartScalars scalars;  ///< empty: no SolverState
   };
   void add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope = {},
            bool several_ranks = false, PartitionGroups groups = {}, RestartNames restart = {},
-           RestartScalars scalars = {});
+           GhostStencils ghosts = {}, RestartScalars scalars = {});
   /// The entry for `input`, or null when this build has none (E0706).
   [[nodiscard]] const Entry* find(const SolverInput& input) const;
 
