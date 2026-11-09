@@ -1,0 +1,52 @@
+schema = "autan.case/1"
+name = "tmr-flatplate-flatplate-137x97"
+mesh = "flatplate-137x97.msh"
+
+[physics]
+kind = "compressible"
+precision = "fp64"
+turbulence = { model = "sa", nu_tilde_ratio = 3.0 }
+gas = { kind = "ideal-gas", name = "air", molar_mass = "0.0289647 kg / mol", gamma = 1.4, prandtl = 0.72, viscosity = { law = "sutherland", mu_ref = "1.716e-05 Pa * s", t_ref = "273.15 K", s = "110.4 K" } }
+
+[freestream]
+mach = 0.2
+aoa = "0 deg"
+re = 5.0e6
+ref_length = "1.0 m"
+temperature = "300.0 K"
+
+[time]
+kind = "steady"
+max_iterations = 20000
+residual_orders = 14.0
+
+[[boundaries]]
+zones = "sides"
+condition = { kind = "symmetry" }
+
+[[boundaries]]
+zones = "plate"
+condition = { kind = "wall" }
+
+[[boundaries]]
+zones = "symmetry"
+condition = { kind = "symmetry" }
+
+[[boundaries]]
+zones = "inflow"
+condition = { kind = "inlet", total_pressure = "117690.94473570013 Pa", total_temperature = "302.4 K" }
+
+[[boundaries]]
+zones = "outflow"
+condition = { kind = "outlet", static_pressure = "114454.05572321889 Pa" }
+
+[[boundaries]]
+zones = "top"
+condition = { kind = "farfield" }
+
+[[monitors]]
+kind = "forces"
+name = "wall"
+surfaces = "plate"
+every = 1
+ref_area = "2.0 m ** 2"
