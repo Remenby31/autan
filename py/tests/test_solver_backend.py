@@ -381,6 +381,41 @@ def _killed(
     return run_dir
 
 
+def test_a_warm_start_through_the_runtime_stops_on_its_source_reference_and_continues(
+    hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
+) -> None:
+    # case-schema.md#time: a steady warm start from a steady run takes the source's reference,
+    # records it, and a continuation of the warm run repeats the uninterrupted warm run.
+    _, mesh = hybrid
+
+    def case(budget: int, mach: str) -> autan.Case:
+        path = tmp_path / f"m{mach}-{budget}.py"
+        body = CASE.replace("mach=0.2,", f"mach={mach},")
+        path.write_text(body + f"case.time = autan.Steady(max_iterations={budget})\n")
+        return autan.load(path)
+
+    backend = autan.SolverBackend(executable=RELAXATION)
+    source = case(10, "0.2").run(mesh, backend=backend, runs=tmp_path / "source")
+    reference = json.loads((source.path / "history.jsonl").read_text().splitlines()[0])
+    whole = case(10000, "0.25").run(
+        mesh, backend=backend, runs=tmp_path / "whole", start=source, mode="warm"
+    )
+    part = case(5, "0.25").run(
+        mesh, backend=backend, runs=tmp_path / "parts", start=source, mode="warm"
+    )
+    rest = case(10000, "0.25").run(mesh, backend=backend, runs=tmp_path / "parts", start=part)
+    for run in (whole.run, part.run, rest.run):
+        assert run.start is not None
+        assert run.start.residual_reference == reference["residuals"]
+
+    def lines(result: autan.Results) -> list[str]:
+        return (result.path / "history.jsonl").read_text().splitlines()
+
+    assert whole.run.status == "converged"
+    assert lines(part) + lines(rest) == lines(whole)
+    assert rest.field("Density").tobytes() == whole.field("Density").tobytes()
+
+
 @pytest.mark.usefixtures("hybrid")
 def test_a_killed_run_continues_from_its_last_checkpoint(tmp_path: Path) -> None:
     # results.md#checkpointcgns: a run killed between two checkpoints continues from the last

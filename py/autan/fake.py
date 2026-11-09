@@ -95,6 +95,7 @@ ZONE_CHILDREN = frozenset(
         "FlowSolutionMean",
         "WallSolution",
         "RestartState",
+        "SolverState",
     }
 )
 GENERATED = re.compile(r"(boundary|cell-zone)-\d{4}")

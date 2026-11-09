@@ -22,6 +22,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/generators/catch_generators_range.hpp>
+#include <unistd.h>
 
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
@@ -243,7 +244,9 @@ TEMPLATE_TEST_CASE("slip walls keep a gauge pressure finer than FP32 resolves p_
   // residual reduce to the closure of the gauge pressure, even when p - p_ref = 1e-3 is below the
   // FP32 spacing of p_ref = 0.95e5 (7.8e-3).
   using P = TestType;
-  const fs::path file = fs::temp_directory_path() / "autan-one-skew-tet.msh";
+  // One file per process: the two precisions run as separate tests, possibly at once (ctest -j).
+  const fs::path file =
+      fs::temp_directory_path() / ("autan-one-skew-tet-" + std::to_string(::getpid()) + ".msh");
   {
     std::ofstream out(file);
     out << "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n"
@@ -256,6 +259,7 @@ TEMPLATE_TEST_CASE("slip walls keep a gauge pressure finer than FP32 resolves p_
         << "3 1 4 1\n5 1 2 3 4\n$EndElements\n";
   }
   const Case c(file.c_str());
+  fs::remove(file);
   REQUIRE(c.mesh.n_cells() == 1);
   const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
   Euler<P> e(c.mesh, c.geometry, air, second_order(Flux::roe, 0.1));

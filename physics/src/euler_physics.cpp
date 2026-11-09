@@ -1882,12 +1882,12 @@ void register_navier_stokes(runtime::PhysicsRegistry& registry) {
     registry.add({"compressible", model, "fp64", "cpu"},
                  factory<kernels::fp64, NavierStokes<kernels::fp64>>(), navier_stokes_scope,
                  /*several_ranks=*/true, euler_groups, euler_restart_names,
-                 EulerPhysics<kernels::fp64, NavierStokes<kernels::fp64>>::ghosts,
+                 EulerPhysics<kernels::fp64, NavierStokes<kernels::fp64>>::ghosts, {},
                  /*wall_distance=*/std::string(model) == "sa");
     registry.add({"compressible", model, "fp32+acc64", "cpu"},
                  factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>(),
                  navier_stokes_scope, /*several_ranks=*/true, euler_groups, euler_restart_names,
-                 EulerPhysics<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>::ghosts,
+                 EulerPhysics<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>::ghosts, {},
                  /*wall_distance=*/std::string(model) == "sa");
   }
 }

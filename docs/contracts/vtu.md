@@ -22,7 +22,7 @@ VTK XML, `<VTKFile type="UnstructuredGrid" version="1.0" byte_order="LittleEndia
 
 **Cells.** Cell i of the solution (0-based) is VTK cell i, always a `VTK_POLYHEDRON` (type 42), whatever its shape. `connectivity` lists each cell's distinct nodes; `offsets` holds the end of each cell's list. `faces` holds, for each cell, its face count, then for each face its node count and its nodes, ordered so that the face normal (right-hand rule) points out of the cell; `faceoffsets` holds the end of each cell's entry in `faces`. Tetrahedra, hexahedra, prisms and pyramids are written as polyhedra too: that is the representation `solution.cgns` has, and it needs no node reordering, but ParaView and VTK handle polyhedra more slowly and with more memory than native cells (native types: #568).
 
-**Cell data.** Float64, one value per cell, the same values as `solution.cgns`. `CellZone` (Int32) is the 0-based index of the cell's zone in the run's `mesh-info.json` `cell_zones` list. There is no point data: the unknowns are cell values, and interpolating them to nodes would add values the run did not compute. `RestartState` and `WallSolution` are not written.
+**Cell data.** Float64, one value per cell, the same values as `solution.cgns`. `CellZone` (Int32) is the 0-based index of the cell's zone in the run's `mesh-info.json` `cell_zones` list. There is no point data: the unknowns are cell values, and interpolating them to nodes would add values the run did not compute. `RestartState`, `SolverState` and `WallSolution` are not written.
 
 **Ranks.** One file per run: `solution.cgns` holds the whole mesh in one zone whatever the number of ranks, so there is no `.pvtu`.
 
