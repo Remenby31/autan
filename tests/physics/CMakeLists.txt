@@ -95,7 +95,14 @@ if(AUTAN_ENABLE_CGNS)
   # Processes started by these tests share their executables' hash (run.json
   # solver.binary_sha256) through a cache in the build tree.
   set(hash_cache "AUTAN_BINARY_HASH_CACHE=${PROJECT_BINARY_DIR}/binary-hash-cache")
-  catch_discover_tests(autan_euler_run_tests TEST_SPEC "~[gpu]~[mpi]" PROPERTIES ENVIRONMENT ${hash_cache})
+  catch_discover_tests(autan_euler_run_tests TEST_SPEC "~[gpu]~[mpi]~[long]" PROPERTIES ENVIRONMENT ${hash_cache})
+  # [long]: cases that take longer than the default per-test timeout (600 s) on CI's hosted
+  # runners; 1500 s is about twice the longest measured.
+  catch_discover_tests(
+    autan_euler_run_tests
+    TEST_SPEC "[long]~[gpu]~[mpi]"
+    PROPERTIES ENVIRONMENT ${hash_cache} TIMEOUT 1500
+  )
   catch_discover_tests(autan_euler_run_tests TEST_SPEC "[mpi]~[gpu]" PROPERTIES ENVIRONMENT ${hash_cache} LABELS mpi)
   if(AUTAN_ENABLE_CUDA)
     target_link_libraries(autan_euler_run_tests PRIVATE autan::physics)
