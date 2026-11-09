@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Nightly guard (#611), the queue job: build the pinned commit, run the guard case twice at once
 # from one binary in fresh directories, then `autan-vv guard verdict`. The night's deadline, 06:30
-# UTC the day after NIGHT, stops the build or the runs (TERM, then KILL 300 s later). The case runs a
-# fixed 20 000 steps, so missing the deadline measures the queue and the host's load, not the
-# numerics: it is infrastructure evidence (void), as is a cgroup OOM kill that this job's own
-# counter records. Anything else that fails leaves the runs incomplete, and the verdict is red.
+# UTC the day after NIGHT, stops the build or the runs (TERM, then KILL 300 s later). The case runs
+# a fixed 20 000 steps, so missing the deadline measures the queue and the host's load, not the
+# numerics: it is infrastructure evidence (void), as are a cgroup OOM kill that this job's own
+# counter records and a drain that wrote DRAINED in the night's directory before stopping the runs.
+# Anything else that fails leaves the runs incomplete, and the verdict is red.
 set -u
 cd /work || exit 1
 trap 'chown -R 1000:1000 /work' EXIT
@@ -58,6 +59,9 @@ if [ "${end:-$(date -u +%s)}" -ge "$deadline" ] && [ "${rc[*]}" != "0 0" ]; then
   fi
 fi
 [ "$(oom)" -gt "$oom0" ] && infra="${infra:+$infra; }cgroup OOM kill (memory.events oom_kill $oom0 -> $(oom))"
+# A drain writes DRAINED (who, when, why) before its TERM: runs it stopped are infrastructure.
+[ -e /work/DRAINED ] && [ "${rc[*]}" != "0 0" ] \
+  && infra="${infra:+$infra; }drained: $(tr -d '"\\' < /work/DRAINED | tr '\n' ' ' | cut -c1-300)"
 kill "$killer" 2>/dev/null
 pick() { local n; n=$(ls -d "$1"/run-* 2>/dev/null | wc -l); [ "$n" = 1 ] && ls -d "$1"/run-* || echo "/work/$1/not-one-run"; }
 args=(guard verdict /work --commit "$commit" --run1 "$(pick run1)" --run2 "$(pick run2)" --rc1 "${rc[0]}" --rc2 "${rc[1]}")
