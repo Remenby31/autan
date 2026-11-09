@@ -71,7 +71,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           CHANGED: ${{ steps.scope.outputs.paths }}
         run: |
-          pattern='spalart_allmaras|colouring|cell_colours|physics/src/euler_physics\.cpp|test_sa_sweeps'
+          pattern='spalart_allmaras|colouring|cell_colours|physics/src/euler_physics\.cpp|test_sa_sweeps|tests/physics/CMakeLists\.txt|\.github/workflows/gpu-tests\.yml'
           if [[ $EVENT != pull_request ]] || grep -Eq "$pattern" <<<"$CHANGED"; then
             ctest --test-dir build -L certificate --output-on-failure --no-tests=error
           else
