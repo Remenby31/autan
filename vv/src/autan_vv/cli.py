@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import sys
 from dataclasses import asdict
@@ -490,6 +491,46 @@ def _cmd_agree(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+def _strict(value: object) -> object:
+    """Non-finite floats become null, so a report is strict JSON."""
+    if isinstance(value, dict):
+        return {k: _strict(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_strict(v) for v in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+def _cmd_guard(args: argparse.Namespace) -> None:
+    from autan_vv import guard  # noqa: PLC0415
+
+    if args.action == "status":
+        _say(guard.night_status(args.night))
+        return
+    previous = json.loads(args.previous.read_text()) if args.previous is not None else None
+    report = guard.verdict(
+        args.run1,
+        args.run2,
+        args.commit,
+        has_544=args.has_544,
+        previous=previous,
+        infra=args.infra,
+    )
+    (args.night / "verdict.json").write_text(
+        json.dumps(_strict(report), indent=2, allow_nan=False) + "\n"
+    )
+    failing = ", ".join(
+        f"{c['gate']}:{c.get('equation') or c.get('measure') or c.get('rule') or ''}"
+        for c in report.get("failing", [])
+    )
+    _say(
+        f"{report['outcome']} {report['commit'][:12]} {failing or report.get('reason') or report.get('infra') or ''}"
+    )
+    if report["outcome"] == "red":
+        raise SystemExit(1)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the `autan-vv` CLI; returns the process exit code (2 on a coded V&V error)."""
     parser = argparse.ArgumentParser(prog="autan-vv", description=__doc__)
@@ -668,6 +709,21 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--k", type=float, default=500.0)
     p.add_argument("--out", type=Path)
     p.set_defaults(func=_cmd_agree)
+
+    p = sub.add_parser(
+        "guard", help="nightly convergence guard (#611): a night's verdict, or its status"
+    )
+    p.add_argument("action", choices=("verdict", "status"))
+    p.add_argument("night", type=Path, help="the night's directory (verdict.json is written there)")
+    p.add_argument("--run1", type=Path, help="verdict: the first run directory")
+    p.add_argument("--run2", type=Path, help="verdict: the second run directory")
+    p.add_argument("--commit", help="verdict: the night's pinned commit")
+    p.add_argument(
+        "--has-544", action="store_true", help="verdict: the commit contains #544's merge"
+    )
+    p.add_argument("--previous", type=Path, help="verdict: the last green night's verdict.json")
+    p.add_argument("--infra", help="verdict: evidenced infrastructure failure (the night is void)")
+    p.set_defaults(func=_cmd_guard)
 
     p = sub.add_parser("cases", help="list or download reference cases, verifying checksums")
     p.add_argument("action", choices=("list", "fetch"))

@@ -1,0 +1,6 @@
+[Unit]
+Description=Autan nightly convergence guard: watchdog (#611)
+
+[Service]
+Type=oneshot
+ExecStart=%h/cfd/guard/repo/vv/guard/watchdog.sh
