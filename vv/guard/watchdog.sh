@@ -4,7 +4,7 @@
 # $G/STATUS, once per night; trims green nights older than 14 days to their verdict, histories and
 # run.json. Red and void nights stay whole.
 set -uo pipefail
-G=${AUTAN_GUARD_ROOT:-$HOME/cfd/guard}
+G=${AUTAN_GUARD_ROOT:-$HOME/cfd/vv-guard}
 if [ "$(date -u +%H%M)" -lt 0700 ]; then night=$(date -u -d "2 days ago" +%F); else night=$(date -u -d yesterday +%F); fi
 grep -q "^$night " "$G/STATUS" 2>/dev/null && exit 0
 v=$G/$night/verdict.json

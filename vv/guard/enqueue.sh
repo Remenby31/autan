@@ -5,7 +5,7 @@
 # latest 23:30 UTC slot; a night already published is not prepared again; one prepared but not
 # published is published. Refused inputs give the night a red verdict without a job.
 set -euo pipefail
-G=${AUTAN_GUARD_ROOT:-$HOME/cfd/guard}
+G=${AUTAN_GUARD_ROOT:-$HOME/cfd/vv-guard}
 MESH_SHA256=ceb75abce31f12437e954107467e3e2ca4acbf66b1059b4a24d910b86ae7a59e
 exec 9> "$G/.enqueue.lock"
 flock -n 9 || exit 0

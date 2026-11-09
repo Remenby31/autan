@@ -31,7 +31,7 @@ Each gate is checked on run 1. The values come from `main` 179e316c, #597's B4 h
 | void | A named infrastructure failure only: a cgroup OOM kill that the job's own counter records during the night. |
 | MISSING | No verdict by 07:00 UTC. |
 
-**Reading the results:** every morning, V&V reads `spark-5512:~/cfd/guard/STATUS`, one line per night, with the orchestrator as backup. A red or MISSING night gets an issue with both runs' paths. The host has no `gh`, so this step is manual.
+**Reading the results:** every morning, V&V reads `spark-5512:~/cfd/vv-guard/STATUS`, one line per night, with the orchestrator as backup. A red or MISSING night gets an issue with both runs' paths. The host has no `gh`, so this step is manual.
 
 **What is kept:** each night's directory holds `verdict.json` (schema `autan.vv-guard-night/1`), both runs, the logs and `previous.json`, the last green night it was compared with. A green night's sources and build are removed after 14 days. Red and void nights stay whole.
 
@@ -41,13 +41,13 @@ On the reference run, energy first goes 10 orders below its peak at step 1977. I
 
 ## Installation on spark-5512
 
-The units run from a dedicated clone, `~/cfd/guard/repo`, updated at each merge of this directory. The inputs sit in `~/cfd/guard/inputs`: the mesh (its sha256 is fixed in `enqueue.sh`) and `reference-history.jsonl`, the reference run's history, for the first differing step before the first green night.
+The units run from a dedicated clone, `~/cfd/vv-guard/repo`, updated at each merge of this directory. The inputs sit in `~/cfd/vv-guard/inputs`: the mesh (its sha256 is fixed in `enqueue.sh`) and `reference-history.jsonl`, the reference run's history, for the first differing step before the first green night.
 
 ```sh
-git clone https://github.com/Remenby31/autan ~/cfd/guard/repo
-mkdir -p ~/cfd/guard/inputs ~/.config/systemd/user
-cp <the mesh> <the reference run's history.jsonl> ~/cfd/guard/inputs/   # names: flatplate-137x97.msh, reference-history.jsonl
-cp ~/cfd/guard/repo/vv/guard/autan-guard-*.{service,timer} ~/.config/systemd/user/
+git clone https://github.com/Remenby31/autan ~/cfd/vv-guard/repo
+mkdir -p ~/cfd/vv-guard/inputs ~/.config/systemd/user
+cp <the mesh> <the reference run's history.jsonl> ~/cfd/vv-guard/inputs/   # names: flatplate-137x97.msh, reference-history.jsonl
+cp ~/cfd/vv-guard/repo/vv/guard/autan-guard-*.{service,timer} ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now autan-guard-enqueue.timer autan-guard-watchdog.timer
 ```
