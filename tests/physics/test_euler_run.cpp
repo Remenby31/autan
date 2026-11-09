@@ -1392,7 +1392,13 @@ static void ns_on_ranks(const char* model, const char* linear, bool steady, cons
   const auto one = run(doc);
   INFO(one.err);
   REQUIRE(one.status == ExitStatus::finished);
-  if (steady) REQUIRE(field(one.run, "SolverSecondOrder", "RestartState").front() == 1.0);
+  if (steady) {
+    REQUIRE(field(one.run, "SolverSecondOrder", "RestartState").front() == 1.0);
+    // The 10 steps past the switch ran: no stop by convergence before them.
+    const auto steps = history(one.run);
+    REQUIRE(std::ranges::count_if(steps, [](const Json& e) { return e["provisional"] == false; }) ==
+            10);
+  }
   std::string err;
   const fs::path many = run_on_ranks(doc, ranks, 0, &err);
   INFO(err);
