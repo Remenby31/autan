@@ -102,6 +102,7 @@ def test_crm_hl_input_is_resolved_and_closed_in_si(
         "linear_solver": "multigrid",
         "coupled_turbulence": False,
         "matrix_free": False,
+        "start_order": "first",
         "checkpoint": {"seconds": 1800.0},
     }
 
@@ -173,6 +174,24 @@ def test_the_matrix_free_step_is_a_laminar_option(
         autan.solver_input.SolverInput.model_validate(
             document | {"time": document["time"] | {"matrix_free": 1}}
         )
+
+
+def test_the_start_order_is_first_unless_the_case_asks_for_second(
+    write_case: Callable[..., Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    # case-schema.md#time: "first" by default, "second" on request, nothing else.
+    case = write_case(CRM_HL + "case.time = autan.Steady(start_order='second')\n")
+    jsonschema.Draft202012Validator(json_schema("case")).validate(autan.load(case).spec.document())
+    status, document = prepare(capsys, case, "crm-hl.meshinfo.json")
+    assert status == 0
+    assert document["time"]["start_order"] == "second"
+    with pytest.raises(ValidationError):
+        autan.solver_input.SolverInput.model_validate(
+            document | {"time": document["time"] | {"start_order": "third"}}
+        )
+    with pytest.raises(autan.CaseError) as error:
+        autan.load(write_case(CRM_HL + "case.time = autan.Steady(start_order='third')\n"))
+    assert error.value.codes == ["E0003"]
 
 
 def test_heat_exchanger_media_and_inlets_in_si(

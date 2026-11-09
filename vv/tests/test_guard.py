@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import json
 import math
-from typing import TYPE_CHECKING, Any
+import os
+import shutil
+import subprocess
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
 from autan_vv import guard
 from autan_vv.cli import main
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 COMMIT = "c" * 40
 STEPS = guard.STEPS
@@ -230,3 +232,34 @@ def test_an_infinite_drop_passes_and_is_written_as_strict_json(tmp_path: Path) -
     report = json.loads((night / "verdict.json").read_text(), parse_constant=refuse)
     assert report["outcome"] == "green"
     assert report["measures"]["drops"]["momentum-x"]["first"] is None  # infinity, written as null
+
+
+WATCHDOG = Path(__file__).resolve().parents[1] / "guard" / "watchdog.sh"
+
+
+@pytest.mark.skipif(shutil.which("flock") is None, reason="watchdog.sh needs flock (util-linux)")
+def test_the_watchdog_voids_a_drained_night_left_without_a_verdict(tmp_path: Path) -> None:
+    # The night the watchdog closes now: the day before the latest 07:00 UTC slot.
+    now = datetime.now(UTC)
+    if now.strftime("%H%M") < "0700":
+        now -= timedelta(days=1)
+    night = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    root, home = tmp_path / "guard", tmp_path / "home"
+    (home / "cfd" / "queue" / "pending").mkdir(parents=True)
+    marker = "drained by the orchestrator at 2026-11-09T14:30Z for an ML4 relaunch"
+
+    def status(drained: bool) -> str:
+        shutil.rmtree(root, ignore_errors=True)
+        (root / night).mkdir(parents=True)
+        (root / night / "COMMIT").write_text(COMMIT + "\n")
+        if drained:
+            (root / night / "DRAINED").write_text(marker + "\n")
+        env = {**os.environ, "HOME": str(home), "AUTAN_GUARD_ROOT": str(root)}
+        subprocess.run(["bash", str(WATCHDOG)], env=env, check=True)
+        return (root / "STATUS").read_text()
+
+    line = status(drained=True)
+    assert line.split()[:3] == [night, COMMIT[:12], "void"]
+    assert marker in line  # the drain's who, when and why reach STATUS
+    assert json.loads((root / night / "verdict.json").read_text())["outcome"] == "void"
+    assert status(drained=False).split()[:3] == [night, COMMIT[:12], "MISSING"]
