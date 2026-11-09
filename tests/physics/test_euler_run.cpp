@@ -944,7 +944,8 @@ TEST_CASE("steady cases the steady solver cannot run are refused before any dire
 
 TEST_CASE("a Navier-Stokes case outside the physics' scope is refused before any directory exists",
           "[navier-stokes]") {
-  // The viscous terms fill no ghosts of their own, steady or not: E0706 at `periodic`. Under
+  // Across a periodic pair the boundary fits would need the image ghosts' translated stencils:
+  // E0706 at `periodic`, steady or not. Under
   // reproducibility "ranks" the steady multigrid still sums in local cell order: E1109, laminar
   // and SA alike.
   const auto [model, ranks] =
@@ -973,7 +974,7 @@ TEST_CASE("a Navier-Stokes case outside the physics' scope is refused before any
 
 TEST_CASE(
     "a Navier-Stokes case under reproducibility ranks gives the same bits in every cell order",
-    "[navier-stokes]") {
+    "[navier-stokes][long]") {
   // case-schema.md, reproducibility: "ranks" repeats the bits in any cell order. The hybrid case,
   // SA and laminar, keeps its no-slip wall so that the viscous boundary fit is built. Steady runs
   // go past the second-order switch, so that the Jacobian, SA's assembly and its sweeps are
@@ -1379,6 +1380,220 @@ TEST_CASE("several ranks give the one-rank solution to round-off", "[euler][mpi]
   CHECK(read(again / "history.jsonl") == read(many / "history.jsonl"));
   for (const char* name : {"Density", "VelocityX", "Pressure"}) {
     CHECK(field(again, name) == field(many, name));
+  }
+}
+
+// The steps each steady configuration of hybrid.solver-input.json takes: its last first-order
+// (provisional) step plus 10, so that every run goes past the second-order switch (Jacobian, SA's
+// assembly and sweeps) and stays within CI's per-test timeout unoptimised. Measured at 83b40ec8 in
+// gpu-tests' unoptimised build on 2026-11-09 (t648-o0b): the fp32+acc64 first-order start ends on
+// its round-off plateau, later than fp64's drop.
+static int past_switch(const std::string& model, const std::string& linear,
+                       const std::string& precision) {
+  const bool fp64 = precision == "fp64";
+  int last_first_order = 0;
+  if (model == "laminar") {
+    last_first_order = linear == "gauss-seidel" ? (fp64 ? 53 : 162) : (fp64 ? 44 : 201);
+  } else {
+    last_first_order = linear == "gauss-seidel" ? (fp64 ? 44 : 146) : (fp64 ? 37 : 184);
+  }
+  return last_first_order + 10;
+}
+
+// runtime.md, Ranks: under reproducibility "ranks" the Navier-Stokes physics writes on N ranks the
+// history and every array of solution.cgns of a run on one (#587). The hybrid case keeps its
+// no-slip wall, so that the boundary fits are built across parts; steady runs go past the
+// second-order switch, laminar flow also runs unsteady.
+static void ns_on_ranks(const char* model, const char* linear, bool steady, const char* precision,
+                        int ranks) {
+  INFO(model << " " << linear << (steady ? " steady " : " unsteady ") << precision << " on "
+             << ranks << " ranks");
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    d["precision"] = precision;
+    if (std::string(model) == "laminar") {
+      d["physics"]["turbulence"]["model"] = "laminar";
+      d["physics"]["turbulence"]["nu_tilde_ratio"] = nullptr;
+      d["freestream"]["nu_tilde"] = nullptr;
+      for (auto& z : d["cell_zones"]) z["initial"]["nu_tilde"] = nullptr;
+    }
+    d["reproducibility"] = "ranks";
+    if (steady) {
+      d["time"]["linear_solver"] = linear;
+      d["time"]["max_iterations"] = past_switch(model, linear, precision);
+    } else {
+      d["time"] = {{"kind", "unsteady"}, {"steps", 20},
+                   {"dt", nullptr},      {"cfl", 0.8},
+                   {"average_from", 10}, {"checkpoint", {{"seconds", 1800.0}}}};
+    }
+  });
+  const auto one = run(doc);
+  INFO(one.err);
+  REQUIRE(one.status == ExitStatus::finished);
+  if (steady) {
+    REQUIRE(field(one.run, "SolverSecondOrder", "RestartState").front() == 1.0);
+    // The 10 steps past the switch ran: no stop by convergence before them.
+    const auto steps = history(one.run);
+    REQUIRE(std::ranges::count_if(steps, [](const Json& e) { return e["provisional"] == false; }) ==
+            10);
+  }
+  std::string err;
+  const fs::path many = run_on_ranks(doc, ranks, 0, &err);
+  INFO(err);
+  REQUIRE(!many.empty());
+  CHECK(read(many / "history.jsonl") == read(one.run / "history.jsonl"));
+  auto bits = [](const std::vector<double>& v) {
+    std::vector<std::uint64_t> out(v.size());
+    std::ranges::transform(v, out.begin(),
+                           [](double x) { return std::bit_cast<std::uint64_t>(x); });
+    return out;
+  };
+  const auto same_arrays = [&](const fs::path& reference, const fs::path& other) {
+    const auto a = data_arrays(reference), b = data_arrays(other);
+    REQUIRE(a.contains("WallSolution/WallShearStressX"));
+    CHECK(a.size() == b.size());
+    for (const auto& [name, values] : a) {
+      INFO(name);
+      REQUIRE(b.contains(name));
+      CHECK(bits(values) == bits(b.at(name)));
+    }
+  };
+  same_arrays(one.run, many);
+  if (steady && ranks == 4 && std::string(model) == "sa" && std::string(linear) == "gauss-seidel") {
+    // Written on 2 ranks 5 steps after the switch to second order, continued on 4 for the last 5:
+    // the restart state carries SA's variable and the switch, so the two runs are the
+    // uninterrupted one. The orders are out of reach, so neither run stops early.
+    const int steps = past_switch(model, linear, precision);
+    Json whole_doc = doc;
+    whole_doc["time"]["residual_orders"] = 30.0;
+    whole_doc["time"]["max_iterations"] = steps;
+    const auto whole = run(whole_doc);
+    INFO(whole.err);
+    REQUIRE(whole.status == ExitStatus::finished);
+    REQUIRE(history(whole.run).size() == static_cast<std::size_t>(steps));
+    Json first_doc = whole_doc;
+    first_doc["time"]["max_iterations"] = steps - 5;
+    const fs::path first = run_on_ranks(first_doc, 2);
+    REQUIRE(!first.empty());
+    REQUIRE(field(first, "SolverSecondOrder", "RestartState").front() == 1.0);
+    Json next = whole_doc;
+    next["start"] = continue_from(first);
+    const fs::path rest = run_on_ranks(next, 4, 0, &err);
+    INFO(err);
+    REQUIRE(!rest.empty());
+    CHECK(read(first / "history.jsonl") + read(rest / "history.jsonl") ==
+          read(whole.run / "history.jsonl"));
+    same_arrays(whole.run, rest);
+  }
+}
+
+TEST_CASE(
+    "laminar Navier-Stokes on several ranks gives the one-rank solution bit for bit in fp64 and "
+    "unsteady",
+    "[navier-stokes][mpi]") {
+  const auto [linear, steady, precision] =
+      GENERATE(std::tuple{"gauss-seidel", true, "fp64"}, std::tuple{"lines", true, "fp64"},
+               std::tuple{"", false, "fp64"}, std::tuple{"", false, "fp32+acc64"});
+  ns_on_ranks("laminar", linear, steady, precision, GENERATE(2, 4));
+}
+
+TEST_CASE(
+    "laminar Navier-Stokes on several ranks gives the one-rank solution bit for bit in fp32+acc64",
+    "[navier-stokes][mpi]") {
+  ns_on_ranks("laminar", GENERATE("gauss-seidel", "lines"), true, "fp32+acc64", GENERATE(2, 4));
+}
+
+TEST_CASE("Spalart-Allmaras on several ranks gives the one-rank solution bit for bit in fp64",
+          "[navier-stokes][mpi]") {
+  ns_on_ranks("sa", GENERATE("gauss-seidel", "lines"), true, "fp64", GENERATE(2, 4));
+}
+
+TEST_CASE("Spalart-Allmaras on several ranks gives the one-rank solution bit for bit in fp32+acc64",
+          "[navier-stokes][mpi]") {
+  ns_on_ranks("sa", GENERATE("gauss-seidel", "lines"), true, "fp32+acc64", GENERATE(2, 4));
+}
+
+TEST_CASE("Spalart-Allmaras on ranks of which one holds no ghost runs as on one rank",
+          "[navier-stokes][mpi]") {
+  // Two boxes of hexahedra apart, 64 and 125 cells, on 3 ranks: the partition gives the small one
+  // a rank of its own, without ghosts, and splits the other. Every ghost exchange is collective,
+  // the SA variable's after each colour of its sweeps included: the rank without ghosts must take
+  // part in each, or the ranks wait on each other. Under "ranks" the run is one rank's, bit for
+  // bit; under "run" it ends.
+  const char* reproducibility = GENERATE("ranks", "run");
+  CAPTURE(reproducibility);
+  autan::CellwiseMesh cells = autan::test::box(4, autan::test::BoxFill::hexa);
+  {
+    const autan::CellwiseMesh b = autan::test::box(5, autan::test::BoxFill::hexa);
+    const auto nodes = static_cast<autan::index_t>(cells.x.size());
+    const auto faces = static_cast<autan::offset_t>(cells.face_node_offsets.size() - 1);
+    const auto face_nodes = static_cast<autan::offset_t>(cells.face_nodes.size());
+    const auto labelled = static_cast<autan::offset_t>(cells.labelled_face_nodes.size());
+    for (std::size_t i = 0; i < b.x.size(); ++i) {
+      cells.x.push_back(b.x[i] + 2.0);
+      cells.y.push_back(b.y[i]);
+      cells.z.push_back(b.z[i]);
+    }
+    for (std::size_t c = 1; c < b.cell_face_offsets.size(); ++c) {
+      cells.cell_face_offsets.push_back(b.cell_face_offsets[c] + faces);
+    }
+    for (std::size_t f = 1; f < b.face_node_offsets.size(); ++f) {
+      cells.face_node_offsets.push_back(b.face_node_offsets[f] + face_nodes);
+    }
+    for (const auto v : b.face_nodes) cells.face_nodes.push_back(v + nodes);
+    cells.cell_zone.insert(cells.cell_zone.end(), b.cell_zone.begin(), b.cell_zone.end());
+    for (std::size_t f = 1; f < b.labelled_face_node_offsets.size(); ++f) {
+      cells.labelled_face_node_offsets.push_back(b.labelled_face_node_offsets[f] + labelled);
+    }
+    for (const auto v : b.labelled_face_nodes) cells.labelled_face_nodes.push_back(v + nodes);
+    cells.labelled_face_zone.insert(cells.labelled_face_zone.end(), b.labelled_face_zone.begin(),
+                                    b.labelled_face_zone.end());
+  }
+  const auto mesh = autan::assemble(autan::to_face_based(std::move(cells)));
+  REQUIRE(mesh.n_cells() == 64 + 125);
+  std::random_device random;
+  const fs::path dir =
+      fs::temp_directory_path() / ("autan_sa_ghostless-" + std::to_string(random()));
+  autan::io::write_polymesh(dir / "polyMesh", mesh);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    d["reproducibility"] = reproducibility;
+    d["mesh"]["path"] = (dir / "polyMesh").string();
+    d["mesh"]["sha256"] = autan::io::mesh_hash(dir / "polyMesh");
+    Json zone = d["cell_zones"][0];
+    zone["zone"] = "fluid";
+    d["cell_zones"] = Json::array({zone});
+    d["time"]["linear_solver"] = "gauss-seidel";
+    d["time"]["max_iterations"] = 200;
+  });
+  const auto one = run(doc);
+  INFO(one.err);
+  REQUIRE(one.status == ExitStatus::finished);
+  REQUIRE(field(one.run, "SolverSecondOrder", "RestartState").front() == 1.0);
+  std::string err;
+  const fs::path many = run_on_ranks(doc, 3, 0, &err);
+  INFO(err);
+  REQUIRE(!many.empty());
+  // The partition this test needs: a rank without ghosts beside ranks with some.
+  std::vector<std::int64_t> ghosts;
+  std::istringstream log(read(many / "log.jsonl"));
+  for (std::string l; std::getline(log, l);) {
+    const auto e = Json::parse(l);
+    if (e["source"] == "mpi") ghosts = e["data"]["ghost_cells"].get<std::vector<std::int64_t>>();
+  }
+  REQUIRE(ghosts.size() == 3);
+  CHECK(std::ranges::count(ghosts, 0) == 1);
+  if (std::string(reproducibility) == "ranks") {
+    CHECK(read(many / "history.jsonl") == read(one.run / "history.jsonl"));
+    const auto a = data_arrays(one.run), b = data_arrays(many);
+    REQUIRE(a.size() == b.size());
+    for (const auto& [name, values] : a) {
+      INFO(name);
+      REQUIRE(b.contains(name));
+      REQUIRE(values.size() == b.at(name).size());
+      CHECK(std::memcmp(values.data(), b.at(name).data(), values.size() * sizeof(double)) == 0);
+    }
+  } else {
+    CHECK(Json::parse(read(many / "run.json"))["status"] ==
+          Json::parse(read(one.run / "run.json"))["status"]);
   }
 }
 

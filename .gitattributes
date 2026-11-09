@@ -1,2 +1,5 @@
 # Test meshes written by independent tools are oracles: keep them byte for byte.
 tests/data/** -text
+# Vendored libraries are upstream's bytes, checked against third_party/SHA256SUMS.
+third_party/nlohmann_json/** -text
+third_party/picosha2/** -text
