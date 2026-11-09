@@ -10,6 +10,7 @@ import pytest
 from autan_codegen import model, traffic
 from autan_codegen.derive import derive
 from autan_codegen.emit_cpp import rel_datasets, storage_type
+from autan_codegen.errors import Code, CodegenError
 from autan_codegen.generate import generate
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -282,6 +283,34 @@ def test_a_tangent_reads_no_primal_input_its_finalise_does_not_use(tmp_path: Pat
     assert _bytes(m, "doubled_tangent", "fp64") == tangent
     lm = next(lm for lm in m.loops if lm.name == "doubled_tangent")
     assert {t.size for t in traffic.traffic(lm)} == {"sc_tan", "tot_tan", "index_t", "offset_t"}
+
+
+MIXED = """
+from autan_codegen.dsl import State, Sum, cell_reduce, cells, faces, pointwise
+
+h = faces.field("h", State.Vec2)
+hs = cells.field("hs", State)
+
+
+@pointwise
+def half_and_whole(a: State, b: State.Vec2) -> State:
+    return a + b[1]
+
+
+mixed_halves = cell_reduce(half_and_whole, a=h.near, b=h, acc=Sum(hs))
+"""
+
+
+def test_a_dataset_read_by_halves_and_whole_in_one_loop_gets_no_byte_count(
+    tmp_path: Path,
+) -> None:
+    # near's components index a half, the direct binding's the whole (2, ...) dataset: they are
+    # not the same elements, so the derivation refuses rather than counting them apart.
+    m = _module(tmp_path, MIXED)
+    lm = next(lm for lm in m.loops if lm.name == "mixed_halves")
+    with pytest.raises(CodegenError) as e:
+        traffic.traffic(lm)
+    assert e.value.code is Code.INVALID_BINDING
 
 
 TOPOLOGY = """

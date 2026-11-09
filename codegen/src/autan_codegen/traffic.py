@@ -159,6 +159,16 @@ class _Touched:
             self.modes.setdefault(name, {}).setdefault(c, set()).update(mode)
 
     def terms(self) -> list[Term]:
+        halves = {"near_halves", "far_halves", "both_halves"}
+        for name, by_comp in self.sets.items():
+            places = set().union(*by_comp.values())
+            if places & halves and places - halves:
+                # near and far index a half, the other bindings the whole (2, ...) dataset: their
+                # components are not the same elements, so no count is given rather than a wrong one.
+                raise CodegenError(
+                    Code.INVALID_BINDING,
+                    f"{name} is read by halves (near, far) and whole in one loop: no byte count",
+                )
         out: dict[tuple[str, str, int], int] = {}
         for name, by_comp in self.sets.items():
             for c, places in by_comp.items():
