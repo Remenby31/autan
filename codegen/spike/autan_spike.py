@@ -92,14 +92,18 @@ def mesh(fa: FaceArrays, n_ghost_cells: int = 0) -> Mesh:
     return _wrap(h)
 
 
-def partition(m: Mesh, parts: npt.NDArray[np.int32], n_parts: int, rank: int, layers: int) -> Mesh:
-    """Part `rank` of `parts` (one per cell of the unpartitioned `m`) with `layers` ghost layers,
-    ghost geometry filled from `m` (autan::extract_partition)."""
+_GHOSTS = {"face": 0, "face2": 1, "vertex": 2}
+
+
+def partition(m: Mesh, parts: npt.NDArray[np.int32], n_parts: int, rank: int, ghosts: str) -> Mesh:
+    """Part `rank` of `parts` (one per cell of the unpartitioned `m`) with the ghosts of the
+    stencil `ghosts` ("face", "face2" or "vertex", autan::GhostStencil), ghost geometry filled
+    from `m` (autan::extract_partition)."""
     err = ctypes.create_string_buffer(512)
     h = ctypes.c_void_p()
     parts = np.ascontiguousarray(parts, dtype=np.int32)
     rc = lib().autan_spike_mesh_partition(
-        m.handle, _p(parts), ctypes.c_int64(len(parts)), ctypes.c_int32(n_parts), ctypes.c_int32(rank), ctypes.c_int32(layers),
+        m.handle, _p(parts), ctypes.c_int64(len(parts)), ctypes.c_int32(n_parts), ctypes.c_int32(rank), ctypes.c_int32(_GHOSTS[ghosts]),
         ctypes.byref(h), err, ctypes.c_size_t(len(err)),
     )  # fmt: skip
     _check(rc, err)
