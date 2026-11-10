@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <initializer_list>
+#include <stdexcept>
 #include <string_view>
 
 #include "autan/core/error.hpp"
@@ -38,6 +39,18 @@ class SelfExchange final : public GhostExchange {
   }
   void forward(std::span<double* const> components, MemorySpace space, void* stream) override {
     run(components, space, stream);
+  }
+  // A part without periodic images has no ghost and gets no row. Rows are not exchanged across
+  // periodic pairs: Navier-Stokes, the only caller, refuses them (E0706), and keys carry no image
+  // shift.
+  CellRows forward_rows(const CellRows& owned, std::span<const std::uint8_t> wanted) override {
+    if (part_.mesh.n_cells() != part_.mesh.n_owned_cells() || !wanted.empty()) {
+      throw Error(ErrorCode::halo_inconsistent, "rows are not exchanged across periodic pairs");
+    }
+    CellRows none;
+    none.stride = owned.stride;
+    none.offsets = {0};
+    return none;
   }
 
  private:
@@ -102,6 +115,9 @@ class MpiGhosts final : public GhostExchange {
   }
   void forward(std::span<double* const> components, MemorySpace space, void* stream) override {
     exchange(space).forward(components, stream);
+  }
+  CellRows forward_rows(const CellRows& owned, std::span<const std::uint8_t> wanted) override {
+    return autan::forward_rows(part_.halo, owned, wanted, comm_);
   }
 
  private:

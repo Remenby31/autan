@@ -33,9 +33,12 @@ struct Transport {
 /// Compressible Navier-Stokes residual: the Euler residual of `Euler<P>` plus the viscous fluxes of
 /// kernels/navier_stokes.py, with an eddy viscosity set by a turbulence model (zero by default).
 /// Same conventions and call sequence as Euler<P>; `wall` boundary faces are no-slip.
-/// The ghost stencil a partition must hold for the Navier-Stokes physics (laminar or SA): the
-/// boundary fits of the owned cells and of their face neighbours reach three vertex rings of them.
-GhostStencil navier_stokes_ghost_stencil() noexcept;
+/// The ghost stencil a partition holds for the Navier-Stokes physics (laminar or SA). Under
+/// reproducibility "ranks", vertex4: each rank fits its owned cells and their face neighbours,
+/// whose fits reach three vertex rings of them, from its own ghosts, the one-rank bits. Otherwise
+/// vertex3: each rank fits its owned cells only, and receives its ghost face neighbours' fits from
+/// their owners (#651).
+GhostStencil navier_stokes_ghost_stencil(bool ranks_reproducible) noexcept;
 
 template <class P>
 class NavierStokes {
@@ -47,7 +50,8 @@ class NavierStokes {
   /// With `keys`, as Euler<P>'s: its Euler<P> takes them, the viscous face loops gather each cell's
   /// faces in global order and orientation, the boundary fit lists its entries in ascending global
   /// id, and assemble() sums and places its blocks in that order and orientation. On a partition,
-  /// `ghosts` must hold navier_stokes_ghost_stencil() (E0148 otherwise).
+  /// `ghosts` must hold vertex3 at least (E0148 otherwise); below vertex4, the ghosts' fits come
+  /// from their owners, through the GhostFill of set_ghosts, which must carry rows.
   NavierStokes(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme,
                Transport transport, const kernels::GlobalKeys* keys = nullptr,
                std::optional<GhostStencil> ghosts = std::nullopt);

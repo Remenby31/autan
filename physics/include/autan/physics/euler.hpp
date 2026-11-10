@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 #include "autan/core/geometry.hpp"
@@ -13,6 +14,7 @@
 #include "autan/core/mesh.hpp"
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
+#include "autan/partition/cell_rows.hpp"
 #include "autan/physics/block_matrix.hpp"
 
 namespace autan::kernels::euler {
@@ -81,6 +83,13 @@ class GhostFill {
   virtual ~GhostFill() = default;
   virtual void forward(std::span<float* const> components) = 0;
   virtual void forward(std::span<double* const> components) = 0;
+  /// The row of every ghost `wanted` selects (one byte, 0 or 1, per ghost), in ghost order, from
+  /// its owner's row in `owned` (one per owned cell); an empty row elsewhere. Collective. A fill
+  /// that carries no rows throws std::logic_error.
+  virtual CellRows forward_rows(const CellRows& /*owned*/,
+                                std::span<const std::uint8_t> /*wanted*/) {
+    throw std::logic_error("this ghost fill carries no rows");
+  }
 };
 
 /// Euler residual R(U) = sum_f F . S - s V of a mesh, in precision policy P

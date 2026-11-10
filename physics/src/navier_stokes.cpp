@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -62,6 +63,16 @@ struct NavierStokes<P>::Impl {
   std::vector<std::int64_t> cell_key, face_key;  // global ids, under keys only
   std::size_t owned;                             // the owned cells, numbered first
   GhostFill* ghost_fill = nullptr;
+  // Below vertex4 ghosts (#651): each rank fits its owned cells only; a fitted ghost face neighbour
+  // of an owned cell has the fitted coefficients its owner computes (`fits`, exchanged each
+  // residual), and its owner's whole fit row from setup, in the owner's entry order: fit_jacobian
+  // evaluates it entry by entry as the owner evaluates its own, so the self term sums the same
+  // terms in the same order. An entry is a local cell, or -1 for a boundary face or a cell this
+  // rank does not hold, which enter the self term only.
+  bool exchange = false;
+  std::vector<std::int64_t> global_id;
+  using FitRow = std::vector<std::pair<index_t, std::array<double, 19>>>;
+  std::vector<FitRow> ghost_rows;  // per ghost cell, numbered from `owned`
   // Under keys: the interior faces, then the boundary faces, each in ascending global id.
   std::vector<std::size_t> face_order;
   kernels::CellStencil vertex;
@@ -135,8 +146,9 @@ struct NavierStokes<P>::Impl {
       if (fitted[nbr] == 1 && fitted[own] == 0) fitted[own] = 2;
     }
     // On a partition, only the owned cells and their face neighbours get a fit: the viscous faces
-    // of the owned cells read no other, and the four rings of ghosts hold the three-ring stencils
-    // of those cells whole (navier_stokes_ghost_stencil), so each is the fit of the whole mesh.
+    // of the owned cells read no other. With vertex4 ghosts the rank computes them all, their
+    // three-ring stencils whole, so each is the fit of the whole mesh; below vertex4 it computes
+    // the owned cells' only and receives the ghosts' (exchange_fit_rows, `fits`).
     if (owned < nc) {
       std::vector<char> near(nc, 0);
       std::fill(near.begin(), near.begin() + static_cast<std::ptrdiff_t>(owned), 1);
@@ -148,6 +160,13 @@ struct NavierStokes<P>::Impl {
       }
       for (std::size_t c = 0; c < nc; ++c) {
         if (near[c] == 0) fitted[c] = 0;
+      }
+    }
+    if (exchange) {
+      bool ghost_fits = false;
+      for (std::size_t c = owned; c < nc; ++c) ghost_fits = ghost_fits || fitted[c] != 0;
+      if (ghost_fits && ghost_fill == nullptr) {
+        throw std::logic_error("NavierStokes: set_ghosts before set_boundary on a partition");
       }
     }
     auto ring = [&](index_t c) {
@@ -398,7 +417,9 @@ struct NavierStokes<P>::Impl {
     std::vector<std::array<double, nt>> coef, all;
     std::fill(quad.begin(), quad.end(), typename decltype(quad)::value_type(0));
     for (std::size_t c = 0; c < nc; ++c) {
-      if (fitted[c] != 0) {
+      if (exchange && c >= owned) {
+        if (fitted[c] != 0) quad[c] = typename decltype(quad)::value_type(1);
+      } else if (fitted[c] != 0) {
         auto entries = gather(c, 2);
         if (!solve(c, entries, coef)) {
           entries = gather(c, 3);
@@ -437,6 +458,63 @@ struct NavierStokes<P>::Impl {
     d.q4 = q[4].data();
     d.q5 = q[5].data();
     d.q6 = q[6].data();
+    if (exchange && ghost_fill != nullptr) exchange_fit_rows();
+  }
+
+  // The fit rows of the owned cells to the ranks holding them as ghosts, and theirs from them:
+  // every entry in the owner's order, a cell keyed by its global id, a boundary face by -1.
+  void exchange_fit_rows() {
+    constexpr std::size_t nt = 19;
+    const auto nc = static_cast<std::size_t>(topo.n_cells);
+    const auto& t = d.topo;
+    CellRows rows;
+    rows.stride = static_cast<int>(nt);
+    rows.offsets.reserve(owned + 1);
+    for (std::size_t c = 0; c < owned; ++c) {
+      const auto begin = static_cast<std::size_t>(t.stencil_offsets[c]);
+      const auto end = static_cast<std::size_t>(t.stencil_offsets[c + 1]);
+      for (std::size_t k = begin; k < end; ++k) {
+        const index_t e = t.stencil[k];
+        rows.keys.push_back(e < 0 ? -1 : global_id[static_cast<std::size_t>(e)]);
+        for (std::size_t i = 0; i < nt; ++i) rows.values.push_back(coef(k, i));
+      }
+      rows.offsets.push_back(static_cast<offset_t>(rows.keys.size()));
+    }
+    // Only the rows this rank reads travel: fitted ghosts face-adjacent to an owned cell.
+    std::vector<std::uint8_t> wanted(nc - owned, 0);
+    for (std::size_t g = owned; g < nc; ++g) {
+      bool near = false;
+      for (const auto& nb : adjacent[g]) near = near || nb.first < owned;
+      wanted[g - owned] = near && static_cast<double>(quad[g]) > 0.5 ? 1 : 0;
+    }
+    const CellRows got = ghost_fill->forward_rows(rows, wanted);
+    std::unordered_map<std::int64_t, std::size_t> local;
+    local.reserve(nc);
+    for (std::size_t c = 0; c < nc; ++c) local.emplace(global_id[c], c);
+    ghost_rows.assign(nc - owned, {});
+    for (std::size_t g = owned; g < nc; ++g) {
+      const std::size_t r = g - owned;
+      const auto begin = static_cast<std::size_t>(got.offsets[r]);
+      const auto end = static_cast<std::size_t>(got.offsets[r + 1]);
+      bool near = false;
+      for (const auto& nb : adjacent[g]) near = near || nb.first < owned;
+      if (!near) continue;
+      const bool fitted = static_cast<double>(quad[g]) > 0.5;
+      if ((begin < end) != fitted) {
+        throw Error(ErrorCode::halo_inconsistent,
+                    "a ghost's boundary fit differs from its owner's at cell " +
+                        std::to_string(global_id[g]));
+      }
+      if (!fitted) continue;
+      auto& row = ghost_rows[r];
+      row.reserve(end - begin);
+      for (std::size_t e = begin; e < end; ++e) {
+        std::array<double, nt> c{};
+        for (std::size_t i = 0; i < nt; ++i) c[i] = got.values[nt * e + i];
+        const auto at = got.keys[e] < 0 ? local.end() : local.find(got.keys[e]);
+        row.emplace_back(at == local.end() ? index_t{-1} : static_cast<index_t>(at->second), c);
+      }
+    }
   }
 
   // Coefficient i (0-18) of the boundary fit at stencil entry k (kernels/navier_stokes.py order).
@@ -445,11 +523,15 @@ struct NavierStokes<P>::Impl {
     return static_cast<double>(q[i / 3][(i % 3) * nst + k]);
   }
 
-  // Gradient at r of the cubic whose coefficients are those of entry k, and its rise from 0 to s.
-  void basis(std::size_t k, const std::array<double, 3>& r, const std::array<double, 3>& sg,
-             std::array<double, 3>& grad, double& rise) const {
+  [[nodiscard]] std::array<double, 19> coefs(std::size_t k) const {
     std::array<double, 19> c{};
     for (std::size_t i = 0; i < 19; ++i) c[i] = coef(k, i);
+    return c;
+  }
+
+  // Gradient at r of the cubic whose coefficients are c, and its rise from 0 to s.
+  static void basis(const std::array<double, 19>& c, const std::array<double, 3>& r,
+                    const std::array<double, 3>& sg, std::array<double, 3>& grad, double& rise) {
     auto gradient = [&](const std::array<double, 3>& v) {
       const double x = v[0], y = v[1], z = v[2];
       return std::array<double, 3>{
@@ -632,18 +714,17 @@ struct NavierStokes<P>::Impl {
         }
       }
       for (std::size_t j = 0; j < 3; ++j) dfdg[4][0][j] = -area * k_cond * n[j];
-      const auto begin = static_cast<std::size_t>(t.stencil_offsets[s]);
-      const auto end = static_cast<std::size_t>(t.stencil_offsets[s + 1]);
       std::array<double, 3> self{};
-      for (std::size_t k = begin; k < end; ++k) {
+      // Entry `entry` (a cell, or negative for a boundary value or a cell not held here) with
+      // coefficients c: owned and received rows go through it alike, in their owner's order.
+      auto term = [&](index_t entry, const std::array<double, 19>& c) {
         std::array<double, 3> bg{};
         double rise = 0.0;
-        basis(k, r, sg, bg, rise);
+        basis(c, r, sg, bg, rise);
         std::array<double, 3> v{};
         for (std::size_t j = 0; j < 3; ++j) v[j] = w * (bg[j] - rise / dist * e[j]);
         for (std::size_t j = 0; j < 3; ++j) self[j] -= v[j];
-        const index_t entry = t.stencil[k];
-        if (entry < 0) continue;  // boundary values are data
+        if (entry < 0) return;  // boundary values are data
         std::array<std::array<double, 4>, 5> dfdphi{};
         for (std::size_t row = 0; row < 5; ++row) {
           for (std::size_t ph = 0; ph < 4; ++ph) {
@@ -651,6 +732,13 @@ struct NavierStokes<P>::Impl {
           }
         }
         place(static_cast<std::size_t>(entry), dfdphi);
+      };
+      if (exchange && s >= owned) {
+        for (const auto& [entry, c] : ghost_rows[s - owned]) term(entry, c);
+      } else {
+        const auto begin = static_cast<std::size_t>(t.stencil_offsets[s]);
+        const auto end = static_cast<std::size_t>(t.stencil_offsets[s + 1]);
+        for (std::size_t k = begin; k < end; ++k) term(t.stencil[k], coefs(k));
       }
       std::array<std::array<double, 4>, 5> dfdphi{};
       for (std::size_t row = 0; row < 5; ++row) {
@@ -669,6 +757,8 @@ struct NavierStokes<P>::Impl {
       const auto r = static_cast<std::size_t>(t.neighbour[f]);
       const bool fl = static_cast<double>(quad[l]) > 0.5, fr = static_cast<double>(quad[r]) > 0.5;
       if (!fl && !fr) continue;
+      // Below vertex4 a ghost's fit is its owner's to report: halo-only faces are left out.
+      if (exchange && l >= owned && r >= owned) continue;
       const auto xl = centroid(l), xr = centroid(r);
       const std::array<double, 3> xf{g.face_centroid_x[f], g.face_centroid_y[f],
                                      g.face_centroid_z[f]};
@@ -721,6 +811,7 @@ struct NavierStokes<P>::Impl {
       const auto f = at(slot);
       const auto c = static_cast<std::size_t>(t.owner[f]);
       if (static_cast<double>(quad[c]) <= 0.5) continue;
+      if (exchange && c >= owned) continue;
       const double kf = static_cast<double>(kind[f]);
       if (kf > 1.5 && kf < 2.5) continue;  // slip: no viscous flux
       const bool adiabatic = kf > 4.5 && static_cast<double>(d.bc[f]) <= 0.0;
@@ -773,6 +864,9 @@ struct NavierStokes<P>::Impl {
     nk::cpu::temperatures_velocities(h);
     nk::cpu::boundary_temperatures_velocities(h);
     nk::cpu::cubic_fits(h);
+    if (exchange) {
+      for (auto& f : fits) fill_ghosts(f, 15);
+    }
   }
 
   Impl(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme, Transport t,
@@ -782,16 +876,18 @@ struct NavierStokes<P>::Impl {
         keyed(keys != nullptr),
         owned(static_cast<std::size_t>(mesh.n_owned_cells())),
         geo(geometry) {
-    // The boundary fits of the owned cells and of their face neighbours reach three vertex rings
-    // of them: on a partition, its ghosts must hold four.
-    if ((ghosts || mesh.n_cells() != mesh.n_owned_cells()) &&
-        ghosts.value_or(GhostStencil::face2) < navier_stokes_ghost_stencil()) {
+    // The boundary fits of the owned cells reach three vertex rings of them: on a partition, its
+    // ghosts must hold three; with four, the ranks also fit their ghost face neighbours.
+    const bool partitioned = ghosts || mesh.n_cells() != mesh.n_owned_cells();
+    if (partitioned && ghosts.value_or(GhostStencil::face2) < GhostStencil::vertex3) {
       throw Error(ErrorCode::partition_stencil_not_local,
                   "the viscous boundary fits' vertex rings reach beyond the partition's ghosts");
     }
-    if (keys != nullptr) {
-      cell_key.assign(keys->cell.begin(), keys->cell.end());
-      face_key.assign(keys->face.begin(), keys->face.end());
+    // Every rank of a partition takes part in the collective exchanges, a rank without ghosts too.
+    exchange = ghosts.has_value() && *ghosts < GhostStencil::vertex4;
+    if (exchange) {
+      const auto ids = mesh.cell_global_id();
+      global_id.assign(ids.begin(), ids.end());
     }
     if (keys != nullptr) {
       cell_key.assign(keys->cell.begin(), keys->cell.end());
@@ -889,7 +985,9 @@ struct NavierStokes<P>::Impl {
   }
 };
 
-GhostStencil navier_stokes_ghost_stencil() noexcept { return GhostStencil::vertex4; }
+GhostStencil navier_stokes_ghost_stencil(bool ranks_reproducible) noexcept {
+  return ranks_reproducible ? GhostStencil::vertex4 : GhostStencil::vertex3;
+}
 
 template <class P>
 NavierStokes<P>::NavierStokes(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme,
@@ -1100,6 +1198,7 @@ void NavierStokes<P>::gradient_tangent(std::span<const State> s, std::span<const
   d.prim_tan = m.prim_tan.data();
   d.ut_tan = m.ut_tan.data();
   nk::cpu::temperatures_velocities_tangent(Impl::halo(d));
+  if (m.exchange) m.fill_ghosts(m.ut_tan, 5);
   d.fit0_tan = m.fits_tan[0].data();
   d.fit1_tan = m.fits_tan[1].data();
   d.fit2_tan = m.fits_tan[2].data();
@@ -1109,6 +1208,9 @@ void NavierStokes<P>::gradient_tangent(std::span<const State> s, std::span<const
   d.fit6_tan = m.fits_tan[6].data();
   nk::cpu::cubic_fits_tangent(Impl::halo(d));
   m.adiabatic_fit_tangent();
+  if (m.exchange) {
+    for (auto& f : m.fits_tan) m.fill_ghosts(f, 15);
+  }
   d.prim_tan = m.zero_state.data();
   d.ut_tan = m.zero_state.data();
   d.mu_t_tan = m.zero_state.data();
