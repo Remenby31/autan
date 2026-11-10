@@ -782,7 +782,9 @@ struct NavierStokes<P>::Impl {
             if (out != nullptr) apply(row, k, dfdphi, -sign);
             continue;
           }
-          (out != nullptr ? placed : outside) += chain(dfdphi, k, out, sign);
+          // The norms count owned rows only: on a partition each block's row belongs to one rank.
+          const double n2 = chain(dfdphi, k, out, sign);
+          if (row < owned) (out != nullptr ? placed : outside) += n2;
         }
       };
       auto side_l = [&] {
@@ -831,7 +833,8 @@ struct NavierStokes<P>::Impl {
           if (out != nullptr) apply(c, k, dfdphi, -1.0);
           return;
         }
-        (out != nullptr ? placed : outside) += chain(dfdphi, k, out, 1.0);
+        const double n2 = chain(dfdphi, k, out, 1.0);
+        if (c < owned) (out != nullptr ? placed : outside) += n2;
       };
       side(f, c, 1.0, rf, rf, dist, k_cond, mf + mt, ub, place);
     }

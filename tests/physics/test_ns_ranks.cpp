@@ -536,6 +536,83 @@ TEST_CASE("every rank takes part in each fit-row exchange, one without ghosts to
   const bool changed =
       r[0].keys != r[1].keys || r[0].values != r[1].values || r[0].offsets != r[1].offsets;
   CHECK(total(changed ? 1 : 0) > 0);
+
+  // The fit Jacobian's norms count the owned rows only: under the global keys, where every block
+  // has the bits of one rank's (B1, B3), the ranks' squares sum to the whole mesh's, up to the
+  // order of the sums. Every entry of a received row is held here, so none is left out of the
+  // outside norm.
+  if (!keyed) return;
+  {
+    std::set<std::int64_t> held(m.cell_global_id().begin(), m.cell_global_id().end());
+    const auto& last = r[1];
+    bool all_held = true;
+    for (const auto key : last.keys) all_held = all_held && (key < 0 || held.contains(key));
+    REQUIRE(everywhere(all_held));
+  }
+  const auto& mms = manufactured();
+  const std::vector<std::string> names{"rho", "rhou", "rhov", "rhow", "rhoE"};
+  const auto norms = [&](NS<P>& flow, const autan::Mesh& mesh, const autan::Geometry& g) {
+    const auto nc = static_cast<std::size_t>(mesh.n_cells());
+    std::vector<std::array<double, 3>> points(nc);
+    for (std::size_t c = 0; c < nc; ++c) {
+      points[c] = {g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]};
+    }
+    const auto values = mms.evaluate("conserved", names, points);
+    std::vector<double> u(5 * nc);
+    for (std::size_t k = 0; k < 5; ++k) {
+      for (std::size_t c = 0; c < nc; ++c) u[k * nc + c] = values[k][c];
+    }
+    std::vector<typename P::state> s(5 * nc);
+    flow.state(u, s);
+    std::vector<typename P::residual> res(5 * nc);
+    flow.residual_and_jacobian(s, res);
+    autan::physics::BlockMatrix a(mesh);
+    flow.assemble(std::vector<double>(nc, 0.0), a);
+    return flow.fit_jacobian_norms();
+  };
+  const auto [placed, outside] = norms(*ns, m, part.p.geometry);
+  const auto one = autan::extract_partition(
+      global, gg, std::vector<std::int32_t>(gg.cell_volume.size(), 0), 1, 0);
+  const autan::kernels::GlobalKeys one_keys{.cell = one.mesh.cell_global_id(),
+                                            .face = one.face_global_id,
+                                            .reversed = one.face_reversed,
+                                            .shift = one.mesh.ghost_translation()};
+  NS<P> whole(one.mesh, one.geometry, air, scheme(), autan::physics::Transport{}, &one_keys);
+  const auto gnb = static_cast<std::size_t>(one.mesh.n_boundary_faces());
+  const auto gni = static_cast<std::size_t>(one.mesh.n_interior_faces());
+  std::vector<BoundaryKind> gkind(gnb, BoundaryKind::wall);
+  std::vector<double> gdata(5 * gnb, 0.0);
+  for (std::size_t b = 0; b < gnb; ++b) {
+    gdata[b] = 300.0;
+    const auto& name =
+        one.mesh.face_zones()[static_cast<std::size_t>(one.mesh.face_zone()[gni + b])].name;
+    if (name == "xmin" || name == "ymin" || name == "zmin") gkind[b] = BoundaryKind::slip;
+  }
+  whole.set_boundary(gkind, gdata);
+  const auto [g_placed, g_outside] = norms(whole, one.mesh, one.geometry);
+  // Two sums of the same N nonnegative terms in other orders, each within gamma(N) = N u /
+  // (1 - N u) of the exact sum (u = 2^-53, every addition rounded to nearest), the ranks' three
+  // more: N bounds the terms by two rows per side of every face, each side's stencil entries.
+  const auto& t = whole.data().topo;
+  std::size_t widest = 0;
+  for (std::size_t c = 0; c + 1 < static_cast<std::size_t>(global.n_cells()) + 1; ++c) {
+    widest =
+        std::max(widest, static_cast<std::size_t>(t.stencil_offsets[c + 1] - t.stencil_offsets[c]));
+  }
+  const double n_terms =
+      4.0 * static_cast<double>(global.n_faces()) * static_cast<double>(widest + 1) + 3.0;
+  const double nu = n_terms * 0x1p-53;
+  const double gamma = nu / (1.0 - nu);
+  double sums[2] = {placed * placed, outside * outside};
+  double ranks_sum[2] = {0.0, 0.0};
+  MPI_Allreduce(sums, ranks_sum, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+  const double whole_sum[2] = {g_placed * g_placed, g_outside * g_outside};
+  for (int k = 0; k < 2; ++k) {
+    INFO((k == 0 ? "placed" : "outside")
+         << ": ranks " << ranks_sum[k] << ", one rank " << whole_sum[k] << ", gamma " << gamma);
+    CHECK(std::abs(ranks_sum[k] - whole_sum[k]) <= 2.0 * gamma * (ranks_sum[k] + whole_sum[k]));
+  }
+  CHECK(whole_sum[0] > 0.0);
 }
 
 int main(int argc, char** argv) {

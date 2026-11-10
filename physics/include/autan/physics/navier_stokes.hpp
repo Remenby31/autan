@@ -93,7 +93,8 @@ class NavierStokes {
                         typename Euler<P>::Faces faces);
   /// After assemble: Frobenius norms of the boundary fit's Jacobian blocks it added and of those
   /// outside the block pattern (stencil entries that are not the face's cells), which it leaves
-  /// out.
+  /// out, over the owned cells' rows: on a partition the ranks' squares sum to the whole mesh's.
+  /// Below vertex4, a received row's entries this rank does not hold are not counted.
   [[nodiscard]] std::pair<double, double> fit_jacobian_norms() const;
   /// The convective reconstruction's quadratic gradient (Euler<P>::quadratic_gradient).
   [[nodiscard]] typename Euler<P>::QuadraticGradient quadratic_gradient() const;
