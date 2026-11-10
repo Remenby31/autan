@@ -163,7 +163,7 @@ struct Result {
   std::map<std::int64_t, std::array<std::uint64_t, 5>> residual;  // owned cells
   // Placed blocks of owned rows: (row, column) global cell ids.
   std::map<std::pair<std::int64_t, std::int64_t>, std::array<std::uint64_t, 25>> blocks;
-  // Fitted coefficients (7 x 3 per cell) of owned cells and fitted ghost face neighbours.
+  // Fitted coefficients (7 x 15 per cell) of owned cells and fitted ghost face neighbours.
   std::map<std::int64_t, std::vector<std::uint64_t>> fits;
   // Owned cells' boundary-fit rows: (entry key, 19 weights) in stencil order. A cell entry's
   // key is its global id, a boundary face's -2 - its global face id.
@@ -288,7 +288,7 @@ Result run(Part& part, const Walls& walls, const autan::physics::Manufactured& m
     if (c >= owned) out.fitted_near_ghosts.insert(gid(c));
     auto& v = out.fits[gid(c)];
     for (const auto* b : fit) {
-      for (std::size_t j = 0; j < 3; ++j) v.push_back(bits(b[j * nc + c]));
+      for (std::size_t j = 0; j < 15; ++j) v.push_back(bits(b[j * nc + c]));
     }
   }
   keep = std::move(ns);
@@ -537,21 +537,14 @@ TEST_CASE("every rank takes part in each fit-row exchange, one without ghosts to
       r[0].keys != r[1].keys || r[0].values != r[1].values || r[0].offsets != r[1].offsets;
   CHECK(total(changed ? 1 : 0) > 0);
 
-  // The fit Jacobian's norms count the owned rows only: under the global keys, where every block
-  // has the bits of one rank's (B1, B3), the ranks' squares sum to the whole mesh's, up to the
-  // order of the sums. Every entry of a received row is held here, so none is left out of the
-  // outside norm.
-  if (!keyed) return;
-  {
-    std::set<std::int64_t> held(m.cell_global_id().begin(), m.cell_global_id().end());
-    const auto& last = r[1];
-    bool all_held = true;
-    for (const auto key : last.keys) all_held = all_held && (key < 0 || held.contains(key));
-    REQUIRE(everywhere(all_held));
-  }
+  // One evaluation: residual, assembled blocks and the fit Jacobian's norms, as bits.
+  struct Evaluation {
+    std::vector<std::uint64_t> residual, blocks;
+    std::pair<double, double> norms;
+  };
   const auto& mms = manufactured();
   const std::vector<std::string> names{"rho", "rhou", "rhov", "rhow", "rhoE"};
-  const auto norms = [&](NS<P>& flow, const autan::Mesh& mesh, const autan::Geometry& g) {
+  const auto evaluate = [&](NS<P>& flow, const autan::Mesh& mesh, const autan::Geometry& g) {
     const auto nc = static_cast<std::size_t>(mesh.n_cells());
     std::vector<std::array<double, 3>> points(nc);
     for (std::size_t c = 0; c < nc; ++c) {
@@ -568,9 +561,39 @@ TEST_CASE("every rank takes part in each fit-row exchange, one without ghosts to
     flow.residual_and_jacobian(s, res);
     autan::physics::BlockMatrix a(mesh);
     flow.assemble(std::vector<double>(nc, 0.0), a);
-    return flow.fit_jacobian_norms();
+    Evaluation out;
+    for (const auto v : res) out.residual.push_back(bits(v));
+    for (const auto span : {a.diagonals(), a.uppers(), a.lowers()}) {
+      for (const double v : span) out.blocks.push_back(bits(v));
+    }
+    out.norms = flow.fit_jacobian_norms();
+    return out;
   };
-  const auto [placed, outside] = norms(*ns, m, part.p.geometry);
+  // The second set_boundary's rows are the ones the physics uses: its evaluation has the bits of a
+  // physics given those conditions first.
+  const Evaluation refreshed = evaluate(*ns, m, part.p.geometry);
+  {
+    NS<P> fresh(part.p.mesh, part.p.geometry, air, scheme(), autan::physics::Transport{},
+                keyed ? &part.keys : nullptr, part.p.ghosts);
+    fresh.set_ghosts(part.halo.get());
+    fresh.set_boundary(kind, data);
+    const Evaluation first = evaluate(fresh, m, part.p.geometry);
+    CHECK(everywhere(refreshed.residual == first.residual && refreshed.blocks == first.blocks));
+  }
+
+  // The fit Jacobian's norms count the owned rows only: under the global keys, where every block
+  // has the bits of one rank's (B1, B3), the ranks' squares sum to the whole mesh's, up to the
+  // order of the sums. Every entry of a received row is held here, so none is left out of the
+  // outside norm.
+  if (!keyed) return;
+  {
+    std::set<std::int64_t> held(m.cell_global_id().begin(), m.cell_global_id().end());
+    const auto& last = r[1];
+    bool all_held = true;
+    for (const auto key : last.keys) all_held = all_held && (key < 0 || held.contains(key));
+    REQUIRE(everywhere(all_held));
+  }
+  const auto [placed, outside] = refreshed.norms;
   const auto one = autan::extract_partition(
       global, gg, std::vector<std::int32_t>(gg.cell_volume.size(), 0), 1, 0);
   const autan::kernels::GlobalKeys one_keys{.cell = one.mesh.cell_global_id(),
@@ -589,7 +612,7 @@ TEST_CASE("every rank takes part in each fit-row exchange, one without ghosts to
     if (name == "xmin" || name == "ymin" || name == "zmin") gkind[b] = BoundaryKind::slip;
   }
   whole.set_boundary(gkind, gdata);
-  const auto [g_placed, g_outside] = norms(whole, one.mesh, one.geometry);
+  const auto [g_placed, g_outside] = evaluate(whole, one.mesh, one.geometry).norms;
   // Two sums of the same N nonnegative terms in other orders, each within gamma(N) = N u /
   // (1 - N u) of the exact sum (u = 2^-53, every addition rounded to nearest), the ranks' three
   // more: N bounds the terms by two rows per side of every face, each side's stencil entries.
@@ -612,7 +635,9 @@ TEST_CASE("every rank takes part in each fit-row exchange, one without ghosts to
          << ": ranks " << ranks_sum[k] << ", one rank " << whole_sum[k] << ", gamma " << gamma);
     CHECK(std::abs(ranks_sum[k] - whole_sum[k]) <= 2.0 * gamma * (ranks_sum[k] + whole_sum[k]));
   }
+  // Neither norm is zero: the check compares two definite sums.
   CHECK(whole_sum[0] > 0.0);
+  CHECK(whole_sum[1] > 0.0);
 }
 
 int main(int argc, char** argv) {
