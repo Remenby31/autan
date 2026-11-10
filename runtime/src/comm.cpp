@@ -40,16 +40,20 @@ class SelfExchange final : public GhostExchange {
   void forward(std::span<double* const> components, MemorySpace space, void* stream) override {
     run(components, space, stream);
   }
-  // A part without periodic images has no ghost and gets no row. Rows are not exchanged across
-  // periodic pairs: Navier-Stokes, the only caller, refuses them (E0706), and keys carry no image
-  // shift.
+  // A one-rank run on a part, under reproducibility "ranks", with a physics that receives its
+  // ghosts' rows: without periodic images the part has no ghost and gets no row. Rows are not
+  // exchanged across periodic pairs: Navier-Stokes, the only caller, refuses them (E0706), and
+  // keys carry no image shift.
   CellRows forward_rows(const CellRows& owned, std::span<const std::uint8_t> wanted) override {
-    if (part_.mesh.n_cells() != part_.mesh.n_owned_cells() || !wanted.empty()) {
+    const auto ghosts = static_cast<std::size_t>(part_.mesh.n_cells() - part_.mesh.n_owned_cells());
+    if (wanted.size() != ghosts) {
+      throw std::logic_error("forward_rows: the mask holds one byte per ghost");
+    }
+    if (ghosts != 0) {
       throw Error(ErrorCode::halo_inconsistent, "rows are not exchanged across periodic pairs");
     }
     CellRows none;
     none.stride = owned.stride;
-    none.offsets = {0};
     return none;
   }
 
