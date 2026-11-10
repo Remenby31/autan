@@ -2,8 +2,9 @@
 # Nightly guard (#611), run by autan-guard-watchdog.timer at 07:00 UTC (Persistent): appends the
 # outcome of the night whose deadline the latest 07:00 slot closed (green, red, void, or MISSING) to
 # $G/STATUS, once per night, flagging a second void in a row. A night whose job is still pending in
-# the queue is withdrawn and void. Trims green nights older than 14 days to their verdict, histories
-# and run.json; red and void nights stay whole.
+# the queue is withdrawn and void, and so is a drained night left without a verdict (DRAINED). Trims
+# green nights older than 14 days to their verdict, histories and run.json; red and void nights stay
+# whole.
 set -uo pipefail
 G=${AUTAN_GUARD_ROOT:-$HOME/cfd/vv-guard}
 exec 9> "$G/.watchdog.lock"
@@ -18,6 +19,10 @@ if [ ! -e "$v" ] && mv "$HOME/cfd/queue/pending/$name" "$G/$night/withdrawn.job"
   printf '{"schema": "autan.vv-guard-night/1", "commit": "%s", "outcome": "void", "infra": "never started: pending since %s, withdrawn at %s"}\n' \
     "$(cat "$G/$night/COMMIT")" "$(cat "$G/$night/PUBLISHED" 2>/dev/null || echo unknown)" "$(date -u +%FT%TZ)" > "$v.tmp"
   mv "$v.tmp" "$v"
+fi
+if [ ! -e "$v" ] && [ -e "$G/$night/DRAINED" ]; then
+  python3 -c "import json, sys; print(json.dumps({'schema': 'autan.vv-guard-night/1', 'commit': sys.argv[1], 'outcome': 'void', 'infra': 'drained, no verdict: ' + sys.argv[2]}))" \
+    "$(cat "$G/$night/COMMIT" 2>/dev/null || echo unknown)" "$(tr '\n' ' ' < "$G/$night/DRAINED" | cut -c1-300)" > "$v.tmp" && mv "$v.tmp" "$v"
 fi
 line=$(python3 -c "
 import json, sys
