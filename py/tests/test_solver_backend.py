@@ -721,6 +721,39 @@ def test_two_ranks_run_and_stop_through_the_launcher(
     assert stopped.field("Density").size == mesh.counts.cells  # the solution was written
 
 
+@pytest.mark.mpi
+@needs_mpi
+@pytest.mark.parametrize(("reproducibility", "ghosts"), [("run", "vertex3"), ("ranks", "vertex4")])
+def test_navier_stokes_runs_on_two_ranks_with_the_ghosts_its_mode_declares(
+    reproducibility: str, ghosts: str, tmp_path: Path
+) -> None:
+    # mesh-info.md: the partition of a laminar run on two ranks holds the ghosts its mode declares,
+    # vertex3 outside reproducibility "ranks" and vertex4 under it; the real autan-mesh-info writes
+    # it and the shipped runtime runs the case on it.
+    assert MESH_INFO is not None
+    assert RUNTIME is not None
+    path = tmp_path / "hybrid.py"
+    path.write_text(
+        CASE.replace("autan.Laminar())", f"autan.Laminar(), reproducibility={reproducibility!r})")
+        + "case.time = autan.Steady(max_iterations=5, linear_solver='gauss-seidel')\n"
+    )
+    meshinfo = tmp_path / "hybrid.meshinfo.json"
+    meshinfo.write_text(
+        subprocess.run(
+            [str(MESH_INFO), "--json", "--ranks", "2", "--ghosts", ghosts, str(MESH)],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    )
+    result = autan.load(path).run(
+        autan.MeshInfo.load(meshinfo),
+        backend=autan.SolverBackend(devices=autan.Devices(kind="cpu", count=2), executable=RUNTIME),
+        runs=tmp_path / "runs",
+    )
+    assert (result.run.status, result.run.devices.count) == ("completed", 2)
+
+
 HEX = ROOT / "tests" / "data" / "mesh" / "hex" / "polyMesh"
 
 

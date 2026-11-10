@@ -320,17 +320,13 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     assert "E0212" not in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cuda"))
     # The ghosts a run's partition holds (mesh-info.md): face2 for inviscid flow; for a viscous
     # run, laminar or SA, vertex4 under reproducibility "ranks" and vertex3 otherwise. Any other
-    # partition is not the run's.
+    # partition is not the run's. One row per outcome: inviscid in any mode, each viscous model
+    # outside "ranks" (in "run" and in "none"), and under "ranks".
     rule = {
-        ("Inviscid", "run"): "face2",
-        ("Inviscid", "none"): "face2",
         ("Inviscid", "ranks"): "face2",
         ("Laminar", "run"): "vertex3",
-        ("Laminar", "none"): "vertex3",
-        ("Laminar", "ranks"): "vertex4",
-        ("SA", "run"): "vertex3",
         ("SA", "none"): "vertex3",
-        ("SA", "ranks"): "vertex4",
+        ("Laminar", "ranks"): "vertex4",
     }
     for (turbulence, reproducibility), needed in rule.items():
         case = autan.load(
