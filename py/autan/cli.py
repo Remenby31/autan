@@ -396,7 +396,11 @@ def parser() -> argparse.ArgumentParser:
     )
     sub.add_argument("--device-count", type=_positive, default=1, help="autan-run: devices")
     sub.add_argument("--start", help="run directory to start from (default: the freestream)")
-    sub.add_argument("--warm", action="store_true", help="with --start: warm-start, count from 1")
+    sub.add_argument(
+        "--warm",
+        action="store_true",
+        help="with --start: warm-start, count from 1, converge to the start run's residual level",
+    )
     sub.add_argument("--runs", default="runs", help="directory of run directories")
     sub.add_argument("--iterations", type=int, default=200, help="fake: iterations to write")
     sub.add_argument("--pace", type=float, default=0.0, help="fake: seconds per iteration")
@@ -412,7 +416,11 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--device-kind", choices=["cpu", "cuda", "hip"], default="cpu")
     sub.add_argument("--device-count", type=_positive, default=1)
     sub.add_argument("--start", help="run directory to start from (default: the freestream)")
-    sub.add_argument("--warm", action="store_true", help="with --start: warm-start, count from 1")
+    sub.add_argument(
+        "--warm",
+        action="store_true",
+        help="with --start: warm-start, count from 1, converge to the start run's residual level",
+    )
     sub.add_argument("-o", "--output", help="file to write (default: stdout)")
     sub.add_argument("--json", action="store_true", help="diagnostics as JSON on failure")
     sub.set_defaults(func=command_prepare)

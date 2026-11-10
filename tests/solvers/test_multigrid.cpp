@@ -786,7 +786,8 @@ TEST_CASE("the line smoother repeats its bits on 1, 2 and 4 parts", "[multigrid]
                                                    std::vector<std::size_t>(n, n));
     std::vector<std::unique_ptr<autan::solvers::LineSmoother>> smoothers;
     for (std::int32_t p = 0; p < n_parts; ++p) {
-      local.push_back(autan::extract_partition(mesh, g, parts, n_parts, p, 1));
+      local.push_back(
+          autan::extract_partition(mesh, g, parts, n_parts, p, autan::GhostStencil::face));
       const auto& m = local.back().mesh;
       const auto nl = static_cast<std::size_t>(m.n_cells());
       const auto gid = m.cell_global_id();

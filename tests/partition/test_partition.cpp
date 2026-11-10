@@ -4,11 +4,16 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <limits>
+#include <map>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <span>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -64,14 +69,14 @@ bool same_bits(double a, double b) {
 /// Checks every rank of `parts` against the global mesh: owned cells cover the
 /// mesh once, faces and owned cells carry the global geometry bit for bit,
 /// ghosts are NaN, and each send list matches the receiver's ghost list.
-std::vector<autan::LocalPartition> check_split(const autan::Mesh& global,
-                                               const std::vector<std::int32_t>& parts,
-                                               std::int32_t n_parts, int layers = 2) {
+std::vector<autan::LocalPartition> check_split(
+    const autan::Mesh& global, const std::vector<std::int32_t>& parts, std::int32_t n_parts,
+    autan::GhostStencil kind = autan::GhostStencil::face2) {
   const autan::Geometry gg = autan::compute_geometry(global);
   std::vector<autan::LocalPartition> locals;
   std::vector<int> seen(at(global.n_cells()), 0);
   for (std::int32_t r = 0; r < n_parts; ++r) {
-    locals.push_back(autan::extract_partition(global, gg, parts, n_parts, r, layers));
+    locals.push_back(autan::extract_partition(global, gg, parts, n_parts, r, kind));
     const autan::LocalPartition& lp = locals.back();
     const autan::Mesh& m = lp.mesh;
     const auto gid = m.cell_global_id();
@@ -159,7 +164,7 @@ TEST_CASE("Slab partitions of a hex box have the analytic halo", "[partition]") 
   CHECK(q.max_ghost_ratio ==
         (n_parts == 1 ? 0.0 : (n_parts == 2 ? 1.0 : 2.0) * layer * n_parts / (n * n * n)));
 
-  const auto locals = check_split(global, parts, n_parts, 1);
+  const auto locals = check_split(global, parts, n_parts, autan::GhostStencil::face);
   for (std::int32_t r = 0; r < n_parts; ++r) {
     const auto& m = locals[at(r)].mesh;
     const bool end = r == 0 || r == n_parts - 1;
@@ -533,14 +538,14 @@ TEST_CASE("Periodic directions that are not independent are refused", "[partitio
 TEST_CASE("A cell periodic with itself marks the faces it reverses", "[partition][periodic]") {
   // One hexahedron periodic in x: across x = 1 the cell meets its own image,
   // so the local face there runs from the image to the cell, opposite to its
-  // global face, whatever the number of layers.
-  const int layers = GENERATE(1, 2);
+  // global face, whatever the ghost stencil.
+  const auto kind = GENERATE(autan::GhostStencil::face, autan::GhostStencil::face2);
   autan::CellwiseMesh cells = autan::test::box(1, autan::test::BoxFill::hexa, 0.0);
   cells.face_zones[0].kind = autan::BcKind::periodic;
   cells.face_zones[1].kind = autan::BcKind::periodic;
   cells.periodic.push_back({.zone_a = 0, .zone_b = 1, .translation = {1.0, 0.0, 0.0}});
   const autan::Mesh global = autan::assemble(autan::to_face_based(std::move(cells)));
-  const auto locals = check_split(global, std::vector<std::int32_t>(1, 0), 1, layers);
+  const auto locals = check_split(global, std::vector<std::int32_t>(1, 0), 1, kind);
   const auto& reversed = locals[0].face_reversed;
   CHECK(std::ranges::count(reversed, std::uint8_t{1}) > 0);
 }
@@ -1051,4 +1056,290 @@ TEST_CASE("Cells across a face or a periodic pair never share a colour, in any c
     }
     (void)autan::colour_cells(part.mesh);
   });
+}
+
+namespace {
+
+// A vertex stencil entry by global keys: a cell (0, global id, translation) or a boundary face
+// (1, global face id, translation of its cell).
+using VertexKey = std::tuple<int, std::int64_t, std::array<double, 3>>;
+
+// The vertex stencil of local cell c by its definition (kernels::StencilKind::vertex): the cells
+// and boundary faces of the faces that hold one of its nodes.
+std::set<VertexKey> vertex_stencil(const autan::LocalPartition& lp, index_t c) {
+  const auto& m = lp.mesh;
+  const auto shift = [&](index_t u) {
+    return u < m.n_owned_cells() ? std::array<double, 3>{}
+                                 : m.ghost_translation()[at(u - m.n_owned_cells())];
+  };
+  std::set<index_t> nodes;
+  for (const index_t f : m.cell_faces(c)) {
+    for (const index_t p : m.face_nodes(f)) nodes.insert(p);
+  }
+  std::set<VertexKey> out;
+  for (index_t f = 0; f < m.n_faces(); ++f) {
+    const auto fn = m.face_nodes(f);
+    if (std::none_of(fn.begin(), fn.end(), [&](index_t p) { return nodes.contains(p); })) continue;
+    const index_t o = m.owner()[at(f)];
+    if (f >= m.n_interior_faces()) {
+      out.insert({1, lp.face_global_id[at(f)], shift(o)});
+      continue;
+    }
+    for (const index_t u : {o, m.neighbour()[at(f)]}) {
+      if (u != c) out.insert({0, m.cell_global_id()[at(u)], shift(u)});
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("The vertex ghost stencils hold every cell and boundary face around their rings",
+          "[partition]") {
+  // The n^3 hexahedra of the unit box, plain or periodic in x and y (two to five cells wide):
+  // cell (i, j, k) has the cells (i + a, j + b, k + c), a, b, c in {-1, 0, 1}, and on each side
+  // it touches the 3 x 3 boundary faces around it, wrapped with their translation across the
+  // periodic directions and clipped elsewhere. With d vertex rings (vertex, vertex2 to vertex4),
+  // every cell within d - 1 rings of an owned cell, a ghost at its translation too, has that
+  // whole stencil on the part. Parts: blocks meeting at corners, a corner cell alone, whose
+  // diagonal neighbour lies three face steps away, and on 7^3 an interior cell alone.
+  const auto [n, periodic] = GENERATE(std::pair{7, false}, std::pair{2, true}, std::pair{3, true},
+                                      std::pair{4, true}, std::pair{5, true});
+  const auto [kind, depth] = GENERATE(
+      std::pair{autan::GhostStencil::vertex, 1}, std::pair{autan::GhostStencil::vertex2, 2},
+      std::pair{autan::GhostStencil::vertex3, 3}, std::pair{autan::GhostStencil::vertex4, 4});
+  CAPTURE(n, periodic, autan::name(kind));
+  autan::CellwiseMesh cells = autan::test::box(n, autan::test::BoxFill::hexa);
+  if (periodic) {
+    for (int k = 0; k < 2; ++k) {
+      cells.face_zones[at(2 * k)].kind = autan::BcKind::periodic;
+      cells.face_zones[at(2 * k + 1)].kind = autan::BcKind::periodic;
+      std::array<double, 3> t{};
+      t[at(k)] = 1.0;
+      cells.periodic.push_back({.zone_a = 2 * k, .zone_b = 2 * k + 1, .translation = t});
+    }
+  }
+  const autan::Mesh global = autan::assemble(autan::to_face_based(std::move(cells)));
+  const autan::Geometry gg = autan::compute_geometry(global);
+  const auto ijk = [&](std::size_t c) {
+    return std::array<int, 3>{static_cast<int>(gg.cell_centroid_x[c] * n),
+                              static_cast<int>(gg.cell_centroid_y[c] * n),
+                              static_cast<int>(gg.cell_centroid_z[c] * n)};
+  };
+  std::map<std::array<int, 3>, std::int64_t> cell_at;
+  for (std::size_t c = 0; c < gg.cell_volume.size(); ++c)
+    cell_at[ijk(c)] = static_cast<std::int64_t>(c);
+  // Boundary faces by (axis, side, cell): the face of that cell on that side of the box.
+  std::map<std::array<int, 5>, std::int64_t> face_at;
+  for (index_t f = global.n_interior_faces(); f < global.n_faces(); ++f) {
+    const auto o = at(global.owner()[at(f)]);
+    const std::array<double, 3> fc{gg.face_centroid_x[at(f)], gg.face_centroid_y[at(f)],
+                                   gg.face_centroid_z[at(f)]};
+    for (int a = 0; a < 3; ++a) {
+      if (fc[at(a)] == 0.0 || fc[at(a)] == 1.0) {
+        const auto x = ijk(o);
+        face_at[{a, fc[at(a)] == 1.0 ? 1 : 0, x[0], x[1], x[2]}] = f;
+      }
+    }
+  }
+  // The neighbour at offset d of cell x: its id and translation, or none beyond a wall.
+  const auto wrap =
+      [&](std::array<int, 3> x,
+          std::array<int, 3> d) -> std::optional<std::pair<std::int64_t, std::array<double, 3>>> {
+    std::array<double, 3> t{};
+    for (std::size_t a = 0; a < 3; ++a) {
+      x[a] += d[a];
+      if (x[a] >= 0 && x[a] < n) continue;
+      if (!periodic || a == 2) return std::nullopt;
+      t[a] = x[a] < 0 ? -1.0 : 1.0;
+      x[a] = (x[a] + n) % n;
+    }
+    return std::pair{cell_at.at(x), t};
+  };
+  const auto expected = [&](std::size_t c) {
+    std::set<VertexKey> out;
+    const auto x = ijk(c);
+    for (int a = -1; a <= 1; ++a) {
+      for (int b = -1; b <= 1; ++b) {
+        for (int d = -1; d <= 1; ++d) {
+          if (a == 0 && b == 0 && d == 0) continue;
+          if (const auto v = wrap(x, {a, b, d})) out.insert({0, v->first, v->second});
+        }
+      }
+    }
+    for (int axis = 0; axis < 3; ++axis) {
+      if (periodic && axis < 2) continue;
+      for (const int side : {0, 1}) {
+        if (x[at(axis)] != (side == 0 ? 0 : n - 1)) continue;
+        for (int a = -1; a <= 1; ++a) {
+          for (int b = -1; b <= 1; ++b) {
+            std::array<int, 3> d{};
+            d[at((axis + 1) % 3)] = a;
+            d[at((axis + 2) % 3)] = b;
+            const auto v = wrap(x, d);
+            if (!v) continue;
+            const auto y = ijk(at(v->first));
+            out.insert({1, face_at.at({axis, side, y[0], y[1], y[2]}), v->second});
+          }
+        }
+      }
+    }
+    return out;
+  };
+  std::vector<std::vector<std::int32_t>> partitions;
+  for (const std::int32_t parts : {2, 3, 4}) {
+    std::vector<std::int32_t> p(gg.cell_volume.size());
+    for (std::size_t c = 0; c < p.size(); ++c) {
+      const auto x = ijk(c);
+      p[c] = (x[0] * 3 / n + 2 * (x[1] * 2 / n) + x[2] * 2 / n) % parts;
+    }
+    partitions.push_back(std::move(p));
+  }
+  for (const std::array<int, 3> lone : {std::array{0, 0, 0}, std::array{n / 2, n / 2, n / 2}}) {
+    if (lone != std::array{0, 0, 0} && periodic) continue;
+    std::vector<std::int32_t> alone(gg.cell_volume.size(), 1);
+    alone[at(cell_at.at(lone))] = 0;
+    partitions.push_back(alone);
+  }
+  // A cell's expected stencil seen from its copy at translation t: every key moved by t.
+  const auto expected_at = [&](std::int64_t id, const std::array<double, 3>& t) {
+    std::set<VertexKey> out;
+    for (auto [type, key, shift] : expected(at(id))) {
+      for (std::size_t a = 0; a < 3; ++a) shift[a] += t[a];
+      out.insert({type, key, shift});
+    }
+    return out;
+  };
+  // The copies (id, translation) of the cells around copy (id, t): the 26 of the 3 x 3 x 3 block
+  // (vertex) or the 6 across faces, wrapped and clipped as above.
+  using Copy = std::pair<std::int64_t, std::array<double, 3>>;
+  const auto around = [&](const Copy& u, bool faces_only) {
+    std::vector<Copy> out;
+    const auto x = ijk(at(u.first));
+    for (int a = -1; a <= 1; ++a) {
+      for (int b = -1; b <= 1; ++b) {
+        for (int d = -1; d <= 1; ++d) {
+          const int steps = std::abs(a) + std::abs(b) + std::abs(d);
+          if (steps == 0 || (faces_only && steps != 1)) continue;
+          if (const auto v = wrap(x, {a, b, d})) {
+            auto t = v->second;
+            for (std::size_t k = 0; k < 3; ++k) t[k] += u.second[k];
+            out.push_back({v->first, t});
+          }
+        }
+      }
+    }
+    return out;
+  };
+  // The cell copies within `steps` of `start` through `around`.
+  const auto reach = [&](const std::set<Copy>& start, int steps, bool faces_only) {
+    std::set<Copy> seen = start;
+    std::vector<Copy> frontier(start.begin(), start.end());
+    for (int step = 0; step < steps; ++step) {
+      std::vector<Copy> next;
+      for (const Copy& u : frontier) {
+        for (const Copy& v : around(u, faces_only)) {
+          if (seen.insert(v).second) next.push_back(v);
+        }
+      }
+      frontier = std::move(next);
+    }
+    return seen;
+  };
+  for (const auto& parts : partitions) {
+    const auto n_parts = *std::max_element(parts.begin(), parts.end()) + 1;
+    const auto locals = check_split(global, parts, n_parts, kind);
+    for (const auto& lp : locals) {
+      CHECK(lp.ghosts == kind);
+      const auto& m = lp.mesh;
+      const auto translation = [&](index_t c) {
+        return c < m.n_owned_cells() ? std::array<double, 3>{}
+                                     : m.ghost_translation()[at(c - m.n_owned_cells())];
+      };
+      std::map<std::pair<std::int64_t, std::array<double, 3>>, index_t> local;
+      for (index_t c = 0; c < m.n_cells(); ++c)
+        local[{m.cell_global_id()[at(c)], translation(c)}] = c;
+      // Exactly the cells within `depth` vertex rings or 2 face steps of the owned cells.
+      std::set<Copy> owned;
+      for (index_t c = 0; c < m.n_owned_cells(); ++c) owned.insert({m.cell_global_id()[at(c)], {}});
+      std::set<Copy> halo = reach(owned, depth, false);
+      for (const Copy& u : reach(owned, 2, true)) halo.insert(u);
+      std::set<Copy> held;
+      for (const auto& entry : local) held.insert(entry.first);
+      CHECK(held == halo);
+      // Every cell within the vertex rings carries its own boundary faces, the outermost ring's
+      // included (a second-layer face2 ghost beyond them need not).
+      std::set<VertexKey> boundary;
+      for (index_t f = m.n_interior_faces(); f < m.n_faces(); ++f)
+        boundary.insert({1, lp.face_global_id[at(f)], translation(m.owner()[at(f)])});
+      for (const Copy& u : reach(owned, depth, false)) {
+        const auto x = ijk(at(u.first));
+        for (const auto& [where, face] : face_at) {
+          const bool own = where[2] == x[0] && where[3] == x[1] && where[4] == x[2];
+          if (own && !(periodic && where[0] < 2)) CHECK(boundary.contains({1, face, u.second}));
+        }
+      }
+      // The cells within depth - 1 rings of the owned cells, through their own (checked) stencils.
+      std::set<index_t> within;
+      std::vector<index_t> frontier;
+      for (index_t c = 0; c < m.n_owned_cells(); ++c) {
+        within.insert(c);
+        frontier.push_back(c);
+      }
+      for (int ring = 1; ring < depth; ++ring) {
+        std::vector<index_t> next;
+        for (const index_t u : frontier) {
+          for (const auto& [type, key, shift] : vertex_stencil(lp, u)) {
+            if (type != 0) continue;
+            const auto it = local.find({key, shift});
+            REQUIRE(it != local.end());
+            if (within.insert(it->second).second) next.push_back(it->second);
+          }
+        }
+        frontier = std::move(next);
+      }
+      for (const index_t c : within) {
+        CHECK(vertex_stencil(lp, c) == expected_at(m.cell_global_id()[at(c)], translation(c)));
+      }
+    }
+  }
+}
+
+TEST_CASE("A node whose cells meet only there refuses the vertex ghost stencils", "[partition]") {
+  // Two hexahedra sharing one corner node: no face holds it for both, so no walk around the
+  // node reaches the other part's cell, and its vertex stencil would be truncated (E0148).
+  autan::test::ReferenceCell first = autan::test::affine_cell(
+      autan::CellShape::hexa, {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}, {0, 0, 0});
+  autan::CellwiseMesh cells = std::move(first.mesh);
+  std::vector<index_t> nodes;
+  for (const auto& r : std::vector<std::array<double, 3>>{{1, 1, 1},
+                                                          {2, 1, 1},
+                                                          {2, 2, 1},
+                                                          {1, 2, 1},
+                                                          {1, 1, 2},
+                                                          {2, 1, 2},
+                                                          {2, 2, 2},
+                                                          {1, 2, 2}}) {
+    if (r == std::array<double, 3>{1, 1, 1}) {
+      nodes.push_back(6);  // the first cell's corner (1, 1, 1)
+      continue;
+    }
+    cells.x.push_back(r[0]);
+    cells.y.push_back(r[1]);
+    cells.z.push_back(r[2]);
+    nodes.push_back(static_cast<index_t>(cells.x.size() - 1));
+  }
+  cells.add_cell(autan::CellShape::hexa, nodes, 0);
+  const autan::Mesh global = autan::assemble(autan::to_face_based(std::move(cells)));
+  const autan::Geometry gg = autan::compute_geometry(global);
+  const std::vector<std::int32_t> parts{0, 1};
+  CHECK(autan::extract_partition(global, gg, parts, 2, 0).mesh.n_cells() == 1);
+  for (const auto kind : {autan::GhostStencil::vertex, autan::GhostStencil::vertex2,
+                          autan::GhostStencil::vertex3, autan::GhostStencil::vertex4}) {
+    CAPTURE(autan::name(kind));
+    require_error(autan::ErrorCode::partition_stencil_not_local,
+                  [&] { autan::extract_partition(global, gg, parts, 2, 0, kind); });
+    CHECK(autan::extract_partition(global, gg, std::vector<std::int32_t>{0, 0}, 1, 0, kind)
+              .mesh.n_cells() == 2);
+  }
 }

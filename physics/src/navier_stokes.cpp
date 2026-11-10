@@ -4,12 +4,15 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
+#include "autan/core/error.hpp"
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "navier_stokes_cpu.hpp"
@@ -56,9 +59,11 @@ struct NavierStokes<P>::Impl {
   bool bounded = false;  // set_boundary called: the fit is built
   // Under global keys the face loops gather (Euler<P>'s topology, which share() takes).
   bool keyed;
-  // A key reverses a face: the face Jacobians are then in global orientation, which assemble()
-  // does not place.
-  bool reversed;
+  std::vector<std::int64_t> cell_key, face_key;  // global ids, under keys only
+  std::size_t owned;                             // the owned cells, numbered first
+  GhostFill* ghost_fill = nullptr;
+  // Under keys: the interior faces, then the boundary faces, each in ascending global id.
+  std::vector<std::size_t> face_order;
   kernels::CellStencil vertex;
   std::array<std::vector<typename P::grad>, 7> fits;
   const Geometry& geo;  // FP64 geometry of the boundary fit
@@ -83,6 +88,20 @@ struct NavierStokes<P>::Impl {
     d.topo.stencil_offsets = fit_offsets.data();
     d.topo.stencil = fit_entries.data();
     d.topo.stencil_twin = nullptr;  // the fit has no adjoint
+  }
+
+  // Fills the ghost values of `n` components of an array laid out c * n_cells + i, at most 16 a
+  // call (GhostFill).
+  template <class T>
+  void fill_ghosts(std::vector<T>& v, std::size_t n) const {
+    if (ghost_fill == nullptr) return;
+    const auto nc = static_cast<std::size_t>(topo.n_cells);
+    for (std::size_t first = 0; first < n; first += 16) {
+      const std::size_t count = std::min<std::size_t>(16, n - first);
+      std::array<T*, 16> components{};
+      for (std::size_t k = 0; k < count; ++k) components[k] = v.data() + (first + k) * nc;
+      ghost_fill->forward(std::span<T* const>(components.data(), count));
+    }
   }
 
   // Cubic least-squares fit of every cell owning a face whose condition gives T and the velocity
@@ -115,6 +134,22 @@ struct NavierStokes<P>::Impl {
       if (fitted[own] == 1 && fitted[nbr] == 0) fitted[nbr] = 2;
       if (fitted[nbr] == 1 && fitted[own] == 0) fitted[own] = 2;
     }
+    // On a partition, only the owned cells and their face neighbours get a fit: the viscous faces
+    // of the owned cells read no other, and the four rings of ghosts hold the three-ring stencils
+    // of those cells whole (navier_stokes_ghost_stencil), so each is the fit of the whole mesh.
+    if (owned < nc) {
+      std::vector<char> near(nc, 0);
+      std::fill(near.begin(), near.begin() + static_cast<std::ptrdiff_t>(owned), 1);
+      for (std::size_t f = 0; f < ni; ++f) {
+        const auto own = static_cast<std::size_t>(topo.owner[f]);
+        const auto nbr = static_cast<std::size_t>(topo.neighbour[f]);
+        if (own < owned) near[nbr] = 1;
+        if (nbr < owned) near[own] = 1;
+      }
+      for (std::size_t c = 0; c < nc; ++c) {
+        if (near[c] == 0) fitted[c] = 0;
+      }
+    }
     auto ring = [&](index_t c) {
       const auto i = static_cast<std::size_t>(c);
       return std::span<const index_t>(
@@ -143,6 +178,18 @@ struct NavierStokes<P>::Impl {
       }
       std::sort(out.begin(), out.end());
       out.erase(std::unique(out.begin(), out.end()), out.end());
+      if (!cell_key.empty()) {
+        // Under global keys the boundary faces, then the cells, in ascending global id: the
+        // normal matrix sums its entries, and the nearest boundary face is chosen, in that
+        // order, the same in any cell order (runtime.md, Ranks).
+        std::sort(out.begin(), out.end(), [&](index_t a, index_t b) {
+          if ((a < 0) != (b < 0)) return a < 0;
+          return a < 0 ? face_key[static_cast<std::size_t>(-a - 1)] <
+                             face_key[static_cast<std::size_t>(-b - 1)]
+                       : cell_key[static_cast<std::size_t>(a)] <
+                             cell_key[static_cast<std::size_t>(b)];
+        });
+      }
       return out;
     };
     constexpr std::array<std::array<int, 3>, nt> power{{{1, 0, 0},
@@ -358,8 +405,8 @@ struct NavierStokes<P>::Impl {
           if (!solve(c, entries, coef)) {
             throw std::invalid_argument(
                 "the boundary fit of the viscous fluxes is undetermined at cell " +
-                std::to_string(c) + " (" + std::to_string(entries.size()) +
-                " entries within three rings)");
+                std::to_string(cell_key.empty() ? static_cast<std::int64_t>(c) : cell_key[c]) +
+                " (" + std::to_string(entries.size()) + " entries within three rings)");
           }
         }
         fit_entries.insert(fit_entries.end(), entries.begin(), entries.end());
@@ -613,7 +660,11 @@ struct NavierStokes<P>::Impl {
       }
       place(s, dfdphi);
     };
-    for (std::size_t f = 0; f < (product == nullptr || product->interior ? ni : 0); ++f) {
+    // Under global keys the faces in ascending global id (face_order), so that a block or a
+    // residual row sums its faces' contributions in the same order in any cell order.
+    auto at = [&](std::size_t slot) { return face_order.empty() ? slot : face_order[slot]; };
+    for (std::size_t slot = 0; slot < (product == nullptr || product->interior ? ni : 0); ++slot) {
+      const auto f = at(slot);
       const auto l = static_cast<std::size_t>(t.owner[f]);
       const auto r = static_cast<std::size_t>(t.neighbour[f]);
       const bool fl = static_cast<double>(quad[l]) > 0.5, fr = static_cast<double>(quad[r]) > 0.5;
@@ -644,20 +695,30 @@ struct NavierStokes<P>::Impl {
           (out != nullptr ? placed : outside) += chain(dfdphi, k, out, sign);
         }
       };
-      if (fl) {
+      auto side_l = [&] {
         const std::array<double, 3> rf{xf[0] - xl[0], xf[1] - xl[1], xf[2] - xl[2]};
         side(f, l, wl, rf, dlr, dist, k_cond, mf + mt, uf, place);
-      }
-      if (fr) {
+      };
+      auto side_r = [&] {
         // The rise of r's fit runs from r to l, against e: its correction enters with + sign,
         // which `side` gives through the reversed segment.
         const std::array<double, 3> rf{xf[0] - xr[0], xf[1] - xr[1], xf[2] - xr[2]};
         const std::array<double, 3> drl{-dlr[0], -dlr[1], -dlr[2]};
         side(f, r, wr, rf, drl, dist, k_cond, mf + mt, uf, place);
+      };
+      // Both sides add to the same blocks: the global left's first, in any orientation.
+      if (t.face_reversed != nullptr && t.face_reversed[f] != 0) {
+        if (fr) side_r();
+        if (fl) side_l();
+      } else {
+        if (fl) side_l();
+        if (fr) side_r();
       }
     }
     const auto* kind = d.bc_kind;
-    for (std::size_t f = ni; f < (product == nullptr || product->boundary ? nf : ni); ++f) {
+    for (std::size_t slot = ni; slot < (product == nullptr || product->boundary ? nf : ni);
+         ++slot) {
+      const auto f = at(slot);
       const auto c = static_cast<std::size_t>(t.owner[f]);
       if (static_cast<double>(quad[c]) <= 0.5) continue;
       const double kf = static_cast<double>(kind[f]);
@@ -696,20 +757,46 @@ struct NavierStokes<P>::Impl {
     }
   }
 
+  // `data` over every local cell and face: the generated cell and boundary loops cover owned ones
+  // only. Pointwise values and the fits of the cells whose stencils the ghosts hold whole (owned
+  // cells and their face neighbours) then have their owner's bits; the face loops that sum into the
+  // owned cells' residuals keep the owned range.
+  [[nodiscard]] static nk::Data<P> halo(nk::Data<P> data) {
+    data.topo.n_owned_cells = data.topo.n_cells;
+    data.topo.n_owned_interior_faces = data.topo.n_interior_faces;
+    data.topo.n_owned_faces = data.topo.n_faces;
+    return data;
+  }
+
   void fit() {
-    nk::cpu::temperatures_velocities(d);
-    nk::cpu::boundary_temperatures_velocities(d);
-    nk::cpu::cubic_fits(d);
+    const auto h = halo(d);
+    nk::cpu::temperatures_velocities(h);
+    nk::cpu::boundary_temperatures_velocities(h);
+    nk::cpu::cubic_fits(h);
   }
 
   Impl(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme, Transport t,
-       const kernels::GlobalKeys* keys)
-      : euler(mesh, geometry, gas, scheme, keys),
+       const kernels::GlobalKeys* keys, std::optional<GhostStencil> ghosts)
+      : euler(mesh, geometry, gas, scheme, keys, ghosts),
         quadratic(scheme.gradient_fit == GradientFit::quadratic),
         keyed(keys != nullptr),
-        reversed(keys != nullptr &&
-                 std::ranges::any_of(keys->reversed, [](auto r) { return r != 0; })),
+        owned(static_cast<std::size_t>(mesh.n_owned_cells())),
         geo(geometry) {
+    // The boundary fits of the owned cells and of their face neighbours reach three vertex rings
+    // of them: on a partition, its ghosts must hold four.
+    if ((ghosts || mesh.n_cells() != mesh.n_owned_cells()) &&
+        ghosts.value_or(GhostStencil::face2) < navier_stokes_ghost_stencil()) {
+      throw Error(ErrorCode::partition_stencil_not_local,
+                  "the viscous boundary fits' vertex rings reach beyond the partition's ghosts");
+    }
+    if (keys != nullptr) {
+      cell_key.assign(keys->cell.begin(), keys->cell.end());
+      face_key.assign(keys->face.begin(), keys->face.end());
+    }
+    if (keys != nullptr) {
+      cell_key.assign(keys->cell.begin(), keys->cell.end());
+      face_key.assign(keys->face.begin(), keys->face.end());
+    }
     if (quadratic)
       grad_v.assign(15 * static_cast<std::size_t>(mesh.n_cells()), typename P::grad(0));
     if (!(t.mu_ref > 0.0) || !(t.prandtl > 0.0) || !(t.prandtl_turbulent > 0.0) ||
@@ -718,6 +805,15 @@ struct NavierStokes<P>::Impl {
     }
     const auto packed = kernels::pack_geometry(mesh, geometry, keys);
     topo = kernels::topology(mesh.view());
+    if (!face_key.empty()) {
+      const auto nf = static_cast<std::size_t>(topo.n_faces);
+      const auto ni = static_cast<std::ptrdiff_t>(topo.n_interior_faces);
+      face_order.resize(nf);
+      std::iota(face_order.begin(), face_order.end(), std::size_t{0});
+      auto by_key = [&](std::size_t a, std::size_t b) { return face_key[a] < face_key[b]; };
+      std::sort(face_order.begin(), face_order.begin() + ni, by_key);
+      std::sort(face_order.begin() + ni, face_order.end(), by_key);
+    }
     vertex = kernels::cell_stencil(mesh, packed, kernels::StencilKind::vertex);
     adjacent.assign(static_cast<std::size_t>(mesh.n_cells()), {});
     for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_interior_faces()); ++f) {
@@ -793,10 +889,13 @@ struct NavierStokes<P>::Impl {
   }
 };
 
+GhostStencil navier_stokes_ghost_stencil() noexcept { return GhostStencil::vertex4; }
+
 template <class P>
 NavierStokes<P>::NavierStokes(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme,
-                              Transport transport, const kernels::GlobalKeys* keys)
-    : impl_(std::make_unique<Impl>(mesh, geometry, gas, scheme, transport, keys)) {}
+                              Transport transport, const kernels::GlobalKeys* keys,
+                              std::optional<GhostStencil> ghosts)
+    : impl_(std::make_unique<Impl>(mesh, geometry, gas, scheme, transport, keys, ghosts)) {}
 
 template <class P>
 NavierStokes<P>::~NavierStokes() = default;
@@ -829,6 +928,7 @@ void NavierStokes<P>::set_boundary_data(std::span<const double> data) {
 template <class P>
 void NavierStokes<P>::set_ghosts(GhostFill* ghosts) noexcept {
   impl_->euler.set_ghosts(ghosts);
+  impl_->ghost_fill = ghosts;
 }
 
 template <class P>
@@ -873,7 +973,10 @@ void NavierStokes<P>::residual(std::span<const State> s, std::span<Res> res) {
   auto& m = *impl_;
   if (!m.bounded) throw std::logic_error("NavierStokes: set_boundary before the residual");
   m.euler.residual(s, res);
-  if (m.quadratic) m.euler.linear_gradient(m.grad_v);
+  if (m.quadratic) {
+    m.euler.linear_gradient(m.grad_v);
+    m.fill_ghosts(m.grad_v, 15);
+  }
   m.share();
   m.fit();
   m.d.res = res.data();
@@ -886,7 +989,10 @@ void NavierStokes<P>::residual_and_jacobian(std::span<const State> s, std::span<
   auto& m = *impl_;
   if (!m.bounded) throw std::logic_error("NavierStokes: set_boundary before the residual");
   m.euler.residual_and_jacobian(s, res);
-  if (m.quadratic) m.euler.linear_gradient(m.grad_v);
+  if (m.quadratic) {
+    m.euler.linear_gradient(m.grad_v);
+    m.fill_ghosts(m.grad_v, 15);
+  }
   m.share();
   m.fit();
   m.d.res = res.data();
@@ -897,7 +1003,6 @@ void NavierStokes<P>::residual_and_jacobian(std::span<const State> s, std::span<
 template <class P>
 void NavierStokes<P>::assemble(std::span<const double> shift, BlockMatrix& a) const {
   const auto& m = *impl_;
-  if (m.reversed) throw std::logic_error("NavierStokes: assemble under keys that reverse a face");
   m.euler.assemble(shift, a);
   const auto nc = static_cast<std::size_t>(m.topo.n_cells);
   const auto nf = static_cast<std::size_t>(m.topo.n_faces);
@@ -918,17 +1023,48 @@ void NavierStokes<P>::assemble(std::span<const double> shift, BlockMatrix& a) co
       }
     }
   };
-  for (std::size_t f = 0; f < ni; ++f) {
-    const auto o = static_cast<std::size_t>(m.topo.owner[f]);
-    const auto n = static_cast<std::size_t>(m.topo.neighbour[f]);
-    add(a.diagonal(o), m.visc_jac.data(), nf, f, 0, dwdu, nc, o, 1.0);
-    add(a.upper(f), m.visc_jac.data(), nf, f, 1, dwdu, nc, n, 1.0);
-    add(a.lower(f), m.visc_jac.data(), nf, f, 0, dwdu, nc, o, -1.0);
-    add(a.diagonal(n), m.visc_jac.data(), nf, f, 1, dwdu, nc, n, -1.0);
-  }
-  for (std::size_t f = ni; f < nf; ++f) {
-    const auto o = static_cast<std::size_t>(m.topo.owner[f]);
-    add(a.diagonal(o), m.visc_bnd_jac.data(), nf, f, 0, dwdu, nc, o, 1.0);
+  if (m.keyed) {
+    // As Euler<P>::assemble under global keys: the face loops evaluate each face in its global
+    // orientation (visc_jac: dF/dW of the global left, block 0, and right, block 1), each diagonal
+    // block gathers its cell's faces in Topology::cell_faces order (the global order), and the
+    // off-diagonal blocks are placed in BlockMatrix's local orientation.
+    const auto& t = m.d.topo;
+    auto left = [&](std::size_t f) {
+      const bool rev = t.face_reversed != nullptr && t.face_reversed[f] != 0;
+      return static_cast<std::size_t>(rev ? t.neighbour[f] : t.owner[f]);
+    };
+    for (std::size_t c = 0; c < nc; ++c) {
+      for (auto k = t.cell_face_offsets[c]; k < t.cell_face_offsets[c + 1]; ++k) {
+        const auto f = static_cast<std::size_t>(t.cell_faces[k]);
+        if (f >= ni) {
+          add(a.diagonal(c), m.visc_bnd_jac.data(), nf, f, 0, dwdu, nc, c, 1.0);
+        } else if (left(f) == c) {
+          add(a.diagonal(c), m.visc_jac.data(), nf, f, 0, dwdu, nc, c, 1.0);
+        } else {
+          add(a.diagonal(c), m.visc_jac.data(), nf, f, 1, dwdu, nc, c, -1.0);
+        }
+      }
+    }
+    for (std::size_t f = 0; f < ni; ++f) {
+      const auto o = static_cast<std::size_t>(t.owner[f]);
+      const auto n = static_cast<std::size_t>(t.neighbour[f]);
+      const bool rev = left(f) != o;
+      add(rev ? a.lower(f) : a.upper(f), m.visc_jac.data(), nf, f, 1, dwdu, nc, rev ? o : n, 1.0);
+      add(rev ? a.upper(f) : a.lower(f), m.visc_jac.data(), nf, f, 0, dwdu, nc, rev ? n : o, -1.0);
+    }
+  } else {
+    for (std::size_t f = 0; f < ni; ++f) {
+      const auto o = static_cast<std::size_t>(m.topo.owner[f]);
+      const auto n = static_cast<std::size_t>(m.topo.neighbour[f]);
+      add(a.diagonal(o), m.visc_jac.data(), nf, f, 0, dwdu, nc, o, 1.0);
+      add(a.upper(f), m.visc_jac.data(), nf, f, 1, dwdu, nc, n, 1.0);
+      add(a.lower(f), m.visc_jac.data(), nf, f, 0, dwdu, nc, o, -1.0);
+      add(a.diagonal(n), m.visc_jac.data(), nf, f, 1, dwdu, nc, n, -1.0);
+    }
+    for (std::size_t f = ni; f < nf; ++f) {
+      const auto o = static_cast<std::size_t>(m.topo.owner[f]);
+      add(a.diagonal(o), m.visc_bnd_jac.data(), nf, f, 0, dwdu, nc, o, 1.0);
+    }
   }
   m.fit_norms = m.fit_jacobian(&a, nullptr);
 }
@@ -948,6 +1084,7 @@ void NavierStokes<P>::gradient_tangent(std::span<const State> s, std::span<const
   // eddy viscosity and the fits' boundary values held: the fits' tangent covers every stencil
   // entry, so the blocks `assemble` already adds for them are subtracted (fit_jacobian).
   m.euler.linear_gradient_tangent(s, du, m.grad_v_tan);
+  m.fill_ghosts(m.grad_v_tan, 15);
   // Under the linear fit the viscous terms read the reconstruction's gradient, zero at first order.
   if (!m.quadratic && !m.euler.scheme().second_order) {
     std::fill(m.grad_v_tan.begin(), m.grad_v_tan.end(), typename P::grad(0));
@@ -958,10 +1095,11 @@ void NavierStokes<P>::gradient_tangent(std::span<const State> s, std::span<const
     for (auto& f : m.fits_tan) f.assign(15 * nc, typename P::grad(0));
   }
   m.euler.primitive_tangent(s, du, m.prim_tan);
+  m.fill_ghosts(m.prim_tan, 5);
   auto d = m.d;
   d.prim_tan = m.prim_tan.data();
   d.ut_tan = m.ut_tan.data();
-  nk::cpu::temperatures_velocities_tangent(d);
+  nk::cpu::temperatures_velocities_tangent(Impl::halo(d));
   d.fit0_tan = m.fits_tan[0].data();
   d.fit1_tan = m.fits_tan[1].data();
   d.fit2_tan = m.fits_tan[2].data();
@@ -969,7 +1107,7 @@ void NavierStokes<P>::gradient_tangent(std::span<const State> s, std::span<const
   d.fit4_tan = m.fits_tan[4].data();
   d.fit5_tan = m.fits_tan[5].data();
   d.fit6_tan = m.fits_tan[6].data();
-  nk::cpu::cubic_fits_tangent(d);
+  nk::cpu::cubic_fits_tangent(Impl::halo(d));
   m.adiabatic_fit_tangent();
   d.prim_tan = m.zero_state.data();
   d.ut_tan = m.zero_state.data();

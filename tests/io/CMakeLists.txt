@@ -51,6 +51,9 @@ add_cli_test(coded-error 1 "E0130" ${mesh_dir}/missing.msh)
 add_cli_test(usage 2 "usage: autan-mesh-info" --unknown)
 add_cli_test(scale 0 "\"scale\": 0.0254" --json --scale 0.0254 ${mesh_dir}/hex/polyMesh)
 add_cli_test(no-scale 2 "usage: autan-mesh-info" --json --scale 0 ${mesh_dir}/hex/polyMesh)
+add_cli_test(ghosts 0 "\"ghost_stencil\": \"vertex\"" --json --ghosts vertex ${mesh_dir}/hex/polyMesh)
+add_cli_test(ghosts-without-json 2 "usage: autan-mesh-info" --ghosts vertex ${mesh_dir}/hex/polyMesh)
+add_cli_test(ghosts-face 2 "usage: autan-mesh-info" --json --ghosts face ${mesh_dir}/hex/polyMesh)
 if(AUTAN_ENABLE_METIS)
   add_cli_test(
     partition
