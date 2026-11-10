@@ -1223,10 +1223,10 @@ TEST_CASE("cases outside the Euler physics are refused before any directory exis
   CHECK(out.run.empty());
   CHECK(!fs::exists(out.runs));
   const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
-  CHECK(diagnostic["code"] == "E0706");
-  CHECK(diagnostic["data"]["path"] == path);
-  CHECK(diagnostic["data"][field] == value);
-  CHECK(diagnostic["data"]["zone"] ==
+  CHECK(diagnostic.at("code") == "E0706");
+  CHECK(diagnostic.at("data").at("path") == path);
+  CHECK(diagnostic.at("data").at(field) == value);
+  CHECK(diagnostic.at("data").at("zone") ==
         (field == "medium" ? doc["cell_zones"][1]["zone"] : doc["boundaries"][boundary]["zone"]));
 }
 
