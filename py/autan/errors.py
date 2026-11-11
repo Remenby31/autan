@@ -817,6 +817,12 @@ _CODES = [
         "starts it anyway, at the risk of exhausting the machine.",
     ),
     Code(
+        "E0720",
+        "Colouring couples a colour",
+        "A colour-ordered smoother receives a colouring without one valid colour per cell, or in which two cells of one colour share an interior face.",
+        "Pass the runtime's distance-1 cell colouring (PhysicsContext::cell_colours).",
+    ),
+    Code(
         "W0712",
         "Run started beyond its memory",
         "The run was started with `--allow-oversubscription` although its memory estimate "

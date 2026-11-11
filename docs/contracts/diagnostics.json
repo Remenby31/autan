@@ -691,6 +691,12 @@
       "fix": "Use fp64.",
       "doc": "https://remenby31.github.io/autan/sdk/errors/#w0717"
     },
+    "E0720": {
+      "severity": "error",
+      "title": "Colouring couples a colour",
+      "fix": "Pass the runtime's distance-1 cell colouring (PhysicsContext::cell_colours).",
+      "doc": "https://remenby31.github.io/autan/sdk/errors/#e0720"
+    },
     "W0801": {
       "severity": "warning",
       "title": "No NVIDIA GPU found",
