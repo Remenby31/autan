@@ -88,7 +88,8 @@ jobs:
           persist-credentials: false
       - name: Is the pinned image docker/dev's?
         run: |
-          tree=$(git rev-parse HEAD:docker/dev)
+          # The checkout belongs to another user than the container's root: git needs it declared.
+          tree=$(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD:docker/dev)
           [ "$tree" = c5ed7be0431c08d00c7cb43d698908591beb268b ] ||
             echo "::warning::docker/dev is now tree $tree, the pinned image tree c5ed7be0: once gpu-image.yml has published the new image, pin it here"
       - name: No open GB10-only CPU difference
@@ -112,6 +113,7 @@ jobs:
       - name: Build
         run: cmake --build build
       - name: Deal the CPU tests into three shards (each test in exactly one)
+        id: split
         run: bench/ci/cpu-test-shards.py build "$RUNNER_TEMP" 3
       # MPI tests one at a time: they busy-poll, and concurrent ranks on shared cores starve each
       # other.
@@ -138,7 +140,7 @@ jobs:
             python3 -c 'import json, sys; print(" ".join("#%d" % i["number"] for i in json.load(sys.stdin)))')
           [ -z "$open" ] || { echo "::error::the CPU tests failed on GB10 ($open): see the first step"; exit 1; }
       - name: Keep what this shard ran
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.split.outcome == 'success' }}
         env:
           SHARD: ${{ matrix.shard }}
         run: |
@@ -146,7 +148,7 @@ jobs:
           cp "$RUNNER_TEMP"/cpu-all-*.names "$RUNNER_TEMP/shard/"
           cp "$RUNNER_TEMP"/cpu-"$SHARD"-*.names "$RUNNER_TEMP/shard/" 2>/dev/null || true
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.split.outcome == 'success' }}
         with:
           name: cpu-shard-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/shard/
