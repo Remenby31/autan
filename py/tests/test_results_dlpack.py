@@ -62,7 +62,8 @@ def _run(tmp_path: Path, name: str, time_spec: str) -> autan.Results:
     )
 
 
-# A run killed while it runs, once it has written a checkpoint: its directory keeps it.
+# A run stopped while it runs, once it has written a checkpoint, then killed: its directory
+# keeps the checkpoint. It cannot converge first: no precision reaches 15 orders.
 def _killed(tmp_path: Path) -> autan.Results:
     case, meshinfo = _inputs(
         tmp_path,
@@ -78,21 +79,28 @@ def _killed(tmp_path: Path) -> autan.Results:
     groups = [writer.pid]
     try:
         deadline = time.monotonic() + 120
-        while time.monotonic() < deadline:
-            found = list(runs.glob("run-*/run.json"))
-            if found and json.loads(found[0].read_text()).get("checkpoint"):
-                break
-            time.sleep(0.05)
+        while not list(runs.glob("run-*/run.json")):
+            assert writer.poll() is None, "the run ended before its directory existed"
+            assert time.monotonic() < deadline, "no run directory"
+            time.sleep(0.02)
         children = subprocess.run(
-            ["pgrep", "-P", str(writer.pid)], capture_output=True, text=True, check=False
+            ["pgrep", "-P", str(writer.pid)], capture_output=True, text=True, check=True
         )
         groups += [int(pid) for pid in children.stdout.split()]
+        [run] = runs.glob("run-*")
+        while not json.loads((run / "run.json").read_text()).get("checkpoint"):
+            assert writer.poll() is None, "the run ended before its first checkpoint"
+            assert time.monotonic() < deadline, "no checkpoint"
+            time.sleep(0.02)
+        for group in groups:
+            os.killpg(group, signal.SIGSTOP)
+        assert json.loads((run / "run.json").read_text())["status"] == "running"
+        assert (run / "checkpoint.cgns").exists()
     finally:
         for group in groups:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(group, signal.SIGKILL)
         writer.wait()
-    [run] = runs.glob("run-*")
     return autan.Results.open(run)
 
 
