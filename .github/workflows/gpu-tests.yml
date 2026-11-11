@@ -47,11 +47,18 @@ jobs:
         id: scope
         if: github.event_name == 'pull_request'
         run: echo "paths=$(git diff --name-only HEAD^1 HEAD -- | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+      # Optimised (-O2) with NDEBUG left undefined (assertions in dependencies stay on): without
+      # a build type the host code was built at -O0, which made the GPU tests' host references
+      # ~6x slower (an NS bits test: 89 s here, 14.5 s in a Release build). The CPU Debug job
+      # keeps covering -O0.
+      # The bitwise contract does not depend on the level: -ffp-contract=off and --fmad=false
+      # are set for every build type (CMakeLists.txt).
       - name: Configure with CUDA, MPI, METIS and Scotch
         run: >-
           cmake -S . -B build -G Ninja -DAUTAN_ENABLE_CUDA=ON -DAUTAN_ENABLE_MPI=ON
           -DAUTAN_ENABLE_METIS=ON -DAUTAN_ENABLE_SCOTCH=ON -DCMAKE_CUDA_ARCHITECTURES=121
-          -DAUTAN_WARNINGS_AS_ERRORS=ON
+          -DAUTAN_WARNINGS_AS_ERRORS=ON -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_CXX_FLAGS_RELEASE=-O2 -DCMAKE_CUDA_FLAGS_RELEASE=-O2
       - name: Build
         run: cmake --build build
       # CPU tests outside the GPU lock, with no GPU visible: a test that needs one but lacks the
@@ -61,8 +68,22 @@ jobs:
         env:
           CUDA_VISIBLE_DEVICES: ""
         run: |
-          ctest --test-dir build -LE 'gpu|mpi' -j 4 --output-on-failure --no-tests=error
+          ctest --test-dir build -LE 'gpu|mpi|certificate' -j 4 --output-on-failure --no-tests=error
           ctest --test-dir build -L mpi -LE gpu -j 1 --output-on-failure --no-tests=error
+      # The SA colour sweeps' certificate (T2c, #163): nightly, on pushes to main, and on pull
+      # requests that touch the SA assembly or sweeps, the colouring or the step that calls them.
+      - name: Certificate tests (SA colour sweeps)
+        env:
+          CUDA_VISIBLE_DEVICES: ""
+          EVENT: ${{ github.event_name }}
+          CHANGED: ${{ steps.scope.outputs.paths }}
+        run: |
+          pattern='spalart_allmaras|colouring|cell_colours|physics/src/euler_physics\.cpp|test_sa_sweeps|tests/physics/CMakeLists\.txt|\.github/workflows/gpu-tests\.yml'
+          if [[ $EVENT != pull_request ]] || grep -Eq "$pattern" <<<"$CHANGED"; then
+            ctest --test-dir build -L certificate --output-on-failure --no-tests=error
+          else
+            echo "no change to the SA sweeps: certificate tests not run"
+          fi
       - name: Give this job priority on the GPU lock
         run: bench/ci/priority.sh start 90
       # The GPU tests in two holds of the lock, each well under its 10 minutes: all of them took

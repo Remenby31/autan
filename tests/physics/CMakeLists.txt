@@ -4,6 +4,7 @@ add_executable(
   test_implicit.cpp
   test_manufactured.cpp
   test_navier_stokes.cpp
+  test_sa_sweeps.cpp
   ${PROJECT_SOURCE_DIR}/tests/core/fixtures.cpp
 )
 target_include_directories(autan_physics_tests PRIVATE ${PROJECT_SOURCE_DIR}/tests/core)
@@ -20,6 +21,14 @@ target_compile_definitions(
 # The generated loops' data, which Euler::data() returns.
 target_include_directories(autan_physics_tests PRIVATE ${PROJECT_BINARY_DIR}/physics/generated)
 catch_discover_tests(autan_physics_tests)
+# The colour sweeps' certificate (T2c, #163), hidden from the run above: a ctest label of its own,
+# run by gpu-tests nightly and on pull requests that touch the SA assembly or sweeps.
+catch_discover_tests(
+  autan_physics_tests
+  TEST_SPEC "[certificate]"
+  TEST_PREFIX "certificate: "
+  PROPERTIES LABELS certificate
+)
 
 # The manufactured-solution study's C ABI, through the shared library euler_mms.py loads.
 add_executable(autan_physics_mms_tests test_block_ilu.cpp test_mms_build_info.cpp)
@@ -103,6 +112,47 @@ if(AUTAN_ENABLE_CGNS)
     PROPERTIES ENVIRONMENT ${hash_cache} TIMEOUT 1500
   )
   catch_discover_tests(autan_euler_run_tests TEST_SPEC "[mpi]~[gpu]" PROPERTIES ENVIRONMENT ${hash_cache} LABELS mpi)
+  if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
+    # #651 G-fit (P0, B1, B5): the Navier-Stokes physics at ghost depths 3 and 4 on the ranks of
+    # one MPI world, on 2, 3 and 4 ranks.
+    add_executable(
+      autan_ns_ranks_tests
+      test_ns_ranks.cpp
+      ${PROJECT_SOURCE_DIR}/tests/core/fixtures.cpp
+    )
+    target_include_directories(
+      autan_ns_ranks_tests
+      PRIVATE ${PROJECT_SOURCE_DIR}/tests/core ${PROJECT_BINARY_DIR}/physics/generated
+    )
+    target_link_libraries(
+      autan_ns_ranks_tests
+      PRIVATE
+        autan::physics
+        autan::io
+        autan::partition
+        autan::halo
+        Catch2::Catch2
+        autan_compile_options
+    )
+    target_compile_definitions(
+      autan_ns_ranks_tests
+      PRIVATE
+        AUTAN_TEST_MESH_DIR="${PROJECT_SOURCE_DIR}/tests/data/mesh"
+        AUTAN_TEST_MMS="${PROJECT_SOURCE_DIR}/py/tests/fixtures/rans_sa.mms.json"
+    )
+    foreach(ranks 2 3 4)
+      add_test(
+        NAME autan_ns_ranks_tests_${ranks}_ranks
+        COMMAND
+          ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
+          $<TARGET_FILE:autan_ns_ranks_tests> ${MPIEXEC_POSTFLAGS}
+      )
+      set_tests_properties(
+        autan_ns_ranks_tests_${ranks}_ranks
+        PROPERTIES PROCESSORS ${ranks} TIMEOUT 600 LABELS mpi
+      )
+    endforeach()
+  endif()
   if(AUTAN_ENABLE_CUDA)
     target_link_libraries(autan_euler_run_tests PRIVATE autan::physics)
     catch_discover_tests(autan_euler_run_tests TEST_SPEC "[gpu]" PROPERTIES ENVIRONMENT ${hash_cache} LABELS gpu)
