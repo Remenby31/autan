@@ -19,7 +19,7 @@ Every file has a URL, a size and a SHA-256. TMR data files use `raw.githubuserco
 | `tmr-2dzp-flatplate` | 5 nested PLOT3D grids (35×25 … 545×385, 16 MB zip); CFL3D and FUN3D SA: cf along the plate, cf(0.97) and CD per grid, profiles at x = 0.97 | PLOT3D 2D, Tecplot |
 | `tmr-2dbc-bump` | 5 grids (89×41 … 1409×641, 166 MB zip); CFL3D and FUN3D SA: cp, cf, forces per grid, profiles at x = 0.75 | PLOT3D 2D, Tecplot |
 | `tmr-2dn00-naca0012` | 5 grids (113×33 … 1793×513, 110 MB zip) and the exact airfoil points; CFL3D SA cp, cf, CL, CD at α = 0, 10, 15°; experiments of Ladson, Gregory and O'Reilly, Abbott and von Doenhoff, McCroskey | PLOT3D 2D, Tecplot |
-| `tmr-2dn00-naca0012-numerics` | CFL3D and FUN3D SA forces on grid families I–III at α = 10° (Diskin et al. 2015), cp and cf | Tecplot |
+| `tmr-2dn00-naca0012-numerics` | CFL3D and FUN3D SA forces on grid families I–III at α = 10° (Diskin et al. 2015), cp and cf; family II's three coarsest grids (113×33, 225×65, 449×129), members of TMR's 2.98 GB grid archive | Tecplot, PLOT3D |
 | `onera-m6` | Schmitt and Charpin pressure at 7 span stations, runs 2308 (M 0.8395, α 3.06°) and 2565 (M 0.8372, α 6.06°), from TMR and NPARC (NPARC `.ex` files store −Cp); section profiles | Tecplot, columns |
 | `rae2822` | Geometry; case 6 Cp (NPARC); cases 1, 6, 7, 9, 12 conditions, forces, Cp, cf from the 1981 AFOSR-HTTM-Stanford conference tape (72 coded files decoded; the text file is skipped; see known defects) | columns, 1981 tape |
 
