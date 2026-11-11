@@ -10,7 +10,7 @@ from autan.schema import SA, Compressible, Laminar, Steady
 from autan.texts import TEXT_BYTES
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
     from autan.meshinfo import MeshInfo
     from autan.schema import CaseSpec
@@ -81,20 +81,35 @@ _GROUPS_FACTOR = 96
 _UPLOAD_CHUNK = 2**20
 
 
+# The runtime's phases, in order (runtime/src/run.cpp, physics/src/euler_physics.cpp): reading
+# the input, the mesh, its partition, the line groups and the case's files; building the
+# physics up to its boundaries and their fits; then, still in the physics' constructor, the
+# steady solver's block matrix and linear solver and the turbulence model's setup; then the
+# iterations (the tangents the steady step allocates on first use) and the output. Where the
+# code leaves the order open, a persistent component takes the earliest phase and a transient
+# the latest: both can only raise the peak.
+Phase = Literal["input", "physics", "solver", "iterations"]
+PHASES: tuple[Phase, ...] = ("input", "physics", "solver", "iterations")
+
+
+# What one part of a run allocates: from `phase` to the end of the run, or for a transient from
+# `phase` to `last` (its own phase unless it stays alive into a later one).
 class Component(BaseModel):
     model_config = ConfigDict(frozen=True)
     name: str
     bytes_host: int
     bytes_device: int
     transient: bool
+    phase: Phase
+    last: Phase
 
 
 class Memory(BaseModel):
-    """A run's memory per rank at its peak (model ``autan.memory/2``, docs/sdk/plan.md): what
-    each rank allocates on the host and on its device, by component."""
+    """A run's memory per rank at its peak (model ``autan.memory/3``, docs/sdk/plan.md): what
+    each rank allocates on the host and on its device, by component and phase."""
 
     model_config = ConfigDict(frozen=True)
-    model: Literal["autan.memory/2"] = "autan.memory/2"
+    model: Literal["autan.memory/3"] = "autan.memory/3"
     device_kind: DeviceKind
     gpus: int
     equations: int
@@ -292,10 +307,23 @@ def _rank(
 
     parts: list[Component] = []
 
-    def add(name: str, host: float, device: float = 0, *, transient: bool = False) -> None:
+    def add(
+        name: str,
+        host: float,
+        device: float = 0,
+        *,
+        phase: Phase,
+        transient: bool = False,
+        last: Phase | None = None,
+    ) -> None:
         parts.append(
             Component(
-                name=name, bytes_host=int(host), bytes_device=int(device), transient=transient
+                name=name,
+                bytes_host=int(host),
+                bytes_device=int(device),
+                transient=transient,
+                phase=phase,
+                last=last or (phase if transient else "iterations"),
             )
         )
 
@@ -305,31 +333,32 @@ def _rank(
     mesh_bytes = 24 * nodes + 16 * faces + 4 * counts.face_nodes + 12 * interior + 4 * boundary
     mesh_bytes += 20 * cells
     geometry = 56 * faces + 32 * cells
-    add("runtime", _RUNTIME)
+    add("runtime", _RUNTIME, phase="input")
     # Rank 0 reads its executable in 1 MiB chunks to hash it (results.md, solver.binary_sha256).
-    add("binary hash", 2**20, transient=True)
+    add("binary hash", 2**20, phase="input", transient=True)
     if mesh.groups_source is not None:
         # The zone-groups sidecar, at most 1 MiB (mesh-info.md), read and parsed during setup
         # (io::read_zone_groups).
-        add("zone groups", _GROUPS_FACTOR * _GROUPS_BYTES, transient=True)
+        add("zone groups", _GROUPS_FACTOR * _GROUPS_BYTES, phase="input", transient=True)
     # The solver input (at most input_bytes): the runtime keeps the case's name and text, and
     # reads and parses the document once.
-    add("solver input", input_bytes)
-    add("solver input setup", (1 + _JSON_DOCUMENT) * input_bytes, transient=True)
-    add("mesh", mesh_bytes + geometry + 12 * cells)
-    add("mesh setup", mesh_bytes + geometry)  # kept resident by the allocator: not transient
-    add("mesh reading", _reading(mesh, interior, boundary), transient=True)
+    add("solver input", input_bytes, phase="input")
+    add("solver input setup", (1 + _JSON_DOCUMENT) * input_bytes, phase="input", transient=True)
+    add("mesh", mesh_bytes + geometry + 12 * cells, phase="input")
+    # Kept resident by the allocator: not transient.
+    add("mesh setup", mesh_bytes + geometry, phase="input")
+    add("mesh reading", _reading(mesh, interior, boundary), phase="input", transient=True)
     # In RCM order (the runtime's default, quality.lines.order) the run keeps the renumbered
     # mesh beside the one it read, with the cell order and the face and point maps.
     if mesh.quality.lines.order == "rcm":
-        add("renumbered mesh", mesh_bytes + 4 * cells + 5 * faces + 4 * nodes)
+        add("renumbered mesh", mesh_bytes + 4 * cells + 5 * faces + 4 * nodes, phase="input")
     if rank is not None and mesh.partition is not None and extracts(spec, mesh, ranks):
         kept, halo_device, extraction = _partition(mesh, rank)
-        add("partition", kept, halo_device if device_kind != "cpu" else 0)
-        add("partition setup", extraction, transient=True)
+        add("partition", kept, halo_device if device_kind != "cpu" else 0, phase="input")
+        add("partition setup", extraction, phase="input", transient=True)
     elif ranks > 1:
         # No partition for these ranks: the plan refuses the run (E0212).
-        add("partition", (mesh_bytes + geometry) / ranks + 9 * f)
+        add("partition", (mesh_bytes + geometry) / ranks + 9 * f, phase="input")
     # The solution gathered on rank 0 at the end and the writer's copy: the n + 1 primitive
     # fields and their means; the restart's n conserved, n + 1 average sums and their weight, the
     # steady solver's n + 5 values, one circulation per point-vortex condition.
@@ -341,8 +370,13 @@ def _rank(
     steady = isinstance(spec.time, Steady)
     window = 8 * 501 if spec.physics.precision == "fp32+acc64" and steady else 0
     if window:
-        add("first-order start window", window)
-    add("solution output", 2 * 8 * cells * fields + writer + 2 * window, transient=True)
+        add("first-order start window", window, phase="physics")
+    add(
+        "solution output",
+        2 * 8 * cells * fields + writer + 2 * window,
+        phase="iterations",
+        transient=True,
+    )
     # A start reads the previous solution on every rank, every field for a continuation, the
     # n + 1 primitive fields for a warm start, then takes the rank's share and frees the rest;
     # with them the descriptors its writer wrote, unfiltered, which cg_open holds until close
@@ -357,9 +391,17 @@ def _rank(
         # cg_open's tree (mesh.md#memory-of-a-cgns-read) at the node count the runtime accepts
         # in a start file (E0707 beyond, before cg_open).
         descriptors += _CGNS_TREE + _CGNS_NODE * _CGNS_NODES_MAX + _CGNS_EAGER
-        # The start's copy and the rank's owned copy of the window coexist for a moment.
+        # The physics takes the rank's share when it is built (runtime.md, PhysicsContext), and the
+        # runtime frees it when the physics' constructor returns. The start's copy and the rank's
+        # owned copy of the window coexist for a moment.
         start_window = 2 * window if start == "continue" else 0
-        add("start", 8 * (cells + c) * read + metadata + descriptors + start_window, transient=True)
+        add(
+            "start",
+            8 * (cells + c) * read + metadata + descriptors + start_window,
+            phase="input",
+            transient=True,
+            last="solver",
+        )
     # Files of the case, each read once at its size S (runtime.md): an initial state holds its
     # text, the document's strings (at most S), 1 KiB of members, its rows streamed into
     # vectors (64 B a row, 128 B while one grows) and their pairing (138 B a row, 160 B per
@@ -383,14 +425,15 @@ def _rank(
         else:
             loads += (_JSON_DOCUMENT + 32) * x.size
     if loads:
-        add("state files", loads, transient=True)
+        # Read while the input is prepared; the physics reads the initial state when it is built.
+        add("state files", loads, phase="input", transient=True, last="solver")
     if any(x.kind == "faces" for x in files):
-        add("face states", sum(40 * x.faces for x in files if x.kind == "faces"))
+        add("face states", sum(40 * x.faces for x in files if x.kind == "faces"), phase="input")
     if any(x.kind == "manufactured" for x in files):
         # The text in a buffer of MMS_BYTES + 1, which the runtime reads into and keeps
         # (runtime/src/run.cpp), and its compiled expressions.
         texts = sum(MMS_BYTES + 1 + 64 * x.size for x in files if x.kind == "manufactured")
-        add("manufactured solution", texts)
+        add("manufactured solution", texts, phase="input")
 
     # The physics (Euler's inventory, scaled from its 5 equations to n): geometry, stencil
     # and state on the host, always; the same on the device for a device run.
@@ -411,7 +454,7 @@ def _rank(
     # Under reproducibility "ranks", the global order the physics keeps: 4 B an incidence, 8 its
     # twin, 1 a face's orientation (codegen/cpp/geometry.cpp, global_order).
     ranks_order = 12 * k + f if spec.physics.reproducibility == "ranks" else 0
-    add("physics", host_physics + ranks_order)
+    add("physics", host_physics + ranks_order, phase="physics")
     # The constructor's packed geometry (25F + 4C + 4K in FP64), the stencil's twins and FP64
     # weights, the stencil's marks (4C + 4F_b), a vertex stencil's node lists (16N + 8P) and,
     # under "ranks", a first global order built and freed in pack_geometry: freed when it
@@ -422,7 +465,12 @@ def _rank(
     # A viscous run's convective gradient is the quadratic fit in every cell, over the vertex
     # stencil, whose twins and FP64 weights the constructor also builds and frees.
     vertex = 32 * share.vertex if viscous else 0
-    add("physics setup", packed + 32 * stencil + vertex + marks + first_order, transient=True)
+    add(
+        "physics setup",
+        packed + 32 * stencil + vertex + marks + first_order,
+        phase="physics",
+        transient=True,
+    )
     if viscous:
         _viscous(
             add,
@@ -438,9 +486,9 @@ def _rank(
         # turn, each with that geometry: construction (incidence twins, colouring work), the
         # weights' upload (its FP64 weights and the physics' copy, the limiter's unit field)
         # and bind (its weights, one staged chunk of 2^20 values).
-        add("device mesh host", 4 * f)
+        add("device mesh host", 4 * f, phase="physics")
         phases = (8 * k + 8 * f, 48 * stencil + n * c * s, 24 * stencil + 8 * _UPLOAD_CHUNK)
-        add("device setup", packed + max(phases), transient=True)
+        add("device setup", packed + max(phases), phase="physics", transient=True)
         device = (
             2 * n * c * 8
             + 2 * c * 8
@@ -460,45 +508,51 @@ def _rank(
             + geometry_packed
             + n * f * 8
         )
-        add("physics device", 0, device)
+        add("physics device", 0, device, phase="physics")
         # The kernels' face scratch, 5 values of 8 B a face (euler_device face_scratch_width).
-        add("device face scratch", 0, 40 * f)
-        add("device context", _CUDA_CONTEXT)
+        add("device face scratch", 0, 40 * f, phase="physics")
+        # The preflight's device query creates the context before the mesh is read (run.cpp).
+        add("device context", _CUDA_CONTEXT, phase="input")
 
     # The implicit steady solve (host, CPU runs only): Jacobians, block matrix and the linear
     # solver (the multigrid inventory: 5x5 blocks, scaled by n²/25).
     if isinstance(spec.time, Steady) and device_kind == "cpu":
+        # The cells' line groups and their colouring, which the runtime builds while it prepares
+        # the input (run.cpp, cell_groups) and keeps, with a renumbered copy: two CSRs of at most
+        # C + 1 offsets (8 B) and C cells (4 B), grown to twice, and a colour a cell, likewise.
+        add("line groups", 2 * 2 * (8 * (cells + 1) + 4 * cells) + 2 * 4 * cells, phase="input")
         block = 8 * n * n
         add(
             "jacobian",
             3 * n * n * f * s + n * n * c * s + block * c + 2 * block * fi + 8 * c + 4 * k + 8 * c,
+            phase="solver",
         )
         name, persistent, solver_setup = _linear_solver(
             spec.time.linear_solver, c, fi, block, min(mesh.quality.lines.cells, c), mesh
         )
-        add(name, persistent)
+        add(name, persistent, phase="solver")
+        setup_phase: Phase = "solver"
         if name == "multigrid" and (ranks > 1 or spec.physics.reproducibility == "ranks"):
+            # The hierarchy is built with the zone groups, before the partition (euler_groups).
             kept, solver_setup = _partition_hierarchy(
                 mesh, mesh_bytes + geometry, interior, solver_setup
             )
-            add("partition hierarchy", kept)
+            add("partition hierarchy", kept, phase="input")
+            setup_phase = "input"
             _partition_multigrid(add, mesh, c, fi, n, interior)
-        add(f"{name} setup", solver_setup, transient=True)
+        add(f"{name} setup", solver_setup, phase=setup_phase, transient=True)
         # The steady operator's boundary gradient term (Euler::gradient_tangent): the primitives',
         # the gradients' (linear and the band's) and the limiter bounds' tangents, zero tangents of
         # the other inputs, the band flag's, and the step's copy of the direction and its image
         # (euler_physics.cpp, dv_ and dres_).
-        add("gradient tangent", c * (70 * s + 48))
+        add("gradient tangent", c * (70 * s + 48), phase="iterations")
         # Its derivative of the boundary values a cell's fit keeps (Euler::gradient_tangent):
         # d(prim_b)/d(prim) of every face, the boundary values' tangents, a discarded increment and
         # the list of those cells. Allocated only where some cell keeps its boundary faces (a
         # one-cell-thick slab: every cell), counted on every mesh.
-        add("boundary state tangent", 25 * s * f + 40 * (f - fi) + 48 * c)
+        add("boundary state tangent", 25 * s * f + 40 * (f - fi) + 48 * c, phase="iterations")
 
-    # The peak holds every persistent component and the largest transient one: transients
-    # are freed in turn, and later allocations reuse their memory.
-    host = sum(p.bytes_host for p in parts if not p.transient)
-    host += max((p.bytes_host for p in parts if p.transient), default=0)
+    host = _peak(parts)
     device = sum(p.bytes_device for p in parts)
     per_rank = host + device
     return Memory(
@@ -511,6 +565,29 @@ def _rank(
         bytes_total=per_rank * ranks,
         components=tuple(parts),
     )
+
+
+# The host peak over the runtime's phases: in each phase, every persistent component allocated
+# so far, every transient that stays alive across it, and the largest transient of that phase
+# alone (they are freed in turn, and later allocations reuse their memory).
+def _peak(parts: Iterable[Component]) -> int:
+    parts = tuple(parts)
+    order = {name: i for i, name in enumerate(PHASES)}
+    best = 0
+    for i in range(len(PHASES)):
+        alive = sum(p.bytes_host for p in parts if not p.transient and order[p.phase] <= i)
+        spans = [p for p in parts if p.transient and p.phase != p.last]
+        across = sum(p.bytes_host for p in spans if order[p.phase] <= i <= order[p.last])
+        own = max(
+            (
+                p.bytes_host
+                for p in parts
+                if p.transient and p.phase == p.last and order[p.phase] == i
+            ),
+            default=0,
+        )
+        best = max(best, alive + across + own)
+    return best
 
 
 # The host arrays of the Navier-Stokes physics and of Spalart-Allmaras beyond Euler's
@@ -528,8 +605,8 @@ def _viscous(
     # offsets and entries, and the band's offsets, entries (a vector grown to at most twice
     # its size) and weights. Setting the boundary builds the weights in FP64 first, in a vector
     # grown to at most twice, then their columns, beside the weights it converts them to.
-    add("quadratic gradient", c * (15 * s + 24) + 8 + 8 * v + b * (8 + 3 * s))
-    add("quadratic gradient setup", 72 * b, transient=True)
+    add("quadratic gradient", c * (15 * s + 24) + 8 + 8 * v + b * (8 + 3 * s), phase="physics")
+    add("quadratic gradient setup", 72 * b, phase="physics", transient=True)
     # NavierStokes (navier_stokes.cpp): the viscous gradient, geometry, viscosities, boundary
     # states and tractions, the fit's seven gradients and its weights, the viscous Jacobian
     # blocks, the vertex stencil kept whole, the face adjacency (allocator slack included), the
@@ -538,22 +615,28 @@ def _viscous(
     add(
         "viscous",
         c * (128 * s + 88) + f * (99 * s + 24) + 64 * fi + 40 * v + q * (8 + 21 * s) + 10 * c * s,
+        phase="physics",
     )
     # Its steady operator's viscous term (NavierStokes::gradient_tangent, steady CPU runs): the
     # viscous gradients', the primitives', T and u's and the seven fits' tangents, zero tangents
     # and a flag.
     if steady:
-        add("viscous tangent", c * (135 * s + 8))
+        add("viscous tangent", c * (135 * s + 8), phase="iterations")
     # Its own packed geometry with a vertex stencil's node lists, or the fit's coefficients
     # (152 B an entry) and entries (4 B) while they grow, whichever is larger.
     packed = 8 * (25 * f + 4 * c + 4 * k) + 16 * counts.nodes + 8 * counts.face_nodes
-    add("viscous setup", max(packed + 6 * c + 5 * fb, 3 * 156 * q + c), transient=True)
+    add(
+        "viscous setup",
+        max(packed + 6 * c + 5 * fb, 3 * 156 * q + c),
+        phase="physics",
+        transient=True,
+    )
     if not sa:
         return
     # SpalartAllmaras (spalart_allmaras.cpp) and the steady step's scalar system
     # (euler_physics.cpp, SaState): geometry, wall distance, nu~ and its boundary values,
     # gradient and source, its Jacobian, face lists and the system's diagonal and couplings.
-    add("spalart-allmaras", c * (8 * s + 104) + f * (9 * s + 28) + 28 * fi)
+    add("spalart-allmaras", c * (8 * s + 104) + f * (9 * s + 28) + 28 * fi, phase="physics")
     # Setup: its packed geometry, or the wall distance's surface over the wall faces' nodes,
     # at most the face nodes no interior face takes (3 a face at least): triangles of 72 B and
     # their copies, order and tree nodes, 352 B a node.
@@ -562,6 +645,7 @@ def _viscous(
     add(
         "spalart-allmaras setup",
         max(8 * (25 * f + 4 * c + 4 * k) + 8 * (c + 1), 32 * c + 32 * fb + 352 * surface),
+        phase="solver",
         transient=True,
     )
 
@@ -620,9 +704,10 @@ def _partition_hierarchy(
 ) -> tuple[int, float]:
     counts = mesh.counts
     cells, faces, nodes = counts.cells, counts.faces, counts.nodes
-    # The order and its inverse, the face maps, each level-0 node's part, the global level 0,
-    # its lines as the zone groups (12C), and each level's parts in the distributed operator.
-    kept = 8 * cells + 5 * faces + 4 * cells + 16 * cells + 13 * interior + 12 * cells
+    # The order and its inverse, the face maps, each level-0 node's part, the global level 0 and
+    # each level's parts in the distributed operator; its lines, the run's groups, are the
+    # `line groups` component.
+    kept = 8 * cells + 5 * faces + 4 * cells + 16 * cells + 13 * interior
     kept += 4 * sum(mesh.quality.multigrid.cells_by_level)
     # renumber_cells' peak (Renumbering), with point_source's growth (4N more) and assemble's
     # closure check, 16 B a face-node incidence of the largest cell (at most P).
@@ -645,11 +730,16 @@ def _partition_multigrid(
     b = n * n
     cells = mesh.counts.cells
     owned = 8 * b * c + 16 * b * fi + 8 * c + 9 * fi
-    add("partition multigrid", owned + 8 * b * cells + 16 * b * interior + 16 * n * cells)
+    add(
+        "partition multigrid",
+        owned + 8 * b * cells + 16 * b * interior + 16 * n * cells,
+        phase="solver",
+    )
     levels = mesh.quality.multigrid
     add(
         "partition multigrid setup",
         16 * c + 56 * fi + 8 * sum(levels.cells_by_level),
+        phase="solver",
         transient=True,
     )
     nc, ec = levels.cells_by_level[-1], levels.edges_by_level[-1]
@@ -659,7 +749,9 @@ def _partition_multigrid(
         # twice for their growth, and the old buffer of the list growing (at most E entries).
         node = 3 * 8 * (2 + b) + 8 * b + 24
         edge = 3 * 8 * (2 + 2 * b) + 16 * b + 48
-        add("multigrid coarsest assembly", node * nc + edge * ec, transient=True)
+        add(
+            "multigrid coarsest assembly", node * nc + edge * ec, phase="iterations", transient=True
+        )
 
 
 def _reading(mesh: MeshInfo, interior: int, boundary: int) -> int:

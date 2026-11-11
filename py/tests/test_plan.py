@@ -302,7 +302,7 @@ def test_the_multigrid_hierarchy_is_for_the_cell_order_the_run_builds_it_in(
 def test_the_memory_estimate_counts_what_each_run_allocates(
     write_case: Callable[[str], Path], crm_mesh: autan.MeshInfo
 ) -> None:
-    # docs/sdk/plan.md, autan.memory/2: per rank, by component; the values are validated
+    # docs/sdk/plan.md, autan.memory/3: per rank, by component; the values are validated
     # against measured peaks, this checks which run allocates what and where.
     def memory(body: str = CRM_HL, **options: Any) -> autan.Memory:
         return autan.load(write_case(body)).plan(crm_mesh, **options).memory
@@ -318,9 +318,61 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     gauss_seidel = CRM_HL + "case.time = autan.Steady(linear_solver='gauss-seidel')\n"
     assert "boundary state tangent" in names(memory(gauss_seidel, device_kind="cpu"))
     assert cpu.bytes_device == 0
-    # The peak: every persistent component and the largest transient one.
+    # The peak (plan.md): the largest over the runtime's phases of the persistent components
+    # allocated so far, the transients alive across that phase and its own largest transient.
+    phases = ("input", "physics", "solver", "iterations")
+    # The runtime's order (run.cpp, euler_physics.cpp): the input and the line groups; the
+    # physics up to its boundaries' fits; its constructor's block matrix, linear solver and the
+    # turbulence model's setup; the tangents the steady step allocates on first use, the output.
+    expected = {
+        "runtime": "input",
+        "binary hash": "input",
+        "solver input": "input",
+        "solver input setup": "input",
+        "mesh": "input",
+        "mesh setup": "input",
+        "mesh reading": "input",
+        "renumbered mesh": "input",
+        "line groups": "input",
+        "first-order start window": "physics",
+        "physics": "physics",
+        "physics setup": "physics",
+        "quadratic gradient": "physics",
+        "quadratic gradient setup": "physics",
+        "viscous": "physics",
+        "viscous setup": "physics",
+        "spalart-allmaras": "physics",
+        "spalart-allmaras setup": "solver",
+        "jacobian": "solver",
+        "multigrid": "solver",
+        "multigrid setup": "solver",
+        "gradient tangent": "iterations",
+        "viscous tangent": "iterations",
+        "boundary state tangent": "iterations",
+        "solution output": "iterations",
+    }
+    assert {c.name: c.phase for c in cpu.components} == expected
+
+    def at(estimate: autan.Memory, i: int) -> int:
+        alive = 0
+        own = 0
+        for c in estimate.components:
+            first, last = phases.index(c.phase), phases.index(c.last)
+            if (not c.transient and first <= i) or (
+                c.transient and first != last and first <= i <= last
+            ):
+                alive += c.bytes_host
+            elif c.transient and first == last == i:
+                own = max(own, c.bytes_host)
+        return alive + own
+
+    assert cpu.bytes_host == max(at(cpu, i) for i in range(len(phases)))
+    # A viscous run's largest transient, the boundary fit's or the band's setup, is built with the
+    # physics, before the Jacobian and the linear solver exist (#559): it does not add to them.
+    largest = max((c for c in cpu.components if c.transient), key=lambda c: c.bytes_host)
+    assert largest.phase == "physics"
     persistent = sum(c.bytes_host for c in cpu.components if not c.transient)
-    assert cpu.bytes_host == persistent + max(c.bytes_host for c in cpu.components if c.transient)
+    assert cpu.bytes_host < persistent + largest.bytes_host
     # A device run solves explicitly: no Jacobian or linear solver, the state on the device.
     cuda = memory(device_kind="cuda")
     assert not names(cuda) & {"jacobian", "multigrid", "boundary state tangent"}
@@ -333,7 +385,13 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     gs = memory(
         CRM_HL + "case.time = autan.Steady(linear_solver='gauss-seidel')\n", device_kind="cpu"
     )
-    assert gs.bytes_host < cpu.bytes_host
+
+    # Gauss-Seidel allocates less than the multigrid; the peak, here in the physics phase, does
+    # not depend on it.
+    def solving(estimate: autan.Memory) -> int:
+        return sum(c.bytes_host for c in estimate.components if c.phase == "solver")
+
+    assert solving(gs) < solving(cpu)
     unsteady = memory(CRM_HL + "case.time = autan.Unsteady(steps=10, cfl=1.0)\n", device_kind="cpu")
     assert not names(unsteady) & {"jacobian", "multigrid", "boundary state tangent"}
     # Every rank keeps the global mesh; its share of the rest shrinks with the ranks, from the
@@ -620,8 +678,8 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     # On a partition (here one rank under reproducibility "ranks") every rank builds the hierarchy
     # on an RCM copy of the global mesh (setup-memory.md, Multigrid on a partition). It keeps the
     # order and its inverse (8 C), the face maps (5 F), each node's part (4 C), the global level 0
-    # (16 C + 13 F_i), its lines as zone groups (12 C) and each level's parts (4 B a node). Its
-    # setup holds the copy, the mesh (2 520 B), its point map grown without reserve (8 N) and its
+    # (16 C + 13 F_i) and each level's parts (4 B a node); its lines are the run's line groups.
+    # Both are built before the partition, in the input phase. Its setup holds the copy, the mesh (2 520 B), its point map grown without reserve (8 N) and its
     # geometry (56 F + 32 C), beside the build's peak, the line grouping above; the copy's
     # renumbering, 40 C + 60 N + 50 F + 8 F_i + 24 P, is lower. The rank's distributed multigrid
     # keeps two copies of the finest blocks (200 B a cell, 400 an interior face, for 5
@@ -632,8 +690,25 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     ranked = TINY.replace("autan.Inviscid()", 'autan.Inviscid(), reproducibility="ranks"')
     partitioned = autan.load(write_case(ranked)).plan(tiny_mesh(20), device_kind="cpu")
     part = {c.name: c for c in partitioned.memory.components}
-    kept = 8 * 10 + 5 * 40 + 4 * 10 + 16 * 10 + 13 * 20 + 12 * 10 + 4 * 10
+    kept = 8 * 10 + 5 * 40 + 4 * 10 + 16 * 10 + 13 * 20 + 4 * 10
     assert part["partition hierarchy"].bytes_host == kept
+    phases_of = {
+        name: (part[name].phase, part[name].last)
+        for name in (
+            "partition hierarchy",
+            "multigrid setup",
+            "partition multigrid",
+            "partition multigrid setup",
+            "multigrid coarsest assembly",
+        )
+    }
+    assert phases_of == {
+        "partition hierarchy": ("input", "iterations"),
+        "multigrid setup": ("input", "input"),
+        "partition multigrid": ("solver", "iterations"),
+        "partition multigrid setup": ("solver", "solver"),
+        "multigrid coarsest assembly": ("iterations", "iterations"),
+    }
     copy = 2520 + 8 * 30 + 56 * 40 + 32 * 10
     build = 160 * 20 + 284 * 10 + 72 * 20
     assert part["multigrid setup"].bytes_host == copy + build
@@ -656,7 +731,17 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     )
     for mode, fields, window in modes:
         started = autan.load(write_case(TINY)).plan(tiny_mesh(20), device_kind="cpu", start=mode)
-        assert {c.name: c for c in started.memory.components}["start"].bytes_host == (
+        # The physics reads it while it is built: it stays alive through the solver's setup.
+        retained = {c.name: c for c in started.memory.components}["start"]
+        assert (retained.transient, retained.phase, retained.last) == (True, "input", "solver")
+        # It is alive with everything the physics' constructor allocates: the peak holds them all.
+        built = sum(
+            c.bytes_host
+            for c in started.memory.components
+            if not c.transient and c.phase in ("input", "physics", "solver")
+        )
+        assert started.memory.bytes_host >= built + retained.bytes_host
+        assert retained.bytes_host == (
             8 * (10 + 10) * fields
             + window
             + 42 * 64 * 2**10

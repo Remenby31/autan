@@ -6,6 +6,7 @@ the case document is specified in docs/contracts/case-schema.md.
 
 from autan import gases, materials, units
 from autan.case import Case, forces, load
+from autan.compare import diff
 from autan.errors import CaseError, Diagnostic, Location
 from autan.fake import FakeBackend
 from autan.memory import Memory
@@ -73,6 +74,7 @@ __all__ = [
     "Sutherland",
     "Unsteady",
     "__version__",
+    "diff",
     "forces",
     "gases",
     "load",

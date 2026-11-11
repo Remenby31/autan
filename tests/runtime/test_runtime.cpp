@@ -21,6 +21,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -2935,6 +2936,29 @@ TEST_CASE("An equation at round-off from iteration 1 does not hold back converge
   const Outcome above = run(input([](Json& d) { d["time"]["max_iterations"] = 100; }), waking);
   REQUIRE(above.status == ExitStatus::finished);
   CHECK(Json::parse(read(above.run / "run.json"))["status"] == "completed");
+}
+
+TEST_CASE("A momentum component drops from the largest momentum residual at iteration 1",
+          "[runtime]") {
+  // case-schema.md#time: residuals (e + 1) 0.5^(k-1) drop 8 orders at k = 28. A weakly excited
+  // equation starts at 1e-5 of that law, above the floor 1e-12 x 6, and stops at 1e-12, 7.5
+  // orders below its own first value. A momentum component drops from the largest momentum
+  // residual at iteration 1, momentum-z's 4: the run converges at k = 28 whether momentum-x or
+  // momentum-y is the weak one, as when the mesh axes are permuted; stopping at 5e-8 instead,
+  // above 4e-8, it holds the run back. Energy keeps its own reference: weak, it holds the run back.
+  for (const auto& [equation, stall, converges] :
+       {std::tuple{1, 1e-12, true}, std::tuple{2, 1e-12, true}, std::tuple{1, 5e-8, false},
+        std::tuple{4, 1e-12, false}}) {
+    CAPTURE(equation, stall);
+    autan_test::RelaxationOptions weak;
+    weak.weak_equation = equation;
+    weak.weak_stall = stall;
+    const Outcome o = run(input([](Json& d) { d["time"]["max_iterations"] = 100; }), weak);
+    REQUIRE(o.status == ExitStatus::finished);
+    const Json info = Json::parse(read(o.run / "run.json"));
+    CHECK(info["status"] == (converges ? "converged" : "completed"));
+    CHECK(info["iterations"] == (converges ? 28 : 100));
+  }
 }
 
 TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]") {
