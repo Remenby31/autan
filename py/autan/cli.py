@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from autan import compare
 from autan.case import Case, load
 from autan.errors import (
     REGISTRY,
@@ -340,6 +341,47 @@ def json_schema(name: str) -> dict[str, Any]:
     }
 
 
+def _diff_text(report: compare.Report) -> str:
+    lines = [
+        f"record   {e.name}: {e.a!r} | {e.b!r}" for e in report.record if e.compared and not e.agree
+    ]
+    lines += [
+        f"history  {s.name}: first at iteration {s.first}, max abs {s.max_abs:.3e}, rel {s.max_rel:.3e}"
+        for s in report.history
+        if not s.agree
+    ]
+    lines += [
+        f"solution {s.name}: max abs {s.max_abs:.3e}, rel {s.max_rel:.3e}"
+        for s in report.fields
+        if not s.agree
+    ]
+    mode = "bit for bit" if report.bitwise else f"within rtol {report.rtol:g}"
+    verdict = f"the runs agree {mode}" if report.agree else f"the runs differ ({mode})"
+    return "\n".join([*lines, f"solution: {report.solution}", verdict])
+
+
+def command_diff(args: argparse.Namespace) -> int:
+    """Compare two run directories (docs/sdk/diff.md). As ``diff`` and ``cmp``: exit 0 when they
+    agree, 1 when they differ, 2 when they cannot be compared (``E0701``)."""
+    try:
+        report = compare.diff(
+            args.a, args.b, bitwise=args.bitwise, rtol=args.rtol, fields=args.fields
+        )
+    except CaseError as error:
+        _fail(error, args.json)
+        return 2
+    _emit(report.model_dump(mode="json"), args.json, _diff_text(report))
+    return 0 if report.agree else 1
+
+
+def _rtol(text: str) -> float:
+    value = float(text)
+    if not value > 0:
+        message = "must be > 0"
+        raise argparse.ArgumentTypeError(message)
+    return value
+
+
 def command_schema(args: argparse.Namespace) -> int:
     sys.stdout.write(json.dumps(json_schema(args.document), indent=2) + "\n")
     return 0
@@ -435,6 +477,18 @@ def parser() -> argparse.ArgumentParser:
         help="a downloaded perf-history artifact of gpu-bench (gh run download -n perf-history)",
     )
     sub.set_defaults(func=command_ui)
+
+    sub = commands.add_parser("diff", help="compare two runs: record, history, solution")
+    sub.add_argument("a", help="a run directory")
+    sub.add_argument("b", help="another run directory")
+    sub.add_argument("--fields", nargs="+", help="compare only these solution fields")
+    tolerance = sub.add_mutually_exclusive_group()
+    tolerance.add_argument("--bitwise", action="store_true", help="values agree when bit for bit")
+    tolerance.add_argument(
+        "--rtol", type=_rtol, default=compare.RTOL, help="relative tolerance (default 1e-6)"
+    )
+    sub.add_argument("--json", action="store_true", help="print the report as JSON")
+    sub.set_defaults(func=command_diff)
 
     sub = commands.add_parser("doctor", help="check GPU, driver, MPI and solver core")
     sub.add_argument("--json", action="store_true", help="print JSON")
