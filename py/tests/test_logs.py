@@ -2,6 +2,7 @@
 (docs/sdk/logs.md; acceptance.md, M4). The runs use `autan-run-relaxation`, the shipped runtime
 with the core's test physics, whose knobs end a run with each final status."""
 
+import contextlib
 import json
 import os
 import shutil
@@ -228,17 +229,23 @@ def test_follow_holds_back_a_partial_line_and_takes_its_rewrite(tmp_path: Path) 
 def test_follow_prints_every_line_live_until_the_final_status(tmp_path: Path, ending: str) -> None:
     case, meshinfo = _inputs(tmp_path)
     runs = tmp_path / "runs"
+    # The SDK and its autan-run in a process group of their own, held while the follower starts.
     writer = subprocess.Popen(
         [sys.executable, "-c", RUN, str(case), str(meshinfo), str(RELAXATION), str(runs)],
         env=_env(AUTAN_TEST_PAUSE_MS=PAUSE_MS, **ENDINGS[ending]),
+        start_new_session=True,
     )
     follower = None
     try:
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline and not list(runs.glob("run-*/run.json")):
             time.sleep(0.02)
+        os.killpg(writer.pid, signal.SIGSTOP)
         [run] = runs.glob("run-*")
         follower = Follower(run)
+        while not follower.printed and time.monotonic() < deadline:
+            time.sleep(0.02)
+        os.killpg(writer.pid, signal.SIGCONT)
         # When each complete line appears in the file, and whether the run was then running.
         appeared: list[tuple[float, bool]] = []
         while follower.process.poll() is None and time.monotonic() < deadline:
@@ -256,7 +263,8 @@ def test_follow_prints_every_line_live_until_the_final_status(tmp_path: Path, en
         seen = (run / "log.jsonl").read_bytes().count(b"\n")
         appeared.extend((time.monotonic(), False) for _ in range(seen - len(appeared)))
     finally:
-        writer.kill()
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(writer.pid, signal.SIGKILL)
         writer.wait()
         if follower is not None:
             follower.process.kill()
