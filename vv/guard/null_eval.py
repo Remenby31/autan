@@ -25,7 +25,15 @@ STEPS = guard.STEPS
 W1 = (10001, 20000)
 W2 = (18001, 20000)
 MEDIAN_M = (15001, 20000)
-DROPS = list(guard.DROP_MIN)  # (equation, reference): peak, first or shared
+# Gate (c)'s keys, as guard.DROP_MIN listed them at 1d6a9d3e. The fallback and the positive controls
+# read that commit's guard.gates: run this evaluator with autan_vv at 1d6a9d3e.
+DROPS = [
+    ("energy", "peak"),
+    ("energy", "first"),
+    ("momentum-x", "first"),
+    ("momentum-y", "shared"),
+    ("nu-tilde", "first"),
+]
 DELTA = {"T": 0.05, "M": 0.3, "G_P": 0.3}
 LIMIT = {"T": 0.5, "M": -9.0, "energy_drop": 9.0}
 CANDIDATES = {"d": ["T", "M", "withdrawn"], "c": ["median_drop", "energy_ungated"]}

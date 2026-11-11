@@ -148,9 +148,7 @@ def test_a_short_late_excursion_moves_m3s_but_no_longer_fails_the_night(tmp_path
     assert v["measures"]["tail_fraction"] == pytest.approx(1e-4)
 
 
-def test_the_gate_measures_are_the_frozen_evaluators(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_the_gate_measures_are_the_frozen_evaluators(tmp_path: Path) -> None:
     # The gates read the measures the null search selected them on (vv/guard/null_eval.py, frozen
     # before any null history was read): the same values from both implementations.
     spec = importlib.util.spec_from_file_location(
@@ -158,11 +156,18 @@ def test_the_gate_measures_are_the_frozen_evaluators(
     )
     assert spec is not None
     assert spec.loader is not None
-    # The evaluator ran with autan_vv at 1d6a9d3e, whose gate (c) keys were named DROP_MIN.
-    monkeypatch.setattr(guard, "DROP_MIN", guard.MEDIAN_DROP_MIN, raising=False)
     null_eval = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(null_eval)
-    for name, series in (("green", _green()), ("tail", _worse("tail")), ("peak", _worse("peak"))):
+    sloped = (
+        _green()
+    )  # energy still falling across steps 18 001-20 000: median and last step differ
+    sloped["energy"] = _series([(1, 12.0), (7, 400.0), (1500, 3e-8), (STEPS, 5.5e-10)])
+    for name, series in (
+        ("green", _green()),
+        ("tail", _worse("tail")),
+        ("peak", _worse("peak")),
+        ("sloped", sloped),
+    ):
         _, lines = guard.read_run(_run(tmp_path / name, series), COMMIT)
         m, c = guard.measure(lines), null_eval.candidates(lines)
         assert m["tail_fraction"] == c["T"]
@@ -311,3 +316,29 @@ def test_the_watchdog_voids_a_drained_night_left_without_a_verdict(tmp_path: Pat
     assert marker in line  # the drain's who, when and why reach STATUS
     assert json.loads((root / night / "verdict.json").read_text())["outcome"] == "void"
     assert status(drained=False).split()[:3] == [night, COMMIT[:12], "MISSING"]
+
+
+def test_gate_c_reads_the_median_of_the_last_2000_steps_not_the_last_step(tmp_path: Path) -> None:
+    window = slice(18000, 20000)  # steps 18 001-20 000
+    # Energy high over the window but low at its last step: (c) fails on the median, (b) passes.
+    high = _green()
+    e = high["energy"].copy()
+    e[window] = 1e-8
+    e[-1] = 5.5e-10
+    high["energy"] = e
+    v = _night(tmp_path / "high", high)
+    failing = {(c["gate"], c.get("equation") or c.get("measure")) for c in v["failing"]}
+    assert ("c", "energy") in failing
+    assert ("b", "energy") not in failing
+    assert v["measures"]["median_drops"]["energy/peak"] == pytest.approx(
+        math.log10(400.0 / float(np.median(e[window])))
+    )
+    # The opposite: a spike at the last step only. (b) fails on the final residual, (c) passes.
+    spike = _green()
+    e = spike["energy"].copy()
+    e[-1] = 1e-6
+    spike["energy"] = e
+    v = _night(tmp_path / "spike", spike)
+    failing = {(c["gate"], c.get("equation") or c.get("measure")) for c in v["failing"]}
+    assert ("b", "energy") in failing
+    assert ("c", "energy") not in failing
