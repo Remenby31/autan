@@ -84,6 +84,8 @@ def test_main_like_night_is_green_and_its_measures_follow_from_the_history(tmp_p
     below = energy <= energy.max() * 1e-10
     assert m["m3f"] == int(np.argmax(below)) + 1  # first step below
     assert m["m3s"] == m["m3f"]  # monotone after the peak: the crossing is sustained
+    # m3s is computed and reported, gated by no gate (#701, exception 6801958242).
+    assert all(g.get("measure") != "m3s" for g in v["gates"])
     # Once #544 is in the night's commit, the shared rule must be met: here it is.
     assert _night(tmp_path / "n544", _green(), has_544=True)["outcome"] == "green"
 
@@ -264,7 +266,9 @@ def test_cli_writes_strict_json_and_exits_1_on_red(tmp_path: Path) -> None:
         main(["guard", "verdict", str(night), "--run1", str(r1), "--run2", str(r2),
               "--commit", COMMIT])  # fmt: skip
     assert err.value.code == 1
-    assert json.loads((night / "verdict.json").read_text())["outcome"] == "red"
+    report = json.loads((night / "verdict.json").read_text())
+    assert report["outcome"] == "red"
+    assert isinstance(report["measures"]["m3s"], int)  # m3s stays in every report
     assert main(["guard", "status", str(night)]) == 0
 
 
