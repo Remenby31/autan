@@ -66,6 +66,10 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+      # The Spark runner's container limit (16 GiB). In a private cgroup namespace the solver
+      # reads its memory limit at the namespace root; without one there it warns (W0713) before
+      # the diagnostics some tests expect first (runtime/src/host_memory.cpp).
+      options: --memory 16g
     strategy:
       fail-fast: false
       matrix:
