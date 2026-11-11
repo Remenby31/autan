@@ -7,6 +7,7 @@ catalogue from the TMR pages against the downloaded data files, a second source.
 
 import hashlib
 import math
+import re
 import urllib.error
 import zipfile
 from pathlib import Path
@@ -210,6 +211,9 @@ def test_every_file_downloads_verifies_and_parses(name: str, cache: Path) -> Non
                 for v in path.name.replace("-", "x").split("_")[-1].split(".")[0].split("x")
                 if v.isdigit()
             ]
+            # TMR's family II files carry their size only in its grid table (the description).
+            if len(dims) != 2 and (m := re.search(r"\((\d+)x(\d+)\)", f.description)):
+                dims = [int(m.group(1)), int(m.group(2))]
             if len(dims) == 2:
                 assert x.shape == (dims[1], dims[0])
 
