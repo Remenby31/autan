@@ -91,7 +91,8 @@ def agree(
     if bitwise:
         return np.asarray(a.view(np.uint64) == b.view(np.uint64))
     gap, scale, _ = _gap(a, b)
-    with np.errstate(invalid="ignore"):
+    # rtol * scale may overflow to infinity, which keeps the comparison right.
+    with np.errstate(invalid="ignore", over="ignore"):
         close = gap <= rtol * scale
     return np.asarray((a == b) | (np.nextafter(a, b) == b) | close)
 
