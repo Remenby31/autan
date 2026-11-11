@@ -10,7 +10,7 @@ on:
   push:
     branches: [main]
     paths: &paths
-      [codegen/**, kernels/**, physics/**, core/**, runtime/**, partition/**, io/**, tests/**, CMakeLists.txt, .github/workflows/gpu-tests.yml, bench/ci/cpu-test-shards.py, bench/ci/gb10-health.py]
+      [codegen/**, kernels/**, physics/**, core/**, runtime/**, partition/**, io/**, tests/**, CMakeLists.txt, .github/workflows/gpu-tests.yml, bench/ci/cpu-test-shards.py, bench/ci/gb10-health.py, bench/ci/cpu-test-skips.txt]
   pull_request:
     paths: *paths
     # ready_for_review: a draft that becomes ready runs at once; drafts themselves are skipped.
@@ -163,8 +163,8 @@ jobs:
 
   # Across the three runners and the Spark: every shard succeeded, each listed the same two sets
   # as the Spark's build of the same commit, and the tests their JUnit reports show (passed, or
-  # skipped as ctest allows, each skip listed) are, across the shards, each test of each set
-  # exactly once. A shard that dealt, built
+  # skipped and listed in bench/ci/cpu-test-skips.txt) are, across the shards, each test of each
+  # set exactly once. A shard that dealt, built
   # or ran differently would show here.
   cpu-tests-check:
     name: CPU tests (hosted arm64, each of the Spark's CPU tests run exactly once)
@@ -174,6 +174,11 @@ jobs:
     timeout-minutes: 5
     permissions: {}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: bench/ci/cpu-test-skips.txt
+          sparse-checkout-cone-mode: false
       - name: Every shard succeeded
         env:
           SHARDS: ${{ needs.cpu-tests.result }}
@@ -195,6 +200,11 @@ jobs:
           root = pathlib.Path("shards")
           dirs = sorted(d for d in root.iterdir() if d.is_dir())
           errors = []
+          allowed = dict(
+              line.split("\t", 1)
+              for line in pathlib.Path("bench/ci/cpu-test-skips.txt").read_text().splitlines()
+              if line and not line.startswith("#")
+          )
           if len(dirs) != 3:
               errors.append(f"{len(dirs)} shard listings, not 3")
           for name in ("serial", "mpi"):
@@ -213,13 +223,16 @@ jobs:
                       continue
                   for case in ET.parse(report).getroot().iter("testcase"):
                       t = case.get("name", "")
-                      # Run and not failed. A skip passes, as ctest passes it (the Spark's CPU step
-                      # did the same); each one is listed below.
+                      # Run and passed, or skipped and listed in bench/ci/cpu-test-skips.txt
+                      # (GB10 skips it the same way); any other skip is an error, as a failure.
                       bad = [e for e in ("failure", "error") if case.find(e) is not None]
                       if bad or case.get("status") in ("fail", "failed"):
                           errors.append(f"{t}: failed in {d.name} ({case.get('status')}, {bad})")
                       if case.find("skipped") is not None or case.get("status") in ("notrun", "disabled", "skipped"):
-                          print(f"::notice::CPU test shards: skipped, as ctest allows, in {d.name}: {t}")
+                          if t in allowed:
+                              print(f"::notice::CPU test shards: skipped in {d.name}, allowed ({allowed[t]}): {t}")
+                          else:
+                              errors.append(f"{t}: skipped in {d.name}, not in bench/ci/cpu-test-skips.txt")
                       if t in seen:
                           errors.append(f"{t}: in {seen[t]} and {d.name}")
                       seen[t] = d.name

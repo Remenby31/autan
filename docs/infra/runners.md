@@ -30,7 +30,7 @@ Jobs run directly in the runner container, which is the dev image with the GPU a
 
 The Spark runs gpu-tests' build, GPU tests and generator only. The CPU tests (`-LE 'gpu|mpi'` with `-j 4`, then `-L mpi -LE gpu` with `-j 1`) run on hosted `ubuntu-24.04-arm` runners, in job `cpu-tests`:
 - **Image and build.** Each runner builds the tree itself with the Spark job's configuration (the workflow's `CONFIGURE`). It runs in the dev image `gpu-image.yml` published, pinned by digest.
-- **Shards.** `bench/ci/cpu-test-shards.py` deals the tests into three shards by name, and job `cpu-tests-check` checks across the three runners that each CPU test ran exactly once.
+- **Shards.** `bench/ci/cpu-test-shards.py` deals the tests into three shards by name, and job `cpu-tests-check` checks across the three runners that each CPU test ran exactly once and passed. A skip passes only when the test is listed in `bench/ci/cpu-test-skips.txt`, with the reason and the GB10 run that skips it the same way; any other skip fails like a failure.
 - **MPI settings.** Open MPI runs as root with oversubscription, through environment variables, so the test commands are the Spark's.
 
 The Spark still runs the whole CPU suite on GB10, last, on the nightly and on a manual run (`workflow_dispatch`). When that step does not pass on the nightly (failed, cancelled, timed out, or never reached), the report opens an issue labelled `gb10-cpu-difference`; later nights comment on the open one.
