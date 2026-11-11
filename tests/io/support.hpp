@@ -208,6 +208,7 @@ inline void require_constructed(const autan::Mesh& mesh, const std::string& name
 
 #if defined(__linux__)
 #include <malloc.h>
+#include <sys/prctl.h>
 
 // A /proc/self/status field, in bytes.
 inline std::int64_t status_bytes(const std::string& key) {
@@ -222,6 +223,9 @@ inline std::int64_t status_bytes(const std::string& key) {
 template <class Run>
 std::int64_t peak_of(const Run& run) {
   malloc_trim(0);  // freed memory the allocator kept would otherwise hide what `run` allocates
+  // Base pages only: a host whose transparent huge pages (2 MiB, or a multi-size 64 KiB) are
+  // "always" makes a fault resident a whole folio, so the count would round up by up to 2 MiB.
+  REQUIRE(prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0) == 0);
   const std::int64_t before = status_bytes("VmRSS");
   std::ofstream("/proc/self/clear_refs") << "5";  // VmHWM := VmRSS
   run();

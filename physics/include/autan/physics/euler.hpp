@@ -4,13 +4,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 #include "autan/core/geometry.hpp"
+#include "autan/core/ghost_stencil.hpp"
 #include "autan/core/mesh.hpp"
 #include "autan/kernels/geometry.hpp"
 #include "autan/kernels/runtime.hpp"
+#include "autan/partition/cell_rows.hpp"
 #include "autan/physics/block_matrix.hpp"
 
 namespace autan::kernels::euler {
@@ -66,6 +70,11 @@ struct Scheme {
   std::array<double, 5> reference{1.0, 0.0, 0.0, 0.0, 2.5};
 };
 
+/// The ghost stencil a partition must hold for `scheme` to compute its owned cells as on the
+/// whole mesh: face2, vertex for GradientStencil::vertex, vertex2 for the quadratic fit's two
+/// vertex rings.
+std::optional<GhostStencil> ghost_stencil(const Scheme& scheme);
+
 /// Fills the ghost cells of a partitioned mesh from their owners: each pointer is one component
 /// of n_cells values, owned cells then ghosts (at most 16 per call). The runtime's GhostExchange
 /// behind it; a mesh without ghosts needs none.
@@ -74,6 +83,13 @@ class GhostFill {
   virtual ~GhostFill() = default;
   virtual void forward(std::span<float* const> components) = 0;
   virtual void forward(std::span<double* const> components) = 0;
+  /// The row of every ghost `wanted` selects (one byte, 0 or 1, per ghost), in ghost order, from
+  /// its owner's row in `owned` (one per owned cell); an empty row elsewhere. Collective. A fill
+  /// that carries no rows throws std::logic_error.
+  virtual CellRows forward_rows(const CellRows& /*owned*/,
+                                std::span<const std::uint8_t> /*wanted*/) {
+    throw std::logic_error("this ghost fill carries no rows");
+  }
 };
 
 /// Euler residual R(U) = sum_f F . S - s V of a mesh, in precision policy P
@@ -90,9 +106,12 @@ class Euler {
   /// and stencil entries in global order and every face is evaluated in its global orientation,
   /// so that the residual and the Jacobian of each owned cell have the same bits on any number
   /// of ranks and in any cell order (solver-input.md, reproducibility "ranks"). The spans must
-  /// outlive the constructor only.
+  /// outlive the constructor only. On a partition, `ghosts` is the stencil its ghosts hold
+  /// (LocalPartition::ghosts), face2 when not given for a mesh with ghosts; none for a whole
+  /// mesh without ghosts. A scheme that needs more (ghost_stencil) is E0148, ghosts or not.
   Euler(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme,
-        const kernels::GlobalKeys* keys = nullptr);
+        const kernels::GlobalKeys* keys = nullptr,
+        std::optional<GhostStencil> ghosts = std::nullopt);
   ~Euler();
   Euler(const Euler&) = delete;
   Euler& operator=(const Euler&) = delete;

@@ -1,0 +1,4 @@
+# CPU tests that may be skipped in gpu-tests' hosted CPU shards, one per line: the test name exactly as
+# ctest lists it, a tab, then why it skips there and that GB10 skips it the same way (with the run
+# that shows it). cpu-tests-check fails on any other skip, as on a failure (#680).
+Navier-Stokes under reproducibility ranks gives the bits of the pinned reference	AUTAN_REFERENCE_RUN unset: skipped the same way on GB10 (spark-75d6, test 261, run 42944424595)

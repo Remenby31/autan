@@ -19,13 +19,13 @@ namespace autan::runtime {
 /// residuals, they decide the same.
 class RoundOffExemption {
  public:
-  /// `names` are the equations; `woken`, those that left their floor earlier in a continued
-  /// chain (solver-input.md, `start.woken`).
+  /// `names` are the equations; `woken`, those that left their floor earlier in the chain
+  /// (solver-input.md, `start.woken`).
   RoundOffExemption(std::vector<std::string> names, std::vector<std::string> woken)
       : names_(std::move(names)), woken_(std::move(woken)) {}
 
-  /// Sets the floor from the residuals at iteration 1 of the original run (`start.
-  /// residual_reference` in a continuation), unless already set.
+  /// Sets the floor from the run's reference (case-schema.md#time: iteration 1, or `start.
+  /// residual_reference`), unless already set.
   void reference(std::span<const double> first) {
     if (!exempt_.empty()) return;
     first_.assign(first.begin(), first.end());

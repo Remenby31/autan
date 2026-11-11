@@ -12,6 +12,7 @@ import itertools
 import json
 import re
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import autan
@@ -367,13 +368,36 @@ def test_viscous_oracles_check_the_material_law(tmp_path: Path) -> None:
     assert err.value.code == "V0724"
 
 
-def test_two_dimensional_oracles_need_one_layer_meshes(tmp_path: Path) -> None:
-    thin = cartesian((4, 4, 4), (-10.0, -10.0, 0.0), (10.0, 10.0, 1e-10))
-    path = tmp_path / "thin.msh"
-    write_fluent(thin, path, "fluid")
-    (run,) = _runs(tmp_path, [(thin, path, "fluent")], "isentropic-vortex", 2.0, time=40.0)
+def test_lower_dimensional_oracles_need_equal_layers_and_count_h_across_their_axes(
+    tmp_path: Path,
+) -> None:
+    # Couette depends on y only: 1 x 4 x 1 and 4 x 4 x 1 columns both have h = H/4, the second
+    # counting its 4 cells per y-layer. Unequal layers along x are refused.
+    for nx in (1, 4):
+        column = cartesian((nx, 4, 1))
+        path = tmp_path / f"couette-{nx}.msh"
+        write_fluent(column, path, "fluid")
+        case = _case(path, "couette")
+        exact = get_oracle("couette").fields(column.geometry.cell_centroid)
+        fields = {k: exact[k].copy() for k in field_names(case.spec)}
+        run = write_run(
+            tmp_path / f"runs-{nx}", case, column, mesh_info(column, path, "fluent"), fields
+        ).path
+        assert verify([run], "couette")["runs"][0]["h"] == pytest.approx(0.25, rel=1e-12)
+    even = cartesian((4, 4, 1))
+    points = even.points.copy()
+    points[:, 0] = points[:, 0] ** 2  # layers along x of unequal thickness, same box
+    uneven = replace(even, points=points)
+    path = tmp_path / "couette-uneven.msh"
+    write_fluent(uneven, path, "fluid")
+    case = _case(path, "couette")
+    exact = get_oracle("couette").fields(uneven.geometry.cell_centroid)
+    fields = {k: exact[k].copy() for k in field_names(case.spec)}
+    run = write_run(
+        tmp_path / "runs-uneven", case, uneven, mesh_info(uneven, path, "fluent"), fields
+    ).path
     with pytest.raises(VVError) as err:
-        verify([run], "isentropic-vortex")
+        verify([run], "couette")
     assert err.value.code == "V0723"
 
 
