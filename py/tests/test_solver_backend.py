@@ -81,11 +81,32 @@ def test_the_shipped_runtime_reports_missing_physics(
     case.physics = autan.Compressible(turbulence=autan.SST())  # no runtime ships SST yet
     with pytest.raises(autan.CaseError) as error:
         case.run(mesh, backend=autan.SolverBackend(executable=RUNTIME), runs=tmp_path / "runs")
-    [found] = error.value.diagnostics
+    # solver-input.md, exit 2: the warnings written before the refusal (W0713 on a host whose
+    # memory cgroup the runtime cannot read), then the error that refused the run, last.
+    *warnings, found = error.value.diagnostics
+    assert {w.code for w in warnings} <= {"W0712", "W0713"}
     assert found.code == "E0706"
     assert found.fix
     assert found.doc.endswith("#e0706")
     assert not any((tmp_path / "runs").iterdir())
+    # The same order from any host: the SDK reports each line, the warning then the error.
+    lines = [
+        {
+            "code": code,
+            "severity": severity,
+            "message": f"{code} from the runtime",
+            "location": {"path": path},
+            "data": {"path": path},
+            "fix": "",
+            "doc": f"https://remenby31.github.io/autan/sdk/errors/#{code.lower()}",
+        }
+        for code, severity, path in (("W0713", "warning", ""), ("E0706", "error", "physics"))
+    ]
+    printed = "; ".join(f"printf '%s\\n' '{json.dumps(line)}' >&2" for line in lines)
+    refusing = _wrapper(tmp_path, f"{printed}; exit 2")
+    with pytest.raises(autan.CaseError) as error:
+        case.run(mesh, backend=autan.SolverBackend(executable=refusing), runs=tmp_path / "runs")
+    assert [d.code for d in error.value.diagnostics] == ["W0713", "E0706"]
 
 
 @pytest.mark.parametrize("linear_solver", ["multigrid", "gauss-seidel", "lines"])

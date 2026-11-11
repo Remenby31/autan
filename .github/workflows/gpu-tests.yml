@@ -47,11 +47,18 @@ jobs:
         id: scope
         if: github.event_name == 'pull_request'
         run: echo "paths=$(git diff --name-only HEAD^1 HEAD -- | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+      # Optimised (-O2) with NDEBUG left undefined (assertions in dependencies stay on): without
+      # a build type the host code was built at -O0, which made the GPU tests' host references
+      # ~6x slower (an NS bits test: 89 s here, 14.5 s in a Release build). The CPU Debug job
+      # keeps covering -O0.
+      # The bitwise contract does not depend on the level: -ffp-contract=off and --fmad=false
+      # are set for every build type (CMakeLists.txt).
       - name: Configure with CUDA, MPI, METIS and Scotch
         run: >-
           cmake -S . -B build -G Ninja -DAUTAN_ENABLE_CUDA=ON -DAUTAN_ENABLE_MPI=ON
           -DAUTAN_ENABLE_METIS=ON -DAUTAN_ENABLE_SCOTCH=ON -DCMAKE_CUDA_ARCHITECTURES=121
-          -DAUTAN_WARNINGS_AS_ERRORS=ON
+          -DAUTAN_WARNINGS_AS_ERRORS=ON -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_CXX_FLAGS_RELEASE=-O2 -DCMAKE_CUDA_FLAGS_RELEASE=-O2
       - name: Build
         run: cmake --build build
       # CPU tests outside the GPU lock, with no GPU visible: a test that needs one but lacks the
