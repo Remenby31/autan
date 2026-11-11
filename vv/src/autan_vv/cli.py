@@ -38,6 +38,9 @@ def _cmd_mms(args: argparse.Namespace) -> None:
 
 
 def _cmd_meshes(args: argparse.Namespace) -> None:
+    if args.export_cells and args.kind not in ("tet", "poly", "agglomerated"):
+        msg = f"--export-cells applies to tet, poly and agglomerated, not {args.kind}"
+        raise VVError(msg, code="V0309")
     if args.kind == "naca0012":
         from autan_vv.meshes import naca0012  # noqa: PLC0415
 
@@ -50,7 +53,12 @@ def _cmd_meshes(args: argparse.Namespace) -> None:
         from autan_vv.meshes.families import generate_family  # noqa: PLC0415
 
         family, _ = generate_family(
-            args.kind, args.levels, args.out, perturbation=args.perturbation, seed=args.seed
+            args.kind,
+            args.levels,
+            args.out,
+            perturbation=args.perturbation,
+            seed=args.seed,
+            export_cells=args.export_cells,
         )
     for lv in family.levels:
         _say(f"{lv.file}: {lv.n_cells} cells, h = {lv.h:.4g}, sha256 {lv.file_sha256[:12]}")
@@ -576,6 +584,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--perturbation", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", type=Path, required=True)
+    p.add_argument(
+        "--export-cells",
+        action="store_true",
+        help="also write each level's primal cells, <level>.cells.json (tet, poly, agglomerated;"
+        " docs/validation/meshes.md)",
+    )
     p.set_defaults(func=_cmd_meshes)
 
     p = sub.add_parser("m2-cases", help="write the NACA 0012 or ONERA M6 cases of every level")

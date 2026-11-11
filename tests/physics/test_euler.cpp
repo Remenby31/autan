@@ -1294,12 +1294,13 @@ TEMPLATE_TEST_CASE(
     "[navier-stokes][partition]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
   // The viscous faces of an owned cell read the boundary fits of both their cells, built from up
   // to three vertex rings of each (docs/design/ns-sa.md). A part holding four rings
-  // (navier_stokes_ghost_stencil) gives the owned cells and their ghost face neighbours the
+  // (navier_stokes_ghost_stencil under reproducibility "ranks") gives the owned cells and their
+  // ghost face neighbours the
   // fit of the whole mesh: the same flag, entries in the same global order, and weights of the
   // same bits. Every boundary face is a wall on the four meshes. On a stretched one-cell-thick
   // slab, zone ymin alone is, as on a flat plate: the cells at its ends, where two rings hold
   // three positions along it, take a fit over three rings (docs/design/ns-sa.md). A part holding
-  // three rings is refused (E0148), with ghosts or not.
+  // two rings is refused (E0148), with ghosts or not.
   using P = TestType;
   const int which = GENERATE(range(0, static_cast<int>(meshes.size()) + 1));
   const bool ymin_only = which == static_cast<int>(meshes.size());
@@ -1308,8 +1309,9 @@ TEMPLATE_TEST_CASE(
       ymin_only ? autan::test::stretched_slab()
                 : autan::io::read_mesh(mesh_dir / meshes[static_cast<std::size_t>(which)]);
   const autan::Geometry gg = autan::compute_geometry(global);
-  const auto stencil = autan::physics::navier_stokes_ghost_stencil();
+  const auto stencil = autan::physics::navier_stokes_ghost_stencil(true);
   REQUIRE(stencil == autan::GhostStencil::vertex4);
+  REQUIRE(autan::physics::navier_stokes_ghost_stencil(false) == autan::GhostStencil::vertex3);
   const auto part_of = [&](const std::vector<std::int32_t>& parts, std::int32_t n, std::int32_t r,
                            autan::GhostStencil g) {
     auto part = autan::extract_partition(global, gg, parts, n, r, g);
@@ -1369,7 +1371,7 @@ TEMPLATE_TEST_CASE(
   CHECK(compared > 0);
   const auto parts = blocks(gg, 4);
   for (std::int32_t r = 0; r < 4; ++r) {
-    const auto part = part_of(parts, 4, r, autan::GhostStencil::vertex3);
+    const auto part = part_of(parts, 4, r, autan::GhostStencil::vertex2);
     try {
       autan::physics::NavierStokes<P> ns(part.mesh, part.geometry, air,
                                          second_order(Flux::roe, 0.5), autan::physics::Transport{},

@@ -168,7 +168,7 @@
   "partition": {
     "ranks": 1,
     "groups": "none",
-    "ghost_stencil": "vertex4",
+    "ghost_stencil": "vertex3",
     "cells_by_rank": [
       48200000
     ],

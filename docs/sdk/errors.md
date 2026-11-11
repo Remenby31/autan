@@ -466,7 +466,7 @@ Fix: Put the groups file next to the mesh.
 
 The MeshInfo's derived counts are not for this run: its lines were computed at another scale than the case's `mesh_unit`, or a run on several ranks has no partition for that rank count, the groups its linear solver keeps whole and the ghost stencil its physics reads, or a run on one rank with periodic pairs or reproducibility `"ranks"` has no such one-part partition, or a steady CPU run with the multigrid builds its hierarchy in another cell order than `quality.multigrid`: RCM on a partition (several ranks, or reproducibility `"ranks"`), its cell order on one rank. The message names the difference.
 
-Fix: Run `autan-mesh-info --json --scale <metres per mesh unit>` again, with `--ranks N` (and `--groups lines` for a steady CPU run with the lines solver, `--groups multigrid` with the multigrid) for a run on N ranks, `--ghosts vertex4` for a Navier-Stokes case (laminar or SA), and `--multigrid-order rcm` for a steady CPU run with the multigrid on a partition.
+Fix: Run `autan-mesh-info --json --scale <metres per mesh unit>` again, with `--ranks N` (and `--groups lines` for a steady CPU run with the lines solver, `--groups multigrid` with the multigrid) for a run on N ranks, `--ghosts vertex4` for a Navier-Stokes case (laminar or SA) under reproducibility `"ranks"`, `--ghosts vertex3` otherwise, and `--multigrid-order rcm` for a steady CPU run with the multigrid on a partition.
 
 ## E0301
 
@@ -915,6 +915,22 @@ Fix: Check the space and permissions of the run directory's file system.
 This `continue` run's `autan-run` executable is not the one that wrote the state it starts from (run.json `solver.binary_sha256`, results.md#runjson): the chain may not be bit for bit the uninterrupted run. `data` gives the `expected` and `found` SHA-256.
 
 Fix: Continue with the binary of the original run, or start the chain again with this one.
+
+## W0717
+
+**Device result not covered by a tight bound** (warning)
+
+The device comparison on this combination is not covered by a tight bound (#586 2(b): G beyond 4.79, the largest G at which tightness was measured): a laminar run on a CUDA device in fp32+acc64 with farfield or inlet faces, on a mesh whose gradient stencils amplify a boundary value by more than that. `data` gives that amplification `G` and the largest covered one, `G_covered`.
+
+Fix: Use fp64.
+
+## E0720
+
+**Colouring couples a colour** (error)
+
+A colour-ordered smoother receives a colouring without one valid colour per cell, or in which two cells of one colour share an interior face.
+
+Fix: Pass the runtime's distance-1 cell colouring (PhysicsContext::cell_colours).
 
 ## W0801
 

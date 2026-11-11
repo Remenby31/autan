@@ -96,7 +96,7 @@ target_include_directories(
 )
 target_link_libraries(
   autan_physics
-  PUBLIC autan::core autan::kernels
+  PUBLIC autan::core autan::kernels autan::partition
   PRIVATE autan_compile_options nlohmann_json::nlohmann_json
 )
 set_target_properties(autan_physics PROPERTIES POSITION_INDEPENDENT_CODE ON)

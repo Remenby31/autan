@@ -406,6 +406,11 @@ class NoGhosts final : public GhostExchange {
  public:
   void forward(std::span<float* const> /*c*/, MemorySpace /*s*/, void* /*stream*/) override {}
   void forward(std::span<double* const> /*c*/, MemorySpace /*s*/, void* /*stream*/) override {}
+  CellRows forward_rows(const CellRows& owned, std::span<const std::uint8_t> /*wanted*/) override {
+    CellRows none;
+    none.stride = owned.stride;
+    return none;
+  }
 };
 
 // A private copy of a file and the SHA-256 of the bytes copied: what is
@@ -2188,6 +2193,26 @@ class Run final : public Log {
     log_seconds_ += seconds_since(start);
   }
 
+  void warn(std::string_view code, std::string_view message, std::string_view data_json) override {
+    if (!code.starts_with('W')) {
+      throw std::logic_error("Log::warn takes a warning code, not " + std::string(code));
+    }
+    const auto start = std::chrono::steady_clock::now();
+    const Diagnostic d{.code = std::string(code),
+                       .message = std::string(message),
+                       .path = {},
+                       .data_json = data_json.empty() ? "{}" : std::string(data_json)};
+    // Every rank lists it, whichever writes run.json (a failed run's may be another rank's); rank
+    // 0 logs it, the others log theirs with their rank.
+    add_diagnostic(d);
+    if (comm_.rank() != 0) {
+      Json data = Json::parse(d.json())["data"];
+      data["rank"] = comm_.rank();
+      dir_->append_log(log_line("warning", "solver", d.message, d.code, data.dump()));
+    }
+    log_seconds_ += seconds_since(start);
+  }
+
  private:
   // One log.jsonl line: wall-clock UTC time in milliseconds and the current
   // iteration (null before the first).
@@ -2756,7 +2781,7 @@ class Run final : public Log {
   std::int64_t write_failures_ = 0;
   Json first_failure_ = nullptr;
   std::optional<std::size_t> write_warning_;
-  double log_seconds_ = 0.0;    // spent in write()
+  double log_seconds_ = 0.0;    // spent in write() and warn()
   fs::path stop_file_;          // --stop-file; empty: none
   double solve_seconds_ = 0.0;  // this rank's step() and accumulate_average()
   // Declared before the physics, so destroyed after it: its stream outlives the physics' use.

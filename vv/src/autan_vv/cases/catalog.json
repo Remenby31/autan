@@ -625,6 +625,39 @@
      "size": 299097,
      "parser": "tecplot",
      "description": "FUN3D cf,x(x,z) alpha=10 on 7169x2049 family II"
+    },
+    {
+     "name": "n0012familyII.5.p2dfmt.gz",
+     "role": "grid",
+     "url": "https://www.nasa.gov/wp-content/uploads/2026/02/naca0012numerics-grids.zip",
+     "sha256": "3982924aa3d97e59c7b854b0db50287be9e1540d2b51acfcfdd8a7f0049b2c9f",
+     "size": 2981888037,
+     "parser": "plot3d2d",
+     "description": "NACA 0012 family II grid, level 5 (449x129)",
+     "member": "u/piyer/nasa_tmr/gitlab/turbmodels/NACA0012numerics_grids/n0012familyII.5.p2dfmt.gz",
+     "member_sha256": "63b34d470c5baa40e678b049cdf3da169fbc757e741079d103ca454672800d93"
+    },
+    {
+     "name": "n0012familyII.6.p2dfmt.gz",
+     "role": "grid",
+     "url": "https://www.nasa.gov/wp-content/uploads/2026/02/naca0012numerics-grids.zip",
+     "sha256": "3982924aa3d97e59c7b854b0db50287be9e1540d2b51acfcfdd8a7f0049b2c9f",
+     "size": 2981888037,
+     "parser": "plot3d2d",
+     "description": "NACA 0012 family II grid, level 6 (225x65)",
+     "member": "u/piyer/nasa_tmr/gitlab/turbmodels/NACA0012numerics_grids/n0012familyII.6.p2dfmt.gz",
+     "member_sha256": "5664336523cb02c8410c4f9dc67eccdfa79b34ea9549b712c0d9fd988aff3244"
+    },
+    {
+     "name": "n0012familyII.7.p2dfmt.gz",
+     "role": "grid",
+     "url": "https://www.nasa.gov/wp-content/uploads/2026/02/naca0012numerics-grids.zip",
+     "sha256": "3982924aa3d97e59c7b854b0db50287be9e1540d2b51acfcfdd8a7f0049b2c9f",
+     "size": 2981888037,
+     "parser": "plot3d2d",
+     "description": "NACA 0012 family II grid, level 7 (113x33)",
+     "member": "u/piyer/nasa_tmr/gitlab/turbmodels/NACA0012numerics_grids/n0012familyII.7.p2dfmt.gz",
+     "member_sha256": "a106fc8caab9e864465ca12885c1f48e14ff45bceb13343aad221e0944c43261"
     }
    ]
   },
