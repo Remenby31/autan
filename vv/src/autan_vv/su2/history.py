@@ -1,11 +1,15 @@
 """Residual and force histories of SU2 and Autan runs on one footing, and the protocol's
 convergence criterion applied to both.
 
-The criterion is the one case-schema.md (Time) gives a steady Autan run: every residual has dropped
-`orders` orders of magnitude below its value at the first iteration of the history, an equation
-whose first residual is below 1e-12 times the largest one being exempt while it stays there. Both
-codes define a residual the same way, the RMS over the control volumes of the integrated flux
-balance (results.md, History; SU2's rms[...] columns), so a drop is compared with a drop.
+The criterion is the protocol's, registered on #195. Every residual has dropped `orders` orders of
+magnitude below its own value at the first iteration of the history. An equation whose first residual
+is below 1e-12 times the largest one is exempt until it first rises above that floor, and is judged
+against its own first value after. It was case-schema.md's rule (Time) when registered. case-schema has
+since measured a woken equation from the largest first residual of its kind (#530) and a momentum
+component from the largest momentum residual (#544), so an Autan run's own status can differ from
+this criterion's verdict. Both codes define a residual the same way, the RMS over the control volumes
+of the integrated flux balance (results.md, History; SU2's rms[...] columns), so a drop is compared
+with a drop.
 
 Pre-registrations from #493 on use an absolute criterion instead, independent of the initial state:
 every residual at or below epsilon times its freestream flux scale, epsilon taken from a baseline
