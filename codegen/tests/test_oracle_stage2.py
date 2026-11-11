@@ -180,11 +180,19 @@ def test_branch_a_prime_needs_its_n16_bound() -> None:
 
 
 def test_n16_p0_s11_is_excluded_with_its_reason_and_the_others_come_from_their_own_runs() -> None:
-    # The orchestrator's decision (#43, 6809100033): the oracle ran this mesh before the freeze.
-    assert "N16 p0 s1" in mm.STAGE2_EXCLUDED[(16, 0.0, 11)]
+    # #43, 6809100033 and its follow-up: a vv-test mesh, which the N16 measurement also ran.
+    why = mm.STAGE2_EXCLUDED[(16, 0.0, 11)]
+    assert "test_reference_fv" in why
+    assert "N16 p0 s1" in why
+    assert "6809100033" in why
     out = {i["id"]: i for i in mm.instances_stage2("a-prime", mm.STAGE2_FILES, mm.STAGE2_BOUNDS_S)}
     assert "s2-agglomerated-N16-p0.0-s11" not in out
-    for (n, p, seed), (family, run) in mm.STAGE2_RUNS_BY_LEVEL.items():
+    pinned = {
+        (16, 0.15, 11): ("meshes-agglomerated-p0.15-s11-n16", 43115495266),
+        (16, 0.15, 13): ("meshes-agglomerated-p0.15-s13-n16", 43115499012),
+    }
+    assert pinned == mm.STAGE2_RUNS_BY_LEVEL
+    for (n, p, seed), (family, run) in pinned.items():
         i = out[f"s2-agglomerated-N{n}-p{p}-s{seed}"]
         assert (i["data"], i["provenance"]["vv_meshes_run"]) == (family, run)
         assert i["files"]["mesh"]["sha256"] == mm.STAGE2_FILES[(n, p, seed)][1]
@@ -325,6 +333,48 @@ def test_the_exclusion_check_needs_a_clean_session_and_every_instance_among_its_
     u = {**_universe(TEST6), "exitstatus": 0}
     inst = {"id": "x", "files": {"mesh": {"sha256": "unknown"}}}
     assert any("no candidate" in i for i in vx_ex.compare(u, CANDIDATES, {"instances": [inst]}))
+
+
+def test_an_expected_collision_must_be_an_excluded_candidate_never_an_instance() -> None:
+    # The orchestrator's condition (#43): an instance that collides fails, listed or not.
+    u = _universe(TEST6)
+    inst12 = {"id": "i12", "n": 12, "perturbation": 0.0, "seed": 11,
+              "files": {"mesh": {"sha256": "f12"}}}  # fmt: skip
+    ok = {"instances": [inst12], "excluded": {"excluded": ["N6 p0.0 s11"]}}
+    assert vx_ex.compare(u, CANDIDATES, ok) == []
+    not_excluded = {"instances": [inst12], "excluded": {"excluded": []}}
+    assert any("not excluded" in i for i in vx_ex.compare(u, CANDIDATES, not_excluded))
+    inst6 = {"id": "i6", "n": 6, "perturbation": 0.0, "seed": 11,
+             "files": {"mesh": {"sha256": "f6"}}}  # fmt: skip
+    listed = {"instances": [inst6], "excluded": {"excluded": ["N6 p0.0 s11"]}}
+    found = vx_ex.compare(u, CANDIDATES, listed)
+    assert any("is an instance" in i for i in found)
+    assert any("instance N6 p0.0 s11 collides" in i for i in found)
+
+
+@pytest.mark.parametrize(
+    ("branch", "levels", "count"), [("a", {"6", "12"}, 5), ("a-prime", {"6", "12", "16"}, 7)]
+)
+def test_the_stage2_manifest_holds_the_branch_bounds_runs_and_reasons(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, branch: str, levels: set, count: int
+) -> None:
+    import types  # noqa: PLC0415
+
+    monkeypatch.setattr(mm, "fixtures", lambda _p: {"approved": []})
+    ids = tmp_path / "ids.txt"
+    ids.write_text("".join(f"{f}::test_x\n" for f in mm.AUX_FILES_STAGE2))
+    out = tmp_path / "m.json"
+    argv = ["mm", "fx.jsonl", str(out), str(ids), "--stage", "2", "--branch", branch]
+    monkeypatch.setattr(sys, "argv", argv)
+    assert mm.main_stage2(types.SimpleNamespace(FROZEN_SHA256={})) == 0
+    m = json.loads(out.read_text())
+    assert m["branch"] == branch
+    assert set(m["bounds_s"]) == levels
+    assert len(m["instances"]) == count
+    assert set(m["excluded"]["excluded"]) == {"N6 p0.0 s11", "N16 p0.0 s11"}
+    assert set(m["excluded"]["reasons"]) == {"N6 p0.0 s11", "N16 p0.0 s11"}
+    n16 = {"N16 p0.15 s11": 43115495266, "N16 p0.15 s13": 43115499012}
+    assert (n16.items() <= m["data"]["runs"].items()) == (branch == "a-prime")
 
 
 def test_an_exit_after_the_bound_is_a_timeout(tmp_path: Path) -> None:

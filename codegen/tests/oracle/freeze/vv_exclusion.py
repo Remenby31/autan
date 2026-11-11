@@ -4,7 +4,10 @@ As a pytest plugin on the vv suite (`pytest -p vv_exclusion vv/tests`, with this
 PYTHONPATH and VV_EXCLUSION_OUT set), it wraps `generate_level` (through which `generate_family`
 and the CLI pass) and records, for every mesh a test generates: the kind, n, perturbation and
 seed, the mesh SHA-256 (`FaceMesh.sha256()`) and the file SHA-256 (the file written, or, for the
-Fluent kinds, the bytes the same writer produces). It also records every skipped or failed test.
+Fluent kinds, the bytes the same writer produces). It wraps `cartesian` too (kind "cartesian",
+the mesh SHA-256 and the bytes the Fluent writer produces). Two vv tests build a mesh by hand
+instead (test_meshes' deliberately broken FaceMesh, test_su2's limiter slab of quads); they are
+not recorded. It also records every skipped or failed test.
 
 As a script (`python vv_exclusion.py OUT CANDIDATES MANIFEST`, or `--no-manifest-yet` in place of
 MANIFEST before the stage 2 manifest exists), it compares that universe with
@@ -58,10 +61,31 @@ def _install() -> None:
 
     generate_level.__wrapped_original__ = orig  # type: ignore[attr-defined]
     fam.generate_level = generate_level
-    # Modules that imported the name before: rebind them too.
+
+    orig_cart = getattr(fam.cartesian, "__wrapped_original__", fam.cartesian)
+
+    def cartesian(cells: Any, *args: Any, **kw: Any) -> Any:
+        mesh = orig_cart(cells, *args, **kw)
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "box.msh"
+            fam.write_fluent(mesh, out, fam.CELL_ZONE)
+            file_sha = _sha(out.read_bytes())
+        RECORDS.append({
+            "test": os.environ.get("PYTEST_CURRENT_TEST", ""), "kind": "cartesian",
+            "n": "x".join(str(c) for c in cells), "perturbation": 0.0, "seed": 0,
+            "mesh_sha256": mesh.sha256(), "file_sha256": file_sha,
+        })  # fmt: skip
+        return mesh
+
+    cartesian.__wrapped_original__ = orig_cart  # type: ignore[attr-defined]
+    fam.cartesian = cartesian
+    # Modules that imported the names before: rebind them too.
     for name, mod in list(sys.modules.items()):
-        if name.startswith(("autan_vv", "test_")) and getattr(mod, "generate_level", None) is orig:
-            mod.generate_level = generate_level
+        if name.startswith(("autan_vv", "test_")):
+            if getattr(mod, "generate_level", None) is orig:
+                mod.generate_level = generate_level
+            if getattr(mod, "cartesian", None) is orig_cart:
+                mod.cartesian = cartesian
 
 
 def pytest_configure(config: Any) -> None:  # noqa: ARG001
@@ -101,10 +125,31 @@ def compare(
     files = {r["file_sha256"]: r for r in universe["records"] if r["file_sha256"]}
     meshes = {r["mesh_sha256"]: r for r in universe["records"]}
     expected = {(c["n"], c["perturbation"], c["seed"]) for c in candidates["expected_collisions"]}
+    if manifest is not None:
+        # An expected collision must be an excluded candidate, never an instance (#43, 6809100033
+        # and its follow-up approval): an instance that collides fails, listed or not.
+        inst = {
+            (i.get("n"), i.get("perturbation"), i.get("seed"))
+            for i in manifest.get("instances", [])
+        }
+        excluded = set(manifest.get("excluded", {}).get("excluded", []))
+        for n, p, s in sorted(expected):
+            if (n, p, s) in inst:
+                issues.append(
+                    f"N{n} p{p} s{s} is listed as an expected collision but is an instance"
+                )
+            if f"N{n} p{p} s{s}" not in excluded:
+                issues.append(f"N{n} p{p} s{s} is listed as an expected collision but not excluded")
+    else:
+        inst = set()
     for c in candidates["candidates"]:
         key = (c["n"], c["perturbation"], c["seed"])
         hit = files.get(c["file_sha256"]) or meshes.get(c["mesh_sha256"])
-        if hit and key not in expected:
+        if hit and key in inst:
+            issues.append(
+                f"instance N{key[0]} p{key[1]} s{key[2]} collides with {hit['test']} ({hit['kind']} n{hit['n']})"
+            )
+        elif hit and key not in expected:
             issues.append(
                 f"N{key[0]} p{key[1]} s{key[2]} collides with {hit['test']} ({hit['kind']} n{hit['n']})"
             )
