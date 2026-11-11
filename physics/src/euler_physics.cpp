@@ -409,6 +409,11 @@ class EulerPhysics final : public runtime::Physics {
     return out;
   }
 
+  [[nodiscard]] std::vector<io::Field> restart_scalars() const override {
+    if (!level_rule || ctx_.input.time.kind != "steady") return {};
+    return {{.name = start_window, .values = first_order_.window_state()}};
+  }
+
   // Phi_k = f_k sqrt(sum_i A_i^2 / N), A_i the surface of cell i and f_k the face flux magnitude
   // of the freestream with q = |v| + c: rho q, rho q^2 (each momentum) and rho H q
   // (docs/design/euler.md, Precision); SA's rho nt q with the freestream nt.
@@ -616,6 +621,7 @@ class EulerPhysics final : public runtime::Physics {
         auto state = solver_state();
         for (auto& [name, value] : state) value = find(start.restart_fields, name)->front();
         set_solver_state(state);
+        if (level_rule) first_order_.restore_window(*find(start.scalars, start_window));
       }
       if (sa_) {
         const auto& v = *find(start.restart_fields, "DensityNuTilde");
@@ -1056,8 +1062,9 @@ class EulerPhysics final : public runtime::Physics {
     // Largest relative residual over the equations, of the order being solved, leaving out the
     // equations at the round-off floor (the runtime's rule, decided on the reported residuals):
     // their ratio is round-off and would set the CFL number.
-    const double drop = relative_drop(norms.empty() ? report.residuals : norms, report.residuals);
-    switch_order(drop);
+    const std::vector<double>& first = norms.empty() ? report.residuals : norms;
+    const double drop = relative_drop(first, report.residuals);
+    switch_order(drop, first);
     // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
     // after each step the admissibility check shortened or whose relative residual rose, and
     // recovering by half otherwise.
@@ -1477,10 +1484,22 @@ class EulerPhysics final : public runtime::Physics {
   // First-order start: its approximate Jacobian is exact, so the steps are robust far from the
   // solution; second order from the step after the first-order residual has dropped. The device
   // starts the same way, so that both solve the same sequence of problems.
-  void switch_order(double drop) {
+  void switch_order(double drop, const std::vector<double>& residuals) {
     if (second_order_) return;
-    // Also once the drop is on a round-off plateau: in fp32+acc64 three orders can lie below it.
-    if (first_order_.ends_after(drop)) {
+    // fp64: also once the drop has stalled. fp32+acc64: once every watched equation's level is
+    // within the band above its round-off floor, where three orders can lie below round-off.
+    std::array<double, FirstOrderStart::equations> floors{};
+    if (level_rule) {
+      if (scales_.empty()) scales_ = residual_scales();
+      // The equations exempt at this step are not watched, as the convergence rule leaves them.
+      for (std::size_t k = 0; k < FirstOrderStart::equations; ++k)
+        floors[k] = exempt_.exempt(k) ? 0.0 : runtime::round_off_floor * scales_[k];
+    }
+    if (first_order_.ends_after(drop, residuals, floors)) {
+      ctx_.log.write(
+          "info", "solver", "first-order start ended", {},
+          nlohmann::json{{"rule", FirstOrderStart::name(first_order_.end())}, {"drop", drop}}
+              .dump());
       second_order_ = true;
       euler_.set_second_order(true);
       if (device_) device_->set_second_order(true);
@@ -1515,7 +1534,8 @@ class EulerPhysics final : public runtime::Physics {
     // The exemption is decided on the residuals the runtime receives, as on the host.
     if (steady)
       switch_order(
-          relative_drop(r.residuals, report.residuals.empty() ? r.residuals : report.residuals));
+          relative_drop(r.residuals, report.residuals.empty() ? r.residuals : report.residuals),
+          r.residuals);
     if (report.residuals.empty()) report.residuals = r.residuals;
     if (!steady) report.time_step = r.time_step;
     report.diverged_cell = r.invalid;
@@ -1896,8 +1916,12 @@ class EulerPhysics final : public runtime::Physics {
   std::unique_ptr<SaState<P>> sa_;   // SA-neg runs only
   std::array<double, 5> reference_;  // the state the cells store differences from
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
-  FirstOrderStart first_order_;
-  std::optional<BlockMatrix> matrix_;               // steady runs only
+  // fp32+acc64 ends the first-order start on the level rule, fp64 on the stall (#611).
+  static constexpr bool level_rule = std::is_same_v<P, kernels::fp32_acc64>;
+  static constexpr const char* start_window = "SolverStartWindow";
+  FirstOrderStart first_order_{level_rule};
+  std::vector<double> scales_;         // Phi_k of residual_scales(), for the level rule's floors
+  std::optional<BlockMatrix> matrix_;  // steady runs only
   std::optional<solvers::Multigrid> multigrid_;     // linear_solver = "multigrid"
   std::optional<PartitionMultigrid> partitioned_;   // and on a partition
   std::optional<solvers::LineSmoother> lines_;      // linear_solver = "lines"
@@ -2237,24 +2261,33 @@ runtime::CellGroups euler_groups(const runtime::SolverInput& in, const Mesh& mes
   return groups;
 }
 
+// fp32+acc64's first-order start keeps its window in the SolverState (#611).
+std::vector<std::pair<std::string, std::int64_t>> euler_restart_scalars(
+    const runtime::SolverInput& in, bool /*averaging*/) {
+  if (in.precision != "fp32+acc64" || in.time.kind != "steady") return {};
+  return {{"SolverStartWindow", static_cast<std::int64_t>(FirstOrderStart::window_size)}};
+}
+
 void register_euler(runtime::PhysicsRegistry& registry) {
   registry.add({"compressible", "inviscid", "fp64", "cpu"},
                factory<kernels::fp64, Euler<kernels::fp64>>(), euler_scope,
                /*several_ranks=*/true, euler_groups, euler_restart_names,
-               EulerPhysics<kernels::fp64, Euler<kernels::fp64>>::ghosts);
+               EulerPhysics<kernels::fp64, Euler<kernels::fp64>>::ghosts, euler_restart_scalars);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"},
                factory<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>(), euler_scope,
                /*several_ranks=*/true, euler_groups, euler_restart_names,
-               EulerPhysics<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>::ghosts);
+               EulerPhysics<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>::ghosts,
+               euler_restart_scalars);
 #ifdef AUTAN_PHYSICS_CUDA
   registry.add({"compressible", "inviscid", "fp64", "cuda"},
                factory<kernels::fp64, Euler<kernels::fp64>>(), euler_device_scope,
                /*several_ranks=*/false, {}, euler_restart_names,
-               EulerPhysics<kernels::fp64, Euler<kernels::fp64>>::ghosts);
+               EulerPhysics<kernels::fp64, Euler<kernels::fp64>>::ghosts, euler_restart_scalars);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cuda"},
                factory<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>(), euler_device_scope,
                /*several_ranks=*/false, {}, euler_restart_names,
-               EulerPhysics<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>::ghosts);
+               EulerPhysics<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>::ghosts,
+               euler_restart_scalars);
 #endif
 }
 
@@ -2263,12 +2296,14 @@ void register_navier_stokes(runtime::PhysicsRegistry& registry) {
     registry.add({"compressible", model, "fp64", "cpu"},
                  factory<kernels::fp64, NavierStokes<kernels::fp64>>(), navier_stokes_scope,
                  /*several_ranks=*/true, euler_groups, euler_restart_names,
-                 EulerPhysics<kernels::fp64, NavierStokes<kernels::fp64>>::ghosts, {},
+                 EulerPhysics<kernels::fp64, NavierStokes<kernels::fp64>>::ghosts,
+                 euler_restart_scalars,
                  /*wall_distance=*/std::string(model) == "sa");
     registry.add({"compressible", model, "fp32+acc64", "cpu"},
                  factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>(),
                  navier_stokes_scope, /*several_ranks=*/true, euler_groups, euler_restart_names,
-                 EulerPhysics<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>::ghosts, {},
+                 EulerPhysics<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>::ghosts,
+                 euler_restart_scalars,
                  /*wall_distance=*/std::string(model) == "sa");
   }
 }

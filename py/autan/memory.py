@@ -337,7 +337,12 @@ def _rank(
     # The writer also copies the coordinates and writes 64-bit face and cell connectivity.
     k_global = 2 * interior + boundary
     writer = 24 * nodes + 8 * (max(faces, cells) + 1) + 8 * max(counts.face_nodes, k_global)
-    add("solution output", 2 * 8 * cells * fields + writer, transient=True)
+    # fp32+acc64's steady first-order start also writes its window, 501 FP64 values (#611).
+    steady = isinstance(spec.time, Steady)
+    window = 8 * 501 if spec.physics.precision == "fp32+acc64" and steady else 0
+    if window:
+        add("first-order start window", window)
+    add("solution output", 2 * 8 * cells * fields + writer + 2 * window, transient=True)
     # A start reads the previous solution on every rank, every field for a continuation, the
     # n + 1 primitive fields for a warm start, then takes the rank's share and frees the rest;
     # with them the descriptors its writer wrote, unfiltered, which cg_open holds until close
@@ -352,7 +357,9 @@ def _rank(
         # cg_open's tree (mesh.md#memory-of-a-cgns-read) at the node count the runtime accepts
         # in a start file (E0707 beyond, before cg_open).
         descriptors += _CGNS_TREE + _CGNS_NODE * _CGNS_NODES_MAX + _CGNS_EAGER
-        add("start", 8 * (cells + c) * read + metadata + descriptors, transient=True)
+        # The start's copy and the rank's owned copy of the window coexist for a moment.
+        start_window = 2 * window if start == "continue" else 0
+        add("start", 8 * (cells + c) * read + metadata + descriptors + start_window, transient=True)
     # Files of the case, each read once at its size S (runtime.md): an initial state holds its
     # text, the document's strings (at most S), 1 KiB of members, its rows streamed into
     # vectors (64 B a row, 128 B while one grows) and their pairing (138 B a row, 160 B per
