@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Runner core-contention experiment (#697, declared before any run): MPI test #265 under four arms,
-# three interleaved rounds, inside the runner's own container. Proof branch only, never merged.
+# Runner core-contention experiment (#697, declared before any run): MPI test #265, the second
+# experiment's arms D (no rank binding) and D+B (also taskset 16-19), three interleaved rounds, inside the runner's own container. Proof branch only, never merged.
 # Writes one JSON line per run to $OUT/runs.jsonl and the affinity samples to $OUT/affinity-*.txt.
 set -uo pipefail
 build=$1 out=$2
@@ -8,10 +8,11 @@ mkdir -p "$out"
 test_re='^Navier-Stokes at ghost depth 3 repeats bit for bit at a fixed rank count$'
 busy() { awk '/^cpu /{print $2+$3+$4+$7+$8, $2+$3+$4+$5+$6+$7+$8}' /proc/stat; }
 for round in 1 2 3; do
-  for arm in baseline B C BC; do
+  for arm in D DB; do
     prefix=() env_yield=()
-    case $arm in B | BC) prefix=(taskset -c 16-19) ;; esac
-    case $arm in C | BC) env_yield=(OMPI_MCA_mpi_yield_when_idle=1) ;; esac
+    case $arm in DB) prefix=(taskset -c 16-19) ;; esac
+    # D: no binding of the ranks, so they keep the launcher's mask (#697, second experiment).
+    env_yield=(PRTE_MCA_hwloc_default_binding_policy=none OMPI_MCA_hwloc_base_binding_policy=none)
     tag=$arm-r$round
     # Affinity of every autan-run rank, every 2 s: pid, current CPU (psr), allowed CPUs.
     ( while :; do
