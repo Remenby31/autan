@@ -47,6 +47,12 @@ To clear it:
 
 When `docker/dev` changes, the shards warn that the pinned image is older. Once `gpu-image.yml` has published the new image on `main`, pin its arm64 digest in `cpu-tests`; the Spark runner's image is redeployed the same way (below).
 
+## MPI ranks on a shared Spark
+
+The Spark runners share their cores with Slurm and the job queue (on spark2 the runner's cpuset is `1-19` and Slurm's job cores are `1-15`). Open MPI's default binding pins each rank to one of the machine's lowest-numbered cores, whatever the runner's cpuset. On spark2 those are Slurm's busiest cores, and a multi-rank test crawled behind compute jobs. #265 ("Navier-Stokes at ghost depth 3 repeats bit for bit") timed out at 600 s in 12 of 12 runs, also under `taskset` and with `mpi_yield_when_idle`.
+
+gpu-tests' Spark job therefore sets the binding policy to `none` (`OMPI_MCA_hwloc_base_binding_policy`, `PRTE_MCA_hwloc_default_binding_policy`). The ranks keep the runner's cpuset, and the kernel places them on free cores: the same test passed 6 of 6 times in about 21 s, with the host busier. The experiments, declared before they ran, and their measurements are in #697. Dedicated runner cores, or a cgroup weight or Slurm allocation for the runner, would harden this further; they need Meta.
+
 ## On a Spark shared with other teams
 
 The runner of spark-5512 (`spark`) is a guest on a host whose other teams come first. Its placement comes from the environment of every `deploy.sh` command:

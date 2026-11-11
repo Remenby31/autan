@@ -256,6 +256,14 @@ jobs:
     outputs:
       gb10-cpu: ${{ steps.gb10-cpu.outcome }}
       runner: ${{ runner.name }}
+    # MPI ranks are not bound to cores (#697). By default Open MPI bound each rank to one of the
+    # machine's lowest-numbered cores whatever the runner's cpuset; on spark2 those are Slurm's job
+    # cores, and the ranks crawled behind compute jobs: #265 timed out at 600 s in 12/12 runs.
+    # Unbound, the ranks keep the runner's cpuset and the kernel places them on free cores: 6/6
+    # passed in about 21 s under heavier load (#697, the declared experiments).
+    env:
+      OMPI_MCA_hwloc_base_binding_policy: none
+      PRTE_MCA_hwloc_default_binding_policy: none
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
