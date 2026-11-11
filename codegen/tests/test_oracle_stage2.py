@@ -43,7 +43,7 @@ def library() -> str:
 def record(library: str) -> dict:
     _, sha = manifest()
     rec = h.run_instance(SPEC, library, sha)
-    rec["started_utc_s"], rec["ended_utc_s"] = 1000.0, 1100.0
+    rec["started_utc_s"], rec["ended_utc_s"], rec["elapsed_s"] = 1000.0, 1100.0, 100.0
     return rec
 
 
@@ -52,7 +52,7 @@ def aux(library: str, sha: str, **over: object) -> dict:
           "library_sha256_expected": library, "library_sha256_loaded": library,
           "child_library_sha256": [library, library], "pytest_exit": 0,
           "outcomes": dict.fromkeys(NODES, "passed"),
-          "started_utc_s": 2000.0, "ended_utc_s": 2100.0}  # fmt: skip
+          "started_utc_s": 2000.0, "ended_utc_s": 2100.0, "elapsed_s": 100.0}  # fmt: skip
     ev.update(over)
     return ev
 
@@ -74,10 +74,13 @@ def test_a_bound_attempt_within_its_bound_meets_the_acceptance_criteria(
 @pytest.mark.parametrize(
     ("change", "why"),
     [
-        ({"ended_utc_s": 1000.0 + 601}, "over its bound of 600 s"),
-        ({"ended_utc_s": None}, "no valid start and end times"),
-        ({"started_utc_s": 1200.0}, "no valid start and end times"),
-        ({"timeout_latched": True}, "the run script's latch"),
+        ({"elapsed_s": 601.0}, "over its bound"),
+        ({"ended_utc_s": 1000.0 + 601}, "inconsistent or over its bound"),
+        ({"ended_utc_s": None}, "no valid end time"),
+        ({"elapsed_s": None}, "no valid end time"),
+        ({"started_utc_s": None}, "no valid start time"),
+        ({"started_utc_s": 1200.0}, "inconsistent"),
+        ({"watchdog_issue": "marker says timeout"}, "watchdog"),
     ],
 )
 def test_an_attempt_over_its_bound_or_latched_is_decisive(
@@ -91,7 +94,10 @@ def test_an_attempt_over_its_bound_or_latched_is_decisive(
 
 
 def test_more_attempts_than_the_cap_fail(record: dict, library: str) -> None:
-    preflight = {"schema": h.SCHEMA, "id": SPEC["id"], "invalid": [], "stage": "manifest"}
+    # as heldout.main writes it: every record carries its start time
+    preflight = {
+        "schema": h.SCHEMA, "id": SPEC["id"], "invalid": [], "stage": "manifest", "started_utc_s": 900.0
+    }  # fmt: skip
     state = collect(library, [preflight, preflight, record])
     assert any("over the cap of 2" in f for f in state["failures"])
     assert collect(library, [preflight, record])["failures"] == []
@@ -99,7 +105,7 @@ def test_more_attempts_than_the_cap_fail(record: dict, library: str) -> None:
 
 def test_the_auxiliary_suite_has_its_own_bound(record: dict, library: str) -> None:
     _, sha = manifest()
-    for bad in (aux(library, sha, ended_utc_s=2000.0 + 301), aux(library, sha, timeout_latched=True),
+    for bad in (aux(library, sha, elapsed_s=301.0), aux(library, sha, watchdog_issue="marker says running"),
                 aux(library, sha, started_utc_s=None)):  # fmt: skip
         assert collect(library, [record], [bad])["failures"]
 
@@ -130,19 +136,30 @@ def test_stage_1_is_unchanged(library: str) -> None:
     assert state["state"].startswith("no failure observed in stage 1")
 
 
-def test_the_watchdog_returns_the_command_s_status_within_its_bound(tmp_path: Path) -> None:
-    latch = tmp_path / "a.json.timeout"
-    assert watchdog.run(30, str(latch), [sys.executable, "-c", "raise SystemExit(3)"]) == 3
-    assert not latch.exists()
+def test_the_watchdog_records_how_the_command_exited(tmp_path: Path) -> None:
+    marker = tmp_path / "a.json.watchdog"
+    assert watchdog.run(30, str(marker), [sys.executable, "-c", "raise SystemExit(3)"]) == 3
+    doc = json.loads(marker.read_text())
+    assert (doc["status"], doc["exit"]) == ("exited", 3)
+    assert 0 <= doc["elapsed_s"] < 30
 
 
-def test_the_watchdog_latches_then_stops_the_command_at_its_bound(tmp_path: Path) -> None:
-    latch = tmp_path / "a.json.timeout"
-    t0 = time.time()
-    code = watchdog.run(1, str(latch), [sys.executable, "-c", "import time; time.sleep(60)"])
+def test_the_watchdog_marks_a_timeout_then_stops_the_command_at_its_bound(tmp_path: Path) -> None:
+    marker = tmp_path / "a.json.watchdog"
+    t0 = time.monotonic()
+    code = watchdog.run(1, str(marker), [sys.executable, "-c", "import time; time.sleep(60)"])
     assert code == 124
-    assert time.time() - t0 < 30
-    assert json.loads(latch.read_text())["bound_s"] == 1
+    assert time.monotonic() - t0 < 30
+    assert json.loads(marker.read_text())["status"] == "timeout"
+
+
+def test_the_watchdog_does_not_run_a_command_it_cannot_mark(tmp_path: Path) -> None:
+    marker = tmp_path / "a.json.watchdog"
+    marker.write_text("{}")  # exists already: exclusive creation fails
+    flag = tmp_path / "ran"
+    code = watchdog.run(30, str(marker), [sys.executable, "-c", f"open({str(flag)!r}, 'w')"])
+    assert code == 2
+    assert not flag.exists()
 
 
 @pytest.mark.parametrize(("branch", "count"), [("a", 5)])
@@ -198,7 +215,7 @@ def test_a_failing_auxiliary_attempt_stays_decisive_after_a_passing_one(
     record: dict, library: str
 ) -> None:
     _, sha = manifest()
-    for bad in (aux(library, sha, pytest_exit=1), aux(library, sha, timeout_latched=True)):
+    for bad in (aux(library, sha, pytest_exit=1), aux(library, sha, watchdog_issue="no marker")):
         assert collect(library, [record], [bad, aux(library, sha)])["failures"]
 
 
@@ -230,13 +247,19 @@ def test_the_driver_counts_an_orphan_latch_and_refuses_while_jobs_fly(
     for d in (rec_dir, aux_dir, queue / "pending", queue / "running"):
         d.mkdir(parents=True)
     _write(rec_dir, f"{SPEC['id']}.attempt-1.json", record)
+    _write(rec_dir, f"{SPEC['id']}.attempt-1.json.watchdog", {"status": "exited", "exit": 0})
     _write(aux_dir, "attempt-1.json", aux(library, sha))
     args = [str(m), sha, library, str(rec_dir), str(aux_dir), "--queue", str(queue),
             "--job-prefix", "s2-"]  # fmt: skip
+    assert collect_stage2.main(args) == 1  # the auxiliary attempt has no marker
+    _write(aux_dir, "attempt-1.json.watchdog", {"status": "exited", "exit": 0})
     assert collect_stage2.main(args) == 0
-    (rec_dir / f"{SPEC['id']}.attempt-2.json.timeout").write_text("{}")
+    (rec_dir / f"{SPEC['id']}.attempt-2.json.watchdog").write_text('{"status": "running"}')
+    assert collect_stage2.main(args) == 1  # a marker without its record
+    assert "has no record" in capsys.readouterr().out
+    (rec_dir / f"{SPEC['id']}.attempt-2.json.watchdog").unlink()
+    _write(rec_dir, f"{SPEC['id']}.attempt-1.json.watchdog", {"status": "timeout"})
     assert collect_stage2.main(args) == 1
-    assert "latch" in capsys.readouterr().out
     (queue / "running" / "05-s2-agglomerated-N6.job").write_text("")
     assert collect_stage2.main(args) == 3
 
@@ -254,7 +277,7 @@ def test_the_watchdog_kills_what_the_command_leaves_in_its_group(tmp_path: Path)
         f"subprocess.Popen([sys.executable, '-c', {grandchild!r}])\n"
         "time.sleep(60)\n"
     )
-    code = watchdog.run(1, str(tmp_path / "l.timeout"), [sys.executable, "-c", script], grace_s=1)
+    code = watchdog.run(1, str(tmp_path / "l.watchdog"), [sys.executable, "-c", script], grace_s=1)
     assert code == 124
     time.sleep(4)
     assert not flag.exists()  # the TERM-ignoring grandchild was killed with the group
@@ -263,7 +286,7 @@ def test_the_watchdog_kills_what_the_command_leaves_in_its_group(tmp_path: Path)
 def test_the_watchdog_reports_a_signal_as_128_plus_its_number(tmp_path: Path) -> None:
     code = watchdog.run(
         30,
-        str(tmp_path / "l"),
+        str(tmp_path / "l.watchdog"),
         [sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGTERM)"],
     )
     assert code == 128 + 15

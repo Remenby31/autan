@@ -526,19 +526,24 @@ def stage2_limits(manifest: dict[str, Any]) -> tuple[dict[str, int], int, int] |
 
 
 def _timed_out(rec: Any, bound: int) -> str | None:
-    """Why a stage 2 attempt is over its bound (None if it is within it): the run script's latch,
-    or recorded start and end times that are missing, inconsistent or further apart than the bound."""
+    """Why a stage 2 attempt is not accepted on time (None if it is): what the watchdog's marker
+    says (`watchdog_issue`, set by the driver), a missing start time, or a run longer than its
+    bound (the monotonic `elapsed_s` when recorded, else the UTC times)."""
     if not isinstance(rec, dict):
         return None  # malformed: the frozen rules already count it
-    if rec.get("timeout_latched") is True:
-        return f"timed out: the run script's latch at {bound} s"
-    t0, t1 = rec.get("started_utc_s"), rec.get("ended_utc_s")
-    if _finite(t0) and _finite(t1) and t1 - t0 > bound:
-        return f"ran {t1 - t0:.0f} s, over its bound of {bound} s"
+    if rec.get("watchdog_issue"):
+        return f"watchdog: {rec['watchdog_issue']}"
+    t0, t1, elapsed = rec.get("started_utc_s"), rec.get("ended_utc_s"), rec.get("elapsed_s")
+    if not _finite(t0):
+        return "no valid start time"
+    if _finite(elapsed) and elapsed > bound:
+        return f"ran {elapsed:.0f} s, over its bound of {bound} s"
+    if _finite(t1) and (t1 < t0 or t1 - t0 > bound):
+        return f"start and end times {t0}, {t1} are inconsistent or over its bound of {bound} s"
     if rec.get("stage") != "done":
         return None  # an interrupted attempt never passes; it may only be superseded
-    if not (_finite(t0) and _finite(t1)) or t1 < t0:
-        return "no valid start and end times"
+    if not (_finite(t1) and _finite(elapsed)) or elapsed < 0:
+        return "no valid end time or elapsed time"
     return None
 
 
@@ -749,6 +754,7 @@ def main(argv: list[str] | None = None) -> int:
     base = {"manifest_sha256": manifest_sha256, "library_sha256_expected": args.library_sha256,
             "library_sha256_loaded": kr.library_sha256()}  # fmt: skip
     if args.command == "aux":
+        clock = time.monotonic()
         record: dict[str, Any] = {
             "schema": AUX_SCHEMA,
             "stage": "started",
@@ -779,10 +785,11 @@ def main(argv: list[str] | None = None) -> int:
                 {"stage": "done", "outcomes": outcomes, "child_library_sha256": libraries}
             )
         record["ended_utc_s"] = time.time()
+        record["elapsed_s"] = time.monotonic() - clock
         _replace(out, record)
         report.unlink(missing_ok=True)
         return 0
-    started = time.time()
+    started, clock = time.time(), time.monotonic()
     record = {"schema": SCHEMA, "id": args.instance, "invalid": [], "stage": "manifest", **base}
     record["started_utc_s"] = started
     if not _create(out, record):
@@ -804,6 +811,7 @@ def main(argv: list[str] | None = None) -> int:
         record["traceback"] = traceback.format_exc()
         record["passed"] = False
     record["started_utc_s"], record["ended_utc_s"] = started, time.time()
+    record["elapsed_s"] = time.monotonic() - clock
     _replace(out, record)
     return 0
 

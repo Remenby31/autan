@@ -11,6 +11,7 @@ on:
       - vv/**
       - codegen/tests/oracle/freeze/vv_exclusion.py
       - codegen/tests/oracle/freeze/stage2-candidates.json
+      - codegen/tests/oracle/freeze/manifest-stage2.json
       - .github/workflows/oracle-stage2-exclusion.yml
   workflow_dispatch:
 permissions: {}
@@ -46,10 +47,14 @@ jobs:
           VV_EXCLUSION_OUT: ${{ runner.temp }}/universe.json
           PYTHONPATH: ${{ github.workspace }}/codegen/tests/oracle/freeze
         run: uv run --locked --no-sync pytest -p vv_exclusion -m "not network" -q -p no:cacheprovider
+      # With the frozen manifest, every instance must also be a candidate; before it exists, the
+      # check says so (the run at the frozen commit is the one the freeze record cites).
       - name: Compared with the stage 2 candidates
-        run: >-
-          python3 codegen/tests/oracle/freeze/vv_exclusion.py "$RUNNER_TEMP/universe.json"
-          codegen/tests/oracle/freeze/stage2-candidates.json
+        run: |
+          m=codegen/tests/oracle/freeze/manifest-stage2.json
+          if [ -f "$m" ]; then third=$m; else third=--no-manifest-yet; fi
+          python3 codegen/tests/oracle/freeze/vv_exclusion.py "$RUNNER_TEMP/universe.json" \
+            codegen/tests/oracle/freeze/stage2-candidates.json "$third"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
