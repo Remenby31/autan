@@ -801,7 +801,7 @@ TEST_CASE("Fluent zone records of short names cost little beside their text", "[
   const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(padded); });
   CAPTURE(before, after, added);
   CHECK(after - before <= added + (std::int64_t{1} << 20));
-  CHECK(mesh->face_zones().size() == autan::io::read_mesh(plain).face_zones().size());
+  CHECK(mesh->face_zones().size() == 2);  // fluent_tet's zones 3 and 4
 }
 
 TEST_CASE("Fluent interior zones no face is in are not kept", "[io]") {
