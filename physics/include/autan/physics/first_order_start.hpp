@@ -13,13 +13,16 @@ class FirstOrderStart {
   static constexpr double drop_to = 1e-3;
   static constexpr int max_steps = 200;
 
-  /// The relative drop of the step just taken; true when the start ends with that step.
+  /// The relative drop of the step just taken; true when the start ends with that step. Every
+  /// step counts, the one that ends the start included, however it ends.
   bool ends_after(double drop) {
     const bool flat = plateau_.add(drop);
-    return drop < drop_to || flat || ++steps_ > max_steps;
+    ++steps_;
+    return drop < drop_to || flat || steps_ > max_steps;
   }
 
-  /// What a continued run carries over, in the physics' RestartState.
+  /// What a continued run carries over, in the physics' RestartState: `steps`, the first-order
+  /// steps taken so far.
   struct State {
     int steps = 0;
     runtime::Plateau::State plateau;

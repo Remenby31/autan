@@ -503,9 +503,8 @@ TEST_CASE("a continued steady run ends its first-order start where the uninterru
 
 TEST_CASE("the history marks provisional exactly the steps of the first-order start", "[euler]") {
   // results.md#history: a steady line carries `provisional`, true for the first-order start's
-  // steps (euler.md#time-stepping). A uniform flow's start ends on its stall, before the cap, and
-  // the stalling step is not counted by FirstOrderStart: n < 201 marked lines, a prefix, and
-  // n - 1 counted steps in the restart state, second order on.
+  // steps (euler.md#time-stepping). A uniform flow's start ends on its stall, before the cap:
+  // n < 201 marked lines, a prefix, and n counted steps in the restart state, second order on.
   const auto out = run(input("hybrid.solver-input.json", [](Json& d) {
     inviscid_along_x(d, "fp64");
     d["time"]["max_iterations"] = 250;
@@ -521,7 +520,7 @@ TEST_CASE("the history marks provisional exactly the steps of the first-order st
   CHECK(field(out.run, "SolverSecondOrder", "RestartState").front() == 1.0);
   const double counted = field(out.run, "SolverFirstOrderSteps", "RestartState").front();
   CHECK(marked < 201);
-  CHECK(counted == static_cast<double>(marked - 1));
+  CHECK(counted == static_cast<double>(marked));
   // case-schema.md#time: start_order "second" has no first-order start, and the run logs it.
   const auto second = run(input("hybrid.solver-input.json", [](Json& d) {
     inviscid_along_x(d, "fp64");
@@ -2405,9 +2404,9 @@ TEST_CASE("a continued Spalart-Allmaras run repeats the uninterrupted one bit fo
   auto second_order = [&](int n) {
     return field(finished(doc(n)), "SolverSecondOrder", "RestartState").front() == 1.0;
   };
-  // The start counts its first-order steps, the one that switches excluded: the switch comes
-  // after s steps, which the runs of s - 1 and s steps confirm.
-  const int s = static_cast<int>(field(whole, "SolverFirstOrderSteps", "RestartState").front()) + 1;
+  // The start counts its first-order steps, the one that ends it included (#671): the switch
+  // comes after s steps, which the runs of s - 1 and s steps confirm.
+  const int s = static_cast<int>(field(whole, "SolverFirstOrderSteps", "RestartState").front());
   INFO("switch at step " << s);
   REQUIRE(!second_order(s - 1));
   REQUIRE(second_order(s));
@@ -3235,11 +3234,15 @@ TEST_CASE("on a device, a diverged run names the cell whose stored state is not 
 
 TEST_CASE("the first-order start ends with its 201st step or earlier on a drop or a stall",
           "[euler]") {
-  // euler.md#time-stepping. Each sequence gives the step the start ends with.
+  // euler.md#time-stepping. Each sequence gives the step the start ends with; the start has
+  // counted every step it took, the last included, however it ended (#671).
   const auto ends_with = [](const auto& drop) {
     autan::physics::FirstOrderStart start;
     for (int step = 1; step <= 1000; ++step) {
-      if (start.ends_after(drop(step))) return step;
+      if (start.ends_after(drop(step))) {
+        CHECK(start.state().steps == step);
+        return step;
+      }
     }
     return 0;
   };
