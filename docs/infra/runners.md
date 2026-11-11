@@ -33,10 +33,17 @@ The Spark runs gpu-tests' build, GPU tests and generator only. The CPU tests (`-
 - **Shards.** `bench/ci/cpu-test-shards.py` deals the tests into three shards by name, and job `cpu-tests-check` checks across the three runners that each CPU test ran exactly once.
 - **MPI settings.** Open MPI runs as root with oversubscription, through environment variables, so the test commands are the Spark's.
 
-The Spark still runs the whole CPU suite on GB10, last, on the nightly and on a manual run (`workflow_dispatch`). When it fails on the nightly, the report opens an issue labelled `gb10-cpu-difference`; later nights comment on the open one. While it is open, every hosted CPU shard fails, as a red gate does. To clear it:
+The Spark still runs the whole CPU suite on GB10, last, on the nightly and on a manual run (`workflow_dispatch`). When that step does not pass on the nightly (failed, cancelled, timed out, or never reached), the report opens an issue labelled `gb10-cpu-difference`; later nights comment on the open one.
+
+Every hosted CPU shard then fails, as a red gate does, and so does every merge. `bench/ci/gb10-health.py` blocks the shards while any of these holds:
+- the issue is open;
+- the last nightly did not pass its GB10 CPU step and no such issue was closed after it (this covers a report that could not open the issue);
+- GitHub's API cannot be read.
+
+To clear it:
 1. Fix the difference.
 2. Run gpu-tests by hand on the fix's branch: that runs the CPU tests on GB10.
-3. Close the issue once that step is green.
+3. Close the issue once that step is green. If the report opened none, open one with the label and close it, to record the check.
 
 When `docker/dev` changes, the shards warn that the pinned image is older. Once `gpu-image.yml` has published the new image on `main`, pin its arm64 digest in `cpu-tests`; the Spark runner's image is redeployed the same way (below).
 

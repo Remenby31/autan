@@ -10,7 +10,7 @@ on:
   push:
     branches: [main]
     paths: &paths
-      [codegen/**, kernels/**, physics/**, core/**, runtime/**, partition/**, io/**, tests/**, CMakeLists.txt, .github/workflows/gpu-tests.yml, bench/ci/cpu-test-shards.py]
+      [codegen/**, kernels/**, physics/**, core/**, runtime/**, partition/**, io/**, tests/**, CMakeLists.txt, .github/workflows/gpu-tests.yml, bench/ci/cpu-test-shards.py, bench/ci/gb10-health.py]
   pull_request:
     paths: *paths
     # ready_for_review: a draft that becomes ready runs at once; drafts themselves are skipped.
@@ -102,19 +102,13 @@ jobs:
           tree=$(git rev-parse HEAD:docker/dev)
           [ "$tree" = c5ed7be0431c08d00c7cb43d698908591beb268b ] ||
             echo "::warning::docker/dev is now tree $tree, the pinned image tree c5ed7be0: once gpu-image.yml has published the new image, pin it here"
-      - name: No open GB10-only CPU difference
-        id: gb10-open
+      # Fails closed (bench/ci/gb10-health.py): an open gb10-cpu-difference issue, a last nightly
+      # that did not pass its GB10 CPU step and was not cleared since, or GitHub's API unreadable.
+      - name: The CPU tests are healthy on GB10
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: |
-          open=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/$GH_REPO/issues?labels=gb10-cpu-difference&state=open&per_page=5" |
-            python3 -c 'import json, sys; print(" ".join("#%d" % i["number"] for i in json.load(sys.stdin)))')
-          [ -z "$open" ] || {
-            echo "::error::the CPU tests failed on GB10 ($open, label gb10-cpu-difference). Fix it, check the fix with a manual gpu-tests run on its branch (it runs the CPU tests on GB10), then close the issue."
-            exit 1
-          }
+        run: bench/ci/gb10-health.py
       - name: Configure (gpu-tests' configuration)
         run: |
           # CONFIGURE is a list of arguments: split on purpose.
@@ -133,22 +127,22 @@ jobs:
         run: |
           serial=$(cat "$RUNNER_TEMP/cpu-$SHARD-serial")
           mpi=$(cat "$RUNNER_TEMP/cpu-$SHARD-mpi")
+          # The JUnit reports record the tests that ran, for cpu-tests-check.
+          mkdir -p "$RUNNER_TEMP/shard"
           if [ -n "$serial" ]; then
-            ctest --test-dir build -I "$serial" -j 4 --output-on-failure --no-tests=error
+            ctest --test-dir build -I "$serial" -j 4 --output-on-failure --no-tests=error \
+              --output-junit "$RUNNER_TEMP/shard/junit-serial.xml"
           fi
           if [ -n "$mpi" ]; then
-            ctest --test-dir build -I "$mpi" -j 1 --output-on-failure --no-tests=error
+            ctest --test-dir build -I "$mpi" -j 1 --output-on-failure --no-tests=error \
+              --output-junit "$RUNNER_TEMP/shard/junit-mpi.xml"
           fi
       # A GB10 incident opened while this shard ran fails it too.
-      - name: Still no open GB10-only CPU difference
+      - name: Still healthy on GB10
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: |
-          open=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/$GH_REPO/issues?labels=gb10-cpu-difference&state=open&per_page=5" |
-            python3 -c 'import json, sys; print(" ".join("#%d" % i["number"] for i in json.load(sys.stdin)))')
-          [ -z "$open" ] || { echo "::error::the CPU tests failed on GB10 ($open): see the first step"; exit 1; }
+        run: bench/ci/gb10-health.py
       - name: Keep what this shard ran
         if: ${{ !cancelled() && steps.split.outcome == 'success' }}
         env:
@@ -165,9 +159,10 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Across the three runners and the Spark: each shard listed the same two sets as the Spark's
-  # build of the same commit, and the shards' parts are disjoint and together the whole of each
-  # set. A shard that dealt or built differently would show here.
+  # Across the three runners and the Spark: every shard succeeded, each listed the same two sets
+  # as the Spark's build of the same commit, and the tests their JUnit reports show as run and
+  # passed are, across the shards, each test of each set exactly once. A shard that dealt, built
+  # or ran differently would show here.
   cpu-tests-check:
     name: CPU tests (hosted arm64, each of the Spark's CPU tests run exactly once)
     needs: [cpu-tests, tests]
@@ -176,6 +171,11 @@ jobs:
     timeout-minutes: 5
     permissions: {}
     steps:
+      - name: Every shard succeeded
+        env:
+          SHARDS: ${{ needs.cpu-tests.result }}
+        run: |
+          [ "$SHARDS" = success ] || { echo "::error::the CPU shards ended $SHARDS, not success"; exit 1; }
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: cpu-shard-*-${{ github.run_id }}-${{ github.run_attempt }}
@@ -188,6 +188,7 @@ jobs:
         run: |
           python3 - <<'EOF'
           import pathlib, sys
+          import xml.etree.ElementTree as ET
           root = pathlib.Path("shards")
           dirs = sorted(d for d in root.iterdir() if d.is_dir())
           errors = []
@@ -203,13 +204,17 @@ jobs:
               every = set(spark) - {""}
               seen = {}
               for d in dirs:
-                  for f in d.glob(f"cpu-*-{name}.names"):
-                      if f.name.startswith("cpu-all-"):
-                          continue
-                      for t in filter(None, f.read_text().split("\n")):
-                          if t in seen:
-                              errors.append(f"{t}: in {seen[t]} and {d.name}")
-                          seen[t] = d.name
+                  # What ran: the JUnit report's test cases, each run and passed.
+                  report = d / f"junit-{name}.xml"
+                  if not report.exists():
+                      continue
+                  for case in ET.parse(report).getroot().iter("testcase"):
+                      t = case.get("name", "")
+                      if case.get("status") != "run" or case.find("failure") is not None or case.find("skipped") is not None:
+                          errors.append(f"{t}: not run and passed in {d.name} (status {case.get('status')})")
+                      if t in seen:
+                          errors.append(f"{t}: in {seen[t]} and {d.name}")
+                      seen[t] = d.name
               errors += [f"set {name}, run by no shard: {t}" for t in sorted(every - set(seen))]
               errors += [f"set {name}, run but not in the set: {t}" for t in sorted(set(seen) - every)]
               print(f"set {name}: {len(every)} tests, {len(seen)} run across the shards")
@@ -355,7 +360,8 @@ jobs:
   report-nightly:
     needs: tests
     # A nightly failure on main becomes an issue naming the commits since the last green night.
-    if: always() && github.event_name == 'schedule' && needs.tests.result == 'failure'
+    # Any end but success: a hang that reaches the timeout ends cancelled, not failed.
+    if: always() && github.event_name == 'schedule' && needs.tests.result != 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -375,7 +381,10 @@ jobs:
           range=${good:+$good..$GITHUB_SHA}
           gh label create gpu-tests-nightly --force --color B60205 --description "The nightly GPU test run failed"
           labels=gpu-tests-nightly
-          if [ "$GB10_CPU" = failure ]; then
+          # Not passed, whatever the reason (failed, cancelled, timed out, never reached): the
+          # hosted shards also read the nightly's step (bench/ci/gb10-health.py), so a report
+          # that fails here still blocks them.
+          if [ "$GB10_CPU" != success ]; then
             open=$(gh issue list --label gb10-cpu-difference --state open --json number --jq '.[0].number // empty')
             if [ -n "$open" ]; then
               # One incident at a time: a later night adds to the open one.
