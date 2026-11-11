@@ -1856,17 +1856,18 @@ TEST_CASE("several ranks give the one-rank solution to round-off", "[euler][mpi]
 
 // The steps each steady configuration of hybrid.solver-input.json takes: its last first-order
 // (provisional) step plus 10, so that every run goes past the second-order switch (Jacobian, SA's
-// assembly and sweeps) and stays within CI's per-test timeout unoptimised. Measured at 83b40ec8 in
-// gpu-tests' unoptimised build on 2026-11-09 (t648-o0b): the fp32+acc64 first-order start ends on
-// its round-off plateau, later than fp64's drop.
+// assembly and sweeps) and stays within CI's per-test timeout unoptimised. fp64: measured at
+// 83b40ec8 in gpu-tests' unoptimised build on 2026-11-09 (t648-o0b). fp32+acc64: the level rule
+// (euler.md) ends the start at the 201st step at the latest, which bounds it whatever the rule's
+// step.
 static int past_switch(const std::string& model, const std::string& linear,
                        const std::string& precision) {
-  const bool fp64 = precision == "fp64";
+  if (precision != "fp64") return autan::physics::FirstOrderStart::max_steps + 1 + 10;
   int last_first_order = 0;
   if (model == "laminar") {
-    last_first_order = linear == "gauss-seidel" ? (fp64 ? 53 : 162) : (fp64 ? 44 : 201);
+    last_first_order = linear == "gauss-seidel" ? 53 : 44;
   } else {
-    last_first_order = linear == "gauss-seidel" ? (fp64 ? 44 : 146) : (fp64 ? 37 : 184);
+    last_first_order = linear == "gauss-seidel" ? 44 : 37;
   }
   return last_first_order + 10;
 }
@@ -2054,12 +2055,13 @@ TEST_CASE("Navier-Stokes under reproducibility ranks gives the bits of the pinne
   // #651, G-fit v2 B3, hidden: run by hand with AUTAN_REFERENCE_RUN, the autan-run of 0a77fb9f
   // (#648, vertex4 ghosts under "ranks"), built on the same host. #648's steady cases under
   // "ranks" on 2 and 4 ranks give through this build the history and every array of the
-  // reference's run of the same input, bit for bit.
+  // reference's run of the same input, bit for bit, in fp64: the fp32+acc64 first-order start
+  // ends on the level rule since (#611), which the reference does not have.
   const char* reference = std::getenv("AUTAN_REFERENCE_RUN");
   if (reference == nullptr) SKIP("AUTAN_REFERENCE_RUN names the reference autan-run");
   const char* model = GENERATE("laminar", "sa");
   const char* linear = GENERATE("gauss-seidel", "lines");
-  const char* precision = GENERATE("fp64", "fp32+acc64");
+  const char* precision = "fp64";
   const int ranks = GENERATE(2, 4);
   INFO(model << " " << linear << " " << precision << " on " << ranks << " ranks");
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
@@ -2080,10 +2082,13 @@ TEST_CASE("Navier-Stokes under reproducibility ranks gives the bits of the pinne
   INFO(err);
   REQUIRE(!ours.empty());
   // The reference reads the input of its own version: time.start_order came after it, and
-  // "first", the default, is the only start it has.
+  // "first", the default, is the only start it has; so did the MeshInfo's multigrid order.
   Json older = doc;
   REQUIRE(older["time"]["start_order"] == "first");
   older["time"].erase("start_order");
+  if (older.contains("mesh_info") && older["mesh_info"]["quality"].contains("multigrid")) {
+    older["mesh_info"]["quality"]["multigrid"].erase("order");
+  }
   const fs::path theirs = run_on_ranks(older, ranks, 0, &err, reference);
   REQUIRE(!theirs.empty());
   CHECK(read(ours / "history.jsonl") == read(theirs / "history.jsonl"));

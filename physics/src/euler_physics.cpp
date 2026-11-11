@@ -2388,10 +2388,11 @@ void register_navier_stokes(runtime::PhysicsRegistry& registry) {
 #ifdef AUTAN_PHYSICS_CUDA
   registry.add({"compressible", "laminar", "fp64", "cuda"},
                factory<kernels::fp64, NavierStokes<kernels::fp64>>(), navier_stokes_device_scope,
-               /*several_ranks=*/false, {}, euler_restart_names);
+               /*several_ranks=*/false, {}, euler_restart_names, {}, euler_restart_scalars);
   registry.add({"compressible", "laminar", "fp32+acc64", "cuda"},
                factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>(),
-               navier_stokes_device_scope, /*several_ranks=*/false, {}, euler_restart_names);
+               navier_stokes_device_scope, /*several_ranks=*/false, {}, euler_restart_names, {},
+               euler_restart_scalars);
 #endif
 }
 

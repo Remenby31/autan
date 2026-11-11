@@ -46,7 +46,7 @@ class SelfExchange final : public GhostExchange {
   // exchanged across periodic pairs: Navier-Stokes, the only caller, refuses them (E0706), and
   // keys carry no image shift.
   CellRows forward_rows(const CellRows& owned, std::span<const std::uint8_t> wanted) override {
-    const auto ghosts = static_cast<std::size_t>(part_.mesh.n_cells() - part_.mesh.n_owned_cells());
+    const auto ghosts = static_cast<std::size_t>(halo_.recv_offsets.back());
     if (wanted.size() != ghosts) {
       throw std::logic_error("forward_rows: the mask holds one byte per ghost");
     }
@@ -130,7 +130,7 @@ class MpiGhosts final : public GhostExchange {
     exchange(space).forward(components, stream);
   }
   CellRows forward_rows(const CellRows& owned, std::span<const std::uint8_t> wanted) override {
-    return autan::forward_rows(part_.halo, owned, wanted, comm_);
+    return autan::forward_rows(halo_, owned, wanted, comm_);
   }
 
  private:
