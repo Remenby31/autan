@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import statistics
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -34,18 +35,25 @@ FINAL_BOUND = {
 }
 # The equation the slab's span makes zero: it must stay at or below its identically-zero floor.
 ZERO_EQUATION = "momentum-z"
-# #611, gate (c): orders, tonight's value - 0.5. Keys: (equation, reference).
-DROP_MIN = {
-    ("energy", "peak"): 11.36,
-    ("energy", "first"): 9.82,
-    ("momentum-x", "first"): 12.53,
-    ("momentum-y", "shared"): 12.91,
-    ("nu-tilde", "first"): 13.27,
+# #611, gate (c), revised (declaration 6785712335, bounds from the null set 6785809583, selected
+# 6801480590): each drop from the median of the last 2 000 steps, not the last step. Orders; keys:
+# (equation, reference).
+MEDIAN_WINDOW = (18001, 20000)
+MEDIAN_DROP_MIN = {
+    ("energy", "peak"): 11.61,
+    ("energy", "first"): 10.07,
+    ("momentum-x", "first"): 12.83,
+    ("momentum-y", "shared"): 13.04,
+    ("nu-tilde", "first"): 13.56,
 }
-# #611, gate (d): floor(1.10 x tonight's) for the first and the sustained crossing of energy below
-# 1e-10 x its peak.
+# #611, gate (d): floor(1.10 x tonight's) for energy's first crossing below 1e-10 x its peak, then,
+# revised as gate (c) above, the fraction of steps 10 001-20 000 above that level and the peak cap
+# log10(peak / step 1). The sustained crossing m3s is reported, not gated: null perturbations move
+# it across any useful bound.
 M3F_MAX = 2174
-M3S_MAX = 13295
+TAIL = (10001, 20000)
+TAIL_FRACTION_MAX = 0.051
+PEAK_RATIO_MAX = 1.84
 
 
 class GuardError(Exception):
@@ -164,6 +172,14 @@ def measure(lines: list[dict[str, Any]]) -> dict[str, Any]:
         if above and above[-1] + 1 < len(its)
         else (its[0] if not above else None)
     )
+    peak = max(energy)
+    tail = energy[TAIL[0] - 1 : TAIL[1]]
+    median_drops: dict[str, float | None] = {}
+    for k, ref in MEDIAN_DROP_MIN:
+        r = [line["residuals"][k] for line in lines]
+        reference = {"peak": max(r), "first": r[0], "shared": momentum}[ref]
+        med = statistics.median(r[MEDIAN_WINDOW[0] - 1 : MEDIAN_WINDOW[1]])
+        median_drops[f"{k}/{ref}"] = _log_ratio(reference, med)
     return {
         "final": dict(last),
         "zero_floor": floor,
@@ -171,9 +187,20 @@ def measure(lines: list[dict[str, Any]]) -> dict[str, Any]:
         "drops": drops,
         "m3f": m3f,
         "m3s": m3s,
+        "tail_fraction": sum(1 for r in tail if r > 1e-10 * peak) / len(tail),
+        "peak_ratio": _log_ratio(peak, energy[0]),
+        "median_drops": median_drops,
         "rule_own": _rule_step(lines, shared=False),
         "rule_shared": _rule_step(lines, shared=True),
     }
+
+
+def _log_ratio(num: float, den: float) -> float | None:
+    """log10(num / den): None where it is undefined (num not positive or not finite), +inf where den
+    is zero; the frozen evaluator's definition (vv/guard/null_eval.py)."""
+    if not (math.isfinite(num) and math.isfinite(den)) or num <= 0:
+        return None
+    return math.inf if den == 0 else math.log10(num / den)
 
 
 def gates(m: dict[str, Any], has_544: bool) -> list[dict[str, Any]]:
@@ -189,14 +216,18 @@ def gates(m: dict[str, Any], has_544: bool) -> list[dict[str, Any]]:
     z = m["zero_equation_max"]
     out.append({"gate": "b", "equation": ZERO_EQUATION, "value": z, "bound": m["zero_floor"],
                 "pass": z is not None and z <= m["zero_floor"]})  # fmt: skip
-    for (k, ref), low in DROP_MIN.items():
-        v = m["drops"].get(k, {}).get(ref)
+    for (k, ref), low in MEDIAN_DROP_MIN.items():
+        v = m["median_drops"].get(f"{k}/{ref}")
         out.append({"gate": "c", "equation": k, "reference": ref, "value": v, "min": low,
                     "pass": v is not None and v >= low})  # fmt: skip
     out.append({"gate": "d", "measure": "m3f", "value": m["m3f"], "max": M3F_MAX,
                 "pass": m["m3f"] is not None and m["m3f"] <= M3F_MAX})  # fmt: skip
-    out.append({"gate": "d", "measure": "m3s", "value": m["m3s"], "max": M3S_MAX,
-                "pass": m["m3s"] is not None and m["m3s"] <= M3S_MAX})  # fmt: skip
+    t = m["tail_fraction"]
+    out.append({"gate": "d", "measure": "tail_fraction", "value": t, "max": TAIL_FRACTION_MAX,
+                "pass": t <= TAIL_FRACTION_MAX})  # fmt: skip
+    g = m["peak_ratio"]
+    out.append({"gate": "d", "measure": "peak_ratio", "value": g, "max": PEAK_RATIO_MAX,
+                "pass": g is not None and g <= PEAK_RATIO_MAX})  # fmt: skip
     return out
 
 
@@ -263,6 +294,10 @@ def verdict(
         across["deltas"] = {
             "m3f": _delta(m["m3f"], pm.get("m3f")),
             "m3s": _delta(m["m3s"], pm.get("m3s")),
+            "tail_fraction": _delta(m["tail_fraction"], pm.get("tail_fraction")),
+            "peak_ratio": _delta(m["peak_ratio"], pm.get("peak_ratio")),
+            "median_drops": {k: _delta(v, (pm.get("median_drops") or {}).get(k))
+                             for k, v in m["median_drops"].items()},
             "drops": {k: {r: _delta(v, (pm.get("drops") or {}).get(k, {}).get(r))
                           for r, v in d.items()} for k, d in m["drops"].items()},
         }  # fmt: skip

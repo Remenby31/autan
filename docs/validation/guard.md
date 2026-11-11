@@ -12,15 +12,15 @@ Every night, the guard runs the TMR flat plate on `main` and checks that it conv
 
 ## Gates
 
-Each gate is checked on run 1. The values come from `main` 179e316c, #597's B4 history (sha256 `b65468a7…`), and change only through a PR that V&V and the orchestrator review.
+Each gate is checked on run 1. Gates (a), (b) and (d)'s m3f come from `main` 179e316c, #597's B4 history (sha256 `b65468a7…`). Gate (c) and the rest of (d) come from #611's null search: candidates and the rule deriving their bounds were declared before any null history was read ([declaration](https://github.com/Remenby31/autan/issues/611#issuecomment-6785712335)); the bounds come from `main`'s 7 training runs, and the candidates were selected on 8 held-out runs ([selection](https://github.com/Remenby31/autan/issues/611#issuecomment-6801480590)), with `vv/guard/null_eval.py`, the evaluator frozen before any null read. They replace the last-step drops and m3s, which round-off-level inputs alone move across their bounds. They hold from the merge of this revision on; earlier nights keep their verdicts. Gates change only through a PR that V&V and the orchestrator review.
 
 | Gate | Condition |
 |---|---|
 | (a) rule | The case-schema rule at 10 orders, recomputed from the history (`autan_vv.guard`), is met at some step ≤ 20 000 once #544 is in the night's commit, with the shared momentum reference. Before #544, it is recorded and not gated: momentum-y does not meet it against its own step-1 value. The night has #544 when its pinned history holds a commit whose subject ends `(#N)`, N being `PR` in `vv/guard/has544.conf`, which #544's PR sets. |
 | (b) final residuals | ≤ the reference run's × 10^0.5: density 4.579e-15, momentum-x 1.2719e-12, momentum-y 5.355e-13, energy 1.8778e-9, `nu-tilde` 3.625e-18; momentum-z (zero in this slab) ≤ its identically-zero floor at every step, not only the last. |
-| (c) drops, orders | Energy ≥ 11.36 below its peak and ≥ 9.82 below its step-1 value (after #544 the binding equation, with 0.3 order of margin); momentum-x ≥ 12.53 below step 1; momentum-y ≥ 12.91 below the shared momentum reference; `nu-tilde` ≥ 13.27 below step 1. |
-| (d) speed | Energy first 10 orders below its peak by step 2 174 (m3f), and staying there from step 13 295 on (m3s). |
-| (e) repeat | The two runs give the same history, and both exit 0. With the same `autan-run` as the last green night (before any, the reference run, `vv/guard/reference.json`), so does the night against that night. With another binary, the first differing step and the changes of m3f, m3s and every drop are reported. |
+| (c) drops, orders | Each drop measured to the median residual of steps 18 001–20 000, not to the last step: energy ≥ 11.61 below its peak and ≥ 10.07 below its step-1 value; momentum-x ≥ 12.83 below step 1; momentum-y ≥ 13.04 below the shared momentum reference; `nu-tilde` ≥ 13.56 below step 1. The last step's drops are reported. |
+| (d) speed | Energy first 10 orders below its peak by step 2 174 (m3f); above that level on at most 5.1 % of steps 10 001–20 000 (the tail fraction); and its peak at most 10^1.84 times its step-1 value (the peak cap). The step from which it stays below the level (m3s) is reported. |
+| (e) repeat | The two runs give the same history, and both exit 0. With the same `autan-run` as the last green night (before any, the reference run, `vv/guard/reference.json`), so does the night against that night. With another binary, the first differing step and the changes of m3f, m3s, the tail fraction, the peak cap and every drop are reported. |
 
 ## Outcomes
 
@@ -37,7 +37,7 @@ Each gate is checked on run 1. The values come from `main` 179e316c, #597's B4 h
 
 ## A lead the guard keeps in view
 
-On the reference run, energy first goes 10 orders below its peak at step 1977. It then goes back above that level in excursions until step 12 086, for about 10 000 steps, before staying below it to step 20 000. This is a lead, possibly a late limit cycle, and is not gated beyond (d). If #544 or a later change alters it, m3s shows it.
+On the reference run, energy first goes 10 orders below its peak at step 1977. It then goes back above that level in excursions until step 12 086, for about 10 000 steps, before staying below it to step 20 000. This is a lead, possibly a late limit cycle, and is not gated beyond (d). If #544 or a later change alters it, m3s and the tail fraction show it.
 
 ## Installation on spark-5512
 
