@@ -90,8 +90,10 @@ def agree(
     b = np.asarray(b, dtype=np.float64)
     if bitwise:
         return np.asarray(a.view(np.uint64) == b.view(np.uint64))
+    # Halved, so that a - b cannot overflow; halving is exact above the subnormal range, and
+    # adjacency decides within it.
     with np.errstate(invalid="ignore"):
-        close = np.abs(a - b) <= rtol * np.maximum(np.abs(a), np.abs(b))
+        close = np.abs(a / 2 - b / 2) <= rtol * np.maximum(np.abs(a / 2), np.abs(b / 2))
         return np.asarray((a == b) | (np.nextafter(a, b) == b) | close)
 
 
@@ -105,10 +107,11 @@ def _series(
     at: NDArray[np.int64] | None = None,
 ) -> Series:
     ok = agree(a, b, bitwise=bitwise, rtol=rtol)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        gap = np.abs(np.asarray(a, dtype=np.float64) - np.asarray(b, dtype=np.float64))
-        scale = np.maximum(np.abs(a), np.abs(b))
-        rel = np.where(scale > 0, gap / np.where(scale > 0, scale, 1.0), 0.0)
+    with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
+        half = np.abs(np.asarray(a, dtype=np.float64) / 2 - np.asarray(b, dtype=np.float64) / 2)
+        scale = np.maximum(np.abs(a / 2), np.abs(b / 2))
+        rel = np.where(scale > 0, half / np.where(scale > 0, scale, 1.0), 0.0)
+        gap = 2 * half
     bad = np.flatnonzero(~ok)
     first = None if bad.size == 0 else int(at[bad[0]] if at is not None else bad[0])
     return Series(
@@ -193,11 +196,11 @@ def _history(
 
 def _array(results: Results, name: str, node: cgns.Node, dtype: type) -> NDArray[Any]:
     data = np.asarray(node.data)
-    if data.dtype != dtype:
+    if data.dtype.kind != np.dtype(dtype).kind or data.dtype.itemsize != np.dtype(dtype).itemsize:
         where = Location(file=str(results.path / "solution.cgns"))
         message = f"{name} is {data.dtype}, results.md writes it as {np.dtype(dtype)}"
         raise CaseError([diagnostic("E0701", message, location=where)])
-    return data.ravel()
+    return data.astype(np.dtype(dtype).newbyteorder("="), copy=False).ravel()
 
 
 def _arrays(results: Results) -> dict[str, NDArray[Any]]:

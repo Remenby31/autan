@@ -119,7 +119,6 @@ def test_a_difference_is_named_wherever_it_is(
 ) -> None:
     text = INVISCID + "case.time = autan.Steady(max_iterations=5, linear_solver='gauss-seidel')\n"
     base = _run(tmp_path, "base", text)
-    # A perturbed freestream: the record (the case) and exactly the arrays that differ, in each mode.
     perturbed = _run(tmp_path, "mach", text.replace("mach=0.2", "mach=0.2 * 1.001"))
     for flags, rtol in ((("--bitwise",), None), ((), 1e-6)):
         status, report = _report(capsys, str(base), str(perturbed), *flags)
@@ -147,7 +146,6 @@ def test_a_difference_is_named_wherever_it_is(
     scaled = _changed_copy(base, tmp_path / "scale", lambda v: v * 1.001)
     status, report = _report(capsys, str(base), str(scaled))
     assert (status, report["differences"]) == (1, ["FlowSolution/Pressure"])
-    # The history alone: one residual of iteration 3 scaled by 1.001.
     changed = tmp_path / "history" / base.name
     shutil.copytree(base, changed)
     lines = [json.loads(line) for line in (changed / "history.jsonl").read_text().splitlines()]
