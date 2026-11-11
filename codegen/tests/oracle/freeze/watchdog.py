@@ -114,9 +114,11 @@ def run(bound_s: int, marker: str, command: list[str], grace_s: float = GRACE_S)
         elapsed = time.monotonic() - started
         _end_group(child, 0)  # whatever the command left in its group
         status = _status(code)
-        _replace(path, {"status": "exited", "exit": status, "bound_s": bound_s,
-                        "started_utc_s": started_utc, "elapsed_s": elapsed})  # fmt: skip
-        return status
+        over = elapsed > bound_s  # an exit noticed after the bound is a timeout all the same
+        _replace(path, {"status": "timeout" if over else "exited", "exit": status,
+                        "bound_s": bound_s, "started_utc_s": started_utc,
+                        "elapsed_s": elapsed})  # fmt: skip
+        return 124 if over else status
     finally:
         signal.signal(signal.SIGTERM, previous)
 

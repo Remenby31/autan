@@ -38,6 +38,13 @@ def watchdog_issue(marker: Path) -> str | None:
         return f"marker says {doc.get('status') if isinstance(doc, dict) else doc!r}"
     if doc.get("exit") != 0:
         return f"the command exited {doc.get('exit')!r}"
+    elapsed, bound = doc.get("elapsed_s"), doc.get("bound_s")
+    if not (
+        isinstance(elapsed, (int, float))
+        and isinstance(bound, (int, float))
+        and 0 <= elapsed <= bound
+    ):
+        return f"the marker's elapsed time {elapsed!r} is not within its bound {bound!r}"
     return None
 
 

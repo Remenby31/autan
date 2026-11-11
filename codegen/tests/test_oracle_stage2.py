@@ -75,11 +75,11 @@ def test_a_bound_attempt_within_its_bound_meets_the_acceptance_criteria(
     ("change", "why"),
     [
         ({"elapsed_s": 601.0}, "over its bound"),
-        ({"ended_utc_s": 1000.0 + 601}, "inconsistent or over its bound"),
+        ({"elapsed_s": -1.0}, "not within its bound"),
         ({"ended_utc_s": None}, "no valid end time"),
         ({"elapsed_s": None}, "no valid end time"),
         ({"started_utc_s": None}, "no valid start time"),
-        ({"started_utc_s": 1200.0}, "inconsistent"),
+        ({"ended_utc_s": float("nan")}, "an invalid ended_utc_s"),
         ({"watchdog_issue": "marker says timeout"}, "watchdog"),
     ],
 )
@@ -228,7 +228,7 @@ def test_an_attempt_for_an_unknown_instance_fails(record: dict, library: str) ->
 
 def test_an_interrupted_attempt_over_its_bound_is_decisive(record: dict, library: str) -> None:
     mid = {k: copy.deepcopy(v) for k, v in record.items() if k != "entries_sha256"}
-    mid.update(stage="geometry", runs=[], started_utc_s=0.0, ended_utc_s=601.0)
+    mid.update(stage="geometry", runs=[], started_utc_s=0.0, ended_utc_s=601.0, elapsed_s=601.0)
     assert collect(library, [mid, record])["failures"]
 
 
@@ -247,12 +247,13 @@ def test_the_driver_counts_an_orphan_latch_and_refuses_while_jobs_fly(
     for d in (rec_dir, aux_dir, queue / "pending", queue / "running"):
         d.mkdir(parents=True)
     _write(rec_dir, f"{SPEC['id']}.attempt-1.json", record)
-    _write(rec_dir, f"{SPEC['id']}.attempt-1.json.watchdog", {"status": "exited", "exit": 0})
+    ok = {"status": "exited", "exit": 0, "elapsed_s": 10.0, "bound_s": 600}
+    _write(rec_dir, f"{SPEC['id']}.attempt-1.json.watchdog", ok)
     _write(aux_dir, "attempt-1.json", aux(library, sha))
     args = [str(m), sha, library, str(rec_dir), str(aux_dir), "--queue", str(queue),
             "--job-prefix", "s2-"]  # fmt: skip
     assert collect_stage2.main(args) == 1  # the auxiliary attempt has no marker
-    _write(aux_dir, "attempt-1.json.watchdog", {"status": "exited", "exit": 0})
+    _write(aux_dir, "attempt-1.json.watchdog", ok)
     assert collect_stage2.main(args) == 0
     (rec_dir / f"{SPEC['id']}.attempt-2.json.watchdog").write_text('{"status": "running"}')
     assert collect_stage2.main(args) == 1  # a marker without its record
@@ -311,3 +312,30 @@ def test_the_exclusion_check_needs_a_clean_session_and_every_instance_among_its_
     u = {**_universe(TEST6), "exitstatus": 0}
     inst = {"id": "x", "files": {"mesh": {"sha256": "unknown"}}}
     assert any("no candidate" in i for i in vx_ex.compare(u, CANDIDATES, {"instances": [inst]}))
+
+
+def test_an_exit_after_the_bound_is_a_timeout(tmp_path: Path) -> None:
+    marker = tmp_path / "a.json.watchdog"
+    real = watchdog.subprocess.Popen
+
+    class Late(real):  # type: ignore[misc,valid-type]
+        def wait(self, timeout: float | None = None) -> int:  # noqa: ARG002  ignored on purpose
+            code = super().wait()  # ignores the deadline: the exit is noticed late
+            time.sleep(1.5)
+            return code
+
+    watchdog.subprocess.Popen = Late  # type: ignore[misc]
+    try:
+        code = watchdog.run(1, str(marker), [sys.executable, "-c", "pass"])
+    finally:
+        watchdog.subprocess.Popen = real  # type: ignore[misc]
+    assert code == 124
+    assert json.loads(marker.read_text())["status"] == "timeout"
+
+
+def test_the_driver_refuses_a_marker_over_its_bound(tmp_path: Path) -> None:
+    marker = tmp_path / "m.watchdog"
+    marker.write_text(json.dumps({"status": "exited", "exit": 0, "elapsed_s": 11.0, "bound_s": 10}))
+    assert "not within its bound" in str(collect_stage2.watchdog_issue(marker))
+    marker.write_text(json.dumps({"status": "exited", "exit": 0, "elapsed_s": 9.0, "bound_s": 10}))
+    assert collect_stage2.watchdog_issue(marker) is None

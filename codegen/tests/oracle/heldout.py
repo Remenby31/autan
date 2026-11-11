@@ -536,14 +536,18 @@ def _timed_out(rec: Any, bound: int) -> str | None:
     t0, t1, elapsed = rec.get("started_utc_s"), rec.get("ended_utc_s"), rec.get("elapsed_s")
     if not _finite(t0):
         return "no valid start time"
-    if _finite(elapsed) and elapsed > bound:
-        return f"ran {elapsed:.0f} s, over its bound of {bound} s"
-    if _finite(t1) and (t1 < t0 or t1 - t0 > bound):
+    for key, v in (("ended_utc_s", t1), ("elapsed_s", elapsed)):
+        if v is not None and not _finite(v):
+            return f"an invalid {key}: {v!r}"
+    if elapsed is not None:  # the monotonic duration decides when recorded
+        if elapsed < 0 or elapsed > bound:
+            return f"ran {elapsed:.0f} s, not within its bound of {bound} s"
+    elif t1 is not None and (t1 < t0 or t1 - t0 > bound):
         return f"start and end times {t0}, {t1} are inconsistent or over its bound of {bound} s"
     if rec.get("stage") != "done":
         return None  # an interrupted attempt never passes; it may only be superseded
-    if not (_finite(t1) and _finite(elapsed)) or elapsed < 0:
-        return "no valid end time or elapsed time"
+    if t1 is None or elapsed is None:
+        return "no end time or elapsed time"
     return None
 
 
