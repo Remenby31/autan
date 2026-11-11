@@ -77,8 +77,8 @@ export interface Plan {
     medium: { kind: string } | null;
     provenance: string | null;
   }[];
-  /** The memory estimate (case-schema.md, memory/2): `bytes_per_gpu` is one rank's host plus
-   * device memory, `gpus` the number of ranks. */
+  /** The memory estimate (docs/sdk/plan.md, autan.memory/3): `bytes_per_gpu` is one rank's
+   * host plus device memory, `gpus` the number of ranks. */
   memory: {
     device_kind: "cpu" | "cuda" | "hip";
     gpus: number;
