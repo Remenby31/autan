@@ -302,8 +302,7 @@ def _rank(
     # Core (the #325 inventory): the global mesh and its FP64 geometry on every rank, the
     # colourings, and what setup leaves resident (the reader's form and the MeshInfo pass,
     # about the mesh and its geometry again).
-    mesh_bytes = 24 * nodes + 16 * faces + 4 * counts.face_nodes + 12 * interior + 4 * boundary
-    mesh_bytes += 20 * cells
+    mesh_bytes = _mesh_bytes(nodes, faces, counts.face_nodes, interior, boundary, cells)
     geometry = 56 * faces + 32 * cells
     add("runtime", _RUNTIME)
     # Rank 0 reads its executable in 1 MiB chunks to hash it (results.md, solver.binary_sha256).
@@ -471,6 +470,14 @@ def _rank(
         )
         add(name, persistent)
         add(f"{name} setup", solver_setup, transient=True)
+        if name == "multigrid":
+            # The hierarchy's hash for the log, at physics setup (setup-memory.md): the canonical
+            # order and its inverse, level 0's edges, owner, neighbour and maps, its lines.
+            fine_n, fine_f = (
+                mesh.quality.multigrid.cells_by_level[0],
+                mesh.quality.multigrid.edges_by_level[0],
+            )
+            add("hierarchy hash", 16 * fine_n + 49 * fine_f, transient=True)
         # The steady operator's boundary gradient term (Euler::gradient_tangent): the primitives',
         # the gradients' (linear and the band's) and the limiter bounds' tangents, zero tangents of
         # the other inputs, the band flag's, and the step's copy of the direction and its image
@@ -581,21 +588,35 @@ def _linear_solver(
     return "multigrid", scale * (finest + levels + dense), _agglomeration(mesh)
 
 
+def _mesh_bytes(
+    nodes: int, faces: int, face_nodes: int, interior: int, boundary: int, cells: int
+) -> int:
+    """A Mesh's arrays (setup-memory.md, Assembly)."""
+    return 24 * nodes + 16 * faces + 4 * face_nodes + 12 * interior + 4 * boundary + 20 * cells
+
+
 def _agglomeration(mesh: MeshInfo) -> int:
     """What building the hierarchy holds at its peak beyond what it keeps (docs/design/
-    setup-memory.md, « CFD - Multigrille »): the line grouping with its votes (which bounds the
-    isotropic loop after it), the coarse-edge build, or the colouring of the finest level's
-    lines, whichever is larger; every face of a cell pair counts,
-    and the lines are at most the cells."""
+    setup-memory.md, « CFD - Multigrille »). The hierarchy is built on a canonical copy of the
+    mesh: its renumbering at its peak, or the copy (the mesh, its maps and order, its geometry)
+    beside the larger of the line grouping with its votes (which bounds the isotropic loop
+    after it) and the coarse-edge build; or, once the copy is freed, the colouring of the
+    finest level's lines. Every face of a cell pair counts, and the lines are at most the
+    cells."""
     hierarchy = mesh.quality.multigrid
+    counts = mesh.counts
     n, f = hierarchy.cells_by_level[0], hierarchy.edges_by_level[0]
     n1 = hierarchy.cells_by_level[1] if len(hierarchy.cells_by_level) > 1 else 0
     f1 = hierarchy.edges_by_level[1] if len(hierarchy.edges_by_level) > 1 else 0
-    b = mesh.counts.faces - f
+    nodes, faces, p = counts.nodes, counts.faces, counts.face_nodes
+    b = faces - f
+    renumbering = 40 * n + 56 * nodes + 50 * faces + 8 * f + 8 * p + 4 * n
+    canonical = _mesh_bytes(nodes, faces, p, f, b, n) + 4 * n + 5 * faces + 4 * nodes
+    canonical += 56 * faces + 32 * n
     grouping = 160 * f + 284 * n + 72 * b
     coarse_edges = 69 * f + 48 * f1 + 296 * n + 156 * n1 + 144 * b
     colouring = 32 * n + 32 * f
-    return max(grouping, coarse_edges, colouring)
+    return max(renumbering, canonical + max(grouping, coarse_edges), colouring)
 
 
 def _reading(mesh: MeshInfo, interior: int, boundary: int) -> int:

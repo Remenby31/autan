@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <initializer_list>
 #include <limits>
 #include <map>
 #include <memory>
@@ -11,12 +12,14 @@
 #include <random>
 #include <set>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/generators/catch_generators_range.hpp>
+#include <picosha2.h>
 
 #include "autan/core/cellwise.hpp"
 #include "autan/core/geometry.hpp"
@@ -657,6 +660,260 @@ TEST_CASE("layers coarsen in the plane whichever way their lines run", "[multigr
   }
   CHECK(10 * grouped >= 9 * in_long);
   CHECK(alone <= 2 * long_lines);
+}
+
+namespace {
+
+// Two disjoint copies of `m` on the same nodes' coordinates: every cell has a twin with the same
+// centroid, so the canonical order breaks every centroid tie by global id.
+Mesh twins(const Mesh& m) {
+  autan::MeshInput in;
+  const auto np = static_cast<index_t>(m.x().size());
+  const index_t nc = m.n_cells();
+  for (int copy = 0; copy < 2; ++copy) {
+    in.x.insert(in.x.end(), m.x().begin(), m.x().end());
+    in.y.insert(in.y.end(), m.y().begin(), m.y().end());
+    in.z.insert(in.z.end(), m.z().begin(), m.z().end());
+    in.cell_zone.insert(in.cell_zone.end(), m.cell_zone().begin(), m.cell_zone().end());
+  }
+  in.face_node_offsets.push_back(0);
+  for (int copy = 0; copy < 2; ++copy) {
+    for (index_t f = 0; f < m.n_faces(); ++f) {
+      const auto uf = static_cast<std::size_t>(f);
+      for (auto k = m.face_node_offsets()[uf]; k < m.face_node_offsets()[uf + 1]; ++k) {
+        in.face_nodes.push_back(m.face_nodes()[static_cast<std::size_t>(k)] + copy * np);
+      }
+      in.face_node_offsets.push_back(static_cast<autan::offset_t>(in.face_nodes.size()));
+      in.face_cell0.push_back(m.owner()[uf] + copy * nc);
+      in.face_cell1.push_back(f < m.n_interior_faces() ? m.neighbour()[uf] + copy * nc
+                                                       : autan::no_cell);
+      in.face_zone.push_back(m.face_zone()[uf]);
+    }
+  }
+  in.face_zones.assign(m.face_zones().begin(), m.face_zones().end());
+  in.cell_zones.assign(m.cell_zones().begin(), m.cell_zones().end());
+  in.source.format = "memory";
+  return autan::assemble(std::move(in));
+}
+
+struct NumberingCase {
+  std::string name;
+  Mesh mesh;
+  int max_levels;
+};
+
+// The reference meshes, wall layers in two zones, twins whose centroids tie, and a one-level
+// hierarchy (empty coarse maps).
+std::vector<NumberingCase> numbering_cases() {
+  std::vector<NumberingCase> cases;
+  cases.reserve(meshes.size() + 3);
+  for (const char* file : meshes)
+    cases.push_back({file, autan::io::read_mesh(mesh_dir / file), 30});
+  cases.push_back({"wall layers", layered_box(8, 1e-4, Fill::prism, true), 30});
+  cases.push_back({"twins", twins(autan::io::read_mesh(mesh_dir / meshes[1])), 30});
+  cases.push_back({"one level", autan::io::read_mesh(mesh_dir / meshes[3]), 1});
+  return cases;
+}
+
+// The RCM order and two random permutations of the cells.
+std::vector<std::vector<index_t>> numberings(const Mesh& mesh) {
+  std::vector<std::vector<index_t>> orders{autan::rcm_order(mesh)};
+  for (const unsigned seed : {1U, 2U}) {
+    std::vector<index_t> p(static_cast<std::size_t>(mesh.n_cells()));
+    std::iota(p.begin(), p.end(), 0);
+    std::shuffle(p.begin(), p.end(), std::mt19937(seed));
+    orders.push_back(std::move(p));
+  }
+  return orders;
+}
+
+}  // namespace
+
+TEST_CASE("the hierarchy does not depend on the cell numbering", "[multigrid]") {
+  // #365: a permutation of the cells, the geometry carried by renumber_geometry as the run
+  // carries it, gives the same hierarchy relabelled: level 0 on the permuted mesh's own faces,
+  // its maps through the permutation and the renumbering's face map, the coarse levels identical.
+  for (const NumberingCase& c : numbering_cases()) {
+    INFO(c.name);
+    const auto g = autan::compute_geometry(c.mesh);
+    if (c.name == "twins") {
+      const auto half = static_cast<std::size_t>(c.mesh.n_cells()) / 2;
+      REQUIRE(g.cell_centroid_x[0] == g.cell_centroid_x[half]);
+      REQUIRE(g.cell_centroid_y[0] == g.cell_centroid_y[half]);
+      REQUIRE(g.cell_centroid_z[0] == g.cell_centroid_z[half]);
+    }
+    autan::solvers::AgglomerationOptions opt;
+    opt.coarsest_nodes = 4;
+    opt.max_levels = c.max_levels;
+    const auto ref = autan::solvers::agglomerate(c.mesh, g, opt);
+    if (c.max_levels == 1) {
+      REQUIRE(ref.size() == 1);
+    } else {
+      REQUIRE(ref.size() >= 2);
+    }
+    const auto n = static_cast<std::size_t>(c.mesh.n_cells());
+    for (const auto& new_to_old : numberings(c.mesh)) {
+      autan::AssemblyMap map;
+      const auto mesh = autan::renumber_cells(c.mesh, new_to_old, &map);
+      const auto gp = autan::renumber_geometry(g, new_to_old, map);
+      const auto levels = autan::solvers::agglomerate(mesh, gp, opt);
+      check_hierarchy(mesh, levels);
+      REQUIRE(levels.size() == ref.size());
+      const Level& f = levels[0];
+      const Level& r = ref[0];
+      const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+      CHECK(f.owner ==
+            std::vector<index_t>(mesh.owner().begin(),
+                                 mesh.owner().begin() + static_cast<std::ptrdiff_t>(ni)));
+      CHECK(f.neighbour == std::vector<index_t>(mesh.neighbour().begin(), mesh.neighbour().end()));
+      CHECK(f.line_offsets == r.line_offsets);
+      REQUIRE(f.line_nodes.size() == r.line_nodes.size());
+      for (std::size_t k = 0; k < f.line_nodes.size(); ++k) {
+        CHECK(new_to_old[static_cast<std::size_t>(f.line_nodes[k])] == r.line_nodes[k]);
+      }
+      if (ref.size() == 1) {
+        CHECK(f.coarse_node.empty());
+        CHECK(f.coarse_edge.empty());
+        CHECK(f.coarse_flipped.empty());
+        continue;
+      }
+      for (std::size_t i = 0; i < n; ++i) {
+        CHECK(f.coarse_node[i] == r.coarse_node[static_cast<std::size_t>(new_to_old[i])]);
+      }
+      std::size_t reversed_kept = 0, inside = 0;
+      for (std::size_t k = 0; k < ni; ++k) {
+        const auto e = static_cast<std::size_t>(map.face_source[k]);
+        CHECK(f.coarse_edge[k] == r.coarse_edge[e]);
+        CHECK(f.coarse_flipped[k] ==
+              (r.coarse_edge[e] < 0 ? 0 : (r.coarse_flipped[e] ^ map.face_reversed[k])));
+        if (r.coarse_edge[e] < 0) ++inside;
+        if (r.coarse_edge[e] >= 0 && map.face_reversed[k] != 0) ++reversed_kept;
+      }
+      CHECK(inside > 0);
+      CHECK(reversed_kept > 0);
+      for (std::size_t l = 1; l < levels.size(); ++l) {
+        INFO("level " << l);
+        CHECK(levels[l].n_nodes == ref[l].n_nodes);
+        CHECK(levels[l].owner == ref[l].owner);
+        CHECK(levels[l].neighbour == ref[l].neighbour);
+        CHECK(levels[l].line_offsets == ref[l].line_offsets);
+        CHECK(levels[l].line_nodes == ref[l].line_nodes);
+        CHECK(levels[l].coarse_node == ref[l].coarse_node);
+        CHECK(levels[l].coarse_edge == ref[l].coarse_edge);
+        CHECK(levels[l].coarse_flipped == ref[l].coarse_flipped);
+      }
+    }
+  }
+}
+
+TEST_CASE("the hierarchy digest is the same in every cell numbering and reads every map",
+          "[multigrid]") {
+  for (const NumberingCase& c : numbering_cases()) {
+    INFO(c.name);
+    const auto g = autan::compute_geometry(c.mesh);
+    autan::solvers::AgglomerationOptions opt;
+    opt.coarsest_nodes = 4;
+    opt.max_levels = c.max_levels;
+    const auto ref = autan::solvers::agglomerate(c.mesh, g, opt);
+    const std::string digest = autan::solvers::hierarchy_sha256(ref, c.mesh, g);
+    CHECK(digest.size() == 64);
+    for (const auto& new_to_old : numberings(c.mesh)) {
+      autan::AssemblyMap map;
+      const auto mesh = autan::renumber_cells(c.mesh, new_to_old, &map);
+      const auto gp = autan::renumber_geometry(g, new_to_old, map);
+      const auto levels = autan::solvers::agglomerate(mesh, gp, opt);
+      CHECK(autan::solvers::hierarchy_sha256(levels, mesh, gp) == digest);
+    }
+    if (ref.size() < 2) continue;
+    // Moving one fine node to another agglomerate, or flipping one retained edge, changes it.
+    auto moved = ref;
+    auto& node = moved[0].coarse_node;
+    const auto other = std::ranges::find_if(node, [&](index_t x) { return x != node.front(); });
+    REQUIRE(other != node.end());
+    node.front() = *other;
+    CHECK(autan::solvers::hierarchy_sha256(moved, c.mesh, g) != digest);
+    auto flipped = ref;
+    const auto kept =
+        std::ranges::find_if(flipped[0].coarse_edge, [](index_t e) { return e >= 0; });
+    REQUIRE(kept != flipped[0].coarse_edge.end());
+    auto& flip =
+        flipped[0].coarse_flipped[static_cast<std::size_t>(kept - flipped[0].coarse_edge.begin())];
+    flip = static_cast<std::uint8_t>(flip ^ 1U);
+    CHECK(autan::solvers::hierarchy_sha256(flipped, c.mesh, g) != digest);
+  }
+}
+
+TEST_CASE("the hierarchy digest is the SHA-256 of format 1's bytes", "[multigrid]") {
+  // agglomeration.hpp, format 1, written here from its text: four cells stacked along z (their
+  // canonical order is their index order), three hand-made levels with a retained flipped edge
+  // and an internal edge at level 0, a flipped edge at level 1, and a coarsest level's empty maps.
+  const auto mesh = four_cell_line();
+  const auto g = autan::compute_geometry(mesh);
+  std::vector<Level> levels(3);
+  levels[0] = {.n_nodes = 4,
+               .owner = {0, 1, 2},
+               .neighbour = {1, 2, 3},
+               .line_offsets = {0, 4},
+               .line_nodes = {0, 1, 2, 3},
+               .coarse_node = {1, 0, 0, 2},
+               .coarse_edge = {0, -1, 1},
+               .coarse_flipped = {1, 0, 0}};
+  levels[1] = {.n_nodes = 3,
+               .owner = {0, 0},
+               .neighbour = {1, 2},
+               .line_offsets = {0, 1, 2, 3},
+               .line_nodes = {0, 1, 2},
+               .coarse_node = {1, 0, 1},
+               .coarse_edge = {0, -1},
+               .coarse_flipped = {1, 0}};
+  levels[2] = {.n_nodes = 2,
+               .owner = {0},
+               .neighbour = {1},
+               .line_offsets = {0, 1, 2},
+               .line_nodes = {0, 1},
+               .coarse_node = {},
+               .coarse_edge = {},
+               .coarse_flipped = {}};
+  std::vector<unsigned char> bytes;
+  auto u64 = [&](std::uint64_t v) {
+    for (unsigned k = 0; k < 8; ++k) bytes.push_back(static_cast<unsigned char>(v >> (8U * k)));
+  };
+  const auto i64s = [&](std::initializer_list<std::int64_t> values) {
+    u64(values.size());
+    for (const std::int64_t v : values) u64(static_cast<std::uint64_t>(v));
+  };
+  const auto u8s = [&](std::initializer_list<unsigned char> values) {
+    u64(values.size());
+    bytes.insert(bytes.end(), values.begin(), values.end());
+  };
+  u64(1);
+  u64(3);
+  u64(4);
+  i64s({0, 1, 2});
+  i64s({1, 2, 3});
+  i64s({0, 4});
+  i64s({0, 1, 2, 3});
+  i64s({1, 0, 0, 2});
+  i64s({0, -1, 1});
+  u8s({1, 0, 0});
+  u64(3);
+  i64s({0, 0});
+  i64s({1, 2});
+  i64s({0, 1, 2, 3});
+  i64s({0, 1, 2});
+  i64s({1, 0, 1});
+  i64s({0, -1});
+  u8s({1, 0});
+  u64(2);
+  i64s({0});
+  i64s({1});
+  i64s({0, 1, 2});
+  i64s({0, 1});
+  i64s({});
+  i64s({});
+  u8s({});
+  CHECK(autan::solvers::hierarchy_sha256(levels, mesh, g) ==
+        picosha2::hash256_hex_string(bytes.begin(), bytes.end()));
 }
 
 TEST_CASE("one line sweep solves a block-tridiagonal system exactly", "[multigrid]") {

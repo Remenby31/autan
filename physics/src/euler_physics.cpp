@@ -206,11 +206,14 @@ class EulerPhysics final : public runtime::Physics {
           nodes.push_back(l.n_nodes);
           edges.push_back(l.owner.size());
         }
-        ctx.log.write("info", "linear", "agglomeration multigrid", {},
-                      nlohmann::json{{"nodes", nodes},
-                                     {"edges", edges},
-                                     {"coarsest", multigrid_->direct_coarsest() ? "lu" : "sweeps"}}
-                          .dump());
+        ctx.log.write(
+            "info", "linear", "agglomeration multigrid", {},
+            nlohmann::json{{"nodes", nodes},
+                           {"edges", edges},
+                           {"coarsest", multigrid_->direct_coarsest() ? "lu" : "sweeps"},
+                           {"hierarchy_sha256",
+                            solvers::hierarchy_sha256(multigrid_->levels(), mesh, ctx.geometry)}}
+                .dump());
       } else if (in.time.linear_solver == "lines") {
         // The multigrid's fine lines, kept whole by the partition, swept over the runtime's
         // colouring of the lines by global id: the same sweeps on any number of ranks.

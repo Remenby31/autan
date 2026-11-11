@@ -7,10 +7,15 @@
 #include <numeric>
 #include <set>
 #include <stdexcept>
+#include <string>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 
+#include <picosha2.h>
+
 #include "autan/core/lines.hpp"
+#include "autan/core/renumber.hpp"
 
 namespace autan::solvers {
 
@@ -647,11 +652,10 @@ std::vector<std::vector<std::size_t>> line_colours(const Level& l) {
   return colours;
 }
 
-std::vector<Level> agglomerate(const Mesh& mesh, const Geometry& geometry,
-                               const AgglomerationOptions& options) {
-  if (mesh.n_owned_cells() != mesh.n_cells()) {
-    throw std::invalid_argument("agglomeration of a mesh with ghost cells");
-  }
+namespace {
+
+std::vector<Level> build(const Mesh& mesh, const Geometry& geometry,
+                         const AgglomerationOptions& options) {
   Graph g = fine_graph(mesh, geometry);
   fine_lines(g, mesh, geometry, options.line_ratio);
   std::vector<Level> levels;
@@ -671,6 +675,163 @@ std::vector<Level> agglomerate(const Mesh& mesh, const Geometry& geometry,
     levels.push_back(as_level(g));
   }
   return levels;
+}
+
+// The canonical cell order: by centroid, lexicographic on its exact FP64 values, then by global id
+// for cells whose centroids coincide. A permutation of the cells of one mesh, with its geometry
+// carried rather than recomputed, leaves this order unchanged (#365).
+std::vector<index_t> canonical_order(const Mesh& mesh, const Geometry& geometry) {
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  const auto ids = mesh.cell_global_id();
+  auto id = [&](std::size_t c) { return ids.empty() ? static_cast<std::int64_t>(c) : ids[c]; };
+  std::vector<index_t> order(n);
+  std::iota(order.begin(), order.end(), 0);
+  std::ranges::sort(order, [&](index_t a, index_t b) {
+    const auto ua = static_cast<std::size_t>(a), ub = static_cast<std::size_t>(b);
+    const std::array<double, 3> xa{geometry.cell_centroid_x[ua], geometry.cell_centroid_y[ua],
+                                   geometry.cell_centroid_z[ua]};
+    const std::array<double, 3> xb{geometry.cell_centroid_x[ub], geometry.cell_centroid_y[ub],
+                                   geometry.cell_centroid_z[ub]};
+    return xa != xb ? xa < xb : id(ua) < id(ub);
+  });
+  return order;
+}
+
+void put(picosha2::hash256_one_by_one& h, std::uint64_t v) {
+  std::array<unsigned char, 8> b{};
+  for (std::size_t k = 0; k < 8; ++k) b[k] = static_cast<unsigned char>(v >> (8 * k));
+  h.process(b.begin(), b.end());
+}
+
+// A vector as its length (u64) then its values: indices and offsets as i64, flags as u8.
+template <class T>
+void put(picosha2::hash256_one_by_one& h, const std::vector<T>& values) {
+  put(h, static_cast<std::uint64_t>(values.size()));
+  if constexpr (std::is_same_v<T, std::uint8_t>) {
+    h.process(values.begin(), values.end());
+  } else {
+    for (const T v : values) put(h, static_cast<std::uint64_t>(static_cast<std::int64_t>(v)));
+  }
+}
+
+}  // namespace
+
+std::vector<Level> agglomerate(const Mesh& mesh, const Geometry& geometry,
+                               const AgglomerationOptions& options) {
+  if (mesh.n_owned_cells() != mesh.n_cells()) {
+    throw std::invalid_argument("agglomeration of a mesh with ghost cells");
+  }
+  const std::vector<index_t> new_to_old = canonical_order(mesh, geometry);
+  bool identity = true;
+  for (std::size_t i = 0; i < new_to_old.size() && identity; ++i) {
+    identity = std::cmp_equal(new_to_old[i], i);
+  }
+  if (identity) return build(mesh, geometry, options);
+
+  AssemblyMap map;
+  std::vector<Level> levels;
+  {
+    const Mesh canonical = renumber_cells(mesh, new_to_old, &map);
+    levels = build(canonical, renumber_geometry(geometry, new_to_old, map), options);
+  }
+  // Level 0 back in the caller's cells and faces. A face the renumbering reversed has its owner
+  // on the other side, so a retained edge's flip changes with it.
+  Level& fine = levels.front();
+  const auto n = new_to_old.size();
+  const std::size_t ni = fine.owner.size();
+  fine.owner.assign(mesh.owner().begin(), mesh.owner().begin() + static_cast<std::ptrdiff_t>(ni));
+  fine.neighbour.assign(mesh.neighbour().begin(), mesh.neighbour().end());
+  for (index_t& c : fine.line_nodes) c = new_to_old[static_cast<std::size_t>(c)];
+  if (!fine.coarse_node.empty()) {
+    std::vector<index_t> coarse_node(n), coarse_edge(ni);
+    std::vector<std::uint8_t> coarse_flipped(ni);
+    for (std::size_t i = 0; i < n; ++i) {
+      coarse_node[static_cast<std::size_t>(new_to_old[i])] = fine.coarse_node[i];
+    }
+    for (std::size_t k = 0; k < ni; ++k) {
+      const auto f = static_cast<std::size_t>(map.face_source[k]);
+      coarse_edge[f] = fine.coarse_edge[k];
+      coarse_flipped[f] =
+          fine.coarse_edge[k] < 0
+              ? std::uint8_t{0}
+              : static_cast<std::uint8_t>(fine.coarse_flipped[k] ^ map.face_reversed[k]);
+    }
+    fine.coarse_node = std::move(coarse_node);
+    fine.coarse_edge = std::move(coarse_edge);
+    fine.coarse_flipped = std::move(coarse_flipped);
+  }
+  return levels;
+}
+
+std::string hierarchy_sha256(const std::vector<Level>& levels, const Mesh& mesh,
+                             const Geometry& geometry) {
+  const std::vector<index_t> new_to_old = canonical_order(mesh, geometry);
+  std::vector<index_t> old_to_new(new_to_old.size());
+  for (std::size_t i = 0; i < new_to_old.size(); ++i) {
+    old_to_new[static_cast<std::size_t>(new_to_old[i])] = static_cast<index_t>(i);
+  }
+  picosha2::hash256_one_by_one h;
+  put(h, std::uint64_t{1});  // format version
+  put(h, static_cast<std::uint64_t>(levels.size()));
+  for (std::size_t l = 0; l < levels.size(); ++l) {
+    const Level& level = levels[l];
+    put(h, static_cast<std::uint64_t>(level.n_nodes));
+    if (l > 0) {
+      put(h, level.owner);
+      put(h, level.neighbour);
+      put(h, level.line_offsets);
+      put(h, level.line_nodes);
+      put(h, level.coarse_node);
+      put(h, level.coarse_edge);
+      put(h, level.coarse_flipped);
+      continue;
+    }
+    // Level 0 in canonical cells; its edges, oriented from the lower canonical cell, in
+    // increasing (owner, neighbour, coarse edge, flip): the canonical face order up to faces
+    // that no field tells apart.
+    const bool coarse = !level.coarse_node.empty();
+    std::vector<std::array<std::int64_t, 4>> edges(level.owner.size());
+    for (std::size_t e = 0; e < edges.size(); ++e) {
+      const index_t a = old_to_new[static_cast<std::size_t>(level.owner[e])];
+      const index_t b = old_to_new[static_cast<std::size_t>(level.neighbour[e])];
+      const std::int64_t ce = coarse ? level.coarse_edge[e] : 0;
+      const unsigned flip =
+          coarse && ce >= 0 ? (static_cast<unsigned>(level.coarse_flipped[e]) ^ (a > b ? 1U : 0U))
+                            : 0U;
+      edges[e] = {std::min(a, b), std::max(a, b), ce, flip};
+    }
+    std::ranges::sort(edges);
+    std::vector<index_t> owner(edges.size()), neighbour(edges.size());
+    std::vector<std::int64_t> coarse_edge;
+    std::vector<std::uint8_t> coarse_flipped;
+    for (std::size_t e = 0; e < edges.size(); ++e) {
+      owner[e] = static_cast<index_t>(edges[e][0]);
+      neighbour[e] = static_cast<index_t>(edges[e][1]);
+      if (coarse) {
+        coarse_edge.push_back(edges[e][2]);
+        coarse_flipped.push_back(static_cast<std::uint8_t>(edges[e][3]));
+      }
+    }
+    std::vector<index_t> line_nodes(level.line_nodes.size()), coarse_node;
+    for (std::size_t k = 0; k < line_nodes.size(); ++k) {
+      line_nodes[k] = old_to_new[static_cast<std::size_t>(level.line_nodes[k])];
+    }
+    if (coarse) {
+      coarse_node.resize(level.n_nodes);
+      for (std::size_t i = 0; i < level.n_nodes; ++i) {
+        coarse_node[i] = level.coarse_node[static_cast<std::size_t>(new_to_old[i])];
+      }
+    }
+    put(h, owner);
+    put(h, neighbour);
+    put(h, level.line_offsets);
+    put(h, line_nodes);
+    put(h, coarse_node);
+    put(h, coarse_edge);
+    put(h, coarse_flipped);
+  }
+  h.finish();
+  return picosha2::get_hash_hex_string(h);
 }
 
 }  // namespace autan::solvers

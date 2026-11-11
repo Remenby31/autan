@@ -659,6 +659,35 @@ TEST_CASE("the multigrid builds the levels autan-mesh-info publishes", "[euler]"
   CHECK(built["edges"] == published["edges_by_level"]);
 }
 
+TEST_CASE("the multigrid logs one hierarchy digest in either cell order", "[euler]") {
+  // #365: the hierarchy is built on the cells in canonical order, so a run in RCM order and one in
+  // the order read log the same hierarchy_sha256.
+  std::vector<Json> digests;
+  for (const char* order : {"rcm", "input"}) {
+    CAPTURE(order);
+    REQUIRE(setenv("AUTAN_CELL_ORDER", order, 1) == 0);
+    const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+      inviscid_along_x(d, "fp64");
+      d["time"]["linear_solver"] = "multigrid";
+      d["time"]["max_iterations"] = 1;
+    });
+    const auto out = run(doc);
+    unsetenv("AUTAN_CELL_ORDER");
+    INFO(out.err);
+    REQUIRE(out.status == ExitStatus::finished);
+    std::ifstream log_in(out.run / "log.jsonl");
+    for (std::string line; std::getline(log_in, line);) {
+      const Json event = Json::parse(line);
+      if (event["source"] == "linear" && event["data"].contains("edges")) {
+        digests.push_back(event["data"]["hierarchy_sha256"]);
+      }
+    }
+  }
+  REQUIRE(digests.size() == 2);
+  CHECK(digests[0].get<std::string>().size() == 64);
+  CHECK(digests[0] == digests[1]);
+}
+
 TEST_CASE("the line smoother sweeps the same lines whatever the flow model", "[navier-stokes]") {
   // linear_solver = "lines" keeps each of the mesh's lines whole and colours the lines
   // (euler_groups): an SA case sweeps the colours of the inviscid one, not those of single cells.
@@ -2396,23 +2425,26 @@ TEST_CASE("a continued Spalart-Allmaras run repeats the uninterrupted one bit fo
     REQUIRE(r.status == ExitStatus::finished);
     return r.run;
   };
-  // A few steps past the switch to second order (step 35 in fp64, 192 in fp32+acc64); the
-  // checks below fail if it moves past the budget.
-  const int budget = std::string(precision) == "fp64" ? 40 : 200;
+  // Ten steps past the switch to second order (36 provisional steps in fp64; in fp32+acc64 the
+  // start ends at its 201-step cap, which no budget of 211 can miss).
+  const int budget = std::string(precision) == "fp64" ? 46 : 211;
   const auto whole = finished(doc(budget));
-  const auto steps = static_cast<int>(history(whole).size());
+  const auto rows = history(whole);
+  const auto steps = static_cast<int>(rows.size());
   REQUIRE(field(whole, "SolverSecondOrder", "RestartState").front() == 1.0);
   auto second_order = [&](int n) {
     return field(finished(doc(n)), "SolverSecondOrder", "RestartState").front() == 1.0;
   };
-  // The start counts its first-order steps, the one that switches excluded: the switch comes
-  // after s steps, which the runs of s - 1 and s steps confirm.
-  const int s = static_cast<int>(field(whole, "SolverFirstOrderSteps", "RestartState").front()) + 1;
+  // The switch comes after the s provisional steps of the history (results.md#history), which
+  // the runs of s - 1 and s steps confirm; at least two second-order steps follow before s + 1.
+  int s = 0;
+  while (s < steps && rows[static_cast<std::size_t>(s)]["provisional"] == true) ++s;
   INFO("switch at step " << s);
+  REQUIRE(s < steps);
+  REQUIRE(s >= 2);
+  REQUIRE(steps - s >= 2);
   REQUIRE(!second_order(s - 1));
   REQUIRE(second_order(s));
-  REQUIRE(s >= 2);
-  REQUIRE(steps >= s + 2);
   const auto all = read(whole / "history.jsonl");
   for (const int at : {s - 1, s + 1}) {
     const auto first = finished(doc(at));

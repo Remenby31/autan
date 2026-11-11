@@ -551,14 +551,23 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
         assert part["partition"].bytes_host == kept
         assert part["partition"].bytes_device == halo_device
         assert part["partition setup"].bytes_host == extraction
-    # Building the hierarchy (setup-memory.md): the largest of the line grouping with its votes,
-    # 160 F_i + 284 C + 72 F_b, the coarse-edge build, 69 F_i + 48 F_1 + 296 C + 156 C_1 + 144 F_b,
-    # and the line colouring, 32 C + 32 F_i, on 10 cells, 20 interior and 20 boundary faces: the
-    # line grouping on one level, the coarse-edge build once a coarse level of 2 cells and 1 edge
+
+    # Building the hierarchy (setup-memory.md) on its canonical copy of the mesh: the copy (the
+    # mesh 24N + 16F + 4P + 12F_i + 4F_b + 20C, its maps and order 4C + 5F + 4N, its geometry
+    # 56F + 32C) beside the larger of the line grouping with its votes, 160 F_i + 284 C + 72 F_b,
+    # and the coarse-edge build, 69 F_i + 48 F_1 + 296 C + 156 C_1 + 144 F_b; or the renumbering
+    # at its peak, 44C + 56N + 50F + 8F_i + 8P; or the line colouring, 32 C + 32 F_i. On 10 cells,
+    # 30 nodes, 160 face nodes, 20 interior and 20 boundary faces: the copy and the line grouping
+    # on one level, the copy and the coarse-edge build once a coarse level of 2 cells and 1 edge
     # follows.
-    assert by_name["multigrid setup"].bytes_host == 160 * 20 + 284 * 10 + 72 * 20
+    def canonical(p: int) -> int:
+        mesh = 24 * 30 + 16 * 40 + 4 * p + 12 * 20 + 4 * 20 + 20 * 10
+        return mesh + 4 * 10 + 5 * 40 + 4 * 30 + 56 * 40 + 32 * 10
+
+    grouping = 160 * 20 + 284 * 10 + 72 * 20
+    assert by_name["multigrid setup"].bytes_host == canonical(160) + grouping
     setup = {c.name: c for c in deeper.memory.components}["multigrid setup"].bytes_host
-    assert setup == 69 * 20 + 48 * 1 + 296 * 10 + 156 * 2 + 144 * 20
+    assert setup == canonical(160) + 69 * 20 + 48 * 1 + 296 * 10 + 156 * 2 + 144 * 20
     # A coarse level of 1 cell and no edge leaves the line grouping the largest.
     single: dict[str, Any] = tiny_mesh(20).document()
     single["quality"]["multigrid"] = {"cells_by_level": [10, 1], "edges_by_level": [20, 0]}
@@ -566,7 +575,21 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
         autan.MeshInfo.from_document(single, autan.Location()), device_kind="cpu"
     )
     setup = {c.name: c for c in coarse.memory.components}["multigrid setup"].bytes_host
-    assert setup == 160 * 20 + 284 * 10 + 72 * 20
+    assert setup == canonical(160) + grouping
+    # With 100 000 face nodes the renumbering's peak, 8 bytes a face node, is the largest.
+    wide: dict[str, Any] = tiny_mesh(20).document()
+    wide["counts"]["face_nodes"] = 100_000
+    wide = prepared(wide)
+    many_face_nodes = autan.load(write_case(TINY)).plan(
+        autan.MeshInfo.from_document(wide, autan.Location()), device_kind="cpu"
+    )
+    setup = {c.name: c for c in many_face_nodes.memory.components}["multigrid setup"].bytes_host
+    assert setup == 44 * 10 + 56 * 30 + 50 * 40 + 8 * 20 + 8 * 100_000
+    assert setup > canonical(100_000) + grouping
+    # The hierarchy's hash at physics setup: its order and inverse 8C, level 0's edges 32F_i,
+    # owner and neighbour 8F_i, maps 9F_i, lines and coarse nodes 8C.
+    hashed = by_name["hierarchy hash"]
+    assert (hashed.bytes_host, hashed.transient) == (16 * 10 + 49 * 20, True)
     # A start reads the previous solution on every rank and takes the rank's share: 8 (C + C_r)
     # bytes per field, the 34 written fields for a continuation, the 6 primitives for a warm one;
     # and its descriptors at their bounds, held from cg_open: run metadata of 64 KiB, also

@@ -81,6 +81,10 @@ Peaks: `rcm_order`, 37C + 8`F_i`; `renumber_cells`, 40C + 56N + 50F + 8`F_i` + 8
 
 | Held | Grows with | Class |
 |---|---|---|
+| `canonical_order`'s `new_to_old`, sorted in place by a comparator that reads centroids and global ids (no key array, no sort buffer), held for the whole call | `C` (4 B) | M |
+| The canonical copy the hierarchy is built on, unless the order is already the identity (every call: the multigrid, `mesh_counts`, `partition_hierarchy`): `renumber_cells`' `Mesh` and `AssemblyMap` (face_source 4F, face_reversed 1F, point_source 4N), then `renumber_geometry`'s `Geometry`, all live through the build and freed before level 0 is restored; `renumber_cells`' construction peaks first as in Renumbering | N, F, `F_i`, `F_b`, P, C: the mesh, 4C + 5F + 4N, 56F + 32C | M |
+| Level 0 restored to the caller's numbering after the copy is freed: owner, neighbour, line_nodes in place; new coarse_node, coarse_edge, coarse_flipped beside the old ones, then moved | 4C + 5 `F_i`, beside `map` and `new_to_old` | M |
+| The hierarchy's hash for the log, at physics setup after the multigrid is built: `canonical_order` and its inverse, level 0's edges (4 × i64), owner, neighbour, coarse_edge (i64), coarse_flipped, line_nodes, coarse_node; coarse levels hashed in place; freed before the first step | 16C + 49 `F_i` | M: `hierarchy hash` |
 | `agglomerate`'s fine graph `g` (`agglomeration.cpp:120-173`): owner, neighbour, weight, CSR adjacency, zone, volume, centroid, per-cell boundary zones, normals and areas, weakest/strongest, lines | `F_i` (24 B each), `C` (140 B each with push_back capacity), (cell, boundary zone) pairs ≤ `F_b` (72 B) | M |
 | Level 0's copy (`as_level`, `:605`): owner, neighbour, lines; its edges are the mesh's interior faces, duplicates of a cell pair kept, since `Multigrid::set_operator` indexes the fine operator by face and each duplicate is a face already in `F_i` | `F_i` (8 B), `C` (4 B + 8 B per line; lines ≤ `C`) | M |
 | `coarsen`'s per-level work arrays (`:203-220`, `:408`, `:527`): line_of, position, agg, members, coarse lines, grouped, point order, renumber | `C` on level 0 (≤ 124 B per cell with capacity), then `cells_by_level[k]` | M, L |
@@ -94,11 +98,12 @@ Peaks: `rcm_order`, 37C + 8`F_i`; `renumber_cells`, 40C + 56N + 50F + 8`F_i` + 8
 | The Galerkin coarse operators (`multigrid.cpp:296-298`, first `set_operator`) | 25 doubles per `cells_by_level[k]` and 2 × 25 per `edges_by_level[k]`, k ≥ 1 | L |
 | The coarsest dense LU (`multigrid.cpp:239-253`) | (5 `cells_by_level[L−1]`)², only if 5 n ≤ 1000: ≤ 8 MB | F |
 
-**Peak.** The setup transient is the largest of these four moments:
-- P_lines, the line grouping, before the isotropic loop, with the fine graph, Level 0, `coarsen`'s locals and the votes: ≤ 160 `F_i` + 284 `C` + 72 `F_b` bytes;
-- P1, inside `coarsen` on level 0, during the isotropic loop: ≤ 96 `F_i` + 284 `C` + 72 `F_b` bytes;
-- P2, at the coarse-edge build: ≤ 69 `F_i` + 48 `edges_by_level[1]` + 296 `C` + 156 `cells_by_level[1]` + 144 `F_b`;
-- after `agglomerate` returns, `line_colours` on level 0, ≤ 32 `C` + 32 `F_i`, beside the multigrid's kept arrays.
+**Peak.** The setup transient is the largest of these moments, the copy's K = 24N + 16F + 4P + 12`F_i` + 4`F_b` + 20C (the mesh) + 4C + 5F + 4N + 56F + 32C beside the build's:
+- the renumbering of the copy, at its peak (Renumbering) and `new_to_old`: ≤ 44C + 56N + 50F + 8 `F_i` + 8P bytes;
+- K + P_lines, the line grouping, before the isotropic loop, with the fine graph, Level 0, `coarsen`'s locals and the votes: P_lines ≤ 160 `F_i` + 284 `C` + 72 `F_b`;
+- K + P1, inside `coarsen` on level 0, during the isotropic loop: P1 ≤ 96 `F_i` + 284 `C` + 72 `F_b`, below P_lines;
+- K + P2, at the coarse-edge build: P2 ≤ 69 `F_i` + 48 `edges_by_level[1]` + 296 `C` + 156 `cells_by_level[1]` + 144 `F_b`;
+- after `agglomerate` returns, the copy freed, `line_colours` on level 0, ≤ 32 `C` + 32 `F_i`, beside the multigrid's kept arrays.
 
 This assumes every cell is in some line (lines ≤ `C`) and counts push_back capacity at 2×. Measured with a counting `operator new` around `agglomerate` (main bd3285e0), the heap peak is 0.54–0.80 of max(P1, P2) on 43 meshes: the TMR plates, RAE ×3, NACA, the bumps and every MMS family level up to hybrid n048. It is 0.60 on NACA 0012 1024² (1.05 M cells, 479 MB) and 0.74 on DPW4 (21.6 M cells, 8.97 GB).
 
