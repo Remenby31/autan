@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import copy
 import json
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 import autan_spike as s
 import meshes
@@ -21,9 +22,6 @@ from oracle import heldout as h
 from oracle import kernels as kr
 from oracle import topology as t
 from oracle import vvexport as vx
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 N, P, SEED = 3, 0.15, 3
 KINDS = ["hex", "tet", "hybrid", "poly"]
@@ -241,7 +239,10 @@ def test_a_node_moved_by_one_ulp_in_the_file_is_refused(tmp_path: Path, library:
     cells_file.write_text(json.dumps(doc))
     spec = _spec("tet", mesh_file, cells_file)
     rec = h.run_instance(spec, library, "0" * 64, data_dir=tmp_path)
-    assert rec["invalid"] == ["invalid: the export's points are not the mesh's vertices"]
+    assert rec["invalid"] == [
+        "invalid: vertices: 1 export points the faces use are not vertices of the mesh",
+        "invalid: vertices: 1 vertices of the mesh are not export points the faces use",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -266,3 +267,67 @@ def test_a_malformed_vv_spec_is_invalid(change: dict[str, Any]) -> None:
     }  # fmt: skip
     assert h.spec_issues(spec) == []
     assert h.spec_issues({**spec, **change}) != []
+
+
+# A real vv-meshes file and its export (#43, instrument incident of 2026-11-11): test_cell_export's
+# agglomerated level, N 4, p 0.15, seed 5, written by `autan-vv meshes agglomerated --levels 4
+# --perturbation 0.15 --seed 5 --export-cells` at main 15d3f93f. Stage 2's rule excludes it (a vv
+# test generates it). The file keeps every primal node; the reader keeps only those its faces use.
+VV_DATA = Path(__file__).parent / "data" / "vv-agglomerated-n004-p0.15-s5"
+VV_MESH = VV_DATA / "agglomerated-dirty-n004.msh"
+VV_CELLS = VV_DATA / "agglomerated-dirty-n004.cells.json"
+
+
+def _vv() -> tuple[Any, Any, Any, Any]:
+    pts, cells, ag = vx.load_bytes(VV_CELLS.read_bytes(), vx.sha256(VV_MESH.read_bytes()))
+    return pts, cells, ag, t.read_mesh(s.read(str(VV_MESH))).points
+
+
+def test_the_real_vv_file_keeps_nodes_its_faces_do_not_use() -> None:
+    pts, cells, ag, read = _vv()
+    used = vx.used_points(pts, cells, ag)
+    assert len(read) == len(used) < len(pts)
+    # The equality #668 required refuses this file; the exact used-points rule accepts it.
+    assert not (read.shape == pts.shape and np.array_equal(read, pts))
+    assert vx.vertex_issues(read, pts, cells, ag) == []
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra", "moved", "twice"])
+def test_a_vertex_set_that_is_not_the_used_points_is_refused(mutation: str) -> None:
+    pts, cells, ag, read = _vv()
+    bad = read.copy()
+    if mutation == "missing":
+        bad = bad[1:]
+    elif mutation == "extra":
+        bad = np.vstack([bad, [[0.5, 0.5, 0.5 + 2.0**-40]]])
+    elif mutation == "moved":
+        bad[0, 0] = np.nextafter(bad[0, 0], np.inf)
+    else:
+        bad = np.vstack([bad, bad[:1]])
+    issues = vx.vertex_issues(bad, pts, cells, ag)
+    assert issues
+    expected = {
+        "missing": ["1 export points the faces use are not vertices of the mesh"],
+        "extra": ["1 vertices of the mesh are not export points the faces use"],
+        "moved": [
+            "1 export points the faces use are not vertices of the mesh",
+            "1 vertices of the mesh are not export points the faces use",
+        ],
+        "twice": ["the reader gives 1 vertices twice"],
+    }[mutation]
+    assert issues == expected
+
+
+def test_a_vv_instance_on_the_real_vv_file_runs_every_check_and_passes(
+    tmp_path: Path, library: str
+) -> None:
+    for f in (VV_MESH, VV_CELLS):
+        (tmp_path / f.name).write_bytes(f.read_bytes())
+    spec = _spec("agglomerated", tmp_path / VV_MESH.name, tmp_path / VV_CELLS.name)
+    spec.update({"n": 4, "perturbation": 0.15, "seed": 5})
+    assert h.spec_issues(spec) == []
+    rec = h.run_instance(spec, library, "0" * 64, data_dir=tmp_path)
+    assert rec["invalid"] == []
+    assert rec["check1"] == []
+    assert rec["stage"] == "done"
+    assert h.passed(rec, spec)

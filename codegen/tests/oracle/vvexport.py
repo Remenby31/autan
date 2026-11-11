@@ -130,3 +130,37 @@ def check_primal(points: npt.NDArray[np.float64], cells: list[list[list[int]]]) 
             if not t._same_cycle(p, q[::-1]):
                 msg = f"primal cells {i} and {j} list their common polygon in the same order"
                 raise Invalid(msg)
+
+
+def used_points(
+    points: npt.NDArray[np.float64], cells: list[list[list[int]]], cell_map: list[int]
+) -> set[tuple[float, float, float]]:
+    """The export points the merged mesh's faces use. Within one mesh cell, a polygon two of its
+    primal parts share is internal and cancelled (as `topology.derive` cancels it); the nodes of
+    every polygon left are used. A mesh file may keep the others (a vv agglomerated file keeps every
+    primal node), and the reader drops them."""
+    per_cell: dict[int, Counter[tuple[int, ...]]] = {}
+    for i, polys in enumerate(cells):
+        per_cell.setdefault(cell_map[i], Counter()).update(tuple(sorted(p)) for p in polys)
+    used = {v for keys in per_cell.values() for k, n in keys.items() if n == 1 for v in k}
+    return {(float(points[v][0]), float(points[v][1]), float(points[v][2])) for v in used}
+
+
+def vertex_issues(
+    read_points: npt.NDArray[np.float64],
+    points: npt.NDArray[np.float64],
+    cells: list[list[list[int]]],
+    cell_map: list[int],
+) -> list[str]:
+    """Why the mesh reader's vertices are not exactly the export points its faces use (empty if
+    they are): coordinates compared exactly, no point twice, none missing, none extra."""
+    got = [(float(r[0]), float(r[1]), float(r[2])) for r in read_points]
+    want = used_points(points, cells, cell_map)
+    issues = []
+    if len(set(got)) != len(got):
+        issues.append(f"the reader gives {len(got) - len(set(got))} vertices twice")
+    if missing := len(want - set(got)):
+        issues.append(f"{missing} export points the faces use are not vertices of the mesh")
+    if extra := len(set(got) - want):
+        issues.append(f"{extra} vertices of the mesh are not export points the faces use")
+    return issues

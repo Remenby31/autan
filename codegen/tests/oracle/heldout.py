@@ -240,8 +240,12 @@ def run_instance(
             finally:
                 shutil.rmtree(private, ignore_errors=True)
             read = t.read_mesh(m)
-            if read.points.shape != pts.shape or not np.array_equal(read.points, pts):
-                record["invalid"].append("invalid: the export's points are not the mesh's vertices")
+            # The reader keeps only the nodes the faces use; the file may hold others (a vv
+            # agglomerated file keeps every primal node). Its vertices must be exactly the export
+            # points the merged faces use (vvexport.used_points), compared exactly (#43, incident
+            # of 2026-11-11).
+            if issues := vx.vertex_issues(read.points, pts, cells, ag):
+                record["invalid"] += [f"invalid: vertices: {i}" for i in issues]
                 checkpoint(record)
                 return record
         else:
