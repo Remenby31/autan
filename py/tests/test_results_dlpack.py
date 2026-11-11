@@ -40,10 +40,10 @@ RUN = (
 )
 
 
-def _inputs(tmp_path: Path, name: str, time_spec: str) -> tuple[Path, Path]:
+def _inputs(tmp_path: Path, name: str, time_spec: str, text: str = MONITORED) -> tuple[Path, Path]:
     assert MESH_INFO is not None
     case = tmp_path / f"{name}.py"
-    case.write_text(MONITORED + f"case.time = {time_spec}\n")
+    case.write_text(text + f"case.time = {time_spec}\n")
     meshinfo = tmp_path / f"{name}.meshinfo.json"
     meshinfo.write_text(
         subprocess.run(
@@ -63,13 +63,15 @@ def _run(tmp_path: Path, name: str, time_spec: str) -> autan.Results:
 
 
 # A run stopped while it runs, once it has written a checkpoint, then killed: its directory
-# keeps the checkpoint. It cannot converge first: no precision reaches 15 orders.
+# keeps the checkpoint. It cannot converge first: in fp64 there is no round-off plateau
+# (case-schema.md#time), and no residual drops 300 orders.
 def _killed(tmp_path: Path) -> autan.Results:
     case, meshinfo = _inputs(
         tmp_path,
         "killed",
-        "autan.Steady(max_iterations=1000000, residual_orders=15, "
+        "autan.Steady(max_iterations=1000000, residual_orders=300, "
         "checkpoint=autan.Checkpoint(iterations=20))",
+        MONITORED.replace("autan.Laminar())", 'autan.Laminar(), precision="fp64")'),
     )
     runs = tmp_path / "killed"
     writer = subprocess.Popen(
