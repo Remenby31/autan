@@ -1,5 +1,5 @@
 ---
-source_hash: "f2e45ffb42e4"
+source_hash: "ddc79ad5d873"
 ---
 
 # Vérifier un cas avant de le lancer
@@ -27,7 +27,7 @@ cell zones
   air        0.5 M cells  fluid(air)               mesh
   co2        0.5 M cells  fluid(co2)               code
   plate      0.2 M cells  solid(copper)            code
-memory      10.8 GB per rank (7.6 host, 3.3 cuda) x 1 · 7 equations (autan.memory/2)
+memory      11.0 GB per rank (7.5 host, 3.4 cuda) x 1 · 7 equations (autan.memory/3)
 warning[W0205]: mesh '…/heat-exchanger.msh' not found; the MeshInfo is taken as given
 plan OK
 ```
@@ -37,7 +37,7 @@ Lisez-le zone par zone :
 - `casing` n'a pas de règle dans le cas : c'est une paroi parce que le fichier de maillage le dit (`mesh`).
 - `co2` et `plate` prennent les matériaux que le cas leur donne (`code`).
 - `W0205` est attendu : le fichier de maillage n'est pas dans le dépôt, donc `plan` prend le MeshInfo tel quel.
-- La ligne mémoire est ce dont un rang a besoin à son pic, sur l'hôte et sur son périphérique ; [autan plan](../sdk/plan.md#memory-model-autanmemory2) liste ce qu'elle compte. `autan-run` refuse un calcul qui ne tient pas (`E0711`).
+- La ligne mémoire est ce dont un rang a besoin à son pic, sur l'hôte et sur son périphérique ; [autan plan](../sdk/plan.md#memory-model-autanmemory3) liste ce qu'elle compte. `autan-run` refuse un calcul qui ne tient pas (`E0711`).
 
 ## Lire un diagnostic
 
