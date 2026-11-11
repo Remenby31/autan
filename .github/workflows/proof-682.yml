@@ -2,7 +2,7 @@
 name: proof-682
 on:
   push:
-    branches: [proof/682-hosted]
+    branches: [proof/682-hosted, proof/682-fix]
 permissions:
   contents: read
   packages: read
@@ -57,7 +57,7 @@ jobs:
         name: The six bounds, 30 runs each, alone, with smaps
         run: |
           cd build/tests/io
-          for name in "Fluent interior zones no face is in are not kept" "Reading a CGNS file costs at most 1 MiB and 16 KiB a node*" "Reading a CGNS file costs its descriptors*" "Reading a MIXED section costs the elements it keeps*" "Records a reader does not use cost their text*" "Sizes a text reader is told are checked before they are allocated"; do
+          for name in "Fluent zone records of short names cost little beside their text" "Fluent interior zones no face is in are not kept" "Reading a CGNS file costs at most 1 MiB and 16 KiB a node*" "Reading a CGNS file costs its descriptors*" "Reading a MIXED section costs the elements it keeps*" "Records a reader does not use cost their text*" "Sizes a text reader is told are checked before they are allocated"; do
             f=0
             for i in $(seq 30); do
               AUTAN_PEAK_DEBUG=1 ./autan_io_tests "$name" > "$RUNNER_TEMP/last.log" 2>&1 || { f=$((f+1)); echo "== FAIL $name run $i"; grep -E "peak|before :=|after :=|added :=|expansion|<=|^  [0-9]" "$RUNNER_TEMP/last.log" | head -40; }
