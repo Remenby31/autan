@@ -87,10 +87,12 @@ def _diagnostic_codes(out: str) -> list[str]:
 
 
 # The process groups of the SDK writing a run and of its autan-run, which SolverBackend starts
-# in a session of its own (Linux /proc).
+# in a session of its own.
 def _groups(writer: subprocess.Popen[bytes]) -> list[int]:
-    children = Path(f"/proc/{writer.pid}/task/{writer.pid}/children").read_text().split()
-    return [writer.pid, *(int(child) for child in children)]
+    found = subprocess.run(
+        ["pgrep", "-P", str(writer.pid)], capture_output=True, text=True, check=True
+    )
+    return [writer.pid, *(int(child) for child in found.stdout.split())]
 
 
 def _signal(groups: list[int], number: signal.Signals) -> None:
