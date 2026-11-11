@@ -162,19 +162,43 @@ def test_the_watchdog_does_not_run_a_command_it_cannot_mark(tmp_path: Path) -> N
     assert not flag.exists()
 
 
-@pytest.mark.parametrize(("branch", "count"), [("a", 5)])
+@pytest.mark.parametrize(("branch", "count"), [("a", 5), ("a-prime", 7)])
 def test_a_branch_gives_its_instances_each_a_valid_spec(branch: str, count: int) -> None:
     out = mm.instances_stage2(branch, mm.STAGE2_FILES, mm.STAGE2_BOUNDS_S)
     assert len(out) == count
     assert all(h.spec_issues(i) == [] for i in out)
-    assert {i["n"] for i in out} == {6, 12}
+    assert {i["n"] for i in out} == set(mm.STAGE2_LEVELS[branch])
+    assert len({i["id"] for i in out}) == count
     assert all((i["n"], i["perturbation"], i["seed"]) not in mm.STAGE2_EXCLUDED for i in out)
     assert all(i["bound_s"] == mm.STAGE2_BOUNDS_S[str(i["n"])] for i in out)
 
 
-def test_branch_a_prime_needs_its_n16_files_and_bound() -> None:
+def test_branch_a_prime_needs_its_n16_bound() -> None:
+    bounds = {k: v for k, v in mm.STAGE2_BOUNDS_S.items() if k != "16"}
     with pytest.raises(SystemExit):
-        mm.instances_stage2("a-prime", mm.STAGE2_FILES, mm.STAGE2_BOUNDS_S)
+        mm.instances_stage2("a-prime", mm.STAGE2_FILES, bounds)
+
+
+def test_n16_p0_s11_is_excluded_with_its_reason_and_the_others_come_from_their_own_runs() -> None:
+    # The orchestrator's decision (#43, 6809100033): the oracle ran this mesh before the freeze.
+    assert "N16 p0 s1" in mm.STAGE2_EXCLUDED[(16, 0.0, 11)]
+    out = {i["id"]: i for i in mm.instances_stage2("a-prime", mm.STAGE2_FILES, mm.STAGE2_BOUNDS_S)}
+    assert "s2-agglomerated-N16-p0.0-s11" not in out
+    for (n, p, seed), (family, run) in mm.STAGE2_RUNS_BY_LEVEL.items():
+        i = out[f"s2-agglomerated-N{n}-p{p}-s{seed}"]
+        assert (i["data"], i["provenance"]["vv_meshes_run"]) == (family, run)
+        assert i["files"]["mesh"]["sha256"] == mm.STAGE2_FILES[(n, p, seed)][1]
+        assert i["bound_s"] == 87183  # 3 x 29,061 s, s2t2-n16
+    assert out["s2-agglomerated-N12-p0.15-s11"]["provenance"]["vv_meshes_run"] == 42952307240
+
+
+def test_every_frozen_file_is_a_candidate_of_the_exclusion_check() -> None:
+    cands = json.loads((Path(mm.__file__).parent / "stage2-candidates.json").read_text())
+    known = {(c["n"], c["perturbation"], c["seed"]): c["file_sha256"] for c in cands["candidates"]}
+    for key, (_, file_sha, _) in mm.STAGE2_FILES.items():
+        assert known[key] == file_sha, key
+    for key in mm.STAGE2_EXCLUDED:
+        assert key in known, key
 
 
 def _universe(*records: dict, not_passed: list[str] | None = None) -> dict:
@@ -291,17 +315,6 @@ def test_the_watchdog_reports_a_signal_as_128_plus_its_number(tmp_path: Path) ->
         [sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGTERM)"],
     )
     assert code == 128 + 15
-
-
-def test_branch_a_prime_gives_eight_instances_with_its_n16_files() -> None:
-    files = dict(mm.STAGE2_FILES)
-    for p, seed in ((0.0, 11), (0.15, 11), (0.15, 13)):
-        name = "agglomerated-n016.msh" if p == 0.0 else "agglomerated-dirty-n016.msh"
-        files[(16, p, seed)] = (name, "a" * 64, "b" * 64)
-    out = mm.instances_stage2("a-prime", files, {**mm.STAGE2_BOUNDS_S, "16": 3600})
-    assert len(out) == 8
-    assert {i["n"] for i in out} == {6, 12, 16}
-    assert all(h.spec_issues(i) == [] for i in out)
 
 
 def test_the_exclusion_check_needs_a_clean_session_and_every_instance_among_its_candidates() -> (

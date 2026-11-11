@@ -71,6 +71,30 @@
    "perturbation": 0.0,
    "seed": 11,
    "source": "devbox sizing at 89a0aa5d; excluded (section 3)"
+  },
+  {
+   "file_sha256": "69d58408d4ecad07af08d3bbdf4f9eacb1738a9d202f49e5c4a822dd71579947",
+   "mesh_sha256": "5dfb6d5e7f2f2bc4221c75efba4d1c6b25a7458d6ca8871494c04da140dc4b65",
+   "n": 16,
+   "perturbation": 0.0,
+   "seed": 11,
+   "source": "hosted vv-meshes, d7a8714c (branch hpc/vv-meshes-d7a8714c), run 43115491686"
+  },
+  {
+   "file_sha256": "c5d273a688573aa7b580fb73bfb4b1cabe3529baf2f68ed70fc461e9018bb411",
+   "mesh_sha256": "00fc75c54bc9af92307b42404ad906ede95fa96ab5407b0f7c6b0a6632073457",
+   "n": 16,
+   "perturbation": 0.15,
+   "seed": 11,
+   "source": "hosted vv-meshes, d7a8714c (branch hpc/vv-meshes-d7a8714c), run 43115495266"
+  },
+  {
+   "file_sha256": "44761629a94dfd1d5fa91662a70798057acacba3435c8c235001211ac6841d8a",
+   "mesh_sha256": "7cb294be3c893240b750adff51ac56a4563e5b33137e7b5724435221499e11a4",
+   "n": 16,
+   "perturbation": 0.15,
+   "seed": 13,
+   "source": "hosted vv-meshes, d7a8714c (branch hpc/vv-meshes-d7a8714c), run 43115499012"
   }
  ],
  "expected_collisions": [
