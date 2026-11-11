@@ -32,11 +32,14 @@ concurrency:
 env:
   # gpu-tests' configuration, shared by the Spark job and the hosted CPU shards so that both
   # build the same tests.
+  # The build's launcher flags declare oversubscription (as ci.yml's MPI job does): a test that
+  # starts more ranks than the machine has cores goes through them, not through the environment.
   CONFIGURE: >-
     -G Ninja -DAUTAN_ENABLE_CUDA=ON -DAUTAN_ENABLE_MPI=ON
     -DAUTAN_ENABLE_METIS=ON -DAUTAN_ENABLE_SCOTCH=ON -DCMAKE_CUDA_ARCHITECTURES=121
     -DAUTAN_WARNINGS_AS_ERRORS=ON -DCMAKE_BUILD_TYPE=Release
     -DCMAKE_CXX_FLAGS_RELEASE=-O2 -DCMAKE_CUDA_FLAGS_RELEASE=-O2
+    -DMPIEXEC_PREFLAGS=--oversubscribe
 
 jobs:
   # The CPU tests the Spark ran before the GPU tests, on hosted arm64 runners: the same two
