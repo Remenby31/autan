@@ -293,11 +293,14 @@ class RunErrors:
 
 
 def _h(mesh: FaceMesh, axes: tuple[int, ...]) -> tuple[float, float]:
-    """Total volume and mesh size along the oracle's axes. Along every other direction each cell must
-    span the whole mesh thickness, one layer (V0723); h = (V / (their extent) / N)^(1/len(axes))."""
+    """Total volume and mesh size along the oracle's axes. Along every other direction the mesh must
+    be m >= 1 layers of equal thickness, each cell spanning exactly one (V0723); h = (V / (their
+    extent) / (N / (their layer count)))^(1/len(axes)), so h counts the cells across the oracle's axes
+    only."""
     g = mesh.geometry
     volume = float(g.cell_volume.sum())
     span = 1.0
+    layers = 1
     cell_of_node = np.repeat(mesh.owner, np.diff(mesh.face_offsets))
     nb = np.repeat(mesh.neighbour, np.diff(mesh.face_offsets)[: mesh.n_interior])
     for axis in sorted(set(range(3)) - set(axes)):
@@ -310,16 +313,26 @@ def _h(mesh: FaceMesh, axes: tuple[int, ...]) -> tuple[float, float]:
         for cells, vals in ((cell_of_node, values), (nb, values[: nb.size])):
             np.minimum.at(cell_min, cells, vals)
             np.maximum.at(cell_max, cells, vals)
-        one_layer = (
-            extent > 0
-            and np.all(cell_min - lo <= 1e-9 * extent)
-            and np.all(hi - cell_max <= 1e-9 * extent)
-        )
-        if not one_layer:
-            msg = f"the oracle varies along {[('xyz')[a] for a in axes]}: the mesh must be one cell thick along {'xyz'[axis]}"
+        tol = 1e-9 * extent
+        thickness = cell_max - cell_min
+        typical = float(np.median(thickness))  # one plane moved within tolerance cannot shift it
+        m = round(extent / typical) if extent > 0 and typical > 0 else 0
+        layered = m >= 1
+        if layered:
+            d = extent / m
+            k = (cell_min - lo) / d
+            layered = bool(
+                np.all(np.abs(thickness - d) <= tol) and np.all(np.abs(k - np.round(k)) * d <= tol)
+            )
+        if not layered:
+            msg = (
+                f"the oracle varies along {[('xyz')[a] for a in axes]}: along {'xyz'[axis]} the mesh "
+                "must be layers of equal thickness, each cell spanning exactly one"
+            )
             raise VVError(msg, code="V0723")
         span *= extent
-    return volume, (volume / span / mesh.n_cells) ** (1.0 / len(axes))
+        layers *= m
+    return volume, (volume / span / (mesh.n_cells / layers)) ** (1.0 / len(axes))
 
 
 def run_errors(results: autan.Results, oracle: Oracle) -> RunErrors:
