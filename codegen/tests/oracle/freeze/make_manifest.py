@@ -267,6 +267,11 @@ def main_stage2(kr: object) -> int:
         for item in args.n16:
             p, seed, mesh, mesh_sha, cells_sha = item.split(",")
             files[(16, float(p), int(seed))] = (mesh, mesh_sha, cells_sha)
+    aux_ids = node_ids(Path(args.collected).read_text())
+    files_seen = {i.split("::")[0] for i in aux_ids}
+    if files_seen != set(AUX_FILES_STAGE2):
+        msg = f"the collected node ids come from {sorted(files_seen)}, not from {AUX_FILES_STAGE2}"
+        raise SystemExit(msg)
     manifest = {
         "schema": "autan.adr0003-manifest/1",
         "stage": 2,
@@ -285,7 +290,8 @@ def main_stage2(kr: object) -> int:
         "positive_fixtures": fixtures(Path(args.fixtures)),
         "auxiliary_tests": {
             "rule": "the oracle suite on the frozen build, the stage 2 tests included: every node id below must pass (none skipped, deselected or missing), within aux_bound_s",
-            "node_ids": node_ids(Path(args.collected).read_text()),
+            "files": AUX_FILES_STAGE2,
+            "node_ids": aux_ids,
         },
         "verdict": "fail-closed (heldout.collect, stage 2): every instance's attempt bound, done and passing all its combinations within its bound, at most retry_cap attempts, and the auxiliary suite passing within aux_bound_s; stated as 'acceptance criteria met' on these frozen exports only",
     }  # fmt: skip

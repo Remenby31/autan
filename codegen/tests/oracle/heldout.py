@@ -532,13 +532,13 @@ def _timed_out(rec: Any, bound: int) -> str | None:
         return None  # malformed: the frozen rules already count it
     if rec.get("timeout_latched") is True:
         return f"timed out: the run script's latch at {bound} s"
-    if rec.get("stage") != "done":
-        return None
     t0, t1 = rec.get("started_utc_s"), rec.get("ended_utc_s")
+    if _finite(t0) and _finite(t1) and t1 - t0 > bound:
+        return f"ran {t1 - t0:.0f} s, over its bound of {bound} s"
+    if rec.get("stage") != "done":
+        return None  # an interrupted attempt never passes; it may only be superseded
     if not (_finite(t0) and _finite(t1)) or t1 < t0:
         return "no valid start and end times"
-    if t1 - t0 > bound:
-        return f"ran {t1 - t0:.0f} s, over its bound of {bound} s"
     return None
 
 
@@ -552,7 +552,13 @@ def _stage2_screen(
     if limits is None:
         return attempts, auxiliary, ["the manifest freezes no valid stage 2 limits"]
     bounds, aux_bound, cap = limits
-    screened: dict[str, list[Any]] = {}
+    known = {spec.get("id") for spec in manifest.get("instances") or [] if isinstance(spec, dict)}
+    failures += [
+        f"an attempt for {sid!r}, which is no instance of the manifest"
+        for sid in attempts
+        if sid not in known
+    ]
+    screened: dict[str, list[Any]] = dict(attempts)
     for spec in manifest.get("instances") or []:
         sid = spec.get("id") if isinstance(spec, dict) else None
         tries = attempts.get(sid) if isinstance(sid, str) else None

@@ -13,9 +13,9 @@ from pathlib import Path
 import pytest
 from oracle import heldout as h
 from oracle import kernels as kr
+from oracle.freeze import collect_stage2, watchdog
 from oracle.freeze import make_manifest as mm
 from oracle.freeze import vv_exclusion as vx_ex
-from oracle.freeze import watchdog
 
 SPEC = {
     "id": "dev-hex-N2", "kind": "hex", "n": 2, "perturbation": 0.15, "seed": 3,
@@ -87,7 +87,7 @@ def test_an_attempt_over_its_bound_or_latched_is_decisive(
     state = collect(library, [late, record])
     assert any("decisive" in f for f in state["failures"]), state["failures"]
     assert state["state"] == "FAIL"
-    assert why  # the screening reason, for the parametrize id
+    del why  # names the case only
 
 
 def test_more_attempts_than_the_cap_fail(record: dict, library: str) -> None:
@@ -161,7 +161,7 @@ def test_branch_a_prime_needs_its_n16_files_and_bound() -> None:
 
 
 def _universe(*records: dict, not_passed: list[str] | None = None) -> dict:
-    return {"records": list(records), "not_passed": not_passed or []}
+    return {"records": list(records), "not_passed": not_passed or [], "exitstatus": 0}
 
 
 CANDIDATES = {
@@ -192,3 +192,99 @@ def test_the_exclusion_check_refuses_a_collision_a_missing_one_a_skip_and_an_emp
     universe: dict, issue: str
 ) -> None:
     assert any(issue in i for i in vx_ex.compare(universe, CANDIDATES))
+
+
+def test_a_failing_auxiliary_attempt_stays_decisive_after_a_passing_one(
+    record: dict, library: str
+) -> None:
+    _, sha = manifest()
+    for bad in (aux(library, sha, pytest_exit=1), aux(library, sha, timeout_latched=True)):
+        assert collect(library, [record], [bad, aux(library, sha)])["failures"]
+
+
+def test_an_attempt_for_an_unknown_instance_fails(record: dict, library: str) -> None:
+    raw, sha = manifest()
+    attempts = {SPEC["id"]: [record], "not-an-instance": [record]}
+    state = h.collect(raw, sha, library, attempts, [aux(library, sha)])
+    assert any("no instance of the manifest" in f for f in state["failures"])
+
+
+def test_an_interrupted_attempt_over_its_bound_is_decisive(record: dict, library: str) -> None:
+    mid = {k: copy.deepcopy(v) for k, v in record.items() if k != "entries_sha256"}
+    mid.update(stage="geometry", runs=[], started_utc_s=0.0, ended_utc_s=601.0)
+    assert collect(library, [mid, record])["failures"]
+
+
+def _write(d: Path, name: str, doc: object) -> Path:
+    p = d / name
+    p.write_text(json.dumps(doc))
+    return p
+
+
+def test_the_driver_counts_an_orphan_latch_and_refuses_while_jobs_fly(
+    tmp_path: Path, record: dict, library: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    raw, sha = manifest()
+    m = _write(tmp_path, "m.json", json.loads(raw))
+    rec_dir, aux_dir, queue = tmp_path / "r", tmp_path / "a", tmp_path / "q"
+    for d in (rec_dir, aux_dir, queue / "pending", queue / "running"):
+        d.mkdir(parents=True)
+    _write(rec_dir, f"{SPEC['id']}.attempt-1.json", record)
+    _write(aux_dir, "attempt-1.json", aux(library, sha))
+    args = [str(m), sha, library, str(rec_dir), str(aux_dir), "--queue", str(queue),
+            "--job-prefix", "s2-"]  # fmt: skip
+    assert collect_stage2.main(args) == 0
+    (rec_dir / f"{SPEC['id']}.attempt-2.json.timeout").write_text("{}")
+    assert collect_stage2.main(args) == 1
+    assert "latch" in capsys.readouterr().out
+    (queue / "running" / "05-s2-agglomerated-N6.job").write_text("")
+    assert collect_stage2.main(args) == 3
+
+
+def test_the_watchdog_kills_what_the_command_leaves_in_its_group(tmp_path: Path) -> None:
+    flag = tmp_path / "grandchild-alive"
+    grandchild = (
+        "import pathlib, signal, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "time.sleep(3)\n"
+        f"pathlib.Path({str(flag)!r}).write_text('x')\n"
+    )
+    script = (
+        "import subprocess, sys, time\n"
+        f"subprocess.Popen([sys.executable, '-c', {grandchild!r}])\n"
+        "time.sleep(60)\n"
+    )
+    code = watchdog.run(1, str(tmp_path / "l.timeout"), [sys.executable, "-c", script], grace_s=1)
+    assert code == 124
+    time.sleep(4)
+    assert not flag.exists()  # the TERM-ignoring grandchild was killed with the group
+
+
+def test_the_watchdog_reports_a_signal_as_128_plus_its_number(tmp_path: Path) -> None:
+    code = watchdog.run(
+        30,
+        str(tmp_path / "l"),
+        [sys.executable, "-c", "import os, signal; os.kill(os.getpid(), signal.SIGTERM)"],
+    )
+    assert code == 128 + 15
+
+
+def test_branch_a_prime_gives_eight_instances_with_its_n16_files() -> None:
+    files = dict(mm.STAGE2_FILES)
+    for p, seed in ((0.0, 11), (0.15, 11), (0.15, 13)):
+        name = "agglomerated-n016.msh" if p == 0.0 else "agglomerated-dirty-n016.msh"
+        files[(16, p, seed)] = (name, "a" * 64, "b" * 64)
+    out = mm.instances_stage2("a-prime", files, {**mm.STAGE2_BOUNDS_S, "16": 3600})
+    assert len(out) == 8
+    assert {i["n"] for i in out} == {6, 12, 16}
+    assert all(h.spec_issues(i) == [] for i in out)
+
+
+def test_the_exclusion_check_needs_a_clean_session_and_every_instance_among_its_candidates() -> (
+    None
+):
+    u = {**_universe(TEST6), "exitstatus": 1}
+    assert any("exited 1" in i for i in vx_ex.compare(u, CANDIDATES))
+    u = {**_universe(TEST6), "exitstatus": 0}
+    inst = {"id": "x", "files": {"mesh": {"sha256": "unknown"}}}
+    assert any("no candidate" in i for i in vx_ex.compare(u, CANDIDATES, {"instances": [inst]}))
