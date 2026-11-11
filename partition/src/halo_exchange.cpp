@@ -7,6 +7,8 @@
 #include <cstring>
 #include <exception>
 #include <limits>
+#include <span>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -420,6 +422,184 @@ void exchange_ghost_geometry(HaloExchange& exchange, const Mesh& mesh, Geometry&
     geometry.cell_centroid_y[n_owned + g] += t[g][1];
     geometry.cell_centroid_z[n_owned + g] += t[g][2];
   }
+}
+
+CellRows forward_rows(const HaloPattern& pattern, const CellRows& owned,
+                      std::span<const std::uint8_t> wanted, MPI_Comm comm) {
+  int size = 0;
+  int rank = 0;
+  MPI_Comm_size(comm, &size);
+  MPI_Comm_rank(comm, &rank);
+  agree(comm, size == pattern.n_ranks && rank == pattern.rank, ErrorCode::halo_inconsistent,
+        "rank " + std::to_string(rank) + " of " + std::to_string(size) +
+            " holds the halo pattern of part " + std::to_string(pattern.rank) + " of " +
+            std::to_string(pattern.n_ranks));
+  int least = owned.stride;
+  int most = owned.stride;
+  MPI_Allreduce(MPI_IN_PLACE, &least, 1, MPI_INT, MPI_MIN, comm);
+  MPI_Allreduce(MPI_IN_PLACE, &most, 1, MPI_INT, MPI_MAX, comm);
+  agree(comm, least == most, ErrorCode::halo_inconsistent,
+        "the ranks send rows of " + std::to_string(least) + " to " + std::to_string(most) +
+            " values an entry");
+
+  // Allocations may fail on one rank only; the others must not enter the next collective.
+  const auto together = [comm](const auto& step) {
+    bool ok = true;
+    try {
+      step();
+    } catch (const std::exception&) {
+      ok = false;
+    }
+    agree(comm, ok, ErrorCode::partition_invalid_request, "ghost rows do not fit in memory");
+  };
+
+  const std::size_t n_rows = owned.offsets.empty() ? 0 : owned.offsets.size() - 1;
+  const std::size_t stride = at(std::max(owned.stride, 0));
+  bool rows_ok = owned.stride >= 0 && !owned.offsets.empty() && owned.offsets.front() == 0 &&
+                 std::ranges::is_sorted(owned.offsets) &&
+                 owned.keys.size() == at(owned.offsets.back()) &&
+                 (stride == 0 ? owned.values.empty()
+                              : owned.values.size() % stride == 0 &&
+                                    owned.values.size() / stride == owned.keys.size());
+  for (const index_t c : pattern.send_cells) rows_ok = rows_ok && c >= 0 && at(c) < n_rows;
+  agree(comm, rows_ok, ErrorCode::partition_invalid_request,
+        "rows that do not match their sizes, or a sent cell without a row");
+
+  // A slot count that differs from the peer's ghost count, or offsets that leave their lists,
+  // must fail here rather than in the exchanges below.
+  const auto n_neighbours = pattern.neighbours.size();
+  const auto spans = [n_neighbours](const std::vector<index_t>& offsets) {
+    return offsets.size() == n_neighbours + 1 && offsets.front() == 0 &&
+           std::ranges::is_sorted(offsets);
+  };
+  bool shape_ok = spans(pattern.send_offsets) && spans(pattern.recv_offsets) &&
+                  at(pattern.send_offsets.back()) == pattern.send_cells.size();
+  std::vector<int> slots_to(at(size), 0);
+  std::vector<int> slots_from(at(size), 0);
+  std::vector<int> send_at(at(size), 0);
+  std::vector<int> recv_at(at(size), 0);
+  for (std::size_t i = 0; shape_ok && i < n_neighbours; ++i) {
+    const std::int32_t q = pattern.neighbours[i];
+    shape_ok = q >= 0 && q < size && (i == 0 || q > pattern.neighbours[i - 1]);
+    if (!shape_ok) break;
+    slots_to[at(q)] = pattern.send_offsets[i + 1] - pattern.send_offsets[i];
+    slots_from[at(q)] = pattern.recv_offsets[i + 1] - pattern.recv_offsets[i];
+    send_at[at(q)] = pattern.send_offsets[i];
+    recv_at[at(q)] = pattern.recv_offsets[i];
+  }
+  std::vector<int> announced(at(size), 0);
+  MPI_Alltoall(slots_to.data(), 1, MPI_INT, announced.data(), 1, MPI_INT, comm);
+  agree(comm, shape_ok && announced == slots_from, ErrorCode::halo_inconsistent,
+        "rank " + std::to_string(rank) + " expects ghost rows its neighbours do not send");
+
+  const std::size_t n_sent = pattern.send_cells.size();
+  const std::size_t n_ghosts = at(pattern.recv_offsets.back());
+  agree(comm,
+        wanted.size() == n_ghosts &&
+            std::ranges::all_of(wanted, [](std::uint8_t w) { return w <= 1; }),
+        ErrorCode::partition_invalid_request,
+        "a mask of " + std::to_string(wanted.size()) + " bytes for " + std::to_string(n_ghosts) +
+            " ghosts, or a byte other than 0 and 1");
+
+  // Each receiver's mask, in its ghost order, reaches the owner in send-slot order: a sender's
+  // slots to a neighbour are that neighbour's ghosts from it, in the same order.
+  std::vector<std::uint8_t> sent_wanted;
+  std::vector<std::int64_t> sent_length;
+  std::vector<std::int64_t> ghost_length;
+  together([&] {
+    sent_wanted.resize(n_sent);
+    sent_length.resize(n_sent);
+    ghost_length.resize(n_ghosts);
+  });
+  MPI_Alltoallv(wanted.data(), slots_from.data(), recv_at.data(), MPI_UINT8_T, sent_wanted.data(),
+                slots_to.data(), send_at.data(), MPI_UINT8_T, comm);
+  for (std::size_t k = 0; k < n_sent; ++k) {
+    const auto c = at(pattern.send_cells[k]);
+    sent_length[k] = sent_wanted[k] != 0 ? owned.offsets[c + 1] - owned.offsets[c] : 0;
+  }
+  MPI_Alltoallv(sent_length.data(), slots_to.data(), send_at.data(), MPI_INT64_T,
+                ghost_length.data(), slots_from.data(), recv_at.data(), MPI_INT64_T, comm);
+
+  // MPI counts are int: every count and displacement below is at most `total * width`, so the
+  // totals are bounded before any product is formed.
+  const std::int64_t cap = std::numeric_limits<int>::max() / std::max(owned.stride, 1);
+  bool fits = true;
+  std::int64_t total_to = 0;
+  std::int64_t total_from = 0;
+  const auto add = [&](std::int64_t& total, std::int64_t n) {
+    fits = fits && n >= 0 && n <= cap - total;
+    if (fits) total += n;
+  };
+  std::vector<std::int64_t> entries_to(at(size), 0);
+  std::vector<std::int64_t> entries_from(at(size), 0);
+  for (std::size_t i = 0; fits && i < n_neighbours; ++i) {
+    const auto q = at(pattern.neighbours[i]);
+    for (auto k = pattern.send_offsets[i]; k < pattern.send_offsets[i + 1]; ++k) {
+      add(total_to, sent_length[at(k)]);
+      entries_to[q] += fits ? sent_length[at(k)] : 0;
+    }
+    for (auto g = pattern.recv_offsets[i]; g < pattern.recv_offsets[i + 1]; ++g) {
+      fits = fits && (wanted[at(g)] != 0 || ghost_length[at(g)] == 0);
+      add(total_from, ghost_length[at(g)]);
+      entries_from[q] += fits ? ghost_length[at(g)] : 0;
+    }
+  }
+  agree(comm, fits, ErrorCode::partition_invalid_request,
+        "ghost rows exceed the MPI count range at " + std::to_string(owned.stride) +
+            " values an entry");
+
+  std::vector<int> key_count_to(at(size)), key_count_from(at(size));
+  std::vector<int> key_at_to(at(size)), key_at_from(at(size));
+  std::vector<int> value_count_to(at(size)), value_count_from(at(size));
+  std::vector<int> value_at_to(at(size)), value_at_from(at(size));
+  std::int64_t to = 0;
+  std::int64_t from = 0;
+  for (int q = 0; q < size; ++q) {
+    const auto u = at(q);
+    key_count_to[u] = static_cast<int>(entries_to[u]);
+    key_count_from[u] = static_cast<int>(entries_from[u]);
+    key_at_to[u] = static_cast<int>(to);
+    key_at_from[u] = static_cast<int>(from);
+    value_count_to[u] = static_cast<int>(entries_to[u] * owned.stride);
+    value_count_from[u] = static_cast<int>(entries_from[u] * owned.stride);
+    value_at_to[u] = static_cast<int>(to * owned.stride);
+    value_at_from[u] = static_cast<int>(from * owned.stride);
+    to += entries_to[u];
+    from += entries_from[u];
+  }
+
+  // Send order runs over the neighbours in increasing rank, as the displacements above do.
+  std::vector<std::int64_t> keys;
+  std::vector<double> values;
+  CellRows out;
+  out.stride = owned.stride;
+  together([&] {
+    keys.reserve(at(total_to));
+    values.reserve(at(total_to) * stride);
+    for (std::size_t k = 0; k < n_sent; ++k) {
+      if (sent_wanted[k] == 0) continue;
+      const auto c = at(pattern.send_cells[k]);
+      const auto first = at(owned.offsets[c]);
+      const auto last = at(owned.offsets[c + 1]);
+      keys.insert(keys.end(), owned.keys.begin() + static_cast<std::ptrdiff_t>(first),
+                  owned.keys.begin() + static_cast<std::ptrdiff_t>(last));
+      values.insert(values.end(),
+                    owned.values.begin() + static_cast<std::ptrdiff_t>(first * stride),
+                    owned.values.begin() + static_cast<std::ptrdiff_t>(last * stride));
+    }
+    if (keys.size() != at(total_to) || values.size() != at(total_to) * stride) {
+      throw std::logic_error("packed rows do not match their lengths");
+    }
+    out.offsets.assign(n_ghosts + 1, 0);
+    out.keys.resize(at(total_from));
+    out.values.resize(at(total_from) * stride);
+  });
+  for (std::size_t g = 0; g < n_ghosts; ++g) out.offsets[g + 1] = out.offsets[g] + ghost_length[g];
+  MPI_Alltoallv(keys.data(), key_count_to.data(), key_at_to.data(), MPI_INT64_T, out.keys.data(),
+                key_count_from.data(), key_at_from.data(), MPI_INT64_T, comm);
+  MPI_Alltoallv(values.data(), value_count_to.data(), value_at_to.data(), MPI_DOUBLE,
+                out.values.data(), value_count_from.data(), value_at_from.data(), MPI_DOUBLE, comm);
+  return out;
 }
 
 }  // namespace autan

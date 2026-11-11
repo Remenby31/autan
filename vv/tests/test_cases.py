@@ -195,6 +195,15 @@ def cache() -> Path:
     return Path("~/.cache/autan-vv").expanduser()
 
 
+# Grid points (i, j) of files whose names do not carry them, transcribed from TMR's NACA 0012
+# numerical analysis grid page (https://tmbwg.github.io/turbmodels/naca0012numerics_grids.html).
+TMR_GRID_TABLE = {
+    "n0012familyII.5.p2dfmt.gz": [449, 129],
+    "n0012familyII.6.p2dfmt.gz": [225, 65],
+    "n0012familyII.7.p2dfmt.gz": [113, 33],
+}
+
+
 @pytest.mark.network
 @pytest.mark.slow
 @pytest.mark.parametrize("name", [c.name for c in list_cases()])
@@ -210,6 +219,7 @@ def test_every_file_downloads_verifies_and_parses(name: str, cache: Path) -> Non
                 for v in path.name.replace("-", "x").split("_")[-1].split(".")[0].split("x")
                 if v.isdigit()
             ]
+            dims = TMR_GRID_TABLE.get(f.name, dims)
             if len(dims) == 2:
                 assert x.shape == (dims[1], dims[0])
 

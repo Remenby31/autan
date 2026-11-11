@@ -1,13 +1,20 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <span>
 #include <utility>
 
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
+#include "autan/kernels/geometry.hpp"
 #include "autan/physics/block_matrix.hpp"
 #include "autan/physics/euler.hpp"
+
+namespace autan::kernels::navier_stokes {
+template <class P>
+struct Data;
+}  // namespace autan::kernels::navier_stokes
 
 namespace autan::physics {
 
@@ -26,14 +33,28 @@ struct Transport {
 /// Compressible Navier-Stokes residual: the Euler residual of `Euler<P>` plus the viscous fluxes of
 /// kernels/navier_stokes.py, with an eddy viscosity set by a turbulence model (zero by default).
 /// Same conventions and call sequence as Euler<P>; `wall` boundary faces are no-slip.
+/// The ghost stencil a partition holds for the Navier-Stokes physics (laminar or SA). Under
+/// reproducibility "ranks", vertex4: each rank fits its owned cells and their face neighbours,
+/// whose fits reach three vertex rings of them, from its own ghosts, the one-rank bits. Otherwise
+/// vertex3: each rank fits its owned cells only, and receives its ghost face neighbours' fits from
+/// their owners (#651).
+GhostStencil navier_stokes_ghost_stencil(bool ranks_reproducible) noexcept;
+
 template <class P>
 class NavierStokes {
  public:
   using State = typename P::state;
   using Res = typename P::residual;
+  using Faces = typename Euler<P>::Faces;
 
+  /// With `keys`, as Euler<P>'s: its Euler<P> takes them, the viscous face loops gather each cell's
+  /// faces in global order and orientation, the boundary fit lists its entries in ascending global
+  /// id, and assemble() sums and places its blocks in that order and orientation. On a partition,
+  /// `ghosts` must hold vertex3 at least (E0148 otherwise); below vertex4, the ghosts' fits come
+  /// from their owners, through the GhostFill of set_ghosts, which must carry rows.
   NavierStokes(const Mesh& mesh, const Geometry& geometry, Gas gas, Scheme scheme,
-               Transport transport);
+               Transport transport, const kernels::GlobalKeys* keys = nullptr,
+               std::optional<GhostStencil> ghosts = std::nullopt);
   ~NavierStokes();
   NavierStokes(const NavierStokes&) = delete;
   NavierStokes& operator=(const NavierStokes&) = delete;
@@ -47,8 +68,9 @@ class NavierStokes {
   void set_boundary(std::span<const BoundaryKind> kind, std::span<const double> data);
   /// As Euler<P>'s; the fit depends on the conditions only, so it is kept.
   void set_boundary_data(std::span<const double> data);
-  /// Euler<P>'s ghost exchange. The viscous terms fill no ghosts of their own: a mesh with
-  /// ghosts (periodic pairs, partitions) is outside this physics' scope.
+  /// The ghost exchange, Euler<P>'s too. The viscous terms fill the gradient they read at a
+  /// neighbour (`grad_v`) and compute the boundary fits of the owned cells and of their face
+  /// neighbours from values every rank holds alike.
   void set_ghosts(GhostFill* ghosts) noexcept;
   void set_second_order(bool on);
   void set_source(std::span<const double> source);
@@ -63,9 +85,16 @@ class NavierStokes {
   /// A = diag(shift) + J~ into `a`: Euler<P>'s blocks, the viscous face Jacobians and, through
   /// the boundary fit, the viscous fluxes' dependence on the fitted cell and the face's other cell.
   void assemble(std::span<const double> shift, BlockMatrix& a) const;
+  /// After residual_and_jacobian(s): adds to dres the chosen faces' derivative through the
+  /// gradients that `assemble` leaves out, convective (Euler<P>::gradient_tangent) and viscous
+  /// (the cell gradients, and the boundary fit's stencil entries outside the block pattern), the
+  /// limiter, the eddy viscosity and the fits' boundary values held fixed.
+  void gradient_tangent(std::span<const State> s, std::span<const State> du, std::span<Res> dres,
+                        typename Euler<P>::Faces faces);
   /// After assemble: Frobenius norms of the boundary fit's Jacobian blocks it added and of those
   /// outside the block pattern (stencil entries that are not the face's cells), which it leaves
-  /// out.
+  /// out, over the owned cells' rows: on a partition the ranks' squares sum to the whole mesh's.
+  /// Below vertex4, a received row's entries this rank does not hold are not counted.
   [[nodiscard]] std::pair<double, double> fit_jacobian_norms() const;
   /// The convective reconstruction's quadratic gradient (Euler<P>::quadratic_gradient).
   [[nodiscard]] typename Euler<P>::QuadraticGradient quadratic_gradient() const;
@@ -94,6 +123,12 @@ class NavierStokes {
     double gas_constant;
   };
   [[nodiscard]] Arrays arrays() noexcept;
+
+  /// For a device copy of the residual, after set_boundary: the Euler residual it adds to, and
+  /// the viscous loops' data in host memory (geometry, the boundary fit's stencil and weights,
+  /// eddy viscosity, parameters).
+  [[nodiscard]] const Euler<P>& euler() const noexcept;
+  [[nodiscard]] const kernels::navier_stokes::Data<P>& data() const;
 
  private:
   struct Impl;

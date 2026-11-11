@@ -38,6 +38,7 @@
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/core/renumber.hpp"
+#include "autan/core/wall_distance.hpp"
 #include "autan/io/cgns.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
@@ -356,8 +357,11 @@ struct Prepared {
   std::map<std::string, index_t> face_zone;  // boundary zone name -> Mesh::face_zones() index
   std::vector<std::vector<index_t>> monitor_zones;
   const PhysicsFactory* factory = nullptr;
-  std::string cell_order;                   // "rcm" (default) or "input", from AUTAN_CELL_ORDER
-  const PartitionGroups* groups = nullptr;  // the physics' groups; null or empty: none
+  std::string cell_order;                     // "rcm" (default) or "input", from AUTAN_CELL_ORDER
+  const PartitionGroups* groups = nullptr;    // the physics' groups; null or empty: none
+  GhostStencil ghosts = GhostStencil::face2;  // the stencil the physics declares
+  const RestartScalars* scalars = nullptr;    // its SolverState arrays; null or empty: none
+  bool wall_distance = false;                 // the physics reads PhysicsContext::wall_distance
   std::vector<Diagnostic> memory_warnings = {};  // W0712, W0713: the memory check's warnings
   std::optional<StartState> start;               // input.start, read and checked
   Json start_averaging;                          // `continue`: the previous run's averaging
@@ -402,6 +406,11 @@ class NoGhosts final : public GhostExchange {
  public:
   void forward(std::span<float* const> /*c*/, MemorySpace /*s*/, void* /*stream*/) override {}
   void forward(std::span<double* const> /*c*/, MemorySpace /*s*/, void* /*stream*/) override {}
+  CellRows forward_rows(const CellRows& owned, std::span<const std::uint8_t> /*wanted*/) override {
+    CellRows none;
+    none.stride = owned.stride;
+    return none;
+  }
 };
 
 // A private copy of a file and the SHA-256 of the bytes copied: what is
@@ -520,6 +529,12 @@ void load_start(Prepared& p, const PhysicsRegistry::Entry* entry) {
       if (named("RestartState") != restart) {
         unusable("RestartState holds other arrays than the physics writes");
       }
+      const auto scalars = entry != nullptr && entry->scalars
+                               ? entry->scalars(p.input, averaged)
+                               : std::vector<std::pair<std::string, std::int64_t>>{};
+      if (io::solver_state_arrays(snapshot->path()) != scalars) {
+        unusable("SolverState holds other arrays or lengths than the physics writes");
+      }
     }
     stored = io::read_solution(snapshot->path(), start.mode == "continue");
   } catch (const Error& e) {
@@ -570,7 +585,8 @@ void load_start(Prepared& p, const PhysicsRegistry::Entry* entry) {
   if (names != field_names(p.input)) {
     start_mismatch("E0708", "the previous run solved other variables", "start.run");
   }
-  StartState state{.fields = std::move(stored.fields), .mean_fields = {}, .restart_fields = {}};
+  StartState state{
+      .fields = std::move(stored.fields), .mean_fields = {}, .restart_fields = {}, .scalars = {}};
   if (start.mode == "continue") {
     // A continuation goes on in the order the run computed in (results.md,
     // cell_order): another order would change its bits from the restart on.
@@ -589,6 +605,7 @@ void load_start(Prepared& p, const PhysicsRegistry::Entry* entry) {
     p.start_binary = solver["binary_sha256"];
     state.mean_fields = std::move(stored.mean_fields);
     state.restart_fields = std::move(stored.restart_fields);
+    state.scalars = std::move(stored.solver_state);
   }
   p.start = std::move(state);
 }
@@ -1492,6 +1509,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
   const auto* entry = registry.find(p.input);
   p.factory = entry != nullptr ? &entry->factory : nullptr;
   p.groups = entry != nullptr ? &entry->groups : nullptr;
+  p.scalars = entry != nullptr ? &entry->scalars : nullptr;
   if (entry != nullptr && entry->scope) {
     if (auto refusal = entry->scope(p.input, ranks)) {
       auto data = nlohmann::json::parse(refusal->data_json);
@@ -1502,6 +1520,22 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
                                   .data_json = data.dump()});
     }
   }
+  if (entry != nullptr && entry->ghosts) {
+    const std::optional<GhostStencil> ghosts = entry->ghosts(p.input);
+    // A part with ghosts: on several ranks or with periodic pairs. Under reproducibility "ranks" on
+    // one rank without pairs, the one part has none, and every stencil is the mesh's.
+    const bool partitioned = ranks > 1 || !p.input.periodic.empty();
+    if (!ghosts && partitioned) {
+      throw InputError(Diagnostic{
+          .code = "E0148",
+          .message = "the physics' stencil is wider than any partition's ghosts, and this run "
+                     "computes on a partition",
+          .path = "physics",
+          .data_json = nlohmann::json{{"path", "physics"}, {"ranks", ranks}}.dump()});
+    }
+    if (ghosts) p.ghosts = *ghosts;
+  }
+  if (entry != nullptr) p.wall_distance = entry->wall_distance;
   if (entry != nullptr && ranks > 1 && !entry->several_ranks) {
     throw InputError(Diagnostic{
         .code = "E0706",
@@ -1772,6 +1806,7 @@ class Run final : public Log {
   void stop_on(fs::path file) { stop_file_ = std::move(file); }
 
   ExitStatus execute() {
+    if (p_.wall_distance) wall_distance_ = compute_wall_distance();
     const StartState* start = local_start_ ? &*local_start_ : p_.start ? &*p_.start : nullptr;
     const std::vector<io::Field>* initial = local_initial_ ? &*local_initial_
                                             : p_.initial   ? &*p_.initial
@@ -1794,7 +1829,9 @@ class Run final : public Log {
                                  .group_offsets = group_offsets_,
                                  .group_cells = group_cells_,
                                  .cell_group_colours = group_colours_,
-                                 .n_group_colours = n_group_colours_};
+                                 .n_group_colours = n_group_colours_,
+                                 .ghost_stencil = local_ ? std::optional(p_.ghosts) : std::nullopt,
+                                 .wall_distance = wall_distance_};
     std::string status = "running";
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
@@ -1866,7 +1903,7 @@ class Run final : public Log {
         ordered[c] = parts[at(ordered_->new_to_old[c])];
       parts = std::move(ordered);
     }
-    LocalPartition part = extract_partition(mesh, geometry_, parts, n, comm_.rank());
+    LocalPartition part = extract_partition(mesh, geometry_, parts, n, comm_.rank(), p_.ghosts);
     comm_.fill_ghosts(part);
     return part;
   }
@@ -1888,7 +1925,8 @@ class Run final : public Log {
   [[nodiscard]] StartState owned_start(const StartState& global) const {
     return StartState{.fields = owned_fields(global.fields),
                       .mean_fields = owned_fields(global.mean_fields),
-                      .restart_fields = owned_fields(global.restart_fields)};
+                      .restart_fields = owned_fields(global.restart_fields),
+                      .scalars = global.scalars};
   }
 
   // The mesh index of each owned cell of the physics' mesh.
@@ -2034,6 +2072,30 @@ class Run final : public Log {
   }
 
   [[nodiscard]] const Mesh& physics_mesh() const { return local_ ? local_->mesh : compute_mesh(); }
+
+  // PhysicsContext::wall_distance: the walls of the whole mesh (the input's no-slip wall zones),
+  // queried at each centroid of the physics' mesh, owned and ghosts; empty without a wall. The
+  // surface is freed once queried.
+  [[nodiscard]] std::vector<double> compute_wall_distance() const {
+    const Mesh& global = compute_mesh();
+    std::vector<index_t> walls;
+    for (const auto& b : p_.input.boundaries) {
+      if (b.kind != "wall") continue;
+      for (std::size_t z = 0; z < global.face_zones().size(); ++z) {
+        if (global.face_zones()[z].name == b.zone) walls.push_back(static_cast<index_t>(z));
+      }
+    }
+    if (walls.empty()) return {};
+    std::sort(walls.begin(), walls.end());
+    walls.erase(std::unique(walls.begin(), walls.end()), walls.end());
+    const WallSurface surface(global, walls);
+    const Geometry& g = physics_geometry();
+    std::vector<double> d(at(physics_mesh().n_cells()));
+    for (std::size_t c = 0; c < d.size(); ++c) {
+      d[c] = surface.distance({g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]});
+    }
+    return d;
+  }
   [[nodiscard]] const Geometry& physics_geometry() const {
     return local_ ? local_->geometry : geometry_;
   }
@@ -2122,6 +2184,26 @@ class Run final : public Log {
     log_seconds_ += seconds_since(start);
   }
 
+  void warn(std::string_view code, std::string_view message, std::string_view data_json) override {
+    if (!code.starts_with('W')) {
+      throw std::logic_error("Log::warn takes a warning code, not " + std::string(code));
+    }
+    const auto start = std::chrono::steady_clock::now();
+    const Diagnostic d{.code = std::string(code),
+                       .message = std::string(message),
+                       .path = {},
+                       .data_json = data_json.empty() ? "{}" : std::string(data_json)};
+    // Every rank lists it, whichever writes run.json (a failed run's may be another rank's); rank
+    // 0 logs it, the others log theirs with their rank.
+    add_diagnostic(d);
+    if (comm_.rank() != 0) {
+      Json data = Json::parse(d.json())["data"];
+      data["rank"] = comm_.rank();
+      dir_->append_log(log_line("warning", "solver", d.message, d.code, data.dump()));
+    }
+    log_seconds_ += seconds_since(start);
+  }
+
  private:
   // One log.jsonl line: wall-clock UTC time in milliseconds and the current
   // iteration (null before the first).
@@ -2150,22 +2232,24 @@ class Run final : public Log {
     const bool steady = in.time.kind == "steady";
     const std::int64_t budget = steady ? in.time.max_iterations : in.time.steps;
     const auto equations = residual_names(in);
-    // Steady convergence is measured against iteration 1 of the original run
-    // (solver-input.md, `start`); a `continue` goes on counting and timing.
+    // Steady convergence is measured against the run's reference (case-schema.md#time): its own
+    // iteration 1, or the one `start` carries for a `continue` or a steady `warm` from a steady
+    // run; only a `continue` goes on counting and timing.
+    const bool inherited = in.start && in.start->residual_reference;
     std::vector<double> first;
+    if (inherited) first = *in.start->residual_reference;
     // The equations that left their floor, in the chain so far: a checkpoint carries them.
     std::set<std::string> woken;
-    if (continued() && in.start->woken)
+    if (inherited && in.start->woken)
       woken.insert(in.start->woken->begin(), in.start->woken->end());
     RoundOffExemption exempt(
-        equations, continued() && in.start->woken ? *in.start->woken : std::vector<std::string>{});
+        equations, inherited && in.start->woken ? *in.start->woken : std::vector<std::string>{});
     // One round-off plateau per equation, counted from this run's first step.
     std::vector<ResidualPlateau> plateaus(equations.size());
     double time = 0.0, average_start = 0.0;
     std::int64_t from = 1;
     if (continued()) {
       const Start& s = *in.start;
-      if (s.residual_reference) first = *s.residual_reference;
       if (s.time) time = *s.time;
       from = s.iterations + 1;
       if (!info_["averaging"].is_null()) average_start = info_["averaging"]["from_time"];
@@ -2227,6 +2311,7 @@ class Run final : public Log {
                   {"time", steady ? Json(nullptr) : Json(step_time)},
                   {"residuals", residuals},
                   {"monitors", Json::object()}};
+      if (steady) record["provisional"] = report.provisional;
       for (std::size_t m = 0; m < in.monitors.size(); ++m) {
         const auto& monitor = in.monitors[m];
         if (it % monitor.every != 0) continue;
@@ -2498,6 +2583,7 @@ class Run final : public Log {
       s.fields = physics_->fields(false);
       if (!info_["averaging"].is_null()) s.mean_fields = physics_->fields(true);
       s.restart_fields = physics_->restart_fields();
+      s.solver_state = physics_->restart_scalars();
       if (!s.wall_faces.empty()) s.wall_fields = physics_->wall_fields(physics_faces);
     } catch (const std::exception& e) {
       throw PhysicsFailure(e.what());
@@ -2511,6 +2597,16 @@ class Run final : public Log {
     for (const auto& f : s.wall_fields) names.push_back(f.name);
     if (!s.wall_faces.empty() && names != wall_field_names(in))
       throw PhysicsFailure("the physics returned another set of wall fields");
+    // The SolverState a continue checks names and lengths of (E0707): what the entry registers.
+    std::vector<std::pair<std::string, std::int64_t>> scalars;
+    for (const auto& f : s.solver_state)
+      scalars.emplace_back(f.name, static_cast<std::int64_t>(f.values.size()));
+    const bool averaged = !s.mean_fields.empty();
+    if (scalars != (p_.scalars != nullptr && *p_.scalars
+                        ? (*p_.scalars)(in, averaged)
+                        : std::vector<std::pair<std::string, std::int64_t>>{})) {
+      throw PhysicsFailure("the physics returned other solver state arrays than it registers");
+    }
     // Rank 0 gathers every field, cells by mesh index, wall faces by slot.
     const auto ids = owned_ids();
     const auto gather = [&](std::vector<io::Field>& fields, std::span<const std::int64_t> where,
@@ -2680,7 +2776,7 @@ class Run final : public Log {
   std::int64_t write_failures_ = 0;
   Json first_failure_ = nullptr;
   std::optional<std::size_t> write_warning_;
-  double log_seconds_ = 0.0;    // spent in write()
+  double log_seconds_ = 0.0;    // spent in write() and warn()
   fs::path stop_file_;          // --stop-file; empty: none
   double solve_seconds_ = 0.0;  // this rank's step() and accumulate_average()
   // Declared before the physics, so destroyed after it: its stream outlives the physics' use.
@@ -2690,6 +2786,7 @@ class Run final : public Log {
   std::optional<Ordered> ordered_;
   CellGroups groups_;  // the physics' groups, over p_.mesh's cells
   Geometry geometry_;
+  std::vector<double> wall_distance_;  // PhysicsContext::wall_distance
   std::optional<LocalPartition> local_;
   std::map<index_t, std::vector<double>> local_states_;  // boundary_states, physics order
   // PhysicsContext's global keys of the physics' faces: through the partition
@@ -2721,9 +2818,12 @@ class Run final : public Log {
 }  // namespace
 
 void PhysicsRegistry::add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope,
-                          bool several_ranks, PartitionGroups groups, RestartNames restart) {
-  entries_.emplace_back(std::move(key), Entry{std::move(factory), std::move(scope), several_ranks,
-                                              std::move(groups), std::move(restart)});
+                          bool several_ranks, PartitionGroups groups, RestartNames restart,
+                          GhostStencils ghosts, RestartScalars scalars, bool wall_distance) {
+  entries_.emplace_back(
+      std::move(key),
+      Entry{std::move(factory), std::move(scope), several_ranks, std::move(groups),
+            std::move(restart), std::move(ghosts), std::move(scalars), wall_distance});
 }
 
 const PhysicsRegistry::Entry* PhysicsRegistry::find(const SolverInput& in) const {

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import sys
 from dataclasses import asdict
@@ -37,6 +38,9 @@ def _cmd_mms(args: argparse.Namespace) -> None:
 
 
 def _cmd_meshes(args: argparse.Namespace) -> None:
+    if args.export_cells and args.kind not in ("tet", "poly", "agglomerated"):
+        msg = f"--export-cells applies to tet, poly and agglomerated, not {args.kind}"
+        raise VVError(msg, code="V0309")
     if args.kind == "naca0012":
         from autan_vv.meshes import naca0012  # noqa: PLC0415
 
@@ -49,7 +53,12 @@ def _cmd_meshes(args: argparse.Namespace) -> None:
         from autan_vv.meshes.families import generate_family  # noqa: PLC0415
 
         family, _ = generate_family(
-            args.kind, args.levels, args.out, perturbation=args.perturbation, seed=args.seed
+            args.kind,
+            args.levels,
+            args.out,
+            perturbation=args.perturbation,
+            seed=args.seed,
+            export_cells=args.export_cells,
         )
     for lv in family.levels:
         _say(f"{lv.file}: {lv.n_cells} cells, h = {lv.h:.4g}, sha256 {lv.file_sha256[:12]}")
@@ -299,11 +308,13 @@ def _cmd_su2_flatplate(args: argparse.Namespace) -> None:
             msg = "su2-flatplate prepare takes --published (SU2's turb_SA_flatplate.cfg)"
             raise VVError(msg, code="V0903")
         for run in flatplate.prepare(
-            args.cache, args.published, args.root, args.su2_mesh, args.max_iterations
+            args.cache, args.published, args.root, args.su2_mesh, args.max_iterations, args.absolute
         ):
             _say(str(run.relative_to(args.root)))
         return
-    report = flatplate.results(args.root, args.cache, tuple(args.models), args.reference)
+    report = flatplate.results(
+        args.root, args.cache, tuple(args.models), args.reference, args.absolute
+    )
     if args.out is not None:
         args.out.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
     for model, data in report["models"].items():
@@ -325,15 +336,21 @@ def _cmd_su2_flatplate(args: argparse.Namespace) -> None:
             )
             _say(f"{model} continuum {key}: {value}")
         _say(f"{model} gate M3: {'PASS' if data['pass'] else 'FAIL'}")
-        if "amended" in data:
-            amended = data["amended"]
-            iterations = [lv["amended"]["iterations"] for lv in data["levels"]]
-            _say(f"{model} amended criterion: converged at {iterations}")
-            for key, est in amended["continuum"].items():
+        for reading in ("amended", "absolute"):
+            if reading not in data:
+                continue
+            iterations = [lv[reading]["iterations"] for lv in data["levels"]]
+            _say(f"{model} {reading} criterion: converged at {iterations}")
+            for key, est in data[reading]["continuum"].items():
                 value = f"{est['estimate']:.6e}" if "estimate" in est else est["error"]
-                _say(f"{model} amended continuum {key}: {value}")
-            _say(f"{model} amended gate M3: {'PASS' if amended['pass'] else 'FAIL'}")
-    readings = [r for data in report["models"].values() for r in (data, data.get("amended", data))]
+                _say(f"{model} {reading} continuum {key}: {value}")
+            _say(f"{model} {reading} gate M3: {'PASS' if data[reading]['pass'] else 'FAIL'}")
+    # With --absolute, the reading of #493 decides; otherwise every reading must pass.
+    readings = [
+        r for data in report["models"].values()
+        for r in ([data["absolute"]] if "absolute" in data
+                  else [data, data.get("amended", data)])
+    ]  # fmt: skip
     if not all(r["pass"] for r in readings):
         raise SystemExit(1)
 
@@ -443,7 +460,15 @@ def _cmd_verify(args: argparse.Namespace) -> None:
             )
     verdict = report["verdict"]
     if verdict is not None:
-        state = "PASS" if verdict["pass"] else "FAIL"
+        for check in verdict["checks"]:
+            if "equations" in check:
+                worst = min(
+                    (e["drop"] for e in check["equations"].values() if e["drop"] is not None),
+                    default=None,
+                )
+                shown = "none (identically zero)" if worst is None else f"{worst:.2f}"
+                _say(f"{check['run_id']}: {check['status']}, smallest drop {shown} orders")
+        state = {True: "PASS", False: "FAIL", None: "REPORTED, NOT GATED"}[verdict["pass"]]
         if verdict["investigate"]:
             state += ", TO INVESTIGATE"
         for warning in verdict["warnings"]:
@@ -454,7 +479,7 @@ def _cmd_verify(args: argparse.Namespace) -> None:
             else f" (not evidence: {'; '.join(verdict['not_evidence_because'])})"
         )
         _say(f"gate {verdict['gate']}: {state}{note}")
-        if not verdict["pass"]:
+        if verdict["pass"] is False:
             raise SystemExit(1)
 
 
@@ -471,6 +496,54 @@ def _cmd_agree(args: argparse.Namespace) -> None:
         _say(f"{pair['n_cells']} cells: worst {worst} {pair['fields'][worst]:.3g} x 2^-23")
     _say(f"fp32 agreement (k = {report['k']:g}): {'PASS' if report['pass'] else 'FAIL'}")
     if not report["pass"]:
+        raise SystemExit(1)
+
+
+def _strict(value: object) -> object:
+    """Non-finite floats become null, so a report is strict JSON."""
+    if isinstance(value, dict):
+        return {k: _strict(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_strict(v) for v in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+def _cmd_guard(args: argparse.Namespace) -> None:
+    from autan_vv import guard  # noqa: PLC0415
+
+    if args.action == "status":
+        _say(guard.night_status(args.night))
+        return
+    previous, note = None, None
+    if args.previous is not None:
+        try:
+            previous = json.loads(args.previous.read_text())
+        except (OSError, ValueError) as err:
+            note = f"previous verdict unreadable: {err}"
+    report = guard.verdict(
+        args.run1,
+        args.run2,
+        args.commit,
+        has_544=args.has_544,
+        previous=previous,
+        previous_history=args.previous_history,
+        exit_codes=(args.rc1, args.rc2),
+        infra=args.infra,
+    )
+    if note:
+        report["note"] = note
+    tmp = args.night / ".verdict.json.tmp"
+    tmp.write_text(json.dumps(_strict(report), indent=2, allow_nan=False) + "\n")
+    tmp.replace(args.night / "verdict.json")
+    failing = ", ".join(
+        f"{c['gate']}:{c.get('equation') or c.get('measure') or c.get('rule') or ''}"
+        for c in report.get("failing", [])
+    )
+    detail = failing or report.get("reason") or report.get("infra") or ""
+    _say(f"{report['outcome']} {report['commit'][:12]} {detail}")
+    if report["outcome"] == "red":
         raise SystemExit(1)
 
 
@@ -511,6 +584,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--perturbation", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", type=Path, required=True)
+    p.add_argument(
+        "--export-cells",
+        action="store_true",
+        help="also write each level's primal cells, <level>.cells.json (tet, poly, agglomerated;"
+        " docs/validation/meshes.md)",
+    )
     p.set_defaults(func=_cmd_meshes)
 
     p = sub.add_parser("m2-cases", help="write the NACA 0012 or ONERA M6 cases of every level")
@@ -599,6 +678,12 @@ def main(argv: list[str] | None = None) -> int:
         help="results: the models to report",
     )
     p.add_argument(
+        "--absolute",
+        type=Path,
+        help="root of the published configuration's runs: prepare writes the absolute criterion"
+        " of #493 into each case; results also judges every run by it",
+    )
+    p.add_argument(
         "--reference",
         type=Path,
         help="results: root of the published configuration's runs, for the amended criterion",
@@ -646,6 +731,24 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--k", type=float, default=500.0)
     p.add_argument("--out", type=Path)
     p.set_defaults(func=_cmd_agree)
+
+    p = sub.add_parser(
+        "guard", help="nightly convergence guard (#611): a night's verdict, or its status"
+    )
+    p.add_argument("action", choices=("verdict", "status"))
+    p.add_argument("night", type=Path, help="the night's directory (verdict.json is written there)")
+    p.add_argument("--run1", type=Path, help="verdict: the first run directory")
+    p.add_argument("--run2", type=Path, help="verdict: the second run directory")
+    p.add_argument("--commit", help="verdict: the night's pinned commit")
+    p.add_argument(
+        "--has-544", action="store_true", help="verdict: the commit contains #544's merge"
+    )
+    p.add_argument("--previous", type=Path, help="verdict: the last green night's verdict.json")
+    p.add_argument("--previous-history", type=Path, help="verdict: that night's run-1 history")
+    p.add_argument("--rc1", type=int, default=0, help="verdict: run 1's exit code")
+    p.add_argument("--rc2", type=int, default=0, help="verdict: run 2's exit code")
+    p.add_argument("--infra", help="verdict: evidenced infrastructure failure (the night is void)")
+    p.set_defaults(func=_cmd_guard)
 
     p = sub.add_parser("cases", help="list or download reference cases, verifying checksums")
     p.add_argument("action", choices=("list", "fetch"))

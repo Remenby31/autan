@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <ranges>
 #include <regex>
 #include <string>
 #include <utility>
@@ -50,7 +51,7 @@ ZoneNodeNames zone_node_names(const std::vector<std::string>& boundary,
   static const std::vector<std::string> zone_children{
       "ZoneType",     "GridCoordinates",      "NGonElements", "NFaceElements",
       "ZoneBC",       "ZoneGridConnectivity", "FlowSolution", "FlowSolutionMean",
-      "WallSolution", "RestartState"};
+      "WallSolution", "RestartState",         "SolverState"};
   static const std::regex generated("(boundary|cell-zone)-[0-9]{4}");
   std::vector<std::string> all(boundary);
   all.insert(all.end(), cell.begin(), cell.end());
@@ -111,6 +112,15 @@ void write_solution(const std::filesystem::path& file, const Mesh& mesh, const S
     check_size(f.values.size(), n_cells, "mean field " + f.name);
   for (const auto& f : solution.wall_fields) {
     check_size(f.values.size(), solution.wall_faces.size(), "wall field " + f.name);
+  }
+  for (std::size_t i = 0; i < solution.solver_state.size(); ++i) {
+    const auto& f = solution.solver_state[i];
+    const bool repeated = std::ranges::any_of(solution.solver_state | std::views::take(i),
+                                              [&](const Field& g) { return g.name == f.name; });
+    if (f.values.empty() || repeated) {
+      throw Error(ErrorCode::mesh_inconsistent_sizes,
+                  "solver state '" + f.name + "' is empty or named twice");
+    }
   }
   if (!std::ranges::is_sorted(solution.wall_faces) ||
       std::ranges::adjacent_find(solution.wall_faces) != solution.wall_faces.end() ||
@@ -295,6 +305,13 @@ void write_solution(const std::filesystem::path& file, const Mesh& mesh, const S
                                 f.values.data(), &field),
                  "write field", f.name);
     }
+  }
+
+  if (!solution.solver_state.empty()) {
+    cgns_check(cg_goto(fn, base, "Zone_t", zone, "end"), "go to the zone");
+    cgns_check(cg_user_data_write("SolverState"), "write SolverState");
+    cgns_check(cg_goto(fn, base, "Zone_t", zone, "SolverState", 0, "end"), "go to SolverState");
+    for (const auto& f : solution.solver_state) write_array(f.name.c_str(), f.values);
   }
 
   if (!solution.wall_faces.empty()) {

@@ -24,6 +24,7 @@ from autan.schema import (
     Inviscid,
     Laminar,
     SolidZone,
+    Steady,
 )
 from autan.units import si
 
@@ -33,7 +34,7 @@ from autan_vv.meshes.facemesh import FaceMesh, FloatArray, Zone
 from autan_vv.oracles import Oracle, conserved
 from autan_vv.oracles.registry import get_oracle
 from autan_vv.order import fit_order
-from autan_vv.stop import check_stop
+from autan_vv.stop import check_stop, residual_drops
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -194,11 +195,14 @@ def freestream_oracle(spec: autan.CaseSpec) -> Oracle:
     )
 
 
-def _check_compatible(results: autan.Results, oracle: Oracle) -> list[str]:
-    """Reasons the run cannot be compared with the oracle (empty if it can)."""
+def _check_compatible(
+    results: autan.Results, oracle: Oracle, *, finished: bool = True
+) -> list[str]:
+    """Reasons the run cannot be compared with the oracle (empty if it can); with `finished`, a
+    status other than converged or completed is one."""
     spec = results.case
     reasons = []
-    if results.run.status not in FINISHED:
+    if finished and results.run.status not in FINISHED:
         reasons.append(f"status {results.run.status}, not converged or completed")
     physics = spec.physics
     expected = {"euler": Inviscid, "navier-stokes": Laminar, "rans-sa": SA}
@@ -289,11 +293,14 @@ class RunErrors:
 
 
 def _h(mesh: FaceMesh, axes: tuple[int, ...]) -> tuple[float, float]:
-    """Total volume and mesh size along the oracle's axes. Along every other direction each cell must
-    span the whole mesh thickness, one layer (V0723); h = (V / (their extent) / N)^(1/len(axes))."""
+    """Total volume and mesh size along the oracle's axes. Along every other direction the mesh must
+    be m >= 1 layers of equal thickness, each cell spanning exactly one (V0723); h = (V / (their
+    extent) / (N / (their layer count)))^(1/len(axes)), so h counts the cells across the oracle's axes
+    only."""
     g = mesh.geometry
     volume = float(g.cell_volume.sum())
     span = 1.0
+    layers = 1
     cell_of_node = np.repeat(mesh.owner, np.diff(mesh.face_offsets))
     nb = np.repeat(mesh.neighbour, np.diff(mesh.face_offsets)[: mesh.n_interior])
     for axis in sorted(set(range(3)) - set(axes)):
@@ -306,16 +313,26 @@ def _h(mesh: FaceMesh, axes: tuple[int, ...]) -> tuple[float, float]:
         for cells, vals in ((cell_of_node, values), (nb, values[: nb.size])):
             np.minimum.at(cell_min, cells, vals)
             np.maximum.at(cell_max, cells, vals)
-        one_layer = (
-            extent > 0
-            and np.all(cell_min - lo <= 1e-9 * extent)
-            and np.all(hi - cell_max <= 1e-9 * extent)
-        )
-        if not one_layer:
-            msg = f"the oracle varies along {[('xyz')[a] for a in axes]}: the mesh must be one cell thick along {'xyz'[axis]}"
+        tol = 1e-9 * extent
+        thickness = cell_max - cell_min
+        typical = float(np.median(thickness))  # one plane moved within tolerance cannot shift it
+        m = round(extent / typical) if extent > 0 and typical > 0 else 0
+        layered = m >= 1
+        if layered:
+            d = extent / m
+            k = (cell_min - lo) / d
+            layered = bool(
+                np.all(np.abs(thickness - d) <= tol) and np.all(np.abs(k - np.round(k)) * d <= tol)
+            )
+        if not layered:
+            msg = (
+                f"the oracle varies along {[('xyz')[a] for a in axes]}: along {'xyz'[axis]} the mesh "
+                "must be layers of equal thickness, each cell spanning exactly one"
+            )
             raise VVError(msg, code="V0723")
         span *= extent
-    return volume, (volume / span / mesh.n_cells) ** (1.0 / len(axes))
+        layers *= m
+    return volume, (volume / span / (mesh.n_cells / layers)) ** (1.0 / len(axes))
 
 
 def run_errors(results: autan.Results, oracle: Oracle) -> RunErrors:
@@ -605,6 +622,87 @@ def _json_ready(value: Any) -> Any:
     return value
 
 
+def _residual_drop_verdict(gate: Gate, opened: list[autan.Results], against: str) -> dict[str, Any]:
+    """A `residual-drop` gate on runs of the oracle's case (V0724 apart from their status), one
+    precision (V0726), one case apart from the mesh, one build, distinct meshes (V0727). Each run is
+    judged alone: within its case's max_iterations, every equation dropped at least `gate.lower`
+    orders (residual_drops), an equation identically zero to the end passing. Outside `fp64` the drops are reported and `pass` is None."""
+    oracle = get_oracle(against)
+    for results in opened:
+        reasons = _check_compatible(results, oracle, finished=False)
+        if not isinstance(results.case.time, Steady):
+            reasons.append("the run is not steady")
+        if reasons:
+            msg = f"run {results.run.run_id} cannot be verified against {oracle.name}: {'; '.join(reasons)}"
+            raise VVError(msg, code="V0724")
+    precisions = {r.run.precision for r in opened}
+    if len(precisions) > 1:
+        msg = f"runs of one family must share a precision, got {sorted(precisions)}"
+        raise VVError(msg, code="V0726")
+    reasons = _family_problem(opened)
+    if len({r.run.mesh.sha256 for r in opened}) != len(opened):
+        reasons.append("the runs need distinct meshes")
+    if reasons:
+        raise VVError("; ".join(reasons), code="V0727")
+    gated = precisions.pop() == "fp64"
+    checks = []
+    for results in opened:
+        run = results.run
+        drops = residual_drops(results)
+        equations = {
+            name: {
+                "drop": d,
+                "identically_zero": d is None,
+                "pass": d is None or d >= gate.lower,
+            }
+            for name, d in drops.items()
+        }
+        budget = results.case.time.max_iterations  # type: ignore[union-attr]
+        within = run.iterations <= budget
+        checks.append(
+            {
+                "run_id": run.run_id,
+                "status": run.status,
+                "iterations": run.iterations,
+                "max_iterations": budget,
+                "precision": run.precision,
+                "solver_commit": run.solver.commit,
+                "case_sha256": run.case.sha256,
+                "mesh_sha256": run.mesh.sha256,
+                "plateau": list(run.convergence.plateau) if run.convergence is not None else [],
+                "equations": equations,
+                "lower": gate.lower,
+                "pass": within and bool(equations) and all(e["pass"] for e in equations.values()),
+            }
+        )
+    not_evidence = []
+    if any(r.run.solver.backend == "fake" for r in opened):
+        not_evidence.append("fake backend: synthetic results are never evidence")
+    report = {
+        "schema": VERDICT_SCHEMA,
+        "oracle": {
+            "name": oracle.name,
+            "physics": oracle.physics,
+            "reference_only": oracle.reference_only,
+            "parameters": dict(oracle.parameters),
+        },
+        "runs": [],
+        "fits": {},
+        "verdict": {
+            "gate": gate.id,
+            "milestone": gate.milestone,
+            "checks": checks,
+            "pass": all(c["pass"] for c in checks) if gated else None,
+            "warnings": [],
+            "investigate": False,
+            "evidence": gated and not not_evidence,
+            "not_evidence_because": not_evidence
+            + ([] if gated else ["outside fp64 the drops are reported, not gated"]),
+        },
+    }
+    return _json_ready(report)  # type: ignore[no-any-return]
+
+
 def verify(run_dirs: list[Path], against: str, gate_id: str | None = None) -> dict[str, Any]:
     """Compare runs with an oracle and, with `gate_id`, give a verdict (schema autan.vv-verdict/1).
 
@@ -629,6 +727,8 @@ def verify(run_dirs: list[Path], against: str, gate_id: str | None = None) -> di
     opened = [autan.Results.open(p) for p in run_dirs]
     for results in opened:
         check_stop(results)
+    if gate is not None and gate.measure == "residual-drop":
+        return _residual_drop_verdict(gate, opened, against)
     precisions = {r.run.precision for r in opened}
     if len(precisions) > 1:
         msg = f"runs of one family must share a precision, got {sorted(precisions)}"

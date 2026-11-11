@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "autan/core/geometry.hpp"
+#include "autan/core/ghost_stencil.hpp"
 #include "autan/core/mesh.hpp"
 
 namespace autan {
@@ -115,6 +116,7 @@ enum class MemorySpace : std::uint8_t { host, cuda };
 /// One rank's share of a partitioned mesh.
 struct LocalPartition {
   Mesh mesh;
+  GhostStencil ghosts = GhostStencil::face2;  ///< the stencil its ghosts hold
   /// Owned cells and every face carry the global geometry bit for bit (area
   /// vectors negated on faces whose orientation flipped); ghost cells hold
   /// NaN until a forward halo exchange fills them.
@@ -127,20 +129,20 @@ struct LocalPartition {
   HaloPattern halo;
 };
 
-/// Builds the part `rank` of `parts` with `layers` (1 or 2) layers of ghost
-/// cells: owned cells in the order of `global`, then ghosts ordered as
-/// HaloPattern states; every cell keeps the cell_global_id it has in
-/// `global`. With two layers the first ghost layer carries all its faces,
-/// so the face-of-face stencil of every owned cell is local. A periodic face
+/// Builds the part `rank` of `parts` with the ghost cells and faces of `ghosts`: owned cells in
+/// the order of `global`, then ghosts ordered as HaloPattern states; every cell keeps the
+/// cell_global_id it has in `global`. A periodic face
 /// becomes an interior face to an image ghost: the cell across it, shifted
 /// by the pair's translation (Mesh::ghost_translation), even on one part.
 /// `global_geometry` must be compute_geometry(global). Throws E0141 if
-/// `global` has ghosts and E0140 if `parts`, `n_parts`, `rank` or `layers`
+/// `global` has ghosts, E0140 if `parts`, `n_parts` or `rank`
 /// are out of range, `rank` owns no cell, or the periodic translations of
-/// `global` span more than three directions or are not linearly independent.
+/// `global` span more than three directions or are not linearly independent, and E0148 if, with
+/// a vertex kind, a node the rings walk around keeps a face elsewhere: its cells do not all meet
+/// through faces around it.
 LocalPartition extract_partition(const Mesh& global, const Geometry& global_geometry,
                                  std::span<const std::int32_t> parts, std::int32_t n_parts,
-                                 std::int32_t rank, int layers = 2);
+                                 std::int32_t rank, GhostStencil ghosts = GhostStencil::face2);
 
 /// One level of a graph hierarchy (a multigrid level): n_nodes nodes, edges owner -> neighbour
 /// (indices of nodes), and each node's global id. Global ids are distinct and an edge joins two

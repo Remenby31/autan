@@ -41,6 +41,7 @@ Agreed with the core mesh readers (#1):
 - **Grid.** Karman–Trefftz map with singular points at the trailing edge and half the leading-edge radius inside the leading edge; surface nodes on the analytic airfoil at equal angles about the midpoint of the mapped chord, field nodes on circles of radius R₁ e^(2πj/NC) blended from the near circle (the paper's eqs. 9–14; eq. 14 is printed with r_i,1 (R_NC+1 − R_1), which ends on no circle and does not give back eq. 13 for a circle, so we use r_i,1 (R_NC+1 − R_j), which does both). Cells have aspect ratio 1 (median 1 + O(1/NC), at most 2.06 next to the trailing edge) and the far field lies 148–149 chords away. The trailing-edge cells have a 172° corner, the mapping's singularity, as in the paper.
 - **Family.** R₁ comes from the paper's finest grid (NC = 4096), so level NC is the 4096² grid with lines removed: levels are nested bit for bit, refinement ratio exactly 2. The lower half mirrors the upper one exactly.
 - **Slab.** The airfoil lies in the x–z plane (lift along +z, as case-schema.md orients α), extruded over y ∈ [0, 1]. Zones `airfoil`, `farfield`, `back` (y = 0), `front` (y = 1). The manifest's `h` is the in-plane size √(area / cells). The levels are written by `naca0012.write_msh`, in Python, byte for byte as Gmsh's writer gives them (tested), so they need no Gmsh and can be generated on the linux-aarch64 Sparks; the manifest's `gmsh_version` is `none`. A level is bit for bit the same on one platform; between macOS arm64 and linux aarch64 the field nodes differ by up to 7e-14 relative (the math library's complex powers and exponentials; 4e-16 on the airfoil), so the mesh hash names the platform's mesh: compare a family's levels from one platform.
+- **Reproducible.** The same command writes the same bytes on every IEEE CPU: the elementary functions whose last bit belongs to the C library (the map's complex powers, angles and moduli, exp, cos, sin, atan) are evaluated in mpmath at 120 bits and rounded once, and R₁'s sum is `math.fsum` (#536). A golden SHA-256 of level 32 is tested. Meshes generated before this (#537) hold other bytes, the same geometry to the last bits: results measured on them stay attached to their SHA-256, as H1's `naca0012-n2048.msh` and the SU2 study's levels are.
 
 ## ONERA M6 meshes
 
@@ -75,6 +76,21 @@ N1 (shortest edge over the extent) is above 10⁻⁹ on every level and the oute
 Each family directory has `manifest.json` (schema `autan.mesh-family/1`): kind, perturbation, seed, Gmsh version, and per level the file name, `file_sha256`, `mesh_sha256` (topology and coordinates, format-independent), counts per cell type, total volume, h = (V/N)^(1/3) and `min_subvolume_ratio`. The same seed, Gmsh version and platform give byte-identical files; a different seed gives different files (`test_families_regenerate_bit_for_bit`).
 
 `min_subvolume_ratio` is the smallest (sub-tetrahedron / cell volume) of the decomposition used by the core (triangle fan around each face's mean point, apex at the cell's mean face point). It is slightly negative (≈ −0.005) on median-dual meshes because their faces are strongly non-planar; volumes and closure are still exact.
+
+## Primal-cell export
+
+`autan-vv meshes tet|poly|agglomerated --export-cells` also writes, beside each level's mesh `<level>.msh`, the file `<level>.cells.json` (schema `autan.vv-cell-export/1`). It holds each primal cell's outward polygons and the map from each primal cell to the cell of the mesh file, for a checker that reads the cells apart from the mesh. Without the flag, a family's files are byte-for-byte the same; with it, the meshes and `manifest.json` are unchanged and only the `.cells.json` files are added (`test_cell_export.py`).
+
+| Key | Value |
+|---|---|
+| `schema` | `"autan.vv-cell-export/1"` |
+| `kind`, `n`, `perturbation`, `seed` | the level's parameters |
+| `mesh` | `file`: the mesh file's name; `sha256`: its SHA-256; `n_cells`: its cells |
+| `points` | the mesh file's vertices, `[x, y, z]`: the coordinates the file holds, exactly |
+| `cells` | per primal cell, its polygons: lists of indices into `points`, oriented outward (counter-clockwise seen from outside) |
+| `map` | per primal cell, the index of the mesh-file cell that contains it |
+
+The primal cells are the tetrahedra for `tet` and the median dual's cells for `poly` and `agglomerated`. The map is the identity, except for `agglomerated`, where each mesh cell is the union of the median-dual cells mapped to it; their shared polygons are inside it, the others are its faces. The hosted `vv-meshes` workflow passes the flag when asked (`export_cells`, for the levels given only), and its `SHA256SUMS` lists the `.cells.json` files with the meshes. An export is larger than its mesh file (each interior polygon is listed by both of its cells, indices in decimal), so it is meant for the levels a checker reads, not for every gate level.
 
 ## Checks
 
