@@ -182,6 +182,41 @@ def _cmd_sod_cases(args: argparse.Namespace) -> None:
         _say(str(path))
 
 
+def _cmd_couette_cases(args: argparse.Namespace) -> None:
+    from autan_vv.cases import couette  # noqa: PLC0415
+    from autan_vv.meshes import couette as couette_meshes  # noqa: PLC0415
+    from autan_vv.meshes.families import MANIFEST_SCHEMA, generate_level  # noqa: PLC0415
+
+    manifest = json.loads((args.family / "manifest.json").read_text())
+    if manifest.get("schema") != MANIFEST_SCHEMA or manifest.get("kind") != couette_meshes.KIND:
+        msg = f"{args.family} is not a {couette_meshes.KIND} mesh family ({MANIFEST_SCHEMA})"
+        raise VVError(msg, code="V0805")
+    args.out.mkdir(parents=True, exist_ok=True)
+    out = args.out.resolve()
+    for level in manifest["levels"]:
+        mesh_file = (args.family / level["file"]).resolve()
+        if hashlib.sha256(mesh_file.read_bytes()).hexdigest() != level["file_sha256"]:
+            msg = f"{level['file']} is not the file its manifest records"
+            raise VVError(msg, code="V0805")
+        mesh, _ = generate_level(couette_meshes.KIND, level["n"])
+        if mesh.sha256() != level["mesh_sha256"]:
+            msg = f"{level['file']} does not regenerate from its manifest"
+            raise VVError(msg, code="V0805")
+        stem = Path(level["file"]).stem
+        states = out / f"{stem}.states.json"
+        digest = couette_meshes.write_face_states(mesh, mesh_file, states)
+        case = couette.case(
+            os.path.relpath(mesh_file, out),
+            level["n"],
+            states.name,
+            digest,
+            precision=args.precision,
+        )
+        path = out / f"{stem}.toml"
+        path.write_text(case.to_toml())
+        _say(str(path))
+
+
 def _cmd_forces(args: argparse.Namespace) -> None:
     from autan_vv.cases import naca0012  # noqa: PLC0415
 
@@ -560,7 +595,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser(
         "meshes",
         help="generate a seeded mesh family of the unit cube, of the Ringleb domain with its face"
-        " states, of the periodic square of the isentropic vortex, of the Sod tube, or the NACA 0012"
+        " states, of the periodic square of the isentropic vortex, of the Sod tube, of the Couette"
+        " column, or the NACA 0012"
         " O-meshes",
     )
     p.add_argument(
@@ -576,6 +612,7 @@ def main(argv: list[str] | None = None) -> int:
             "vortex-hex",
             "vortex-prism",
             "sod-tube",
+            "couette",
             "naca0012",
             "onera-m6",
         ),
@@ -616,6 +653,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--precision", choices=("fp64", "fp32+acc64"), default="fp64")
     p.add_argument("--out", type=Path, required=True)
     p.set_defaults(func=_cmd_sod_cases)
+
+    p = sub.add_parser(
+        "couette-cases",
+        help="write the Couette case and face states of every level of a couette family",
+    )
+    p.add_argument("--family", type=Path, required=True, help="directory of the mesh manifest")
+    p.add_argument("--precision", choices=("fp64", "fp32+acc64"), default="fp64")
+    p.add_argument("--out", type=Path, required=True)
+    p.set_defaults(func=_cmd_couette_cases)
 
     p = sub.add_parser(
         "forces", help="continuum forces of a NACA 0012 family and its gates (exit 1 on failure)"

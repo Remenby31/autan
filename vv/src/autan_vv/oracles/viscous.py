@@ -15,17 +15,18 @@ from autan_vv.oracles import FloatArray, Oracle
 
 
 def couette(
-    wall_speed: float = 50.0,
+    wall_speed: float = 200.0,
     height: float = 1.0,
     t_bottom: float = 300.0,
     t_top: float = 320.0,
     pressure: float = 1.0e5,
-    viscosity: float = 1.8e-5,
+    viscosity: float = 1.0e-2,
     prandtl: float = 0.72,
     gamma: float = 1.4,
     gas_constant: float = 287.0,
 ) -> Oracle:
     """Compressible plane Couette flow with viscous heating, constant mu and Pr (exact NS solution).
+    The defaults are the Couette gates' (docs/validation/oracles.md).
 
     Walls y = 0 (at rest, T_bottom) and y = H (moving at U in x, T_top), uniform pressure:
     u = U y/H, T = T_b + (T_t - T_b) y/H + Pr U^2/(2 cp) (y/H)(1 - y/H), rho = p/(R T), from

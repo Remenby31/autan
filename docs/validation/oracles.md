@@ -9,7 +9,7 @@ Source: `vv/src/autan_vv/oracles/`. An oracle maps positions (and a physical tim
 | `isentropic-vortex` | Euler | x, y | exact, unsteady | Vortex of strength 5 convected at Mach 0.5 (Shu 1998) on the periodic [−10, 10]² domain recommended by Spiegel, Huynh and DeBonis (2015); a period that is not finite, shorter than 2, or whose truncation exceeds 10⁻¹⁵, or a strength making the core temperature non-positive, raises `V0709` |
 | `sod`, `lax` | Euler | x | exact, unsteady | Exact Riemann solver (Toro 2009, ch. 4), diaphragm at x = 0.5 |
 | (`shu_osher()`, not registered) | Euler | x | **reference, withheld** | 1D MUSCL–HLLC–SSP-RK3 solution on 12 800 cells at t = 1.8 on [−5, 5] (`V0707` otherwise), cached in `~/.cache/autan-vv`. Not an oracle until independently published fine-grid data confirm its profile behind the shock |
-| `couette` | compressible NS | y | exact | Plane Couette flow with viscous heating, constant μ and Pr (White 2006) |
+| `couette` | compressible NS | y | exact | Plane Couette flow with viscous heating, constant μ and Pr (White 2006). Defaults, the gates' ([#596](https://github.com/Remenby31/autan/issues/596)): H = 1 m, U = 200 m/s, T_b = 300 K, T_t = 320 K, p = 10⁵ Pa, μ = 10⁻² Pa s, Pr = 0.72, so that the viscous heating (14.3 K) is not lost under the linear 20 K |
 | `poiseuille` | incompressible NS | x, y | exact (incompressible) | u = G y (H − y)/(2μ); holds to O(M²) for the compressible solver |
 | `blasius` | boundary layer | x, y | asymptotic | Blasius profile by shooting to f″(0) = 0.332057336215196; approximates NS for Re_x ≫ 1 at low Mach; defined for x > x_le, y ≥ 0 (`V0708`) |
 
