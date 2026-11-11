@@ -1,5 +1,5 @@
-# Runner core-contention experiment (#697): proof branch only, never merged. Two identical jobs so
-# that, with both GB10 runners free, one lands on each; each records its runner's name.
+# Runner core-contention experiment (#697): proof branch only, never merged. One job, for spark2
+# only (the subject): on any other runner it stops at once and frees the runner.
 name: runner-contention-experiment
 on:
   push:
@@ -7,10 +7,6 @@ on:
 permissions: {}
 jobs:
   experiment:
-    strategy:
-      fail-fast: false
-      matrix:
-        copy: [1, 2]
     runs-on: [self-hosted, linux, ARM64, gpu, gb10, tests]
     timeout-minutes: 200
     permissions:
@@ -19,9 +15,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Runner and cores
+      - name: Runner and cores (spark2 only)
         run: |
           echo "runner $RUNNER_NAME"; nproc; grep Cpus_allowed_list /proc/self/status
+          [ "$RUNNER_NAME" = spark-75d6 ] || { echo "::error::not spark2: this experiment runs on spark2 only"; exit 1; }
       # gpu-tests' configuration without CUDA: #265 is a CPU MPI test.
       - name: Build
         run: >-
@@ -35,6 +32,6 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
-          name: runner-contention-${{ matrix.copy }}-${{ github.run_id }}
+          name: runner-contention-${{ github.run_id }}
           path: ${{ runner.temp }}/exp/
           if-no-files-found: error
