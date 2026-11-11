@@ -1,0 +1,40 @@
+# Runner core-contention experiment (#697): proof branch only, never merged. Two identical jobs so
+# that, with both GB10 runners free, one lands on each; each records its runner's name.
+name: runner-contention-experiment
+on:
+  push:
+    branches: [proof/runner-contention]
+permissions: {}
+jobs:
+  experiment:
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: [1, 2]
+    runs-on: [self-hosted, linux, ARM64, gpu, gb10, tests]
+    timeout-minutes: 200
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Runner and cores
+        run: |
+          echo "runner $RUNNER_NAME"; nproc; grep Cpus_allowed_list /proc/self/status
+      # gpu-tests' configuration without CUDA: #265 is a CPU MPI test.
+      - name: Build
+        run: >-
+          cmake -S . -B build -G Ninja -DAUTAN_ENABLE_CUDA=OFF -DAUTAN_ENABLE_MPI=ON
+          -DAUTAN_ENABLE_METIS=ON -DAUTAN_ENABLE_SCOTCH=ON -DAUTAN_WARNINGS_AS_ERRORS=ON
+          -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS_RELEASE=-O2 && cmake --build build
+      - name: Four arms, three interleaved rounds
+        env:
+          CUDA_VISIBLE_DEVICES: ""
+        run: bash bench/ci/runner-contention.sh build "$RUNNER_TEMP/exp"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: runner-contention-${{ matrix.copy }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/exp/
+          if-no-files-found: error
