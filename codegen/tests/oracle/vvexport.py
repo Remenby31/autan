@@ -157,6 +157,11 @@ def vertex_issues(
     got = [(float(r[0]), float(r[1]), float(r[2])) for r in read_points]
     want = used_points(points, cells, cell_map)
     issues = []
+    # Two export points at one position, one of them used, would make the mapping by coordinates
+    # ambiguous: refused.
+    seen = Counter((float(p[0]), float(p[1]), float(p[2])) for p in points)
+    if shared := sum(1 for xyz in want if seen[xyz] > 1):
+        issues.append(f"{shared} export points the faces use share their coordinates with another")
     if len(set(got)) != len(got):
         issues.append(f"the reader gives {len(got) - len(set(got))} vertices twice")
     if missing := len(want - set(got)):

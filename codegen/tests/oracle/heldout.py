@@ -242,8 +242,7 @@ def run_instance(
             read = t.read_mesh(m)
             # The reader keeps only the nodes the faces use; the file may hold others (a vv
             # agglomerated file keeps every primal node). Its vertices must be exactly the export
-            # points the merged faces use (vvexport.used_points), compared exactly (#43, incident
-            # of 2026-11-11).
+            # points the merged faces use (vvexport.used_points), compared exactly.
             if issues := vx.vertex_issues(read.points, pts, cells, ag):
                 record["invalid"] += [f"invalid: vertices: {i}" for i in issues]
                 checkpoint(record)

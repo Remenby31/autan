@@ -331,3 +331,28 @@ def test_a_vv_instance_on_the_real_vv_file_runs_every_check_and_passes(
     assert rec["check1"] == []
     assert rec["stage"] == "done"
     assert h.passed(rec, spec)
+
+
+def test_the_vertices_in_any_order_are_accepted() -> None:
+    pts, cells, ag, read = _vv()
+    shuffled = read[np.random.default_rng(1).permutation(len(read))]
+    assert vx.vertex_issues(shuffled, pts, cells, ag) == []
+
+
+def test_an_unused_export_point_among_the_vertices_is_refused() -> None:
+    pts, cells, ag, read = _vv()
+    used = vx.used_points(pts, cells, ag)
+    unused = next(p for p in pts.tolist() if tuple(p) not in used)
+    issues = vx.vertex_issues(np.vstack([read, [unused]]), pts, cells, ag)
+    assert issues == ["1 vertices of the mesh are not export points the faces use"]
+
+
+def test_export_points_sharing_coordinates_are_refused() -> None:
+    pts, cells, ag, read = _vv()
+    used = vx.used_points(pts, cells, ag)
+    k = next(i for i, p in enumerate(pts.tolist()) if tuple(p) not in used)
+    v = next(i for i, p in enumerate(pts.tolist()) if tuple(p) in used)
+    aliased = pts.copy()
+    aliased[k] = aliased[v]  # an unused point moved onto a used one
+    issues = vx.vertex_issues(read, aliased, cells, ag)
+    assert issues == ["1 export points the faces use share their coordinates with another"]
