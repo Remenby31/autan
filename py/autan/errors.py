@@ -851,6 +851,16 @@ _CODES = [
         "Continue with the binary of the original run, or start the chain again with this one.",
     ),
     Code(
+        "W0717",
+        "Device result not covered by a tight bound",
+        "The device comparison on this combination is not covered by a tight bound (#586 2(b): G "
+        "beyond 4.79, the largest G at which tightness was measured): a laminar run on a CUDA "
+        "device in fp32+acc64 with farfield or inlet faces, on a mesh whose gradient stencils "
+        "amplify a boundary value by more than that. `data` gives that amplification `G` and the "
+        "largest covered one, `G_covered`.",
+        "Use fp64.",
+    ),
+    Code(
         "D0107",
         "Divergence",
         "The solution diverged: a residual or a state became non-finite or non-physical. "

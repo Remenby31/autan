@@ -3460,6 +3460,68 @@ TEST_CASE("A launcher killed after its ranks is judged by their markers", "[runt
   REQUIRE(waitpid(zombie, &waited, 0) == zombie);
 }
 
+TEST_CASE("A physics' warning reaches run.json and log.jsonl", "[runtime]") {
+  // Log::warn (runtime.md): a W code of the physics is listed in run.json `diagnostics` and logged
+  // at level warning, source solver, as the runtime's own.
+  autan_test::RelaxationOptions options;
+  options.warn = true;
+  const Outcome o = run(input(), options);
+  REQUIRE(o.status == ExitStatus::finished);
+  const Json info = Json::parse(read(o.run / "run.json"));
+  std::vector<Json> listed;
+  for (const auto& d : info["diagnostics"]) {
+    if (d["code"] == "W0717") listed.push_back(d);
+  }
+  REQUIRE(listed.size() == 1);
+  CHECK(listed[0]["data"]["source"] == "relaxation");
+  std::vector<Json> warnings;
+  std::ifstream in(o.run / "log.jsonl");
+  for (std::string line; std::getline(in, line);) {
+    const Json event = Json::parse(line);
+    if (event["code"] == "W0717") warnings.push_back(event);
+  }
+  REQUIRE(warnings.size() == 1);
+  CHECK(warnings[0]["level"] == "warning");
+  CHECK(warnings[0]["source"] == "solver");
+  CHECK_FALSE(warnings[0]["data"].contains("rank"));
+}
+
+TEST_CASE("Several ranks record a physics' warning once, rank 0's, and log every rank's",
+          "[runtime][mpi]") {
+  // Log::warn (runtime.md): every rank raises it alike; rank 0 lists it in run.json
+  // `diagnostics` and logs it, the others log theirs with their rank.
+  constexpr int ranks = 2;
+  const fs::path run = run_on_ranks(input(), ranks, {"AUTAN_TEST_WARN=1"});
+  const Json info = Json::parse(read(run / "run.json"));
+  CHECK(std::ranges::count_if(info["diagnostics"],
+                              [](const Json& d) { return d["code"] == "W0717"; }) == 1);
+  std::vector<int> logged;
+  std::ifstream in(run / "log.jsonl");
+  for (std::string line; std::getline(in, line);) {
+    const Json event = Json::parse(line);
+    if (event["code"] != "W0717") continue;
+    CHECK(event["level"] == "warning");
+    CHECK(event["data"]["source"] == "relaxation");
+    logged.push_back(event["data"].contains("rank") ? event["data"]["rank"].get<int>() : 0);
+  }
+  std::ranges::sort(logged);
+  CHECK(logged == std::vector<int>{0, 1});
+
+  // The failed run.json of a run whose rank 1 fails after the warning, written by that rank, lists
+  // the warning too.
+  const Json failed = Json::parse(read(
+      run_on_ranks(input(), ranks,
+                   {"AUTAN_TEST_WARN=1", "AUTAN_TEST_THROW_AT=1", "AUTAN_TEST_THROW_RANK=1"}, 1) /
+      "run.json"));
+  CHECK(failed["status"] == "failed");
+  auto has = [&](const char* code) {
+    return std::ranges::count_if(failed["diagnostics"],
+                                 [&](const Json& d) { return d["code"] == code; }) == 1;
+  };
+  CHECK(has("W0717"));
+  CHECK(has("E0704"));
+}
+
 TEST_CASE("The ranks of a host share its memory", "[runtime][mpi]") {
   // solver-input.md, `memory` is one rank's: two ranks on one host need twice it.
   constexpr std::int64_t huge = std::int64_t{1} << 60;
