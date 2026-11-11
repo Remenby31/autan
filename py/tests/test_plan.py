@@ -396,8 +396,14 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     )
     assert by_name["solver input"].bytes_host == bound + 2**16
     assert by_name["solver input setup"].bytes_host == 41 * (bound + 2**16)
-    # The writer adds the coordinates 24N and 64-bit connectivity 8 max(F, C) + 8 max(P, K).
-    assert by_name["solution output"].bytes_host == 2 * 34 * 80 + 24 * 30 + 8 * 41 + 8 * 160
+    # The writer adds the coordinates 24N and 64-bit connectivity 8 max(F, C) + 8 max(P, K); a
+    # steady fp32+acc64 run also writes its first-order start's window, 501 FP64 values, kept
+    # twice as the fields are (#611).
+    assert by_name["solution output"].bytes_host == (
+        2 * 34 * 80 + 24 * 30 + 8 * 41 + 8 * 160 + 2 * 8 * 501
+    )
+    assert by_name["first-order start window"].bytes_host == 8 * 501
+    assert not by_name["first-order start window"].transient
     # RCM order keeps the renumbered mesh (the mesh terms without geometry) and its maps.
     renumbered = 720 + 640 + 640 + 240 + 80 + 200 + 4 * 10 + 5 * 40 + 4 * 30
     assert by_name["renumbered mesh"].bytes_host == renumbered
@@ -572,12 +578,18 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     # and its descriptors at their bounds, held from cg_open: run metadata of 64 KiB, also
     # copied and parsed (40 B a byte), and zone names of 25 600 B for each of the 2 zones and
     # the document; HDF5's default caches; and cg_open's tree, 1 MiB and 16 KiB a node, at the
-    # 16 384 nodes the runtime accepts in a start file.
-    modes: tuple[tuple[Literal["continue", "warm"], int], ...] = (("continue", 34), ("warm", 6))
-    for mode, fields in modes:
+    # 16 384 nodes the runtime accepts in a start file. A continuation of a steady fp32+acc64
+    # run also reads its first-order start's window, 501 FP64 values, and copies the rank's
+    # (#611).
+    modes: tuple[tuple[Literal["continue", "warm"], int, int], ...] = (
+        ("continue", 34, 2 * 8 * 501),
+        ("warm", 6, 0),
+    )
+    for mode, fields, window in modes:
         started = autan.load(write_case(TINY)).plan(tiny_mesh(20), device_kind="cpu", start=mode)
         assert {c.name: c for c in started.memory.components}["start"].bytes_host == (
             8 * (10 + 10) * fields
+            + window
             + 42 * 64 * 2**10
             + 25_600 * 3
             + caches
