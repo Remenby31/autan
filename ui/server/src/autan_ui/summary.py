@@ -31,8 +31,9 @@ def residual_orders(
     """Orders of magnitude the slowest equation not yet converged has dropped since iteration 1,
     by the steady convergence rule of case-schema.md#time: `math.inf` once every equation is.
 
-    An equation below the floor at iteration 1 (FLOOR times the largest first residual) is
-    exempt while it stays at or below it; once above, it joins `woken`, which this call
+    A momentum component drops from the largest first residual of the momentum components
+    (#544). An equation below the floor at iteration 1 (FLOOR times the largest first residual)
+    is exempt while it stays at or below it; once above, it joins `woken`, which this call
     updates, is never exempt again, and drops from the largest first residual of the momentum
     components for a momentum component, of every equation otherwise. An equation a converged
     run counted converged on a round-off plateau (`plateau`, run.json `convergence.plateau`)
@@ -48,7 +49,7 @@ def residual_orders(
             if _number(value) and 0 <= value <= floor:
                 continue
             woken.add(name)
-        if zero:
+        if zero or name.startswith("momentum-"):
             start = _kind_reference(first, name)
         if name in (plateau or ()):
             continue  # Converged on a round-off plateau.
