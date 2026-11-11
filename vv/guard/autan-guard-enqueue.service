@@ -1,0 +1,6 @@
+[Unit]
+Description=Autan nightly convergence guard: enqueue (#611)
+
+[Service]
+Type=oneshot
+ExecStart=%h/cfd/vv-guard/repo/vv/guard/enqueue.sh

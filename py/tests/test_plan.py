@@ -82,7 +82,13 @@ def test_heat_exchanger_example_plans_two_gases_and_a_solid(
         (
             "crm-hl",
             lambda d: d["boundary_zones"].append(
-                {"name": "ghost", "type": None, "native_type": None, "faces": 0}
+                {
+                    "name": "ghost",
+                    "type": None,
+                    "native_type": None,
+                    "faces": 0,
+                    "first_cell_height": None,
+                }
             ),
             CRM_HL,
             [],
@@ -246,6 +252,7 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
                     "type": "farfield",
                     "native_type": None,
                     "faces": boundary_faces,
+                    "first_cell_height": {"min": 0.01, "median": 0.02, "max": 0.05},
                 }
             ],
             "cell_zones": [{"name": "fluid", "type": None, "native_type": None, "cells": 10}],
@@ -311,13 +318,29 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     lines = autan.load(write_case(CRM_HL + "case.time = autan.Steady(linear_solver='lines')\n"))
     assert "E0212" in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cpu"))
     assert "E0212" not in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cuda"))
-    # Nor is a partition holding the vertex stencil's ghosts that of a face2 run.
-    vertex = prepared(mesh_document("crm-hl"), ranks=4)
-    vertex["partition"]["ghost_stencil"] = "vertex"
-    on_vertex = autan.MeshInfo.from_document(vertex, autan.Location())
-    assert "E0212" in diagnostic_codes(
-        autan.load(write_case(CRM_HL)).plan(on_vertex, gpus=4, device_kind="cuda")
-    )
+    # The ghosts a run's partition holds (mesh-info.md): face2 for inviscid flow; for a viscous
+    # run, laminar or SA, vertex4 under reproducibility "ranks" and vertex3 otherwise. Any other
+    # partition is not the run's. One row per outcome: inviscid in any mode, each viscous model
+    # outside "ranks" (in "run" and in "none"), and under "ranks".
+    rule = {
+        ("Inviscid", "ranks"): "face2",
+        ("Laminar", "run"): "vertex3",
+        ("SA", "none"): "vertex3",
+        ("Laminar", "ranks"): "vertex4",
+    }
+    for (turbulence, reproducibility), needed in rule.items():
+        case = autan.load(
+            write_case(
+                CRM_HL.replace(
+                    "autan.SA())", f'autan.{turbulence}(), reproducibility="{reproducibility}")'
+                )
+            )
+        )
+        for stencil in ("face2", "vertex3", "vertex4"):
+            document = prepared(mesh_document("crm-hl"), ranks=4, ghost_stencil=stencil)
+            on_stencil = autan.MeshInfo.from_document(document, autan.Location())
+            refused = "E0212" in diagnostic_codes(case.plan(on_stencil, gpus=4, device_kind="cuda"))
+            assert refused == (stencil != needed), (turbulence, reproducibility, stencil)
     by_name = {c.name: c for c in four.components}
     assert by_name["mesh"] == {c.name: c for c in cuda.components}["mesh"]
     assert four.bytes_device < cuda.bytes_device / 3

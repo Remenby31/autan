@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import sys
 from dataclasses import asdict
@@ -37,6 +38,9 @@ def _cmd_mms(args: argparse.Namespace) -> None:
 
 
 def _cmd_meshes(args: argparse.Namespace) -> None:
+    if args.export_cells and args.kind not in ("tet", "poly", "agglomerated"):
+        msg = f"--export-cells applies to tet, poly and agglomerated, not {args.kind}"
+        raise VVError(msg, code="V0309")
     if args.kind == "naca0012":
         from autan_vv.meshes import naca0012  # noqa: PLC0415
 
@@ -49,7 +53,12 @@ def _cmd_meshes(args: argparse.Namespace) -> None:
         from autan_vv.meshes.families import generate_family  # noqa: PLC0415
 
         family, _ = generate_family(
-            args.kind, args.levels, args.out, perturbation=args.perturbation, seed=args.seed
+            args.kind,
+            args.levels,
+            args.out,
+            perturbation=args.perturbation,
+            seed=args.seed,
+            export_cells=args.export_cells,
         )
     for lv in family.levels:
         _say(f"{lv.file}: {lv.n_cells} cells, h = {lv.h:.4g}, sha256 {lv.file_sha256[:12]}")
@@ -490,6 +499,54 @@ def _cmd_agree(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+def _strict(value: object) -> object:
+    """Non-finite floats become null, so a report is strict JSON."""
+    if isinstance(value, dict):
+        return {k: _strict(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_strict(v) for v in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+def _cmd_guard(args: argparse.Namespace) -> None:
+    from autan_vv import guard  # noqa: PLC0415
+
+    if args.action == "status":
+        _say(guard.night_status(args.night))
+        return
+    previous, note = None, None
+    if args.previous is not None:
+        try:
+            previous = json.loads(args.previous.read_text())
+        except (OSError, ValueError) as err:
+            note = f"previous verdict unreadable: {err}"
+    report = guard.verdict(
+        args.run1,
+        args.run2,
+        args.commit,
+        has_544=args.has_544,
+        previous=previous,
+        previous_history=args.previous_history,
+        exit_codes=(args.rc1, args.rc2),
+        infra=args.infra,
+    )
+    if note:
+        report["note"] = note
+    tmp = args.night / ".verdict.json.tmp"
+    tmp.write_text(json.dumps(_strict(report), indent=2, allow_nan=False) + "\n")
+    tmp.replace(args.night / "verdict.json")
+    failing = ", ".join(
+        f"{c['gate']}:{c.get('equation') or c.get('measure') or c.get('rule') or ''}"
+        for c in report.get("failing", [])
+    )
+    detail = failing or report.get("reason") or report.get("infra") or ""
+    _say(f"{report['outcome']} {report['commit'][:12]} {detail}")
+    if report["outcome"] == "red":
+        raise SystemExit(1)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the `autan-vv` CLI; returns the process exit code (2 on a coded V&V error)."""
     parser = argparse.ArgumentParser(prog="autan-vv", description=__doc__)
@@ -527,6 +584,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--perturbation", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", type=Path, required=True)
+    p.add_argument(
+        "--export-cells",
+        action="store_true",
+        help="also write each level's primal cells, <level>.cells.json (tet, poly, agglomerated;"
+        " docs/validation/meshes.md)",
+    )
     p.set_defaults(func=_cmd_meshes)
 
     p = sub.add_parser("m2-cases", help="write the NACA 0012 or ONERA M6 cases of every level")
@@ -668,6 +731,24 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--k", type=float, default=500.0)
     p.add_argument("--out", type=Path)
     p.set_defaults(func=_cmd_agree)
+
+    p = sub.add_parser(
+        "guard", help="nightly convergence guard (#611): a night's verdict, or its status"
+    )
+    p.add_argument("action", choices=("verdict", "status"))
+    p.add_argument("night", type=Path, help="the night's directory (verdict.json is written there)")
+    p.add_argument("--run1", type=Path, help="verdict: the first run directory")
+    p.add_argument("--run2", type=Path, help="verdict: the second run directory")
+    p.add_argument("--commit", help="verdict: the night's pinned commit")
+    p.add_argument(
+        "--has-544", action="store_true", help="verdict: the commit contains #544's merge"
+    )
+    p.add_argument("--previous", type=Path, help="verdict: the last green night's verdict.json")
+    p.add_argument("--previous-history", type=Path, help="verdict: that night's run-1 history")
+    p.add_argument("--rc1", type=int, default=0, help="verdict: run 1's exit code")
+    p.add_argument("--rc2", type=int, default=0, help="verdict: run 2's exit code")
+    p.add_argument("--infra", help="verdict: evidenced infrastructure failure (the night is void)")
+    p.set_defaults(func=_cmd_guard)
 
     p = sub.add_parser("cases", help="list or download reference cases, verifying checksums")
     p.add_argument("action", choices=("list", "fetch"))

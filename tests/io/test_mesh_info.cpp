@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -6,8 +7,10 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <random>
+#include <set>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -15,11 +18,13 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <nlohmann/json.hpp>
 
 #include "autan/core/cellwise.hpp"
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
+#include "autan/core/mesh.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "fixtures.hpp"
@@ -63,6 +68,103 @@ TEST_CASE("The mesh hash follows the MeshInfo contract", "[mesh-info]") {
     write(dir / "cellZones", "cz");
     CHECK(autan::io::mesh_hash(dir) ==
           "3d0fa5c0ad6c894d6f887b1a3ad8ba0418a4b06e5208125c29f0ae91073ee9df");
+  }
+}
+
+TEST_CASE("MeshInfo gives each boundary zone's first-cell height", "[mesh-info]") {
+  // mesh-info.md: the first-cell height of a boundary face is |(x_cell - x_face) . n| for its
+  // owner cell, in the file's units; each zone with faces gives its min, median (the mean of the
+  // two middle values for an even count) and max, a zone without faces null.
+  constexpr double eps = std::numeric_limits<double>::epsilon();
+  const auto info = [](const autan::Mesh& mesh) {
+    return nlohmann::json::parse(autan::io::mesh_info_json(mesh, std::string(64, '0'), 1, {}, {}));
+  };
+  const auto zone = [](const nlohmann::json& doc, const std::string& name) {
+    for (const auto& z : doc["boundary_zones"])
+      if (z["name"] == name) return z;
+    FAIL("no zone " << name);
+    return nlohmann::json{};
+  };
+  const auto near = [&](const nlohmann::json& height, std::array<double, 3> expected) {
+    CHECK_THAT(height["min"].get<double>(), Catch::Matchers::WithinAbs(expected[0], 64 * eps));
+    CHECK_THAT(height["median"].get<double>(), Catch::Matchers::WithinAbs(expected[1], 64 * eps));
+    CHECK_THAT(height["max"].get<double>(), Catch::Matchers::WithinAbs(expected[2], 64 * eps));
+  };
+
+  SECTION("a box of hexahedra, uniform and graded along y") {
+    // n = 4 cells of side 1/4: the first cell's centre lies 1/8 from each side. Graded by
+    // y -> y^2, the cells stay boxes: the first layer at y = 0 spans [0, 1/16] (centre 1/32 from
+    // the wall), the last [9/16, 1] (7/32 from y = 1); along x and z nothing changes.
+    auto box = autan::test::box(4, autan::test::BoxFill::hexa);
+    box.face_zones.push_back(autan::FaceZone{.name = "empty",
+                                             .bc_type = "",
+                                             .kind = autan::BcKind::unspecified,
+                                             .provenance = {.source_id = 6, .detail = "test"}});
+    const auto uniform = info(autan::assemble(autan::to_face_based(box)));
+    for (const char* side : {"xmin", "xmax", "ymin", "ymax", "zmin", "zmax"}) {
+      CAPTURE(side);
+      near(zone(uniform, side)["first_cell_height"], {0.125, 0.125, 0.125});
+    }
+    CHECK(zone(uniform, "empty")["faces"] == 0);
+    CHECK(zone(uniform, "empty")["first_cell_height"].is_null());
+    for (double& y : box.y) y *= y;
+    const auto graded = info(autan::assemble(autan::to_face_based(box)));
+    near(zone(graded, "ymin")["first_cell_height"], {1.0 / 32, 1.0 / 32, 1.0 / 32});
+    near(zone(graded, "ymax")["first_cell_height"], {7.0 / 32, 7.0 / 32, 7.0 / 32});
+    near(zone(graded, "xmin")["first_cell_height"], {0.125, 0.125, 0.125});
+  }
+
+  SECTION("tetrahedra, from their nodes alone") {
+    // A tetrahedron's centroid is the mean of its four nodes and a triangle's of its three; the
+    // height is the distance from the one to the plane of the other.
+    const autan::Mesh mesh = autan::io::read_mesh(data_dir / "tet" / "polyMesh");
+    const auto doc = info(mesh);
+    const auto point = [&](autan::index_t v) {
+      const auto i = static_cast<std::size_t>(v);
+      return std::array<double, 3>{mesh.x()[i], mesh.y()[i], mesh.z()[i]};
+    };
+    const auto offsets = mesh.boundary_zone_offsets();
+    for (const auto& z : doc["boundary_zones"]) {
+      CAPTURE(z["name"]);
+      std::size_t index = 0;
+      while (mesh.face_zones()[index].name != z["name"].get<std::string>()) ++index;
+      std::vector<double> h;
+      for (auto f = offsets[index]; f < offsets[index + 1]; ++f) {
+        std::set<autan::index_t> nodes;
+        for (const autan::index_t cf : mesh.cell_faces(mesh.owner()[static_cast<std::size_t>(f)]))
+          for (const autan::index_t v : mesh.face_nodes(cf)) nodes.insert(v);
+        REQUIRE(nodes.size() == 4);
+        std::array<double, 3> cell{};
+        for (const autan::index_t v : nodes)
+          for (std::size_t d = 0; d < 3; ++d) cell[d] += point(v)[d] / 4;
+        const auto tri = mesh.face_nodes(f);
+        REQUIRE(tri.size() == 3);
+        const auto a = point(tri[0]), b = point(tri[1]), c = point(tri[2]);
+        std::array<double, 3> face{}, u{}, w{};
+        for (std::size_t d = 0; d < 3; ++d) {
+          face[d] = (a[d] + b[d] + c[d]) / 3;
+          u[d] = b[d] - a[d];
+          w[d] = c[d] - a[d];
+        }
+        const std::array<double, 3> n{u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2],
+                                      u[0] * w[1] - u[1] * w[0]};
+        const double length = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        h.push_back(std::abs((cell[0] - face[0]) * n[0] + (cell[1] - face[1]) * n[1] +
+                             (cell[2] - face[2]) * n[2]) /
+                    length);
+      }
+      REQUIRE_FALSE(h.empty());
+      std::ranges::sort(h);
+      const std::size_t m = h.size() / 2;
+      const double median = h.size() % 2 == 1 ? h[m] : (h[m - 1] + h[m]) / 2;
+      const double scale = 64 * eps * h.back();
+      CHECK_THAT(z["first_cell_height"]["min"].get<double>(),
+                 Catch::Matchers::WithinAbs(h.front(), scale));
+      CHECK_THAT(z["first_cell_height"]["median"].get<double>(),
+                 Catch::Matchers::WithinAbs(median, scale));
+      CHECK_THAT(z["first_cell_height"]["max"].get<double>(),
+                 Catch::Matchers::WithinAbs(h.back(), scale));
+    }
   }
 }
 

@@ -38,6 +38,7 @@
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/core/renumber.hpp"
+#include "autan/core/wall_distance.hpp"
 #include "autan/io/cgns.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
@@ -360,6 +361,7 @@ struct Prepared {
   const PartitionGroups* groups = nullptr;    // the physics' groups; null or empty: none
   GhostStencil ghosts = GhostStencil::face2;  // the stencil the physics declares
   const RestartScalars* scalars = nullptr;    // its SolverState arrays; null or empty: none
+  bool wall_distance = false;                 // the physics reads PhysicsContext::wall_distance
   std::vector<Diagnostic> memory_warnings = {};  // W0712, W0713: the memory check's warnings
   std::optional<StartState> start;               // input.start, read and checked
   Json start_averaging;                          // `continue`: the previous run's averaging
@@ -404,6 +406,11 @@ class NoGhosts final : public GhostExchange {
  public:
   void forward(std::span<float* const> /*c*/, MemorySpace /*s*/, void* /*stream*/) override {}
   void forward(std::span<double* const> /*c*/, MemorySpace /*s*/, void* /*stream*/) override {}
+  CellRows forward_rows(const CellRows& owned, std::span<const std::uint8_t> /*wanted*/) override {
+    CellRows none;
+    none.stride = owned.stride;
+    return none;
+  }
 };
 
 // A private copy of a file and the SHA-256 of the bytes copied: what is
@@ -1528,6 +1535,7 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
     }
     if (ghosts) p.ghosts = *ghosts;
   }
+  if (entry != nullptr) p.wall_distance = entry->wall_distance;
   if (entry != nullptr && ranks > 1 && !entry->several_ranks) {
     throw InputError(Diagnostic{
         .code = "E0706",
@@ -1798,6 +1806,7 @@ class Run final : public Log {
   void stop_on(fs::path file) { stop_file_ = std::move(file); }
 
   ExitStatus execute() {
+    if (p_.wall_distance) wall_distance_ = compute_wall_distance();
     const StartState* start = local_start_ ? &*local_start_ : p_.start ? &*p_.start : nullptr;
     const std::vector<io::Field>* initial = local_initial_ ? &*local_initial_
                                             : p_.initial   ? &*p_.initial
@@ -1821,7 +1830,8 @@ class Run final : public Log {
                                  .group_cells = group_cells_,
                                  .cell_group_colours = group_colours_,
                                  .n_group_colours = n_group_colours_,
-                                 .ghost_stencil = local_ ? std::optional(p_.ghosts) : std::nullopt};
+                                 .ghost_stencil = local_ ? std::optional(p_.ghosts) : std::nullopt,
+                                 .wall_distance = wall_distance_};
     std::string status = "running";
     std::int64_t done = continued() ? p_.input.start->iterations : 0;
     try {
@@ -2062,6 +2072,30 @@ class Run final : public Log {
   }
 
   [[nodiscard]] const Mesh& physics_mesh() const { return local_ ? local_->mesh : compute_mesh(); }
+
+  // PhysicsContext::wall_distance: the walls of the whole mesh (the input's no-slip wall zones),
+  // queried at each centroid of the physics' mesh, owned and ghosts; empty without a wall. The
+  // surface is freed once queried.
+  [[nodiscard]] std::vector<double> compute_wall_distance() const {
+    const Mesh& global = compute_mesh();
+    std::vector<index_t> walls;
+    for (const auto& b : p_.input.boundaries) {
+      if (b.kind != "wall") continue;
+      for (std::size_t z = 0; z < global.face_zones().size(); ++z) {
+        if (global.face_zones()[z].name == b.zone) walls.push_back(static_cast<index_t>(z));
+      }
+    }
+    if (walls.empty()) return {};
+    std::sort(walls.begin(), walls.end());
+    walls.erase(std::unique(walls.begin(), walls.end()), walls.end());
+    const WallSurface surface(global, walls);
+    const Geometry& g = physics_geometry();
+    std::vector<double> d(at(physics_mesh().n_cells()));
+    for (std::size_t c = 0; c < d.size(); ++c) {
+      d[c] = surface.distance({g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]});
+    }
+    return d;
+  }
   [[nodiscard]] const Geometry& physics_geometry() const {
     return local_ ? local_->geometry : geometry_;
   }
@@ -2146,6 +2180,26 @@ class Run final : public Log {
       Json data = Json::parse(data_json.empty() ? "{}" : data_json);
       data["rank"] = comm_.rank();
       dir_->append_log(log_line(level, source, message, code, data.dump()));
+    }
+    log_seconds_ += seconds_since(start);
+  }
+
+  void warn(std::string_view code, std::string_view message, std::string_view data_json) override {
+    if (!code.starts_with('W')) {
+      throw std::logic_error("Log::warn takes a warning code, not " + std::string(code));
+    }
+    const auto start = std::chrono::steady_clock::now();
+    const Diagnostic d{.code = std::string(code),
+                       .message = std::string(message),
+                       .path = {},
+                       .data_json = data_json.empty() ? "{}" : std::string(data_json)};
+    // Every rank lists it, whichever writes run.json (a failed run's may be another rank's); rank
+    // 0 logs it, the others log theirs with their rank.
+    add_diagnostic(d);
+    if (comm_.rank() != 0) {
+      Json data = Json::parse(d.json())["data"];
+      data["rank"] = comm_.rank();
+      dir_->append_log(log_line("warning", "solver", d.message, d.code, data.dump()));
     }
     log_seconds_ += seconds_since(start);
   }
@@ -2720,7 +2774,7 @@ class Run final : public Log {
   std::int64_t write_failures_ = 0;
   Json first_failure_ = nullptr;
   std::optional<std::size_t> write_warning_;
-  double log_seconds_ = 0.0;    // spent in write()
+  double log_seconds_ = 0.0;    // spent in write() and warn()
   fs::path stop_file_;          // --stop-file; empty: none
   double solve_seconds_ = 0.0;  // this rank's step() and accumulate_average()
   // Declared before the physics, so destroyed after it: its stream outlives the physics' use.
@@ -2730,6 +2784,7 @@ class Run final : public Log {
   std::optional<Ordered> ordered_;
   CellGroups groups_;  // the physics' groups, over p_.mesh's cells
   Geometry geometry_;
+  std::vector<double> wall_distance_;  // PhysicsContext::wall_distance
   std::optional<LocalPartition> local_;
   std::map<index_t, std::vector<double>> local_states_;  // boundary_states, physics order
   // PhysicsContext's global keys of the physics' faces: through the partition
@@ -2762,10 +2817,11 @@ class Run final : public Log {
 
 void PhysicsRegistry::add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope,
                           bool several_ranks, PartitionGroups groups, RestartNames restart,
-                          GhostStencils ghosts, RestartScalars scalars) {
+                          GhostStencils ghosts, RestartScalars scalars, bool wall_distance) {
   entries_.emplace_back(
-      std::move(key), Entry{std::move(factory), std::move(scope), several_ranks, std::move(groups),
-                            std::move(restart), std::move(ghosts), std::move(scalars)});
+      std::move(key),
+      Entry{std::move(factory), std::move(scope), several_ranks, std::move(groups),
+            std::move(restart), std::move(ghosts), std::move(scalars), wall_distance});
 }
 
 const PhysicsRegistry::Entry* PhysicsRegistry::find(const SolverInput& in) const {

@@ -1,6 +1,8 @@
 [files]
 # French text (design documents, translations named *.fr.*), and binary or generated data.
 extend-exclude = [
+  "third_party/nlohmann_json/",
+  "third_party/picosha2/",
   "docs/PLAN.md",
   "docs/plan.html",
   "docs/research/state-of-the-art*",

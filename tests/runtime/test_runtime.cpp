@@ -1188,6 +1188,10 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
         run(input([](Json& d) { d["cell_zones"][0]["medium"]["viscosity"].erase("law"); })),
         "E0705");
     require_error(run(input([](Json& d) { d["time"].erase("kind"); })), "E0705");
+    require_error(run(input([](Json& d) { d["time"].erase("start_order"); })), "E0705");
+  }
+  SECTION("E0705 start_order other than first or second") {
+    require_error(run(input([](Json& d) { d["time"]["start_order"] = "third"; })), "E0705");
   }
   SECTION("E0705 value a kind forbids") {
     require_error(run(input([](Json& d) { d["boundaries"][0]["static_pressure"] = 1e5; })),
@@ -1320,6 +1324,15 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
         [](Json& m) { m["cell_zones"][0]["cells"] = m["cell_zones"][0]["cells"].get<int>() + 1; },
         [](Json& m) { m["boundary_zones"][0]["type"] = "outflow"; },
         [](Json& m) { m["boundary_zones"].push_back(m["boundary_zones"][0]); },
+        // first_cell_height (mesh-info.md): null exactly without faces, 0 <= min <= median <=
+        // max, three equal numbers for one face.
+        [](Json& m) { m["boundary_zones"][0].erase("first_cell_height"); },
+        [](Json& m) { m["boundary_zones"][0]["first_cell_height"] = nullptr; },
+        [](Json& m) { m["boundary_zones"][0]["first_cell_height"]["min"] = -1.0; },
+        [](Json& m) {
+          auto& h = m["boundary_zones"][0]["first_cell_height"];
+          h["median"] = h["max"].get<double>() * 2;
+        },
         [](Json& m) { m["bounds"]["min"][0] = 1e9; },
         [](Json& m) { m["quality"]["lines"]["long_cells"] = m["counts"]["cells"].get<int>() + 1; },
         [](Json& m) {
@@ -2432,8 +2445,8 @@ TEST_CASE("A start the runtime cannot honour exits 2 before any directory", "[ru
     });
     require_error(o, "E0134");
     const Json refusal = Json::parse(o.err.substr(0, o.err.find('\n')));
-    CHECK(refusal["data"]["node"] == node);
-    CHECK(refusal["location"]["path"] == "start.run");
+    CHECK(refusal.at("data").at("node") == node);
+    CHECK(refusal.at("location").at("path") == "start.run");
   }
   SECTION("the previous run was computed on another mesh") {
     // The same cells, but another file: its hash differs.
@@ -3471,6 +3484,68 @@ TEST_CASE("A launcher killed after its ranks is judged by their markers", "[runt
   REQUIRE(waitpid(zombie, &waited, 0) == zombie);
 }
 
+TEST_CASE("A physics' warning reaches run.json and log.jsonl", "[runtime]") {
+  // Log::warn (runtime.md): a W code of the physics is listed in run.json `diagnostics` and logged
+  // at level warning, source solver, as the runtime's own.
+  autan_test::RelaxationOptions options;
+  options.warn = true;
+  const Outcome o = run(input(), options);
+  REQUIRE(o.status == ExitStatus::finished);
+  const Json info = Json::parse(read(o.run / "run.json"));
+  std::vector<Json> listed;
+  for (const auto& d : info["diagnostics"]) {
+    if (d["code"] == "W0717") listed.push_back(d);
+  }
+  REQUIRE(listed.size() == 1);
+  CHECK(listed[0]["data"]["source"] == "relaxation");
+  std::vector<Json> warnings;
+  std::ifstream in(o.run / "log.jsonl");
+  for (std::string line; std::getline(in, line);) {
+    const Json event = Json::parse(line);
+    if (event["code"] == "W0717") warnings.push_back(event);
+  }
+  REQUIRE(warnings.size() == 1);
+  CHECK(warnings[0]["level"] == "warning");
+  CHECK(warnings[0]["source"] == "solver");
+  CHECK_FALSE(warnings[0]["data"].contains("rank"));
+}
+
+TEST_CASE("Several ranks record a physics' warning once, rank 0's, and log every rank's",
+          "[runtime][mpi]") {
+  // Log::warn (runtime.md): every rank raises it alike; rank 0 lists it in run.json
+  // `diagnostics` and logs it, the others log theirs with their rank.
+  constexpr int ranks = 2;
+  const fs::path run = run_on_ranks(input(), ranks, {"AUTAN_TEST_WARN=1"});
+  const Json info = Json::parse(read(run / "run.json"));
+  CHECK(std::ranges::count_if(info["diagnostics"],
+                              [](const Json& d) { return d["code"] == "W0717"; }) == 1);
+  std::vector<int> logged;
+  std::ifstream in(run / "log.jsonl");
+  for (std::string line; std::getline(in, line);) {
+    const Json event = Json::parse(line);
+    if (event["code"] != "W0717") continue;
+    CHECK(event["level"] == "warning");
+    CHECK(event["data"]["source"] == "relaxation");
+    logged.push_back(event["data"].contains("rank") ? event["data"]["rank"].get<int>() : 0);
+  }
+  std::ranges::sort(logged);
+  CHECK(logged == std::vector<int>{0, 1});
+
+  // The failed run.json of a run whose rank 1 fails after the warning, written by that rank, lists
+  // the warning too.
+  const Json failed = Json::parse(read(
+      run_on_ranks(input(), ranks,
+                   {"AUTAN_TEST_WARN=1", "AUTAN_TEST_THROW_AT=1", "AUTAN_TEST_THROW_RANK=1"}, 1) /
+      "run.json"));
+  CHECK(failed["status"] == "failed");
+  auto has = [&](const char* code) {
+    return std::ranges::count_if(failed["diagnostics"],
+                                 [&](const Json& d) { return d["code"] == code; }) == 1;
+  };
+  CHECK(has("W0717"));
+  CHECK(has("E0704"));
+}
+
 TEST_CASE("The ranks of a host share its memory", "[runtime][mpi]") {
   // solver-input.md, `memory` is one rank's: two ranks on one host need twice it.
   constexpr std::int64_t huge = std::int64_t{1} << 60;
@@ -3736,8 +3811,8 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
                        "run.json"));
   CHECK(f["status"] == "failed");
   CHECK(f["iterations"] == 3);
-  CHECK(f["diagnostics"][0]["code"] == "E0704");
-  CHECK(f["diagnostics"][0]["data"]["rank"] == ranks - 1);
+  CHECK(f.at("diagnostics").at(0).at("code") == "E0704");
+  CHECK(f.at("diagnostics").at(0).at("data").at("rank") == ranks - 1);
 
   // The same failure in the final monitor record (loads() called only by
   // finish, `every` beyond the run), the others inside the collective sum of
@@ -3752,8 +3827,8 @@ TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {
                        "run.json"));
   CHECK(g["status"] == "failed");
   CHECK(g["monitors"].is_null());
-  CHECK(g["diagnostics"][0]["code"] == "E0704");
-  CHECK(g["diagnostics"][0]["data"]["rank"] == ranks - 1);
+  CHECK(g.at("diagnostics").at(0).at("code") == "E0704");
+  CHECK(g.at("diagnostics").at(0).at("data").at("rank") == ranks - 1);
 
   // A stop file the last rank creates during iteration 5: rank 0 sees it, and
   // all stop before iteration 6.
