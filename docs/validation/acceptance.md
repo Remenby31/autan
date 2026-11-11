@@ -55,9 +55,9 @@ Set on 2026-11-11 for `logs`, `diff` and the results API's DLPack export ([#684]
 
 | Criterion | Threshold | Source |
 |---|---|---|
-| `autan logs` | every line of a run's `log.jsonl` reads as the shape of [results.md](../contracts/results.md), and `--json` prints it byte for byte; `-f` returns on each final status and prints no line twice; a missing or malformed run directory exits 2 with its code | PLAN M4; *ours*: the log is a contract, so the command must lose nothing of it |
-| `autan diff`, determinism | two runs of one case under reproducibility `"ranks"`, on 1 and on 2 ranks: exit 0 with `--bitwise` | PLAN M4; *ours*: runtime.md promises those bits, and `diff` must confirm them |
-| `autan diff`, a difference | the same case with a perturbed freestream: exit 1, the report naming every field that differs | PLAN M4; *ours* |
+| `autan logs` | every line of a run's `log.jsonl` reads as the shape of [results.md](../contracts/results.md), and `--json` prints it byte for byte; `-f` on a run still writing prints every line it writes, in order and once each, including the last ones written before `run.json` reaches its final status, then returns, whichever final status it is; a missing or malformed run directory exits 2 with its code | PLAN M4; *ours*: the log is a contract, so the command must lose nothing of it |
+| `autan diff`, determinism | two runs of one case under reproducibility `"ranks"`, on 1 and on 2 ranks, same commit: exit 0 with `--bitwise`. The record compares case hash, mesh hash, solver commit, precision, reproducibility mode and final status; rank count, run id and timings are reported, not compared | PLAN M4; *ours*: runtime.md promises those bits, and `diff` must confirm them |
+| `autan diff`, a difference | the same case with a perturbed freestream: exit 1 with and without `--bitwise`, the report naming every field that differs; two runs with the same numbers whose records differ (one `completed`, one `stopped` at the same iteration): exit 1, the report naming the record entry | PLAN M4; *ours* |
 | Results through DLPack | every array the results API returns exports through DLPack on the host (`kDLCPU`) without a copy: the consumer's array shares the results' memory | PLAN M4; *ours* |
 
 Export without leaving the GPU is out of the alpha: it is a beta item, and needs in-process bindings to the runtime. The other M4 items (`plan`'s y+, VTK output, the TMR cases driven end to end by the SDK) are set here when they are scheduled.
