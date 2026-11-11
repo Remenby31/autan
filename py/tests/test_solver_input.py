@@ -388,7 +388,14 @@ def test_reproducibility_reaches_the_runtime_and_the_hash(
     assert (spec.hash() == autan.load(write_case(CRM_HL, name="default.py")).spec.hash()) == (
         mode == "run"  # the default
     )
-    assert main(["prepare", str(case), "--mesh-info", str(FIXTURES / "crm-hl.meshinfo.json")]) == 0
+    # The MeshInfo holds the ghosts the mode's NS physics declares (mesh-info.md): vertex4 under
+    # "ranks", vertex3 otherwise, as the fixture has.
+    info = json.loads((FIXTURES / "crm-hl.meshinfo.json").read_text())
+    if mode == "ranks":
+        info["partition"]["ghost_stencil"] = "vertex4"
+    info_path = tmp_path / "crm-hl.meshinfo.json"
+    info_path.write_text(json.dumps(info))
+    assert main(["prepare", str(case), "--mesh-info", str(info_path)]) == 0
     document = json.loads(capsys.readouterr().out)
     jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
     assert document["reproducibility"] == mode

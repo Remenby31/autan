@@ -318,13 +318,29 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     lines = autan.load(write_case(CRM_HL + "case.time = autan.Steady(linear_solver='lines')\n"))
     assert "E0212" in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cpu"))
     assert "E0212" not in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cuda"))
-    # Nor is a partition holding face2's ghosts that of an SA run, whose fits read four vertex
-    # rings (vertex4).
-    face2 = prepared(mesh_document("crm-hl"), ranks=4, ghost_stencil="face2")
-    on_face2 = autan.MeshInfo.from_document(face2, autan.Location())
-    assert "E0212" in diagnostic_codes(
-        autan.load(write_case(CRM_HL)).plan(on_face2, gpus=4, device_kind="cuda")
-    )
+    # The ghosts a run's partition holds (mesh-info.md): face2 for inviscid flow; for a viscous
+    # run, laminar or SA, vertex4 under reproducibility "ranks" and vertex3 otherwise. Any other
+    # partition is not the run's. One row per outcome: inviscid in any mode, each viscous model
+    # outside "ranks" (in "run" and in "none"), and under "ranks".
+    rule = {
+        ("Inviscid", "ranks"): "face2",
+        ("Laminar", "run"): "vertex3",
+        ("SA", "none"): "vertex3",
+        ("Laminar", "ranks"): "vertex4",
+    }
+    for (turbulence, reproducibility), needed in rule.items():
+        case = autan.load(
+            write_case(
+                CRM_HL.replace(
+                    "autan.SA())", f'autan.{turbulence}(), reproducibility="{reproducibility}")'
+                )
+            )
+        )
+        for stencil in ("face2", "vertex3", "vertex4"):
+            document = prepared(mesh_document("crm-hl"), ranks=4, ghost_stencil=stencil)
+            on_stencil = autan.MeshInfo.from_document(document, autan.Location())
+            refused = "E0212" in diagnostic_codes(case.plan(on_stencil, gpus=4, device_kind="cuda"))
+            assert refused == (stencil != needed), (turbulence, reproducibility, stencil)
     by_name = {c.name: c for c in four.components}
     assert by_name["mesh"] == {c.name: c for c in cuda.components}["mesh"]
     assert four.bytes_device < cuda.bytes_device / 3
