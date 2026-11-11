@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "autan/io/read_mesh.hpp"
@@ -94,6 +95,7 @@ class FluentReader {
       const int id = c_.integer<int>(10, "()");
       section(id);
     }
+    sort_records();
     return build();
   }
 
@@ -376,13 +378,31 @@ class FluentReader {
       c_.unsupported("more than " + std::to_string(max_cell_zone_records) +
                      " fluid, solid or interior zone records");
     }
-    records_[id] = at;
+    if (records_.size() == records_.capacity()) {
+      sort_records();
+      // Half the list free after a sort, so that repeated records sort it a logarithmic number
+      // of times.
+      if (2 * records_.size() > records_.capacity()) records_.reserve(2 * records_.capacity());
+    }
+    records_.emplace_back(id, at);
+  }
+
+  // Sorts the records by zone id, keeping for each id its last, whose offset is the largest.
+  void sort_records() {
+    std::ranges::sort(records_);
+    std::size_t kept = 0;
+    for (std::size_t r = 0; r < records_.size(); ++r) {
+      if (r + 1 < records_.size() && records_[r + 1].first == records_[r].first) continue;
+      records_[kept++] = records_[r];
+    }
+    records_.resize(kept);
   }
 
   // The zone record of zone `id`, the last one given winning.
   [[nodiscard]] std::optional<ZoneInfo> zone_info(std::int64_t id) const {
-    const auto it = records_.find(id);
-    if (it == records_.end()) return std::nullopt;
+    const auto it =
+        std::ranges::lower_bound(records_, id, {}, &std::pair<std::int64_t, std::size_t>::first);
+    if (it == records_.end() || it->first != id) return std::nullopt;
     return record_at(it->second);
   }
 
@@ -568,7 +588,7 @@ class FluentReader {
   std::vector<std::int64_t> face_cell1_;
   std::vector<index_t> face_block_;
   std::vector<FaceBlock> face_blocks_;
-  std::map<std::int64_t, std::size_t> records_;  // zone id -> offset of its last record
+  std::vector<std::pair<std::int64_t, std::size_t>> records_;  // zone id, offset of a record
   static constexpr std::size_t max_cell_zone_records = 16384;
   std::size_t cell_zone_records_ = 0;  // fluid, solid and interior records among them
   std::size_t interior_sections_ = 0;  // face sections holding an interior face
