@@ -56,6 +56,10 @@ class Log {
   /// JSON object.
   virtual void write(std::string_view level, std::string_view source, std::string_view message,
                      std::string_view code = {}, std::string_view data_json = "{}") = 0;
+  /// A registry warning (a W code) of the physics: logged at level warning, source solver, and
+  /// listed in run.json `diagnostics` as the runtime's own are. Another code is std::logic_error.
+  virtual void warn(std::string_view code, std::string_view message,
+                    std::string_view data_json = "{}") = 0;
 };
 
 /// The state of the previous run a run starts from (input.start), read from

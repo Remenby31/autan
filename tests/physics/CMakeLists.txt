@@ -4,6 +4,7 @@ add_executable(
   test_implicit.cpp
   test_manufactured.cpp
   test_navier_stokes.cpp
+  test_sa_sweeps.cpp
   ${PROJECT_SOURCE_DIR}/tests/core/fixtures.cpp
 )
 target_include_directories(autan_physics_tests PRIVATE ${PROJECT_SOURCE_DIR}/tests/core)
@@ -20,6 +21,14 @@ target_compile_definitions(
 # The generated loops' data, which Euler::data() returns.
 target_include_directories(autan_physics_tests PRIVATE ${PROJECT_BINARY_DIR}/physics/generated)
 catch_discover_tests(autan_physics_tests)
+# The colour sweeps' certificate (T2c, #163), hidden from the run above: a ctest label of its own,
+# run by gpu-tests nightly and on pull requests that touch the SA assembly or sweeps.
+catch_discover_tests(
+  autan_physics_tests
+  TEST_SPEC "[certificate]"
+  TEST_PREFIX "certificate: "
+  PROPERTIES LABELS certificate
+)
 
 # The manufactured-solution study's C ABI, through the shared library euler_mms.py loads.
 add_executable(autan_physics_mms_tests test_block_ilu.cpp test_mms_build_info.cpp)

@@ -916,6 +916,22 @@ This `continue` run's `autan-run` executable is not the one that wrote the state
 
 Fix: Continue with the binary of the original run, or start the chain again with this one.
 
+## W0717
+
+**Device result not covered by a tight bound** (warning)
+
+The device comparison on this combination is not covered by a tight bound (#586 2(b): G beyond 4.79, the largest G at which tightness was measured): a laminar run on a CUDA device in fp32+acc64 with farfield or inlet faces, on a mesh whose gradient stencils amplify a boundary value by more than that. `data` gives that amplification `G` and the largest covered one, `G_covered`.
+
+Fix: Use fp64.
+
+## E0720
+
+**Colouring couples a colour** (error)
+
+A colour-ordered smoother receives a colouring without one valid colour per cell, or in which two cells of one colour share an interior face.
+
+Fix: Pass the runtime's distance-1 cell colouring (PhysicsContext::cell_colours).
+
 ## W0801
 
 **No NVIDIA GPU found** (warning)

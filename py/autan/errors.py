@@ -817,6 +817,12 @@ _CODES = [
         "starts it anyway, at the risk of exhausting the machine.",
     ),
     Code(
+        "E0720",
+        "Colouring couples a colour",
+        "A colour-ordered smoother receives a colouring without one valid colour per cell, or in which two cells of one colour share an interior face.",
+        "Pass the runtime's distance-1 cell colouring (PhysicsContext::cell_colours).",
+    ),
+    Code(
         "W0712",
         "Run started beyond its memory",
         "The run was started with `--allow-oversubscription` although its memory estimate "
@@ -849,6 +855,16 @@ _CODES = [
         "starts from (run.json `solver.binary_sha256`, results.md#runjson): the chain may not be "
         "bit for bit the uninterrupted run. `data` gives the `expected` and `found` SHA-256.",
         "Continue with the binary of the original run, or start the chain again with this one.",
+    ),
+    Code(
+        "W0717",
+        "Device result not covered by a tight bound",
+        "The device comparison on this combination is not covered by a tight bound (#586 2(b): G "
+        "beyond 4.79, the largest G at which tightness was measured): a laminar run on a CUDA "
+        "device in fp32+acc64 with farfield or inlet faces, on a mesh whose gradient stencils "
+        "amplify a boundary value by more than that. `data` gives that amplification `G` and the "
+        "largest covered one, `G_covered`.",
+        "Use fp64.",
     ),
     Code(
         "D0107",

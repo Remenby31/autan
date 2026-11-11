@@ -3,7 +3,7 @@
 
     bench/ci/cpu-test-shards.py BUILD_DIR OUT_DIR N
 
-The CPU tests are the two sets gpu-tests ran on the Spark before they moved: `-LE 'gpu|mpi'`
+The CPU tests are the two sets gpu-tests ran on the Spark before they moved: `-LE 'gpu|mpi|certificate'`
 (run with -j 4) and `-L mpi -LE gpu` (the multi-rank tests, run with -j 1). Labels are matched as
 `ctest -L` matches them. Each set is dealt to the shards in the order of the tests' names, round
 robin, so every shard, building on its own runner, deals the same tests to the same shard whatever
@@ -24,7 +24,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-SETS = {"serial": ("-LE", "gpu|mpi"), "mpi": ("-L", "mpi", "-LE", "gpu")}
+SETS = {"serial": ("-LE", "gpu|mpi|certificate"), "mpi": ("-L", "mpi", "-LE", "gpu")}
 
 
 def listed(build: str, *selection: str) -> list[dict]:
@@ -55,7 +55,10 @@ def in_set(test: dict, name: str) -> bool:
     found = labels(test)
     gpu = any(re.search("gpu", label) for label in found)
     mpi = any(re.search("mpi", label) for label in found)
-    return not gpu and (mpi if name == "mpi" else not mpi)
+    certificate = any(re.search("certificate", label) for label in found)
+    if name == "mpi":
+        return mpi and not gpu
+    return not (gpu or mpi or certificate)
 
 
 def main(build: str, out_dir: str, n: int) -> int:

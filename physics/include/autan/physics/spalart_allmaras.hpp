@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <span>
@@ -58,13 +59,13 @@ class SpalartAllmaras {
   /// orientation.
   void assemble(std::span<const double> shift, std::span<double> diag, std::span<double> upper,
                 std::span<double> lower) const;
-  /// Solves the assembled system A dx = b with `sweeps` symmetric Gauss-Seidel sweeps: in cell
-  /// order, or with `colours` (the owned cells by global colour) colour by colour, forward then
-  /// backward, `exchange` filling dx's ghosts after each colour: the same sweeps on any number of
-  /// ranks and in any cell order.
+  /// Solves the assembled system A dx = b from the initial guess in `dx` with `sweeps` symmetric
+  /// Gauss-Seidel sweeps over `colours` (the owned cells by global colour, colour_groups): colour
+  /// by colour, forward then backward, `exchange` filling dx's ghosts after each colour. The same
+  /// sweeps on any number of ranks and in any cell order (ADR 0005, option B).
   void solve(std::span<const double> diag, std::span<const double> upper,
              std::span<const double> lower, std::span<const double> b, std::span<double> dx,
-             int sweeps, const std::vector<std::vector<std::size_t>>* colours = nullptr,
+             int sweeps, const std::vector<std::vector<std::size_t>>& colours,
              const std::function<void(std::span<double>)>& exchange = {}) const;
   /// The ghost exchange: nt's gradient, computed on the owned cells, is filled into the ghosts.
   void set_ghosts(GhostFill* ghosts) noexcept;
@@ -78,5 +79,13 @@ class SpalartAllmaras {
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
+
+/// The owned cells (the first `owned` of `mesh`) grouped by colour, in increasing index, for
+/// SpalartAllmaras<P>::solve. `colours` gives every cell of `mesh`, owned and ghosts, a colour in
+/// [0, n_colours), and no interior face joins two cells of one colour (the runtime's distance-1
+/// colouring, PhysicsContext::cell_colours). Refused otherwise (std::invalid_argument, E0720).
+std::vector<std::vector<std::size_t>> colour_groups(const Mesh& mesh,
+                                                    std::span<const std::int32_t> colours,
+                                                    std::int32_t n_colours, std::size_t owned);
 
 }  // namespace autan::physics

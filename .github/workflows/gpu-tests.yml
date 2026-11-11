@@ -40,7 +40,7 @@ env:
 
 jobs:
   # The CPU tests the Spark ran before the GPU tests, on hosted arm64 runners: the same two
-  # selections (-LE 'gpu|mpi' with -j 4, then -L mpi -LE gpu with -j 1), dealt into three shards
+  # selections (-LE 'gpu|mpi|certificate' with -j 4, then -L mpi -LE gpu with -j 1), dealt into three shards
   # by bench/ci/cpu-test-shards.py, which checks that each CPU test is in exactly one; job
   # cpu-tests-check then checks the same across the three runners. Each shard builds the tree
   # itself, in the dev image gpu-image.yml published from docker/dev, pinned by digest. Like the
@@ -291,6 +291,20 @@ jobs:
           path: ${{ runner.temp }}/inventory/cpu-all-*.names
           if-no-files-found: error
           retention-days: 7
+      # The SA colour sweeps' certificate (T2c, #163): nightly, on pushes to main, and on pull
+      # requests that touch the SA assembly or sweeps, the colouring or the step that calls them.
+      - name: Certificate tests (SA colour sweeps)
+        env:
+          CUDA_VISIBLE_DEVICES: ""
+          EVENT: ${{ github.event_name }}
+          CHANGED: ${{ steps.scope.outputs.paths }}
+        run: |
+          pattern='spalart_allmaras|colouring|cell_colours|physics/src/euler_physics\.cpp|test_sa_sweeps|tests/physics/CMakeLists\.txt|\.github/workflows/gpu-tests\.yml'
+          if [[ $EVENT != pull_request ]] || grep -Eq "$pattern" <<<"$CHANGED"; then
+            ctest --test-dir build -L certificate --output-on-failure --no-tests=error
+          else
+            echo "no change to the SA sweeps: certificate tests not run"
+          fi
       - name: Give this job priority on the GPU lock
         run: bench/ci/priority.sh start 90
       # The GPU tests in two holds of the lock, each well under its 10 minutes: all of them took
@@ -375,7 +389,7 @@ jobs:
           RUNNER: ${{ runner.name }}
         run: |
           echo "CPU tests on GB10, runner $RUNNER"
-          ctest --test-dir build -LE 'gpu|mpi' -j 4 --output-on-failure --no-tests=error
+          ctest --test-dir build -LE 'gpu|mpi|certificate' -j 4 --output-on-failure --no-tests=error
           ctest --test-dir build -L mpi -LE gpu -j 1 --output-on-failure --no-tests=error
 
   report-nightly:

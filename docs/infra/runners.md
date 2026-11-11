@@ -28,7 +28,7 @@ Jobs run directly in the runner container, which is the dev image with the GPU a
 
 ## Where gpu-tests runs its CPU tests
 
-The Spark runs gpu-tests' build, GPU tests and generator only. The CPU tests (`-LE 'gpu|mpi'` with `-j 4`, then `-L mpi -LE gpu` with `-j 1`) run on hosted `ubuntu-24.04-arm` runners, in job `cpu-tests`:
+The Spark runs gpu-tests' build, GPU tests and generator only. The CPU tests (`-LE 'gpu|mpi|certificate'` with `-j 4`, then `-L mpi -LE gpu` with `-j 1`) run on hosted `ubuntu-24.04-arm` runners, in job `cpu-tests`:
 - **Image and build.** Each runner builds the tree itself with the Spark job's configuration (the workflow's `CONFIGURE`). It runs in the dev image `gpu-image.yml` published, pinned by digest.
 - **Shards.** `bench/ci/cpu-test-shards.py` deals the tests into three shards by name, and job `cpu-tests-check` checks across the three runners that each CPU test ran exactly once and passed. A skip passes only when the test is listed in `bench/ci/cpu-test-skips.txt`, with the reason and the GB10 run that skips it the same way; any other skip fails like a failure.
 - **MPI settings.** Open MPI runs as root with oversubscription, through environment variables, so the test commands are the Spark's.
