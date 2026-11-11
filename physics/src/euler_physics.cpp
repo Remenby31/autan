@@ -154,7 +154,7 @@ class EulerPhysics final : public runtime::Physics {
   // The ghost stencil the flow's scheme reads (PhysicsRegistry::Entry::ghosts).
   static std::optional<GhostStencil> ghosts(const runtime::SolverInput& in) {
     if constexpr (is_viscous) {
-      return navier_stokes_ghost_stencil();
+      return navier_stokes_ghost_stencil(in.reproducibility == "ranks");
     } else {
       return ghost_stencil(flow_scheme(in));
     }
@@ -1508,6 +1508,9 @@ class EulerPhysics final : public runtime::Physics {
     }
     void forward(std::span<double* const> components) override {
       ghosts_.forward(components, MemorySpace::host, nullptr);
+    }
+    CellRows forward_rows(const CellRows& owned, std::span<const std::uint8_t> wanted) override {
+      return ghosts_.forward_rows(owned, wanted);
     }
 
    private:

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -47,6 +48,7 @@ extern char** environ;
 #include "autan/physics/first_order_start.hpp"
 #include "autan/physics/manufactured.hpp"
 #include "autan/physics/navier_stokes.hpp"
+#include "autan/runtime/input.hpp"
 #include "autan/runtime/physics.hpp"
 #include "autan/runtime/run.hpp"
 #include "fixtures.hpp"
@@ -1224,10 +1226,10 @@ TEST_CASE("cases outside the Euler physics are refused before any directory exis
   CHECK(out.run.empty());
   CHECK(!fs::exists(out.runs));
   const auto diagnostic = Json::parse(out.err.substr(0, out.err.find('\n')));
-  CHECK(diagnostic["code"] == "E0706");
-  CHECK(diagnostic["data"]["path"] == path);
-  CHECK(diagnostic["data"][field] == value);
-  CHECK(diagnostic["data"]["zone"] ==
+  CHECK(diagnostic.at("code") == "E0706");
+  CHECK(diagnostic.at("data").at("path") == path);
+  CHECK(diagnostic.at("data").at(field) == value);
+  CHECK(diagnostic.at("data").at("zone") ==
         (field == "medium" ? doc["cell_zones"][1]["zone"] : doc["boundaries"][boundary]["zone"]));
 }
 
@@ -1237,7 +1239,7 @@ namespace {
 // autan-run under the launcher on `ranks` ranks: its run directory, none for an invalid input;
 // its standard error in `err` when given.
 fs::path run_on_ranks(const Json& doc, int ranks, int expected_status = 0,
-                      std::string* err = nullptr) {
+                      std::string* err = nullptr, std::string binary = AUTAN_RUN) {
   std::random_device random;
   const fs::path dir = fs::temp_directory_path() / ("autan_euler_mpi-" + std::to_string(random()));
   fs::create_directories(dir);
@@ -1253,7 +1255,7 @@ fs::path run_on_ranks(const Json& doc, int ranks, int expected_status = 0,
   std::vector<std::string> args{AUTAN_MPIEXEC,
                                 AUTAN_MPIEXEC_NUMPROC_FLAG,
                                 std::to_string(ranks),
-                                AUTAN_RUN,
+                                binary,
                                 "--input",
                                 (dir / "solver-input.json").string(),
                                 "--runs",
@@ -1488,6 +1490,34 @@ static void ns_on_ranks(const char* model, const char* linear, bool steady, cons
 }
 
 TEST_CASE(
+    "the Navier-Stokes entries declare vertex4 ghosts under reproducibility ranks and vertex3 "
+    "otherwise",
+    "[navier-stokes]") {
+  // runtime.md, Registration (#651): only "ranks" fits the ghost face neighbours locally.
+  autan::runtime::PhysicsRegistry registry;
+  autan::physics::register_navier_stokes(registry);
+  const char* model = GENERATE("laminar", "sa");
+  const char* reproducibility = GENERATE("ranks", "run");
+  CAPTURE(model, reproducibility);
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    d["reproducibility"] = reproducibility;
+    if (std::string(model) == "laminar") {
+      d["physics"]["turbulence"]["model"] = "laminar";
+      d["physics"]["turbulence"]["nu_tilde_ratio"] = nullptr;
+      d["freestream"]["nu_tilde"] = nullptr;
+      for (auto& z : d["cell_zones"]) z["initial"]["nu_tilde"] = nullptr;
+    }
+  });
+  const auto in = autan::runtime::parse_solver_input(doc.dump());
+  const auto* entry = registry.find(in);
+  REQUIRE(entry != nullptr);
+  REQUIRE(entry->ghosts);
+  CHECK(entry->ghosts(in) == (std::string(reproducibility) == "ranks"
+                                  ? autan::GhostStencil::vertex4
+                                  : autan::GhostStencil::vertex3));
+}
+
+TEST_CASE(
     "laminar Navier-Stokes on several ranks gives the one-rank solution bit for bit in fp64 and "
     "unsteady",
     "[navier-stokes][mpi]") {
@@ -1511,6 +1541,94 @@ TEST_CASE("Spalart-Allmaras on several ranks gives the one-rank solution bit for
 TEST_CASE("Spalart-Allmaras on several ranks gives the one-rank solution bit for bit in fp32+acc64",
           "[navier-stokes][mpi]") {
   ns_on_ranks("sa", GENERATE("gauss-seidel", "lines"), true, "fp32+acc64", GENERATE(2, 4));
+}
+
+TEST_CASE("Navier-Stokes at ghost depth 3 repeats bit for bit at a fixed rank count",
+          "[navier-stokes][mpi]") {
+  // #651, G-fit v2 B4: outside reproducibility "ranks" the physics receives its ghosts' fit rows
+  // from their owners; the same input twice on the same rank count, past the switch to second
+  // order, gives the same history and every array of solution.cgns, bit for bit.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  const int ranks = GENERATE(2, 4);
+  INFO(precision << " on " << ranks << " ranks");
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    d["precision"] = precision;
+    d["reproducibility"] = "run";
+    d["time"]["linear_solver"] = "gauss-seidel";
+    d["time"]["residual_orders"] = 30.0;
+    // Outside "ranks" the switch comes at another step than past_switch's runs: fp32+acc64 is
+    // given room, and the switch is asserted below.
+    d["time"]["max_iterations"] =
+        std::string(precision) == "fp64" ? past_switch("sa", "gauss-seidel", precision) : 400;
+  });
+  std::string err;
+  const fs::path first = run_on_ranks(doc, ranks, 0, &err);
+  INFO(err);
+  REQUIRE(!first.empty());
+  const fs::path again = run_on_ranks(doc, ranks, 0, &err);
+  REQUIRE(!again.empty());
+  REQUIRE(field(first, "SolverSecondOrder", "RestartState").front() == 1.0);
+  CHECK(read(first / "history.jsonl") == read(again / "history.jsonl"));
+  const auto a = data_arrays(first), b = data_arrays(again);
+  REQUIRE(a.contains("WallSolution/WallShearStressX"));
+  CHECK(a.size() == b.size());
+  for (const auto& [name, values] : a) {
+    INFO(name);
+    REQUIRE(b.contains(name));
+    const auto& other = b.at(name);
+    REQUIRE(values.size() == other.size());
+    CHECK(std::memcmp(values.data(), other.data(), values.size() * sizeof(double)) == 0);
+  }
+}
+
+TEST_CASE("Navier-Stokes under reproducibility ranks gives the bits of the pinned reference",
+          "[navier-stokes][mpi][.b3]") {
+  // #651, G-fit v2 B3, hidden: run by hand with AUTAN_REFERENCE_RUN, the autan-run of 0a77fb9f
+  // (#648, vertex4 ghosts under "ranks"), built on the same host. #648's steady cases under
+  // "ranks" on 2 and 4 ranks give through this build the history and every array of the
+  // reference's run of the same input, bit for bit.
+  const char* reference = std::getenv("AUTAN_REFERENCE_RUN");
+  if (reference == nullptr) SKIP("AUTAN_REFERENCE_RUN names the reference autan-run");
+  const char* model = GENERATE("laminar", "sa");
+  const char* linear = GENERATE("gauss-seidel", "lines");
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  const int ranks = GENERATE(2, 4);
+  INFO(model << " " << linear << " " << precision << " on " << ranks << " ranks");
+  const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+    d["precision"] = precision;
+    if (std::string(model) == "laminar") {
+      d["physics"]["turbulence"]["model"] = "laminar";
+      d["physics"]["turbulence"]["nu_tilde_ratio"] = nullptr;
+      d["freestream"]["nu_tilde"] = nullptr;
+      for (auto& z : d["cell_zones"]) z["initial"]["nu_tilde"] = nullptr;
+    }
+    d["reproducibility"] = "ranks";
+    d["time"]["linear_solver"] = linear;
+    d["time"]["residual_orders"] = 30.0;
+    d["time"]["max_iterations"] = past_switch(model, linear, precision);
+  });
+  std::string err;
+  const fs::path ours = run_on_ranks(doc, ranks, 0, &err);
+  INFO(err);
+  REQUIRE(!ours.empty());
+  // The reference reads the input of its own version: time.start_order came after it, and
+  // "first", the default, is the only start it has.
+  Json older = doc;
+  REQUIRE(older["time"]["start_order"] == "first");
+  older["time"].erase("start_order");
+  const fs::path theirs = run_on_ranks(older, ranks, 0, &err, reference);
+  REQUIRE(!theirs.empty());
+  CHECK(read(ours / "history.jsonl") == read(theirs / "history.jsonl"));
+  const auto a = data_arrays(theirs), b = data_arrays(ours);
+  REQUIRE(a.contains("RestartState/SolverSecondOrder"));
+  CHECK(a.size() == b.size());
+  for (const auto& [name, values] : a) {
+    INFO(name);
+    REQUIRE(b.contains(name));
+    const auto& other = b.at(name);
+    REQUIRE(values.size() == other.size());
+    CHECK(std::memcmp(values.data(), other.data(), values.size() * sizeof(double)) == 0);
+  }
 }
 
 TEST_CASE("Spalart-Allmaras on ranks of which one holds no ghost runs as on one rank",
