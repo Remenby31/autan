@@ -138,8 +138,8 @@ struct LocalPartition {
 /// `global` has ghosts, E0140 if `parts`, `n_parts` or `rank`
 /// are out of range, `rank` owns no cell, or the periodic translations of
 /// `global` span more than three directions or are not linearly independent, and E0148 if, with
-/// `vertex`, a node of an owned cell keeps a face elsewhere: its cells do not all meet through
-/// faces around it.
+/// a vertex kind, a node the rings walk around keeps a face elsewhere: its cells do not all meet
+/// through faces around it.
 LocalPartition extract_partition(const Mesh& global, const Geometry& global_geometry,
                                  std::span<const std::int32_t> parts, std::int32_t n_parts,
                                  std::int32_t rank, GhostStencil ghosts = GhostStencil::face2);

@@ -1,10 +1,8 @@
-FetchContent_GetProperties(picosha2)
-
 add_executable(autan-run-relaxation relaxation_main.cpp)
 target_link_libraries(autan-run-relaxation PRIVATE autan::runtime autan_compile_options)
 
 add_executable(autan_runtime_tests test_runtime.cpp test_host_memory.cpp)
-target_include_directories(autan_runtime_tests SYSTEM PRIVATE ${picosha2_SOURCE_DIR})
+target_link_libraries(autan_runtime_tests PRIVATE autan::picosha2)
 target_include_directories(autan_runtime_tests PRIVATE ${PROJECT_SOURCE_DIR}/runtime/src)
 target_link_libraries(
   autan_runtime_tests
@@ -56,8 +54,11 @@ else()
 endif()
 
 # Ranks through the runtime's communicator: one rank here, 1 to 4 under MPI.
-add_executable(autan_ranks_tests test_ranks.cpp)
-target_include_directories(autan_ranks_tests PRIVATE ${PROJECT_SOURCE_DIR}/runtime/src)
+add_executable(autan_ranks_tests test_ranks.cpp ${PROJECT_SOURCE_DIR}/tests/core/fixtures.cpp)
+target_include_directories(
+  autan_ranks_tests
+  PRIVATE ${PROJECT_SOURCE_DIR}/runtime/src ${PROJECT_SOURCE_DIR}/tests/core
+)
 target_link_libraries(autan_ranks_tests PRIVATE autan::runtime Catch2::Catch2 autan_compile_options)
 add_test(NAME autan_ranks_tests COMMAND autan_ranks_tests)
 if(AUTAN_ENABLE_MPI)

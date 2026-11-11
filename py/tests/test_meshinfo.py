@@ -65,6 +65,15 @@ def _grouped(
         lambda d: _grouped(d, {"-wing": ["wing.main"]}),
         lambda d: _grouped(d, {"b": ["wing.main"], "a": ["wing.main"]}, sort=False),
         lambda d: _grouped(d, {"wing": ["wing.main"]}, source=False),
+        # first_cell_height (mesh-info.md): required, null exactly without faces, ordered,
+        # consistent with one or two faces
+        lambda d: _zones(d)[0].pop("first_cell_height"),
+        lambda d: _zones(d)[0].update(first_cell_height=None),
+        lambda d: _zones(d)[0].update(faces=0),
+        lambda d: _zones(d)[0].update(first_cell_height={"min": 2.0, "median": 1.0, "max": 3.0}),
+        lambda d: _zones(d)[0].update(first_cell_height={"min": -1.0, "median": 1.0, "max": 3.0}),
+        lambda d: _zones(d)[0].update(faces=1, first_cell_height=_height(1.0, 1.0, 2.0)),
+        lambda d: _zones(d)[0].update(faces=2, first_cell_height=_height(1.0, 1.0, 3.0)),
     ],
 )
 def test_invalid_documents_are_rejected_with_e0202(
@@ -73,6 +82,29 @@ def test_invalid_documents_are_rejected_with_e0202(
     with pytest.raises(autan.CaseError) as error:
         mesh_variant("crm-hl", edit)
     assert set(error.value.codes) == {"E0202"}
+
+
+def _height(low: float, median: float, high: float) -> dict[str, float]:
+    return {"min": low, "median": median, "max": high}
+
+
+def test_first_cell_heights_of_one_or_two_faces_and_of_a_wall_cell_centroid(
+    mesh_variant: Callable[..., autan.MeshInfo],
+) -> None:
+    # mesh-info.md: one face gives three equal numbers, two a median halfway between them; a
+    # concave cell's centroid may lie in its face's plane (height 0). Faces move between zones so
+    # that the boundary still holds the same faces.
+    for faces, height in ((1, _height(0.0, 0.0, 0.0)), (2, _height(1.0, 2.0, 3.0))):
+
+        def edit(d: dict[str, Any], faces: int = faces, height: dict[str, float] = height) -> None:
+            zones = _zones(d)
+            zones[1]["faces"] += zones[0]["faces"] - faces
+            zones[0].update(faces=faces, first_cell_height=height)
+
+        mesh = mesh_variant("crm-hl", edit)
+        zone = mesh.boundary_zones[0].first_cell_height
+        assert zone is not None
+        assert (zone.min, zone.median, zone.max) == (height["min"], height["median"], height["max"])
 
 
 def test_unreadable_file_is_e0202(tmp_path: Path) -> None:

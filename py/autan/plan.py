@@ -311,9 +311,18 @@ def partition_groups(spec: CaseSpec, device_kind: DeviceKind) -> str:
     return "lines" if lines and device_kind == "cpu" else "none"
 
 
-# The ghost stencil a run's partition holds: the one its physics declares, face2 for every scheme
-# a case selects (docs/contracts/mesh-info.md).
-PARTITION_GHOST_STENCIL = "face2"
+# The ghost stencil a run's partition holds: the one its physics declares (runtime.md,
+# Registration). Compressible Navier-Stokes and Spalart-Allmaras read the viscous boundary fits:
+# under reproducibility "ranks" four vertex rings, each rank fitting its ghost face neighbours
+# too; otherwise three, those fits received from their owners. The Euler physics, and the
+# incompressible cases no viscous physics serves, read face2.
+def partition_ghost_stencil(spec: CaseSpec) -> str:
+    viscous = isinstance(spec.physics, Compressible) and not isinstance(
+        spec.physics.turbulence, Inviscid
+    )
+    if not viscous:
+        return "face2"
+    return "vertex4" if spec.physics.reproducibility == "ranks" else "vertex3"
 
 
 def _check_prepared(
@@ -334,7 +343,7 @@ def _check_prepared(
             f"the case's mesh_unit is {scale:g} m"
         )
     partition = mesh.partition
-    ghost_stencil = PARTITION_GHOST_STENCIL
+    ghost_stencil = partition_ghost_stencil(spec)
     if gpus == 1 and extracts(spec, mesh, 1):
         if partition is None or partition.ranks != 1:
             problems.append(

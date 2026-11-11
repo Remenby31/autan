@@ -22,6 +22,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/generators/catch_generators_range.hpp>
+#include <unistd.h>
 
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
@@ -31,9 +32,12 @@
 #include "autan/kernels/runtime.hpp"
 #include "autan/partition/partition.hpp"
 #include "autan/physics/euler.hpp"
+#include "autan/physics/navier_stokes.hpp"
 #include "autan/physics/point_vortex.hpp"
 #include "euler_cpu.hpp"
 #include "fixtures.hpp"
+#include "navier_stokes_cpu.hpp"
+#include "stretched_slab.hpp"
 
 namespace {
 
@@ -240,7 +244,9 @@ TEMPLATE_TEST_CASE("slip walls keep a gauge pressure finer than FP32 resolves p_
   // residual reduce to the closure of the gauge pressure, even when p - p_ref = 1e-3 is below the
   // FP32 spacing of p_ref = 0.95e5 (7.8e-3).
   using P = TestType;
-  const fs::path file = fs::temp_directory_path() / "autan-one-skew-tet.msh";
+  // One file per process: the two precisions run as separate tests, possibly at once (ctest -j).
+  const fs::path file =
+      fs::temp_directory_path() / ("autan-one-skew-tet-" + std::to_string(::getpid()) + ".msh");
   {
     std::ofstream out(file);
     out << "$MeshFormat\n4.1 0 8\n$EndMeshFormat\n"
@@ -253,6 +259,7 @@ TEMPLATE_TEST_CASE("slip walls keep a gauge pressure finer than FP32 resolves p_
         << "3 1 4 1\n5 1 2 3 4\n$EndElements\n";
   }
   const Case c(file.c_str());
+  fs::remove(file);
   REQUIRE(c.mesh.n_cells() == 1);
   const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
   Euler<P> e(c.mesh, c.geometry, air, second_order(Flux::roe, 0.1));
@@ -1092,6 +1099,174 @@ TEMPLATE_TEST_CASE(
   }
 }
 
+namespace {
+
+// The viscous boundary fit of the owned cells (and, with `layer1`, of their ghost face neighbours)
+// of a Navier-Stokes physics built on `part` under its global keys, every boundary face an
+// isothermal wall, or with `ymin_only` zone ymin alone and the others slip walls: per cell by
+// global id, whether it carries a fit, and its stencil entries by global key (StencilKey) with
+// their 19 weights.
+using FitRow = std::pair<bool, std::vector<std::pair<StencilKey, std::array<double, 19>>>>;
+
+template <class P>
+std::map<std::int64_t, FitRow> fit_rows(const autan::LocalPartition& part, bool layer1,
+                                        bool ymin_only) {
+  const auto& m = part.mesh;
+  const autan::kernels::GlobalKeys keys{.cell = m.cell_global_id(),
+                                        .face = part.face_global_id,
+                                        .reversed = part.face_reversed,
+                                        .shift = m.ghost_translation()};
+  autan::physics::NavierStokes<P> ns(m, part.geometry, air, second_order(Flux::roe, 0.5),
+                                     autan::physics::Transport{}, &keys, part.ghosts);
+  const auto nb = static_cast<std::size_t>(m.n_boundary_faces());
+  const auto ni = static_cast<std::size_t>(m.n_interior_faces());
+  std::vector<BoundaryKind> kind(nb, BoundaryKind::slip);
+  std::vector<double> data(5 * nb, 0.0);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const auto zone = static_cast<std::size_t>(m.face_zone()[ni + b]);
+    if (!ymin_only || m.face_zones()[zone].name == "ymin") {
+      kind[b] = BoundaryKind::wall;
+      data[b] = 300.0;
+    }
+  }
+  ns.set_boundary(kind, data);
+  const auto& d = ns.data();
+  const auto n_owned = m.n_owned_cells();
+  const auto shift = [&](autan::index_t c) {
+    return c < n_owned ? std::array<double, 3>{}
+                       : m.ghost_translation()[static_cast<std::size_t>(c - n_owned)];
+  };
+  std::vector<char> listed(static_cast<std::size_t>(m.n_cells()), 0);
+  std::fill(listed.begin(), listed.begin() + static_cast<std::ptrdiff_t>(n_owned), 1);
+  if (layer1) {
+    for (autan::index_t f = 0; f < m.n_interior_faces(); ++f) {
+      const auto o = m.owner()[static_cast<std::size_t>(f)];
+      const auto n = m.neighbour()[static_cast<std::size_t>(f)];
+      if (o < n_owned) listed[static_cast<std::size_t>(n)] = 1;
+      if (n < n_owned) listed[static_cast<std::size_t>(o)] = 1;
+    }
+  }
+  const auto ns_entries = static_cast<std::size_t>(d.topo.n_stencil);
+  const std::array q{d.q0, d.q1, d.q2, d.q3, d.q4, d.q5, d.q6};
+  std::map<std::int64_t, FitRow> rows;
+  for (std::size_t c = 0; c < listed.size(); ++c) {
+    if (listed[c] == 0) continue;
+    FitRow& row = rows[m.cell_global_id()[c]];
+    row.first = static_cast<double>(d.quad[c]) > 0.5;
+    for (auto k = d.topo.stencil_offsets[c]; k < d.topo.stencil_offsets[c + 1]; ++k) {
+      const auto uk = static_cast<std::size_t>(k);
+      const autan::index_t e = d.topo.stencil[uk];
+      const auto f = static_cast<std::size_t>(-1 - e);
+      const StencilKey key =
+          e >= 0 ? StencilKey{0, m.cell_global_id()[static_cast<std::size_t>(e)], shift(e)}
+                 : StencilKey{1, part.face_global_id[f], shift(m.owner()[f])};
+      std::array<double, 19> w{};
+      for (std::size_t i = 0; i < 19; ++i) {
+        w[i] = static_cast<double>(q[i / 3][(i % 3) * ns_entries + uk]);
+      }
+      row.second.emplace_back(key, w);
+    }
+  }
+  return rows;
+}
+
+}  // namespace
+
+TEMPLATE_TEST_CASE(
+    "the owned cells of a part holding the Navier-Stokes ghost stencil and their face neighbours "
+    "have the boundary fits of one rank",
+    "[navier-stokes][partition]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // The viscous faces of an owned cell read the boundary fits of both their cells, built from up
+  // to three vertex rings of each (docs/design/ns-sa.md). A part holding four rings
+  // (navier_stokes_ghost_stencil under reproducibility "ranks") gives the owned cells and their
+  // ghost face neighbours the
+  // fit of the whole mesh: the same flag, entries in the same global order, and weights of the
+  // same bits. Every boundary face is a wall on the four meshes. On a stretched one-cell-thick
+  // slab, zone ymin alone is, as on a flat plate: the cells at its ends, where two rings hold
+  // three positions along it, take a fit over three rings (docs/design/ns-sa.md). A part holding
+  // two rings is refused (E0148), with ghosts or not.
+  using P = TestType;
+  const int which = GENERATE(range(0, static_cast<int>(meshes.size()) + 1));
+  const bool ymin_only = which == static_cast<int>(meshes.size());
+  INFO((ymin_only ? "stretched slab, wall ymin" : meshes[static_cast<std::size_t>(which)]));
+  const autan::Mesh global =
+      ymin_only ? autan::test::stretched_slab()
+                : autan::io::read_mesh(mesh_dir / meshes[static_cast<std::size_t>(which)]);
+  const autan::Geometry gg = autan::compute_geometry(global);
+  const auto stencil = autan::physics::navier_stokes_ghost_stencil(true);
+  REQUIRE(stencil == autan::GhostStencil::vertex4);
+  REQUIRE(autan::physics::navier_stokes_ghost_stencil(false) == autan::GhostStencil::vertex3);
+  const auto part_of = [&](const std::vector<std::int32_t>& parts, std::int32_t n, std::int32_t r,
+                           autan::GhostStencil g) {
+    auto part = autan::extract_partition(global, gg, parts, n, r, g);
+    auto& lg = part.geometry;
+    const auto& m = part.mesh;
+    for (autan::index_t c = m.n_owned_cells(); c < m.n_cells(); ++c) {
+      const auto u = static_cast<std::size_t>(c);
+      const auto o = static_cast<std::size_t>(m.cell_global_id()[u]);
+      const auto& t = m.ghost_translation()[static_cast<std::size_t>(c - m.n_owned_cells())];
+      lg.cell_volume[u] = gg.cell_volume[o];
+      lg.cell_centroid_x[u] = gg.cell_centroid_x[o] + t[0];
+      lg.cell_centroid_y[u] = gg.cell_centroid_y[o] + t[1];
+      lg.cell_centroid_z[u] = gg.cell_centroid_z[o] + t[2];
+    }
+    return part;
+  };
+  const auto reference =
+      fit_rows<P>(part_of(std::vector<std::int32_t>(gg.cell_volume.size(), 0), 1, 0, stencil),
+                  false, ymin_only);
+  REQUIRE(std::ssize(reference) == global.n_cells());
+  // Cells whose fit reaches a third vertex ring, whose stencil the parts must hold whole too.
+  const auto vertex = autan::kernels::cell_stencil(
+      global, autan::kernels::pack_geometry(global, gg), autan::kernels::StencilKind::vertex);
+  std::size_t three_rings = 0;
+  for (const auto& [id, row] : reference) {
+    std::set<std::int64_t> near{id};
+    for (int ring = 0; ring < 2; ++ring) {
+      const std::vector<std::int64_t> reached(near.begin(), near.end());
+      for (const auto c : reached) {
+        const auto uc = static_cast<std::size_t>(c);
+        for (auto k = vertex.offsets[uc]; k < vertex.offsets[uc + 1]; ++k) {
+          const auto e = vertex.entries[static_cast<std::size_t>(k)];
+          if (e >= 0) near.insert(e);
+        }
+      }
+    }
+    bool beyond = false;
+    for (const auto& entry : row.second) {
+      beyond =
+          beyond || (std::get<0>(entry.first) == 0 && !near.contains(std::get<1>(entry.first)));
+    }
+    three_rings += beyond ? 1 : 0;
+  }
+  INFO("cells fitted over three rings: " << three_rings);
+  if (ymin_only) CHECK(three_rings > 0);
+  std::size_t compared = 0;
+  for (const std::int32_t n : {2, 3, 4}) {
+    const auto parts = blocks(gg, n);
+    for (std::int32_t r = 0; r < n; ++r) {
+      for (const auto& [id, row] : fit_rows<P>(part_of(parts, n, r, stencil), true, ymin_only)) {
+        INFO("cell " << id << " on part " << r << " of " << n);
+        CHECK(row == reference.at(id));
+        compared += row.first ? 1 : 0;
+      }
+    }
+  }
+  CHECK(compared > 0);
+  const auto parts = blocks(gg, 4);
+  for (std::int32_t r = 0; r < 4; ++r) {
+    const auto part = part_of(parts, 4, r, autan::GhostStencil::vertex2);
+    try {
+      autan::physics::NavierStokes<P> ns(part.mesh, part.geometry, air,
+                                         second_order(Flux::roe, 0.5), autan::physics::Transport{},
+                                         nullptr, part.ghosts);
+      FAIL("expected E0148");
+    } catch (const autan::Error& e) {
+      CHECK(e.code() == autan::ErrorCode::partition_stencil_not_local);
+    }
+  }
+}
+
 TEST_CASE("a part without ghosts refuses a stencil its ghost stencil does not hold", "[euler]") {
   // Two hexahedra sharing one corner node: on two face2 parts neither cell has a ghost, yet each
   // one's vertex stencil on the whole mesh holds the other. A part's declared ghost stencil, not
@@ -1118,6 +1293,15 @@ TEST_CASE("a part without ghosts refuses a stencil its ghost stencil does not ho
   s.gradient = autan::physics::GradientStencil::vertex;
   try {
     Euler<autan::kernels::fp64> e(part.mesh, part.geometry, air, s, nullptr, part.ghosts);
+    FAIL("expected E0148");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == autan::ErrorCode::partition_stencil_not_local);
+  }
+  // The Navier-Stokes boundary fits reach the other cell through the node too.
+  try {
+    autan::physics::NavierStokes<autan::kernels::fp64> ns(
+        part.mesh, part.geometry, air, second_order(Flux::roe, 0.5), autan::physics::Transport{},
+        nullptr, part.ghosts);
     FAIL("expected E0148");
   } catch (const autan::Error& e) {
     CHECK(e.code() == autan::ErrorCode::partition_stencil_not_local);
