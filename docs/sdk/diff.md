@@ -22,8 +22,8 @@ In Python: `autan.diff(a, b, *, bitwise=False, rtol=1e-6, fields=None)` takes tw
 ## When two values agree
 
 - With `--bitwise`, two values agree when their bytes are equal.
-- Otherwise, values `a` and `b` agree when |a − b| ≤ `rtol` · max(|a|, |b|) + m, m being the smallest normal FP64 number, 2.2 × 10⁻³⁰⁸.
-  - The default `rtol` is 10⁻⁶. One unit in the last place of a value agrees, a zero included, and a value of magnitude above 10⁻³⁰⁴ scaled by 1.001 differs.
+- Otherwise, values `a` and `b` agree when they are equal or adjacent FP64 numbers, or when |a − b| ≤ `rtol` · max(|a|, |b|).
+  - The default `rtol` is 10⁻⁶. A value with its last bit flipped agrees (it is adjacent), a zero included, and a normal value scaled by 1.001 differs.
   - Every value is compared relatively, near zero too, so round-off on a field that is nearly zero (a transverse velocity) can differ between runs that are not bit for bit.
   - Non-finite values are refused by the reader where results.md refuses them (`E0701`).
 
