@@ -601,7 +601,7 @@ std::int64_t peak_of(const Run& run) {
   malloc_trim(0);
   // Base pages only: a host whose transparent huge pages (2 MiB, or a multi-size 64 KiB) are
   // "always" makes a fault resident a whole folio, so the count would round up by up to 2 MiB.
-  prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);
+  REQUIRE(prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0) == 0);
   const std::int64_t before = status_bytes("VmRSS");
   std::ofstream("/proc/self/clear_refs") << "5";  // VmHWM := VmRSS
   run();
