@@ -31,27 +31,28 @@ RUN = (
     "except KeyboardInterrupt:\n    sys.exit(130)\n"
     "except Exception:\n    sys.exit(1)\n"
 )
-# Knobs of the relaxation physics that end a run of at most 40 iterations with each final
-# status, late enough that the run writes for several seconds; "stopped" is a stop asked of the
-# SDK. At 0.25 s an iteration, a run lasts about 10 s.
+# Knobs of the relaxation physics that end a run of at most 60 iterations with each final
+# status after about 50 iterations; "stopped" is a stop asked of the SDK. At 0.25 s an
+# iteration, a run writes for more than 12 s.
 ENDINGS = {
-    "converged": {"AUTAN_TEST_FACTOR": "0.6"},
+    "converged": {"AUTAN_TEST_FACTOR": "0.7"},
     "completed": {"AUTAN_TEST_FACTOR": "1.0"},
-    "diverged": {"AUTAN_TEST_FACTOR": "1.0", "AUTAN_TEST_DIVERGE_AT": "36"},
-    "failed": {"AUTAN_TEST_FACTOR": "1.0", "AUTAN_TEST_THROW_AT": "36"},
+    "diverged": {"AUTAN_TEST_FACTOR": "1.0", "AUTAN_TEST_DIVERGE_AT": "50"},
+    "failed": {"AUTAN_TEST_FACTOR": "1.0", "AUTAN_TEST_THROW_AT": "50"},
     "stopped": {"AUTAN_TEST_FACTOR": "1.0"},
 }
 PAUSE_MS = "250"
-# The follower is a new Python process: lines are judged once it has had this long to start.
-STARTUP_SECONDS = 3.0
 LIVE_SECONDS = 5.0
+# Lines judged live must span longer than LIVE_SECONDS, so that printing them all at the end
+# cannot pass.
+SPAN_SECONDS = LIVE_SECONDS + 1.0
 
 
 def _inputs(tmp_path: Path) -> tuple[Path, Path]:
     assert MESH_INFO is not None
     case = tmp_path / "hybrid.py"
     case.write_text(
-        CASE + "case.time = autan.Steady(max_iterations=40, "
+        CASE + "case.time = autan.Steady(max_iterations=60, "
         "checkpoint=autan.Checkpoint(iterations=1))\n"
     )
     meshinfo = tmp_path / "hybrid.meshinfo.json"
@@ -88,7 +89,6 @@ class Follower:
     """`autan logs -f --json RUN` in its own process, each printed chunk with its arrival."""
 
     def __init__(self, run: Path) -> None:
-        self.started = time.monotonic()
         self.process = subprocess.Popen(
             [sys.executable, "-m", "autan.cli", "logs", "-f", "--json", str(run)],
             stdout=subprocess.PIPE,
@@ -104,6 +104,12 @@ class Follower:
 
     def output(self) -> bytes:
         return b"".join(chunk for _, chunk in self.printed)
+
+    def wait_for(self, expected: bytes, seconds: float) -> None:
+        deadline = time.monotonic() + seconds
+        while self.output() != expected and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert self.output() == expected
 
     def finish(self) -> int:
         try:
@@ -177,7 +183,8 @@ def _running_copy(tmp_path: Path) -> Path:
             time.sleep(0.02)
         [run] = runs.glob("run-*")
         copy = tmp_path / "copy" / run.name
-        shutil.copytree(run, copy)
+        # The writer's temporaries and checkpoint may be renamed while they are copied.
+        shutil.copytree(run, copy, ignore=shutil.ignore_patterns(".*", "*.tmp", "checkpoint.cgns"))
         writer.send_signal(signal.SIGTERM)
         writer.wait(timeout=60)
     finally:
@@ -197,16 +204,16 @@ def test_follow_holds_back_a_partial_line_and_takes_its_rewrite(tmp_path: Path) 
     last = head.splitlines(keepends=True)[-1]
     follower = Follower(copy)
     try:
+        follower.wait_for(head, 60)
         with (copy / "log.jsonl").open("ab") as log:
             log.write(b'{"time": "2026-11-11T00:00:00.000Z", "iteration": null, "lev')
-        time.sleep(STARTUP_SECONDS)
+        time.sleep(LIVE_SECONDS)
         assert follower.output() == head
         with (copy / "log.jsonl").open("r+b") as log:
             log.truncate(len(head))
         with (copy / "log.jsonl").open("ab") as log:
             log.write(last)
-        time.sleep(LIVE_SECONDS)
-        assert follower.output() == head + last
+        follower.wait_for(head + last, LIVE_SECONDS)
         info = json.loads((copy / "run.json").read_text())
         replaced = copy / "run.json.tmp"
         replaced.write_text(json.dumps({**info, "status": "stopped"}))
@@ -239,8 +246,10 @@ def test_follow_prints_every_line_live_until_the_final_status(tmp_path: Path, en
             running = json.loads((run / "run.json").read_text())["status"] == "running"
             now = time.monotonic()
             appeared.extend((now, running) for _ in range(seen - len(appeared)))
-            judged = [t for t, _ in appeared if t > follower.started + STARTUP_SECONDS]
-            if ending == "stopped" and len(judged) >= 8 and writer.poll() is None:
+            ready = follower.printed[0][0] if follower.printed else None
+            judged = [t for t, _ in appeared if ready is not None and t > ready]
+            stop = ending == "stopped" and judged and now - judged[0] > SPAN_SECONDS + 1
+            if stop and writer.poll() is None:
                 writer.send_signal(signal.SIGTERM)
             time.sleep(0.02)
         assert follower.finish() == 0
@@ -257,10 +266,14 @@ def test_follow_prints_every_line_live_until_the_final_status(tmp_path: Path, en
     printed_at: list[float] = []
     for arrival, chunk in follower.printed:
         printed_at.extend(arrival for _ in range(chunk.count(b"\n")))
+    # Once the follower prints (it is ready), every line appended while the run runs is printed
+    # within LIVE_SECONDS, over a span longer than LIVE_SECONDS.
+    ready = follower.printed[0][0]
     timed = [
         (printed, appeared_at)
         for printed, (appeared_at, running) in zip(printed_at, appeared, strict=True)
-        if running and appeared_at > follower.started + STARTUP_SECONDS
+        if running and appeared_at > ready
     ]
-    assert len(timed) >= 5, "too few lines were appended while the run ran"
+    assert timed, "no line was appended while the run ran"
+    assert timed[-1][1] - timed[0][1] > SPAN_SECONDS
     assert all(printed - appeared_at <= LIVE_SECONDS for printed, appeared_at in timed)
