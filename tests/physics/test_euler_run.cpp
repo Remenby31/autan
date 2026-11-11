@@ -1903,10 +1903,22 @@ static void ns_on_ranks(const char* model, const char* linear, bool steady, cons
   REQUIRE(one.status == ExitStatus::finished);
   if (steady) {
     REQUIRE(field(one.run, "SolverSecondOrder", "RestartState").front() == 1.0);
-    // At least 10 steps past the switch ran: no stop by convergence before them (past_switch).
+    // Every step of the budget after the switch is second order (the switch's step from the run's
+    // own log, the budget from its input): no stop by convergence, and at least the 10 steps past
+    // the switch past_switch gives.
     const auto steps = history(one.run);
-    REQUIRE(std::ranges::count_if(steps, [](const Json& e) { return e["provisional"] == false; }) >=
-            10);
+    const auto second =
+        std::ranges::count_if(steps, [](const Json& e) { return e["provisional"] == false; });
+    long switched = -1;
+    std::istringstream events(read(one.run / "log.jsonl"));
+    for (std::string line; std::getline(events, line);) {
+      if (line.empty()) continue;
+      const Json e = Json::parse(line);
+      if (e["message"] == "first-order start ended") switched = e["iteration"].get<long>();
+    }
+    REQUIRE(switched > 0);
+    REQUIRE(second == doc["time"]["max_iterations"].get<long>() - switched);
+    REQUIRE(second >= 10);
   }
   std::string err;
   const fs::path many = run_on_ranks(doc, ranks, 0, &err);
