@@ -2,8 +2,8 @@
   "schema": "autan.solver-input/1",
   "case": {
     "name": "hybrid-water",
-    "sha256": "77968e2fe544f61a3b72e68801bb51472e0222a78d7c5406a9abb5d436a79b00",
-    "toml": "schema = \"autan.case/1\"\nname = \"hybrid-water\"\nmesh = \"../mesh/hybrid/polyMesh\"\nmesh_unit = \"m\"\nboundaries = [\n    { zones = \"xmin\", condition = { kind = \"velocity-inlet\", velocity = \"2.0 m / s\" } },\n    { zones = \"xmax\", condition = { kind = \"outlet\", static_pressure = \"100000.0 Pa\" } },\n    { zones = \"ymin\", condition = { kind = \"wall\" } },\n    { zones = \"ymax\", condition = { kind = \"wall\" } },\n    { zones = \"zmin\", condition = { kind = \"symmetry\" } },\n    { zones = \"zmax\", condition = { kind = \"symmetry\" } },\n]\ncell_zones = []\nmonitors = []\n\n[physics]\nkind = \"incompressible\"\nprecision = \"fp32+acc64\"\nreproducibility = \"run\"\n\n[physics.turbulence]\nmodel = \"laminar\"\n\n[physics.fluid]\nkind = \"constant-density-fluid\"\nname = \"water\"\ndensity = \"998.2 kg / m ** 3\"\nviscosity = \"0.001002 Pa * s\"\n\n[freestream]\nvelocity = \"2.0 m / s\"\naoa = \"0.0 deg\"\nsideslip = \"0.0 deg\"\n\n[time]\nkind = \"steady\"\nmax_iterations = 10000\nresidual_orders = 8.0\nlinear_solver = \"multigrid\"\ncoupled_turbulence = false\nmatrix_free = false\n\n[time.checkpoint]\nseconds = \"1800.0 s\"\n"
+    "sha256": "af5583d6a6e093dd5b7329d9aafe3401dbc15a0066ca8931c171ec18dd2dbe43",
+    "toml": "schema = \"autan.case/1\"\nname = \"hybrid-water\"\nmesh = \"../mesh/hybrid/polyMesh\"\nmesh_unit = \"m\"\nboundaries = [\n    { zones = \"xmin\", condition = { kind = \"velocity-inlet\", velocity = \"2.0 m / s\" } },\n    { zones = \"xmax\", condition = { kind = \"outlet\", static_pressure = \"100000.0 Pa\" } },\n    { zones = \"ymin\", condition = { kind = \"wall\" } },\n    { zones = \"ymax\", condition = { kind = \"wall\" } },\n    { zones = \"zmin\", condition = { kind = \"symmetry\" } },\n    { zones = \"zmax\", condition = { kind = \"symmetry\" } },\n]\ncell_zones = []\nmonitors = []\n\n[physics]\nkind = \"incompressible\"\nprecision = \"fp32+acc64\"\nreproducibility = \"run\"\n\n[physics.turbulence]\nmodel = \"laminar\"\n\n[physics.fluid]\nkind = \"constant-density-fluid\"\nname = \"water\"\ndensity = \"998.2 kg / m ** 3\"\nviscosity = \"0.001002 Pa * s\"\n\n[freestream]\nvelocity = \"2.0 m / s\"\naoa = \"0.0 deg\"\nsideslip = \"0.0 deg\"\n\n[time]\nkind = \"steady\"\nmax_iterations = 10000\nresidual_orders = 8.0\nlinear_solver = \"multigrid\"\ncoupled_turbulence = false\nmatrix_free = false\nstart_order = \"first\"\n\n[time.checkpoint]\nseconds = \"1800.0 s\"\n"
   },
   "mesh": {
     "path": "@MESH@",
@@ -61,37 +61,67 @@
         "name": "xmin",
         "type": null,
         "native_type": "patch",
-        "faces": 24
+        "faces": 24,
+        "first_cell_height": {
+          "min": 0.03125,
+          "median": 0.125,
+          "max": 0.125
+        }
       },
       {
         "name": "xmax",
         "type": null,
         "native_type": "patch",
-        "faces": 24
+        "faces": 24,
+        "first_cell_height": {
+          "min": 0.0625,
+          "median": 0.0625,
+          "max": 0.08333333333333337
+        }
       },
       {
         "name": "ymin",
         "type": "wall",
         "native_type": "wall",
-        "faces": 20
+        "faces": 20,
+        "first_cell_height": {
+          "min": 0.03125,
+          "median": 0.07291666666666666,
+          "max": 0.125
+        }
       },
       {
         "name": "ymax",
         "type": null,
         "native_type": "patch",
-        "faces": 20
+        "faces": 20,
+        "first_cell_height": {
+          "min": 0.03125,
+          "median": 0.07291666666666669,
+          "max": 0.125
+        }
       },
       {
         "name": "zmin",
         "type": null,
         "native_type": "patch",
-        "faces": 24
+        "faces": 24,
+        "first_cell_height": {
+          "min": 0.03125,
+          "median": 0.125,
+          "max": 0.125
+        }
       },
       {
         "name": "zmax",
         "type": "symmetry",
         "native_type": "symmetryPlane",
-        "faces": 24
+        "faces": 24,
+        "first_cell_height": {
+          "min": 0.0625,
+          "median": 0.0625,
+          "max": 0.08333333333333337
+        }
       }
     ],
     "cell_zones": [
@@ -153,6 +183,7 @@
   },
   "physics": {
     "kind": "incompressible",
+    "flux": null,
     "turbulence": {
       "model": "laminar",
       "base": null,
@@ -311,6 +342,7 @@
     "linear_solver": "multigrid",
     "coupled_turbulence": false,
     "matrix_free": false,
+    "start_order": "first",
     "checkpoint": {
       "seconds": 1800.0
     }

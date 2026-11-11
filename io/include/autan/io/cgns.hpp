@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "autan/core/mesh.hpp"
@@ -63,11 +64,14 @@ struct Solution {
   /// earlier time levels), written as the FlowSolution_t "RestartState";
   /// readers of results ignore it. Empty: no such node.
   std::vector<Field> restart_fields;
+  /// The physics' own state that is not cell-centred, each array of any length >= 1, written as
+  /// the zone's UserDefinedData_t "SolverState"; readers of results ignore it. Empty: no node.
+  std::vector<Field> solver_state;
 };
 
 /// Cell fields of a solution.cgns written by write_solution, to restart from:
 /// the zone's cell count, the RunMetadata text, and FlowSolution,
-/// FlowSolutionMean and RestartState (each empty when absent, the last two
+/// FlowSolutionMean, RestartState and SolverState (each empty when absent, the last three
 /// not read without `whole_state`: a warm start needs only FlowSolution).
 /// Throws E0130 to E0133 for a file outside that layout.
 struct StoredSolution {
@@ -76,12 +80,19 @@ struct StoredSolution {
   std::vector<Field> fields;
   std::vector<Field> mean_fields;
   std::vector<Field> restart_fields;
+  std::vector<Field> solver_state;
 };
 StoredSolution read_solution(const std::filesystem::path& file, bool whole_state = true);
 
 /// The arrays of each FlowSolution_t of the zone of start solution `file`, by solution name, read
 /// through cgio without their values (after check_start_solution: the walk is bounded).
 std::map<std::string, std::vector<std::string>> solution_field_names(
+    const std::filesystem::path& file);
+
+/// The arrays of the zone's SolverState of start solution `file` and their lengths, in the file's
+/// order, through cgio without their values; empty without the node. E0132 for an array that is
+/// not one-dimensional R8.
+std::vector<std::pair<std::string, std::int64_t>> solver_state_arrays(
     const std::filesystem::path& file);
 
 /// The run's mesh a start solution was written for: its boundary and cell zones and its periodic
@@ -104,7 +115,8 @@ std::int64_t solution_cells(const std::filesystem::path& file);
 
 /// Writes `solution` and `mesh` (unpartitioned) as solution.cgns with the
 /// layout of docs/contracts/results.md. Throws E0101 when the mesh has ghost
-/// cells, an array's size does not match the mesh, a BC type is unknown or set
+/// cells, an array's size does not match the mesh, a solver state array is
+/// empty or named twice, a BC type is unknown or set
 /// on a periodic zone, or a non-periodic boundary zone with faces has an empty
 /// BC type; E0102 when `wall_faces` is not ascending and distinct or holds an
 /// index outside the boundary faces [n_interior_faces, n_faces); E0130 when

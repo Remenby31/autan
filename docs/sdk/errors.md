@@ -348,6 +348,22 @@ A launcher started several ranks of a build without MPI.
 
 Fix: Run this build on one rank, or use a build with MPI, such as the dev image.
 
+## E0147
+
+**Not a run's solution** (error)
+
+`autan-vtu` was given a CGNS file without a `FlowSolution`: a mesh, not a run's `solution.cgns` (vtu.md).
+
+Fix: Give it the `solution.cgns` of a run directory.
+
+## E0148
+
+**Stencil not local to the partition** (error)
+
+A stencil reaches a cell or face that the partition does not hold: the physics' stencil is wider than the partition's ghost stencil, or the cells around a node of an owned cell do not all meet through faces around it.
+
+Fix: Run on one rank, or choose a scheme whose stencil the partition holds; a mesh whose cells meet at a node only cannot run the vertex stencil on several ranks.
+
 ## W0150
 
 **Periodic nodes moved** (warning)
@@ -448,9 +464,9 @@ Fix: Put the groups file next to the mesh.
 
 **MeshInfo prepared for another run** (error)
 
-The MeshInfo's derived counts are not for this run: its lines were computed at another scale than the case's `mesh_unit`, or a run on several ranks has no partition for that rank count and the groups its linear solver keeps whole, or a run on one rank with periodic pairs or reproducibility `"ranks"` has no one-part partition. The message names the difference.
+The MeshInfo's derived counts are not for this run: its lines were computed at another scale than the case's `mesh_unit`, or a run on several ranks has no partition for that rank count, the groups its linear solver keeps whole and the ghost stencil its physics reads, or a run on one rank with periodic pairs or reproducibility `"ranks"` has no such one-part partition. The message names the difference.
 
-Fix: Run `autan-mesh-info --json --scale <metres per mesh unit>` again, with `--ranks N` (and `--groups lines` for a steady CPU run with the lines solver) for a run on N ranks.
+Fix: Run `autan-mesh-info --json --scale <metres per mesh unit>` again, with `--ranks N` (and `--groups lines` for a steady CPU run with the lines solver) for a run on N ranks, and `--ghosts vertex4` for a Navier-Stokes case (laminar or SA) under reproducibility `"ranks"`, `--ghosts vertex3` otherwise.
 
 ## E0301
 
@@ -899,6 +915,22 @@ Fix: Check the space and permissions of the run directory's file system.
 This `continue` run's `autan-run` executable is not the one that wrote the state it starts from (run.json `solver.binary_sha256`, results.md#runjson): the chain may not be bit for bit the uninterrupted run. `data` gives the `expected` and `found` SHA-256.
 
 Fix: Continue with the binary of the original run, or start the chain again with this one.
+
+## W0717
+
+**Device result not covered by a tight bound** (warning)
+
+The device comparison on this combination is not covered by a tight bound (#586 2(b): G beyond 4.79, the largest G at which tightness was measured): a laminar run on a CUDA device in fp32+acc64 with farfield or inlet faces, on a mesh whose gradient stencils amplify a boundary value by more than that. `data` gives that amplification `G` and the largest covered one, `G_covered`.
+
+Fix: Use fp64.
+
+## E0720
+
+**Colouring couples a colour** (error)
+
+A colour-ordered smoother receives a colouring without one valid colour per cell, or in which two cells of one colour share an interior face.
+
+Fix: Pass the runtime's distance-1 cell colouring (PhysicsContext::cell_colours).
 
 ## W0801
 

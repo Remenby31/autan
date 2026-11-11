@@ -17,13 +17,13 @@
 #include <nlohmann/json.hpp>
 
 #include "autan/core/lines.hpp"
-#include "autan/core/wall_distance.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/euler_device.hpp"
 #include "autan/physics/first_order_start.hpp"
 #include "autan/physics/manufactured.hpp"
 #include "autan/physics/navier_stokes.hpp"
+#include "autan/physics/navier_stokes_device.hpp"
 #include "autan/physics/point_vortex.hpp"
 #include "autan/physics/spalart_allmaras.hpp"
 #include "autan/runtime/exact_sum.hpp"
@@ -127,10 +127,13 @@ Transport transport_of(const runtime::SolverInput& in) {
 template <class P>
 struct SaState {
   SaState(const Mesh& mesh, const Geometry& geometry, NavierStokes<P>& flow, const Transport& t,
-          bool ft2)
-      : model(mesh, geometry, flow, t, ft2) {}
+          bool ft2, const kernels::GlobalKeys* keys)
+      : model(mesh, geometry, flow, t, ft2, keys) {}
   SpalartAllmaras<P> model;
   std::vector<double> rnu, rhs, dx, diag, upper, lower;
+  // The owned cells by global colour, which solve() sweeps with an exchange after each: the same
+  // sweeps on any number of ranks and in any cell order.
+  std::vector<std::vector<std::size_t>> colours;
   double nt_inf = 0.0;  ///< m^2/s, the freestream's
   std::vector<typename P::state> s;
   std::vector<typename P::residual> res;
@@ -147,6 +150,15 @@ class EulerPhysics final : public runtime::Physics {
   using State = typename P::state;
   using Res = typename P::residual;
   static constexpr bool is_viscous = !std::is_same_v<Flow, Euler<P>>;
+
+  // The ghost stencil the flow's scheme reads (PhysicsRegistry::Entry::ghosts).
+  static std::optional<GhostStencil> ghosts(const runtime::SolverInput& in) {
+    if constexpr (is_viscous) {
+      return navier_stokes_ghost_stencil(in.reproducibility == "ranks");
+    } else {
+      return ghost_stencil(flow_scheme(in));
+    }
+  }
 
   explicit EulerPhysics(const PhysicsContext& ctx)
       : exempt_(runtime::residual_names(ctx.input), ctx.input.start && ctx.input.start->woken
@@ -227,6 +239,14 @@ class EulerPhysics final : public runtime::Physics {
     } else {
       second_order_ = true;
     }
+    // case-schema.md#time: start_order "second" skips the first-order start
+    // (euler.md#time-stepping).
+    if (in.time.kind == "steady" && in.time.start_order == "second") {
+      second_order_ = true;
+      euler_.set_second_order(true);
+      ctx.log.write("info", "solver", "the steady run starts at second order (time.start_order)",
+                    {}, nlohmann::json{{"start_order", "second"}}.dump());
+    }
     if (mms) set_source(*mms);
     std::map<std::string, const runtime::CellZoneInput*> zones;
     for (const auto& z : in.cell_zones) zones[z.zone] = &z;
@@ -254,12 +274,29 @@ class EulerPhysics final : public runtime::Physics {
     apply_vortices();
     if (ctx.device >= 0) {
 #ifdef AUTAN_PHYSICS_CUDA
-      if constexpr (is_viscous) {
-        throw std::logic_error("the Navier-Stokes physics has no device stepper");
-      } else {
+      {
+        // Euler<P>'s or NavierStokes<P>'s (laminar only: SA has no device entry, E0706).
         device_ = make_device_stepper<P>(mesh, ctx.geometry, euler_, gas_.gamma, second_order_,
                                          ctx.ranks, ctx.ghosts, ctx.stream);
         device_->upload(u_);
+        if constexpr (is_viscous) {
+          const bool exp_log = std::ranges::any_of(in.boundaries, [](const auto& b) {
+            return b.kind == "farfield" || b.kind == "inlet";
+          });
+          if (in.precision == "fp32+acc64" && exp_log) {
+            const double gain = device_stencil_gain(euler_.euler(), mesh, ctx.geometry);
+            if (device_gain_warns(true, exp_log, gain)) {
+              ctx.log.warn("W0717",
+                           "the device comparison on this combination is not covered by a tight "
+                           "bound (#586 2(b): G beyond 4.79, the largest G at which tightness was "
+                           "measured)",
+                           nlohmann::json{{"G", gain},
+                                          { "G_covered",
+                                            device_covered_gain }}
+                               .dump());
+            }
+          }
+        }
         if (in.time.kind == "steady") {
           ctx.log.write("warning", "solver",
                         "steady case on the device: explicit SSP-RK3 with local time steps, not "
@@ -339,7 +376,7 @@ class EulerPhysics final : public runtime::Physics {
       }
       out.push_back({.name = "AverageWeight", .values = std::vector<double>(owned_, mean_weight_)});
     }
-    if (sa_) out.push_back({.name = "DensityNuTilde", .values = sa_->rnu});
+    if (sa_) out.push_back({.name = "DensityNuTilde", .values = owned(sa_->rnu, 0)});
     // The steady solver's own state, one uniform field per value (cell-centred, as RestartState).
     if (ctx_.input.time.kind == "steady") {
       for (const auto& [name, value] : solver_state()) {
@@ -408,8 +445,8 @@ class EulerPhysics final : public runtime::Physics {
     }
     if (sa_) {
       if (mean) throw std::invalid_argument("time averages of SA runs are not supported");
-      io::Field nt{.name = "TurbulentSANuTilde", .values = std::vector<double>(n_)};
-      for (std::size_t c = 0; c < n_; ++c) nt.values[c] = sa_->rnu[c] / u_[c];
+      io::Field nt{.name = "TurbulentSANuTilde", .values = std::vector<double>(owned_)};
+      for (std::size_t c = 0; c < owned_; ++c) nt.values[c] = sa_->rnu[c] / u_[c];
       out.push_back(std::move(nt));
     }
     return out;
@@ -485,15 +522,20 @@ class EulerPhysics final : public runtime::Physics {
   static Flow make_flow(const PhysicsContext& ctx, const Gas& gas,
                         const kernels::GlobalKeys* keys) {
     if constexpr (is_viscous) {
-      // The quadratic gradient in every cell: with the linear one near the boundary only, or with
-      // the fit to cell averages, ns-mms-order loses its order on tetrahedra or hexahedra
-      // (docs/design/euler.md, Quadratic gradient).
-      Scheme s = scheme(ctx.input);
-      s.gradient_fit = GradientFit::quadratic;
-      return Flow(ctx.mesh, ctx.geometry, gas, s, transport_of(ctx.input));
+      return Flow(ctx.mesh, ctx.geometry, gas, flow_scheme(ctx.input), transport_of(ctx.input),
+                  keys, ctx.ghost_stencil);
     } else {
-      return Flow(ctx.mesh, ctx.geometry, gas, scheme(ctx.input), keys);
+      return Flow(ctx.mesh, ctx.geometry, gas, flow_scheme(ctx.input), keys, ctx.ghost_stencil);
     }
+  }
+
+  static Scheme flow_scheme(const runtime::SolverInput& in) {
+    Scheme s = scheme(in);
+    // The quadratic gradient in every cell: with the linear one near the boundary only, or with
+    // the fit to cell averages, ns-mms-order loses its order on tetrahedra or hexahedra
+    // (docs/design/euler.md, Quadratic gradient).
+    if constexpr (is_viscous) s.gradient_fit = GradientFit::quadratic;
+    return s;
   }
 
   struct Vortex {
@@ -510,7 +552,10 @@ class EulerPhysics final : public runtime::Physics {
     const double c = std::sqrt(*in.cell_zones.front().medium.gamma * f.pressure / f.density);
     const double speed = std::max(f.speed, c);
     Scheme s;
-    s.flux = Flux::roe;
+    s.flux = in.flux == "hllc"      ? Flux::hllc
+             : in.flux == "ausm+up" ? Flux::ausm_up
+             : in.flux == "roe"     ? Flux::roe
+                                    : throw std::invalid_argument("unknown flux '" + in.flux + "'");
     // A manufactured solution is smooth by construction: verification measures the design
     // order of the unlimited scheme (docs/design/euler.md, Limiter and verification).
     s.limiter = !in.verification.has_value();
@@ -553,7 +598,11 @@ class EulerPhysics final : public runtime::Physics {
         for (auto& [name, value] : state) value = find(start.restart_fields, name)->front();
         set_solver_state(state);
       }
-      if (sa_) sa_->rnu = *find(start.restart_fields, "DensityNuTilde");
+      if (sa_) {
+        const auto& v = *find(start.restart_fields, "DensityNuTilde");
+        std::copy(v.begin(), v.end(), sa_->rnu.begin());
+        fill_ghost_values(sa_->rnu);
+      }
       if (mean_weight_ > 0.0) {
         for (std::size_t k = 0; k < 6; ++k) {
           const auto& v = *find(start.restart_fields, std::string("AverageSum") + field_names[k]);
@@ -571,6 +620,7 @@ class EulerPhysics final : public runtime::Physics {
     if (sa_) {
       const auto& nt = *find(start.fields, "TurbulentSANuTilde");
       for (std::size_t c = 0; c < owned_; ++c) sa_->rnu[c] = rho[c] * nt[c];
+      fill_ghost_values(sa_->rnu);
     }
   }
 
@@ -626,8 +676,10 @@ class EulerPhysics final : public runtime::Physics {
       throw std::invalid_argument("the SA physics runs steady cases only");
     }
     sa_ = std::make_unique<SaState<P>>(mesh, g, euler_, transport_of(in),
-                                       mms == nullptr || mms->turbulence() != "sa-noft2");
+                                       mms == nullptr || mms->turbulence() != "sa-noft2",
+                                       keys_ ? &*keys_ : nullptr);
     auto& t = *sa_;
+    t.model.set_ghosts(&ghost_fill_);
     const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
     const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
     std::vector<std::array<double, 3>> cells(n_), bfaces(nb);
@@ -650,13 +702,10 @@ class EulerPhysics final : public runtime::Physics {
     } else {
       std::map<std::string, std::string> kinds;
       for (const auto& b : in.boundaries) kinds[b.zone] = b.kind;
-      std::vector<index_t> walls;
-      for (std::size_t z = 0; z < mesh.face_zones().size(); ++z) {
-        const auto it = kinds.find(mesh.face_zones()[z].name);
-        if (it != kinds.end() && it->second == "wall") walls.push_back(static_cast<index_t>(z));
-      }
-      if (walls.empty()) throw std::invalid_argument("the SA physics needs a wall");
-      d = wall_distance(mesh, g, walls);
+      // The runtime's, from the walls of the whole mesh: a cell's nearest wall may lie in
+      // another part.
+      if (ctx_.wall_distance.empty()) throw std::invalid_argument("the SA physics needs a wall");
+      d.assign(ctx_.wall_distance.begin(), ctx_.wall_distance.end());
       for (std::size_t b = 0; b < nb; ++b) {
         const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[ni + b])];
         const auto it = kinds.find(zone.name);
@@ -673,6 +722,11 @@ class EulerPhysics final : public runtime::Physics {
       const auto zi = static_cast<std::size_t>(mesh.cell_zone()[c]);
       t.rnu[c] = u_[c] * zones.at(mesh.cell_zones()[zi].name)->initial.nu_tilde.value_or(0.0);
     }
+    // The ghosts' density may not be filled yet: their owners' rho nt.
+    fill_ghost_values(t.rnu);
+    // ADR 0005 (B): SA's system is swept by the runtime's colours on any number of ranks and
+    // whatever the flow's linear solver, so that a device repeats the same sweeps.
+    t.colours = colour_groups(mesh, ctx_.cell_colours, ctx_.n_colours, owned_);
     t.rhs.assign(n_, 0.0);
     t.dx.assign(n_, 0.0);
     t.diag.assign(n_, 0.0);
@@ -966,9 +1020,15 @@ class EulerPhysics final : public runtime::Physics {
       // Loosely coupled: the SA residual at the same state, after the flow's evaluation.
       auto& t = *sa_;
       t.model.residual_and_jacobian(t.stored(t.rnu), t.res);
-      double sum = 0.0;
-      for (const auto r : t.res) sum += static_cast<double>(r) * static_cast<double>(r);
-      report.residuals.push_back(std::sqrt(sum / static_cast<double>(n_)));
+      // As record_norms: an exact sum over the owned cells, the same bits in any order.
+      std::array<runtime::ExactSum, 2> sum;
+      for (std::size_t c = 0; c < owned_; ++c) {
+        const double r = static_cast<double>(t.res[c]);
+        sum[0].add(r * r);
+      }
+      sum[1].add(static_cast<double>(owned_));
+      ctx_.ranks.sum(sum);
+      report.residuals.push_back(std::sqrt(sum[0].value() / sum[1].value()));
     }
     euler_.spectral_radius(lambda_);
     // Largest relative residual over the equations, of the order being solved, leaving out the
@@ -995,20 +1055,16 @@ class EulerPhysics final : public runtime::Physics {
     try {
       if (multigrid_) {
         multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
-        if constexpr (is_viscous) {
-          linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
-        } else {
-          // As Multigrid::solve, GCR preconditioned by one cycle, on the operator with the
-          // boundary faces' gradient term.
-          krylov_residual_ = rhs_;
-          linear = gcr_.solve(
-              [&](std::span<const double> v, std::span<double> y) {
-                matrix_->multiply(v, y);
-                add_boundary_gradient_term(v, y);
-              },
-              [&](std::span<const double> r, std::span<double> z) { multigrid_->cycle(r, z); },
-              krylov_residual_, du_, linear_max_cycles, linear_tolerance);
-        }
+        // As Multigrid::solve, GCR preconditioned by one cycle, on the operator with the
+        // boundary faces' gradient term.
+        krylov_residual_ = rhs_;
+        linear = gcr_.solve(
+            [&](std::span<const double> v, std::span<double> y) {
+              matrix_->multiply(v, y);
+              add_boundary_gradient_term(v, y);
+            },
+            [&](std::span<const double> r, std::span<double> z) { multigrid_->cycle(r, z); },
+            krylov_residual_, du_, linear_max_cycles, linear_tolerance);
       } else if (lines_) {
         // GCR preconditioned by the line sweeps, as the multigrid's outer iteration; its inner
         // products are exact sums over the owned cells of every rank.
@@ -1046,10 +1102,27 @@ class EulerPhysics final : public runtime::Physics {
         if (ctx_.ranks.max(singular ? 1.0 : 0.0) > 0.0) {
           throw std::domain_error("singular diagonal block");
         }
-        matrix_->gauss_seidel(rhs_, du_, gauss_seidel_sweeps, colours_,
-                              [this](std::span<double> x) { fill_ghosts(x); });
-        // A fixed number of sweeps: no residual is measured, only a singular block fails.
-        linear.residual_drop = 0.0;
+        // GCR preconditioned by the symmetric sweeps, as the line smoother's outer iteration, on
+        // the operator with the boundary faces' gradient term; its inner products are exact sums
+        // over the owned cells of every rank.
+        auto exchange = [this](std::span<double> x) { fill_ghosts(x); };
+        if (krylov_v_.size() != rhs_.size()) krylov_v_.assign(rhs_.size(), 0.0);
+        krylov_residual_ = rhs_;
+        linear = gcr_.solve(
+            [&](std::span<const double> v, std::span<double> y) {
+              std::copy(v.begin(), v.end(), krylov_v_.begin());
+              fill_ghosts(krylov_v_);
+              matrix_->multiply(krylov_v_, y);
+              add_boundary_gradient_term(krylov_v_, y);
+            },
+            [&](std::span<const double> r, std::span<double> z) {
+              std::fill(z.begin(), z.end(), 0.0);
+              matrix_->gauss_seidel(r, z, gauss_seidel_sweeps, colours_, exchange);
+            },
+            krylov_residual_, du_, linear_max_cycles, linear_tolerance,
+            {.dot = [this](std::span<const double> u,
+                           std::span<const double> v) { return owned_dot(u, v); },
+             .max_abs = [this](std::span<const double> u) { return owned_max_abs(u); }});
       }
     } catch (const std::domain_error&) {
       linear = {};  // a singular block: the solve failed
@@ -1098,14 +1171,17 @@ class EulerPhysics final : public runtime::Physics {
         for (std::size_t c = 0; c < n_; ++c) t.rhs[c] = -static_cast<double>(t.res[c]);
         std::fill(t.dx.begin(), t.dx.end(), 0.0);
         t.model.assemble(shift, t.diag, t.upper, t.lower);
-        t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, nt_sweeps);
+        t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, nt_sweeps, t.colours,
+                      [this](std::span<double> x) { fill_ghost_values(x); });
         // Local under-relaxation of the SA update: rho nt changes by at most a fraction of
-        // max(|rho nt|, rho nt_inf) per step, which the converged state never reaches.
-        for (std::size_t c = 0; c < n_; ++c) {
+        // max(|rho nt|, rho nt_inf) per step, which the converged state never reaches. Owned
+        // cells; the ghosts take their owners' values.
+        for (std::size_t c = 0; c < owned_; ++c) {
           const double scale = std::max(std::abs(t.rnu[c]), u_[c] * t.nt_inf);
           t.rnu[c] +=
               alpha * std::clamp(t.dx[c], -nt_max_decrease * scale, nt_max_increase * scale);
         }
+        fill_ghost_values(t.rnu);
       }
     }
   }
@@ -1151,20 +1227,18 @@ class EulerPhysics final : public runtime::Physics {
   // Sum of u v over the owned cells of every rank, exact: the same bits on any partition.
   // y += the boundary faces' derivative through the reconstruction's gradients, which the
   // assembled blocks drop: in large far-field cells the step without it is unstable at the CFL
-  // numbers the SER reaches (ONERA M6, #244). The inviscid flow only.
+  // numbers the SER reaches (ONERA M6, #244).
   void add_boundary_gradient_term(std::span<const double> v, std::span<double> y) {
-    if constexpr (!is_viscous) {
-      // The step that switches to second order solves the first-order system it assembled.
-      if (!jacobian_second_order_) return;
-      if (dv_.size() != 5 * n_) {
-        dv_.assign(5 * n_, State(0));
-        dres_.assign(5 * n_, Res(0));
-      }
-      for (std::size_t i = 0; i < 5 * n_; ++i) dv_[i] = State(v[i]);
-      std::fill(dres_.begin(), dres_.end(), Res(0));
-      euler_.gradient_tangent(state_, dv_, dres_, Flow::Faces::boundary);
-      for (std::size_t i = 0; i < 5 * n_; ++i) y[i] += static_cast<double>(dres_[i]);
+    // The step that switches to second order solves the first-order system it assembled.
+    if (!jacobian_second_order_) return;
+    if (dv_.size() != 5 * n_) {
+      dv_.assign(5 * n_, State(0));
+      dres_.assign(5 * n_, Res(0));
     }
+    for (std::size_t i = 0; i < 5 * n_; ++i) dv_[i] = State(v[i]);
+    std::fill(dres_.begin(), dres_.end(), Res(0));
+    euler_.gradient_tangent(state_, dv_, dres_, Flow::Faces::boundary);
+    for (std::size_t i = 0; i < 5 * n_; ++i) y[i] += static_cast<double>(dres_[i]);
   }
 
   double owned_dot(std::span<const double> u, std::span<const double> v) {
@@ -1186,6 +1260,13 @@ class EulerPhysics final : public runtime::Physics {
       }
     }
     return ctx_.ranks.max(m);
+  }
+
+  // Fills the ghost values of one cell array (n_ values) from their owners. On every rank: the
+  // exchange is collective, even for a part without ghosts.
+  void fill_ghost_values(std::span<double> x) {
+    std::array<double*, 1> c{x.data()};
+    ctx_.ghosts.forward(std::span<double* const>(c), MemorySpace::host, nullptr);
   }
 
   void fill_ghosts(std::span<double> x) {
@@ -1421,6 +1502,9 @@ class EulerPhysics final : public runtime::Physics {
     void forward(std::span<double* const> components) override {
       ghosts_.forward(components, MemorySpace::host, nullptr);
     }
+    CellRows forward_rows(const CellRows& owned, std::span<const std::uint8_t> wanted) override {
+      return ghosts_.forward_rows(owned, wanted);
+    }
 
    private:
     runtime::GhostExchange& ghosts_;
@@ -1475,12 +1559,12 @@ class EulerPhysics final : public runtime::Physics {
   std::array<double, 5> reference_;  // the state the cells store differences from
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
   FirstOrderStart first_order_;
-  std::optional<BlockMatrix> matrix_;            // steady runs only
-  std::optional<solvers::Multigrid> multigrid_;  // linear_solver = "multigrid"
-  std::optional<solvers::LineSmoother> lines_;   // linear_solver = "lines"
-  solvers::Gcr gcr_;                             // and its outer iteration
-  std::vector<double> krylov_residual_;
-  std::vector<std::vector<std::size_t>> colours_;  // linear_solver = "gauss-seidel": owned cells
+  std::optional<BlockMatrix> matrix_;               // steady runs only
+  std::optional<solvers::Multigrid> multigrid_;     // linear_solver = "multigrid"
+  std::optional<solvers::LineSmoother> lines_;      // linear_solver = "lines"
+  solvers::Gcr gcr_;                                // and its outer iteration
+  std::vector<double> krylov_residual_, krylov_v_;  // the GCR's residual; a vector with ghosts
+  std::vector<std::vector<std::size_t>> colours_;   // linear_solver = "gauss-seidel": owned cells
   double cfl_cap_ = cfl_max;  // after a shortened or rejected step: half its CFL number
   double cfl_ = cfl_start;
   double penalty_ = 1.0;
@@ -1651,21 +1735,20 @@ std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::Solver
         .data_json = "{}",
         .code = "E0429"};
   }
-  // The viscous and turbulence face loops scatter in local face order, and the boundary fit's and
-  // the viscous gradient's stencils follow the local numbering: the results depend on the cell
-  // order (#587).
-  if (in.reproducibility == "ranks") {
+  // Under reproducibility "ranks" the viscous and turbulence loops, the boundary fit and SA's own
+  // sweeps follow the global order; the steady multigrid still sums in local cell order.
+  if (in.reproducibility == "ranks" && in.time.kind == "steady" &&
+      in.time.linear_solver == "multigrid") {
     return runtime::PhysicsRefusal{
         .message =
-            "the Navier-Stokes physics does not give the same bits in every cell order yet: "
-            "its viscous and turbulence face loops and its boundary fit do not follow the "
-            "global order",
+            "the steady multigrid does not give the same bits in every cell order yet; "
+            "linear_solver = \"gauss-seidel\" or \"lines\" does",
         .path = "reproducibility",
         .data_json = "{}",
         .code = "E1109"};
   }
-  // NavierStokes<P> and SpalartAllmaras<P> fill no ghost cells of their own (their fields, fits
-  // and Jacobian blocks would be wrong across a periodic pair): one rank, no periodic pairs.
+  // The viscous terms' ghost fills and boundary fits are written for partitions; across a periodic
+  // pair the fits would need image ghosts' translated stencils.
   if (!in.periodic.empty()) {
     return runtime::PhysicsRefusal{
         .message = "the Navier-Stokes physics does not run with periodic pairs yet",
@@ -1755,6 +1838,30 @@ std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverI
   }
   return euler_scope(in, ranks);
 }
+
+// The Navier-Stokes physics on a device: one rank, no point vortex, the host's limits otherwise;
+// steady cases take the device's explicit steps. Registered for laminar flow only (ADR 0005): SA
+// on a device has no entry, E0706.
+std::optional<runtime::PhysicsRefusal> navier_stokes_device_scope(const runtime::SolverInput& in,
+                                                                  int ranks) {
+  if (ranks > 1) {
+    return runtime::PhysicsRefusal{
+        .message =
+            "the Navier-Stokes physics runs on one device only, not " + std::to_string(ranks),
+        .path = "devices.kind",
+        .data_json = nlohmann::json{{"ranks", ranks}}.dump()};
+  }
+  for (std::size_t i = 0; i < in.boundaries.size(); ++i) {
+    if (in.boundaries[i].point_vortex) {
+      return runtime::PhysicsRefusal{
+          .message = "the Navier-Stokes physics on a device has no point vortex; boundary zone '" +
+                     in.boundaries[i].zone + "'",
+          .path = "boundaries[" + std::to_string(i) + "].point_vortex",
+          .data_json = nlohmann::json{{"zone", in.boundaries[i].zone}}.dump()};
+    }
+  }
+  return navier_stokes_scope(in, ranks);
+}
 #endif
 
 // EulerPhysics::restart_fields' names: the conserved variables, the averaging sums and weight,
@@ -1785,6 +1892,47 @@ std::vector<std::string> euler_restart_names(const runtime::SolverInput& in, boo
 
 }  // namespace
 
+template <class P>
+double device_stencil_gain(const Euler<P>& flow, const Mesh& mesh, const Geometry& g) {
+  const auto nc = static_cast<std::size_t>(mesh.n_cells());
+  std::vector<double> reach(nc, 0.0);
+  for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
+    auto at = [&](std::size_t c) {
+      const double d = std::hypot(g.face_centroid_x[f] - g.cell_centroid_x[c],
+                                  g.face_centroid_y[f] - g.cell_centroid_y[c],
+                                  g.face_centroid_z[f] - g.cell_centroid_z[c]);
+      reach[c] = std::max(reach[c], d);
+    };
+    at(static_cast<std::size_t>(mesh.owner()[f]));
+    if (f < static_cast<std::size_t>(mesh.n_interior_faces())) {
+      at(static_cast<std::size_t>(mesh.neighbour()[f]));
+    }
+  }
+  auto gain = [&](auto offsets, std::size_t entries, const std::vector<double>& w) {
+    double worst = 0.0;
+    for (std::size_t c = 0; c < nc; ++c) {
+      double sum = 0.0;
+      for (auto e = static_cast<std::size_t>(offsets[c]);
+           e < static_cast<std::size_t>(offsets[c + 1]); ++e) {
+        sum += std::hypot(w[e], w[entries + e], w[2 * entries + e]);
+      }
+      worst = std::max(worst, sum * reach[c]);
+    }
+    return worst;
+  };
+  const auto& st = flow.stencil();
+  double worst = gain(st.offsets, st.entries.size(), flow.gradient_weights());
+  if (flow.scheme().gradient_fit == GradientFit::quadratic) {
+    const auto q = flow.quadratic_gradient();
+    worst = std::max(worst, gain(q.offsets, q.entries.size(), q.weights));
+  }
+  return worst;
+}
+
+template double device_stencil_gain(const Euler<kernels::fp64>&, const Mesh&, const Geometry&);
+template double device_stencil_gain(const Euler<kernels::fp32_acc64>&, const Mesh&,
+                                    const Geometry&);
+
 // linear_solver = "lines": the multigrid's fine lines, computed on the global mesh, which the
 // partition keeps whole.
 runtime::CellGroups euler_groups(const runtime::SolverInput& in, const Mesh& mesh,
@@ -1798,30 +1946,45 @@ runtime::CellGroups euler_groups(const runtime::SolverInput& in, const Mesh& mes
 void register_euler(runtime::PhysicsRegistry& registry) {
   registry.add({"compressible", "inviscid", "fp64", "cpu"},
                factory<kernels::fp64, Euler<kernels::fp64>>(), euler_scope,
-               /*several_ranks=*/true, euler_groups, euler_restart_names);
+               /*several_ranks=*/true, euler_groups, euler_restart_names,
+               EulerPhysics<kernels::fp64, Euler<kernels::fp64>>::ghosts);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"},
                factory<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>(), euler_scope,
-               /*several_ranks=*/true, euler_groups, euler_restart_names);
+               /*several_ranks=*/true, euler_groups, euler_restart_names,
+               EulerPhysics<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>::ghosts);
 #ifdef AUTAN_PHYSICS_CUDA
   registry.add({"compressible", "inviscid", "fp64", "cuda"},
                factory<kernels::fp64, Euler<kernels::fp64>>(), euler_device_scope,
-               /*several_ranks=*/false, {}, euler_restart_names);
+               /*several_ranks=*/false, {}, euler_restart_names,
+               EulerPhysics<kernels::fp64, Euler<kernels::fp64>>::ghosts);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cuda"},
                factory<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>(), euler_device_scope,
-               /*several_ranks=*/false, {}, euler_restart_names);
+               /*several_ranks=*/false, {}, euler_restart_names,
+               EulerPhysics<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>::ghosts);
 #endif
 }
 
 void register_navier_stokes(runtime::PhysicsRegistry& registry) {
-  // One rank only: NavierStokes<P> and SpalartAllmaras<P> fill no ghost cells of their own.
   for (const char* model : {"laminar", "sa"}) {
     registry.add({"compressible", model, "fp64", "cpu"},
                  factory<kernels::fp64, NavierStokes<kernels::fp64>>(), navier_stokes_scope,
-                 /*several_ranks=*/false, euler_groups, euler_restart_names);
+                 /*several_ranks=*/true, euler_groups, euler_restart_names,
+                 EulerPhysics<kernels::fp64, NavierStokes<kernels::fp64>>::ghosts, {},
+                 /*wall_distance=*/std::string(model) == "sa");
     registry.add({"compressible", model, "fp32+acc64", "cpu"},
                  factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>(),
-                 navier_stokes_scope, /*several_ranks=*/false, euler_groups, euler_restart_names);
+                 navier_stokes_scope, /*several_ranks=*/true, euler_groups, euler_restart_names,
+                 EulerPhysics<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>::ghosts, {},
+                 /*wall_distance=*/std::string(model) == "sa");
   }
+#ifdef AUTAN_PHYSICS_CUDA
+  registry.add({"compressible", "laminar", "fp64", "cuda"},
+               factory<kernels::fp64, NavierStokes<kernels::fp64>>(), navier_stokes_device_scope,
+               /*several_ranks=*/false, {}, euler_restart_names);
+  registry.add({"compressible", "laminar", "fp32+acc64", "cuda"},
+               factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>(),
+               navier_stokes_device_scope, /*several_ranks=*/false, {}, euler_restart_names);
+#endif
 }
 
 }  // namespace autan::physics
