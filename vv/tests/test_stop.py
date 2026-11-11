@@ -4,6 +4,7 @@ The histories are written so that their verdict follows from that text by hand: 
 at iteration 1 and exact powers of ten after it, floors of 1e-8, plateaus of constant values.
 """
 
+import itertools
 import math
 from collections.abc import Callable
 from pathlib import Path
@@ -156,6 +157,34 @@ def test_an_identically_zero_equation_is_exempt_until_it_leaves_its_floor(
     early = lines(first, {"momentum-z": 1e-6}, {"momentum-z": 1e-7})
     run = freestream_run(residuals=early, diagnostics=(w0710,))
     assert refused(run) == {"iteration": 3, "equation": "momentum-z"}
+
+
+def test_a_momentum_component_drops_from_the_largest_momentum_residual_whatever_the_axes(
+    freestream_run: Callable[..., Path],
+) -> None:
+    # The flat plate's shape (#544): momentum-y starts five orders below momentum-x. At iteration 2
+    # it is four orders below its own first residual but nine below momentum-x's, the reference of
+    # every momentum component: the run has converged. A permutation of the mesh axes permutes the
+    # momentum residuals (a reflection changes none), and every one gives the same verdict.
+    first = {
+        "density": 1.0,
+        "momentum-x": 1.0,
+        "momentum-y": 1e-5,
+        "momentum-z": 1e-3,
+        "energy": 1.0,
+    }
+    axes = ["momentum-x", "momentum-y", "momentum-z"]
+    for order in itertools.permutations(axes):
+        axis = dict(zip(axes, order, strict=True))
+
+        def relabel(history: Lines, axis: dict[str, str] = axis) -> Lines:
+            old = {new: e for e, new in axis.items()}
+            return [{e: line[old.get(e, e)] for e in EQUATIONS} for line in history]
+
+        verify([freestream_run(residuals=relabel(lines(first, 1e-9)))], "freestream")
+        # momentum-x at 1e-7 has dropped seven orders only.
+        run = freestream_run(residuals=relabel(lines(first, {"momentum-x": 1e-7})))
+        assert refused(run) == {"iteration": 2, "equation": axis["momentum-x"]}
 
 
 def test_an_fp32_run_may_converge_on_a_round_off_plateau_within_ten_floors(
