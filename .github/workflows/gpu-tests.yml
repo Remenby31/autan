@@ -256,6 +256,12 @@ jobs:
     outputs:
       gb10-cpu: ${{ steps.gb10-cpu.outcome }}
       runner: ${{ runner.name }}
+    # MPI ranks are left unbound, so that the kernel may place them on the runner's free cores
+    # rather than on cores the default binding picks and other work occupies (docs/infra/runners.md,
+    # #697). Both names are set, as in the experiment that passed; PRTE's is Open MPI 5's own.
+    env:
+      OMPI_MCA_hwloc_base_binding_policy: none
+      PRTE_MCA_hwloc_default_binding_policy: none
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
