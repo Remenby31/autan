@@ -207,6 +207,9 @@ inline void require_constructed(const autan::Mesh& mesh, const std::string& name
 }  // namespace autan_test
 
 #if defined(__linux__)
+#include <cstdio>
+#include <cstdlib>
+
 #include <malloc.h>
 #include <sys/prctl.h>
 
@@ -226,9 +229,33 @@ std::int64_t peak_of(const Run& run) {
   // Base pages only: a host whose transparent huge pages (2 MiB, or a multi-size 64 KiB) are
   // "always" makes a fault resident a whole folio, so the count would round up by up to 2 MiB.
   REQUIRE(prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0) == 0);
+  const auto dump = [](const char* when) {
+    if (std::getenv("AUTAN_PEAK_DEBUG") == nullptr) return;
+    std::ifstream in("/proc/self/smaps_rollup");
+    std::string all = std::string("[peak ") + when +
+                      "] thp_disable=" + std::to_string(prctl(PR_GET_THP_DISABLE, 0, 0, 0, 0)) +
+                      " ";
+    for (std::string line; std::getline(in, line);) {
+      for (const char* k :
+           {"Rss:", "Anonymous:", "AnonHugePages:", "Shared_Clean:", "Shared_Dirty:",
+            "Private_Clean:", "Private_Dirty:", "Pss_File:", "Pss_Shmem:", "FilePmdMapped:"}) {
+        if (line.rfind(k, 0) == 0) all += line + " | ";
+      }
+    }
+    std::ifstream st("/proc/self/status");
+    for (std::string line; std::getline(st, line);) {
+      for (const char* k :
+           {"VmRSS:", "VmHWM:", "RssAnon:", "RssFile:", "RssShmem:", "THP_enabled:"}) {
+        if (line.rfind(k, 0) == 0) all += line + " | ";
+      }
+    }
+    std::fprintf(stderr, "%s\n", all.c_str());
+  };
+  dump("before");
   const std::int64_t before = status_bytes("VmRSS");
   std::ofstream("/proc/self/clear_refs") << "5";  // VmHWM := VmRSS
   run();
+  dump("after");
   return status_bytes("VmHWM") - before;
 }
 #endif
