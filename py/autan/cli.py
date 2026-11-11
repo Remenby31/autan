@@ -347,8 +347,14 @@ def command_logs(args: argparse.Namespace) -> int:
     ``E0701`` when the run directory or a log line breaks results.md."""
     try:
         for raw, entry in run_logs.read(Path(args.run), follow=args.follow, level=args.level):
-            sys.stdout.write((raw if args.json else run_logs.text(entry)) + "\n")
-            sys.stdout.flush()
+            if args.json:
+                # The bytes the run wrote, whatever stdout's text encoding.
+                sys.stdout.flush()
+                sys.stdout.buffer.write(raw + b"\n")
+                sys.stdout.buffer.flush()
+            else:
+                sys.stdout.write(run_logs.text(entry) + "\n")
+                sys.stdout.flush()
     except CaseError as error:
         return _fail(error, args.json)
     except KeyboardInterrupt:

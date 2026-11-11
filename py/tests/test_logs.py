@@ -31,15 +31,20 @@ RUN = (
     "except KeyboardInterrupt:\n    sys.exit(130)\n"
     "except Exception:\n    sys.exit(1)\n"
 )
-# The relaxation physics' knobs that end a run of at most 40 iterations with each final status;
-# "stopped" is a stop asked of the SDK.
+# Knobs of the relaxation physics that end a run of at most 40 iterations with each final
+# status, late enough that the run writes for several seconds; "stopped" is a stop asked of the
+# SDK. At 0.25 s an iteration, a run lasts about 10 s.
 ENDINGS = {
-    "converged": {},
+    "converged": {"AUTAN_TEST_FACTOR": "0.6"},
     "completed": {"AUTAN_TEST_FACTOR": "1.0"},
-    "diverged": {"AUTAN_TEST_DIVERGE_AT": "12"},
-    "failed": {"AUTAN_TEST_THROW_AT": "12"},
+    "diverged": {"AUTAN_TEST_FACTOR": "1.0", "AUTAN_TEST_DIVERGE_AT": "36"},
+    "failed": {"AUTAN_TEST_FACTOR": "1.0", "AUTAN_TEST_THROW_AT": "36"},
     "stopped": {"AUTAN_TEST_FACTOR": "1.0"},
 }
+PAUSE_MS = "250"
+# The follower is a new Python process: lines are judged once it has had this long to start.
+STARTUP_SECONDS = 3.0
+LIVE_SECONDS = 5.0
 
 
 def _inputs(tmp_path: Path) -> tuple[Path, Path]:
@@ -58,7 +63,7 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path]:
     return case, meshinfo
 
 
-def _clean_env(**knobs: str) -> dict[str, str]:
+def _env(**knobs: str) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith("AUTAN_TEST_")}
     return {**env, **knobs}
 
@@ -68,11 +73,45 @@ def _finished_run(tmp_path: Path, **knobs: str) -> Path:
     runs = tmp_path / "runs"
     subprocess.run(
         [sys.executable, "-c", RUN, str(case), str(meshinfo), str(RELAXATION), str(runs)],
-        env=_clean_env(**knobs),
+        env=_env(**knobs),
         check=True,
     )
     [run] = runs.glob("run-*")
     return run
+
+
+def _diagnostic_codes(out: str) -> list[str]:
+    return [d["code"] for d in json.loads(out[out.index('{\n  "ok"') :])["diagnostics"]]
+
+
+class Follower:
+    """`autan logs -f --json RUN` in its own process, each printed chunk with its arrival."""
+
+    def __init__(self, run: Path) -> None:
+        self.started = time.monotonic()
+        self.process = subprocess.Popen(
+            [sys.executable, "-m", "autan.cli", "logs", "-f", "--json", str(run)],
+            stdout=subprocess.PIPE,
+        )
+        self.printed: list[tuple[float, bytes]] = []
+        self.reader = threading.Thread(target=self._collect, daemon=True)
+        self.reader.start()
+
+    def _collect(self) -> None:
+        assert self.process.stdout is not None
+        while chunk := os.read(self.process.stdout.fileno(), 65536):
+            self.printed.append((time.monotonic(), chunk))
+
+    def output(self) -> bytes:
+        return b"".join(chunk for _, chunk in self.printed)
+
+    def finish(self) -> int:
+        try:
+            status = self.process.wait(timeout=60)
+        finally:
+            self.process.kill()
+            self.reader.join(timeout=10)
+        return status
 
 
 def test_logs_prints_a_runs_log_as_written(
@@ -81,13 +120,10 @@ def test_logs_prints_a_runs_log_as_written(
     run = _finished_run(tmp_path, AUTAN_TEST_WARN="1")
     written = (run / "log.jsonl").read_text()
     lines = written.splitlines()
-    # Every line is in the results.md#log shape and keeps its rules.
     for line in lines:
         assert not log_line_problems(LogLine.model_validate(json.loads(line)))
-    # --json: the log byte for byte.
     assert main(["logs", str(run), "--json"]) == 0
     assert capsys.readouterr().out == written
-    # Readable: one line per event, with its level and message.
     assert main(["logs", str(run)]) == 0
     shown = capsys.readouterr().out.splitlines()
     entries = [json.loads(line) for line in lines]
@@ -95,7 +131,7 @@ def test_logs_prints_a_runs_log_as_written(
     for out, entry in zip(shown, entries, strict=True):
         assert entry["level"] in out
         assert out.endswith(entry["message"])
-    # --level keeps that level and above: here the relaxation physics' W0717.
+    # The relaxation physics' W0717 is the run's only line above info.
     assert main(["logs", str(run), "--json", "--level", "warning"]) == 0
     kept = capsys.readouterr().out.splitlines()
     assert kept == [line for line, e in zip(lines, entries, strict=True) if e["level"] != "info"]
@@ -106,74 +142,125 @@ def test_a_broken_run_directory_is_e0701(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["logs", str(tmp_path / "none"), "--json"]) == 1
-    assert [d["code"] for d in json.loads(capsys.readouterr().out)["diagnostics"]] == ["E0701"]
-    # A line outside the results.md#log shape, in a run directory that is otherwise whole.
+    assert _diagnostic_codes(capsys.readouterr().out) == ["E0701"]
     run = _finished_run(tmp_path)
-    broken = tmp_path / "broken"
-    shutil.copytree(run, broken)
-    with (broken / "log.jsonl").open("a") as log:
-        log.write('{"time": "not a time"}\n')
-    assert main(["logs", str(broken), "--json"]) == 1
-    out = capsys.readouterr().out
-    assert [d["code"] for d in json.loads(out[out.index('{\n  "ok"') :])["diagnostics"]] == [
-        "E0701"
-    ]
+    copy = tmp_path / "copy" / run.name
+    # The run's last line carries data: with a NaN in it, it is in shape but for JSON itself.
+    last = json.loads((run / "log.jsonl").read_text().splitlines()[-1])
+    nan = json.dumps({**last, "data": {**last["data"], "x": float("nan")}}).encode() + b"\n"
+    for appended in (b'{"time": "not a time"}\n', b"\xff\n", nan):
+        shutil.rmtree(copy.parent, ignore_errors=True)
+        shutil.copytree(run, copy)
+        assert main(["logs", str(copy), "--json"]) == 0
+        capsys.readouterr()
+        with (copy / "log.jsonl").open("ab") as log:
+            log.write(appended)
+        assert main(["logs", str(copy), "--json"]) == 1
+        assert _diagnostic_codes(capsys.readouterr().out) == ["E0701"]
+
+
+def _running_copy(tmp_path: Path) -> Path:
+    """A copy of a run directory taken while the runtime writes it, cut to its complete lines;
+    the run is stopped once copied."""
+    case, meshinfo = _inputs(tmp_path)
+    runs = tmp_path / "runs"
+    writer = subprocess.Popen(
+        [sys.executable, "-c", RUN, str(case), str(meshinfo), str(RELAXATION), str(runs)],
+        env=_env(AUTAN_TEST_PAUSE_MS=PAUSE_MS, AUTAN_TEST_FACTOR="1.0"),
+    )
+    try:
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            found = list(runs.glob("run-*/run.json"))
+            if found and (found[0].parent / "log.jsonl").read_bytes().count(b"\n") >= 3:
+                break
+            time.sleep(0.02)
+        [run] = runs.glob("run-*")
+        copy = tmp_path / "copy" / run.name
+        shutil.copytree(run, copy)
+        writer.send_signal(signal.SIGTERM)
+        writer.wait(timeout=60)
+    finally:
+        writer.kill()
+        writer.wait()
+    assert json.loads((copy / "run.json").read_text())["status"] == "running"
+    log = (copy / "log.jsonl").read_bytes()
+    (copy / "log.jsonl").write_bytes(log[: log.rindex(b"\n") + 1])
+    return copy
+
+
+def test_follow_holds_back_a_partial_line_and_takes_its_rewrite(tmp_path: Path) -> None:
+    # Written to as results.md lets a writer: a partial last line, cut and written again
+    # (runtime/src/run_directory.cpp), then the final status.
+    copy = _running_copy(tmp_path)
+    head = (copy / "log.jsonl").read_bytes()
+    last = head.splitlines(keepends=True)[-1]
+    follower = Follower(copy)
+    try:
+        with (copy / "log.jsonl").open("ab") as log:
+            log.write(b'{"time": "2026-11-11T00:00:00.000Z", "iteration": null, "lev')
+        time.sleep(STARTUP_SECONDS)
+        assert follower.output() == head
+        with (copy / "log.jsonl").open("r+b") as log:
+            log.truncate(len(head))
+        with (copy / "log.jsonl").open("ab") as log:
+            log.write(last)
+        time.sleep(LIVE_SECONDS)
+        assert follower.output() == head + last
+        info = json.loads((copy / "run.json").read_text())
+        replaced = copy / "run.json.tmp"
+        replaced.write_text(json.dumps({**info, "status": "stopped"}))
+        replaced.replace(copy / "run.json")
+        assert follower.finish() == 0
+    finally:
+        follower.process.kill()
+    assert follower.output() == head + last
 
 
 @pytest.mark.parametrize("ending", list(ENDINGS))
 def test_follow_prints_every_line_live_until_the_final_status(tmp_path: Path, ending: str) -> None:
     case, meshinfo = _inputs(tmp_path)
     runs = tmp_path / "runs"
-    env = _clean_env(AUTAN_TEST_PAUSE_MS="100", **ENDINGS[ending])
     writer = subprocess.Popen(
         [sys.executable, "-c", RUN, str(case), str(meshinfo), str(RELAXATION), str(runs)],
-        env=env,
+        env=_env(AUTAN_TEST_PAUSE_MS=PAUSE_MS, **ENDINGS[ending]),
     )
+    follower = None
     try:
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + 120
         while time.monotonic() < deadline and not list(runs.glob("run-*/run.json")):
             time.sleep(0.02)
         [run] = runs.glob("run-*")
-        follower = subprocess.Popen(
-            [sys.executable, "-m", "autan.cli", "logs", "-f", "--json", str(run)],
-            stdout=subprocess.PIPE,
-        )
-        printed: list[tuple[float, bytes]] = []
-
-        def collect() -> None:
-            assert follower.stdout is not None
-            # One item at a time, as the follower prints it: each with its arrival time.
-            printed.extend((time.monotonic(), line) for line in follower.stdout)
-
-        reader = threading.Thread(target=collect)
-        reader.start()
-        # When each complete line appears in the file, and whether the run was still running.
+        follower = Follower(run)
+        # When each complete line appears in the file, and whether the run was then running.
         appeared: list[tuple[float, bool]] = []
-        while follower.poll() is None and time.monotonic() < deadline:
+        while follower.process.poll() is None and time.monotonic() < deadline:
             seen = (run / "log.jsonl").read_bytes().count(b"\n")
             running = json.loads((run / "run.json").read_text())["status"] == "running"
             now = time.monotonic()
             appeared.extend((now, running) for _ in range(seen - len(appeared)))
-            # Stop once two lines have appeared after the follower went live.
-            live_lines = sum(1 for t, _ in appeared if printed and t > printed[0][0])
-            if ending == "stopped" and live_lines >= 2 and writer.poll() is None:
+            judged = [t for t, _ in appeared if t > follower.started + STARTUP_SECONDS]
+            if ending == "stopped" and len(judged) >= 8 and writer.poll() is None:
                 writer.send_signal(signal.SIGTERM)
             time.sleep(0.02)
-        assert follower.wait(timeout=60) == 0
-        reader.join(timeout=10)
+        assert follower.finish() == 0
+        seen = (run / "log.jsonl").read_bytes().count(b"\n")
+        appeared.extend((time.monotonic(), False) for _ in range(seen - len(appeared)))
     finally:
         writer.kill()
         writer.wait()
+        if follower is not None:
+            follower.process.kill()
     assert json.loads((run / "run.json").read_text())["status"] == ending
-    # Every line, in order and once each, the last ones included.
-    assert b"".join(line for _, line in printed) == (run / "log.jsonl").read_bytes()
-    # Live: once the follower prints, each line appended while the run runs is printed within
-    # 5 s of its appearing in the file.
-    started = printed[0][0]
-    live = [
-        (out, file)
-        for (out, _), (file, running) in zip(printed, appeared, strict=False)
-        if running and file > started
+    assert follower.output() == (run / "log.jsonl").read_bytes()
+    # When each line was printed: the arrival of the chunk that completed it.
+    printed_at: list[float] = []
+    for arrival, chunk in follower.printed:
+        printed_at.extend(arrival for _ in range(chunk.count(b"\n")))
+    timed = [
+        (printed, appeared_at)
+        for printed, (appeared_at, running) in zip(printed_at, appeared, strict=True)
+        if running and appeared_at > follower.started + STARTUP_SECONDS
     ]
-    assert live, "no line was appended while the run ran"
-    assert all(out - file <= 5.0 for out, file in live)
+    assert len(timed) >= 5, "too few lines were appended while the run ran"
+    assert all(printed - appeared_at <= LIVE_SECONDS for printed, appeared_at in timed)

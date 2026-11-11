@@ -24,9 +24,14 @@ def _broken(path: Path, message: str) -> CaseError:
     return CaseError([diagnostic("E0701", message, location=Location(file=str(path)))])
 
 
-def _parsed(path: Path, text: str) -> LogLine:
+def _reject(constant: str) -> float:
+    message = f"{constant} is not JSON"
+    raise ValueError(message)
+
+
+def _parsed(path: Path, raw: bytes) -> LogLine:
     try:
-        entry = LogLine.model_validate(json.loads(text))
+        entry = LogLine.model_validate(json.loads(raw.decode("utf-8"), parse_constant=_reject))
     except (ValueError, ValidationError) as error:
         raise _broken(path, f"a log line is not in the results.md shape: {error}") from error
     problems = log_line_problems(entry)
@@ -45,16 +50,17 @@ def _status(run: Path) -> str:
 
 def read(
     run: Path, *, follow: bool = False, level: LogLevel = "info"
-) -> Iterator[tuple[str, LogLine]]:
+) -> Iterator[tuple[bytes, LogLine]]:
     """Each line of the run directory ``run``'s ``log.jsonl`` at ``level`` or above, as its
-    text (without the line feed) and its parsed form, in the order written. With ``follow``,
+    bytes (without the line feed) and its parsed form, in the order written. With ``follow``,
     waits for the lines a running run appends and returns once ``run.json`` holds a final
     status, after the last line written before it. A run directory that is not one, or a line
     outside results.md#log, raises ``CaseError`` ``E0701``."""
     Results.open(run)
     path = run / "log.jsonl"
+    # The end of the last complete line read: a writer may cut an incomplete tail and write
+    # it again (runtime/src/run_directory.cpp), so the tail is read again on every pass.
     offset = 0
-    pending = b""
     while True:
         # The status before the lines: both writers log their last line, then rewrite
         # run.json, so the lines read after a final status include every one before it.
@@ -65,14 +71,13 @@ def read(
                 chunk = stream.read()
         except OSError as error:
             raise _broken(path, f"cannot read log.jsonl: {error}") from error
-        offset += len(chunk)
-        *complete, pending = (pending + chunk).split(b"\n")
+        *complete, tail = chunk.split(b"\n")
+        offset += len(chunk) - len(tail)
         for raw in complete:
-            text = raw.decode("utf-8")
-            entry = _parsed(path, text)
+            entry = _parsed(path, raw)
             if _RANK[entry.level] >= _RANK[level]:
-                yield text, entry
-        if done and pending:
+                yield raw, entry
+        if done and tail:
             raise _broken(path, "the last line of a finished run's log.jsonl is incomplete")
         if done or not follow:
             return
