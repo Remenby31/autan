@@ -378,13 +378,16 @@ class FluentReader {
       c_.unsupported("more than " + std::to_string(max_cell_zone_records) +
                      " fluid, solid or interior zone records");
     }
-    if (records_.size() == records_.capacity()) sort_records();
+    if (records_.size() == records_.capacity()) {
+      sort_records();
+      // Half the list free after a sort, so that repeated records sort it a logarithmic number
+      // of times.
+      if (2 * records_.size() > records_.capacity()) records_.reserve(2 * records_.capacity());
+    }
     records_.emplace_back(id, at);
   }
 
-  // Sorts the records by zone id, keeping for each id its last, whose offset is the largest: in
-  // place, before the list would grow and once parsed, so that it holds about one record per id,
-  // sixteen bytes each, where a tree node would cost four times that.
+  // Sorts the records by zone id, keeping for each id its last, whose offset is the largest.
   void sort_records() {
     std::ranges::sort(records_);
     std::size_t kept = 0;
