@@ -350,7 +350,9 @@ class Case:
         mode: Literal["continue", "warm"] = "continue",
     ) -> Results:
         """Run the case with ``backend`` into a new directory under ``runs``; with ``start``,
-        from the state of that previous run (``continue`` it, or ``warm``-start a case)."""
+        from the state of that previous run (``continue`` it, or ``warm``-start a case). A steady
+        ``warm`` start from a steady run converges against that run's residual reference, an
+        absolute level even when the freestream differs (case-schema.md#time)."""
         if backend is None:
             missing = diagnostic(
                 "E0804",

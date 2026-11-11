@@ -102,6 +102,7 @@ def test_crm_hl_input_is_resolved_and_closed_in_si(
         "linear_solver": "multigrid",
         "coupled_turbulence": False,
         "matrix_free": False,
+        "start_order": "first",
         "checkpoint": {"seconds": 1800.0},
     }
 
@@ -173,6 +174,24 @@ def test_the_matrix_free_step_is_a_laminar_option(
         autan.solver_input.SolverInput.model_validate(
             document | {"time": document["time"] | {"matrix_free": 1}}
         )
+
+
+def test_the_start_order_is_first_unless_the_case_asks_for_second(
+    write_case: Callable[..., Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    # case-schema.md#time: "first" by default, "second" on request, nothing else.
+    case = write_case(CRM_HL + "case.time = autan.Steady(start_order='second')\n")
+    jsonschema.Draft202012Validator(json_schema("case")).validate(autan.load(case).spec.document())
+    status, document = prepare(capsys, case, "crm-hl.meshinfo.json")
+    assert status == 0
+    assert document["time"]["start_order"] == "second"
+    with pytest.raises(ValidationError):
+        autan.solver_input.SolverInput.model_validate(
+            document | {"time": document["time"] | {"start_order": "third"}}
+        )
+    with pytest.raises(autan.CaseError) as error:
+        autan.load(write_case(CRM_HL + "case.time = autan.Steady(start_order='third')\n"))
+    assert error.value.codes == ["E0003"]
 
 
 def test_heat_exchanger_media_and_inlets_in_si(
@@ -369,7 +388,14 @@ def test_reproducibility_reaches_the_runtime_and_the_hash(
     assert (spec.hash() == autan.load(write_case(CRM_HL, name="default.py")).spec.hash()) == (
         mode == "run"  # the default
     )
-    assert main(["prepare", str(case), "--mesh-info", str(FIXTURES / "crm-hl.meshinfo.json")]) == 0
+    # The MeshInfo holds the ghosts the mode's NS physics declares (mesh-info.md): vertex4 under
+    # "ranks", vertex3 otherwise, as the fixture has.
+    info = json.loads((FIXTURES / "crm-hl.meshinfo.json").read_text())
+    if mode == "ranks":
+        info["partition"]["ghost_stencil"] = "vertex4"
+    info_path = tmp_path / "crm-hl.meshinfo.json"
+    info_path.write_text(json.dumps(info))
+    assert main(["prepare", str(case), "--mesh-info", str(info_path)]) == 0
     document = json.loads(capsys.readouterr().out)
     jsonschema.Draft202012Validator(json_schema("solver-input")).validate(document)
     assert document["reproducibility"] == mode
@@ -468,6 +494,7 @@ def test_the_input_stays_within_the_size_its_plan_counts(
                 "type": "wall",
                 "native_type": None,
                 "faces": faces // walls_n,
+                "first_cell_height": walls[0]["first_cell_height"],
             }
             for i in range(walls_n)
         ]
@@ -482,6 +509,7 @@ def test_the_input_stays_within_the_size_its_plan_counts(
                     "type": "farfield",
                     "native_type": None,
                     "faces": total // walls_n + (total % walls_n if i == 0 else 0),
+                    "first_cell_height": far[0]["first_cell_height"],
                 }
                 for i in range(walls_n)
             ]

@@ -1,0 +1,9 @@
+[Unit]
+Description=Autan nightly convergence guard: watchdog at 07:00:00 UTC (#611)
+
+[Timer]
+OnCalendar=*-*-* 07:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

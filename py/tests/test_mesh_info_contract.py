@@ -40,10 +40,10 @@ SOURCES = sorted(
 )
 
 
-def mesh_info(source: Path) -> autan.MeshInfo:
+def mesh_info(source: Path, *options: str) -> autan.MeshInfo:
     assert PRODUCER is not None
     done = subprocess.run(
-        [str(PRODUCER), "--json", str(source)], capture_output=True, text=True, check=True
+        [str(PRODUCER), "--json", *options, str(source)], capture_output=True, text=True, check=True
     )
     return autan.MeshInfo.from_document(json.loads(done.stdout), autan.Location(file=str(source)))
 
@@ -72,6 +72,24 @@ def test_producer_output_is_a_valid_mesh_info(source: Path) -> None:
     if mesh == "hybrid" and fmt == "polymesh":
         assert sorted(z.name for z in info.cell_zones) == ["lower", "upper"]
         assert [i.zones for i in info.interfaces] == [("lower", "upper")]
+
+
+def test_producer_records_the_ghost_stencil_of_its_partition() -> None:
+    # The one-part partition of a periodic mesh holds image ghosts: around the nodes of its cells
+    # on the pairs, the vertex stencil's rings hold faces between image ghosts that face2's
+    # first layer does not.
+    source = MESHES / "periodic-box" / "periodic-box.ascii.msh"
+    face2, vertex, vertex4 = (
+        mesh_info(source, *options)
+        for options in ((), ("--ghosts", "vertex"), ("--ghosts", "vertex4"))
+    )
+    assert face2.partition is not None
+    assert vertex.partition is not None
+    assert vertex4.partition is not None
+    stencils = (p.ghost_stencil for p in (face2.partition, vertex.partition, vertex4.partition))
+    assert tuple(stencils) == ("face2", "vertex", "vertex4")
+    assert vertex.partition.faces_by_rank[0] > face2.partition.faces_by_rank[0]
+    assert vertex4.partition.ghosts_by_rank[0] >= vertex.partition.ghosts_by_rank[0]
 
 
 def test_plan_checks_the_hash_of_a_real_mesh(tmp_path: Path) -> None:

@@ -4,7 +4,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <span>
 #include <string>
@@ -19,6 +21,7 @@
 
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
+#include "autan/core/ghost_stencil.hpp"
 #include "autan/partition/halo_exchange.hpp"
 #include "autan/partition/partition.hpp"
 #include "fixtures.hpp"
@@ -80,7 +83,7 @@ struct Setup {
   autan::LocalPartition local;
 };
 
-Setup setup(MeshKind kind) {
+Setup setup(MeshKind kind, autan::GhostStencil ghosts = autan::GhostStencil::face2) {
   autan::Mesh global = make_mesh(kind);
   autan::Geometry gg = autan::compute_geometry(global);
   const std::int32_t n = world_size();
@@ -92,7 +95,8 @@ Setup setup(MeshKind kind) {
     parts = autan::partition_cells(global, n, options);
   }
   MPI_Bcast(parts.data(), static_cast<int>(parts.size()), MPI_INT32_T, 0, MPI_COMM_WORLD);
-  autan::LocalPartition local = autan::extract_partition(global, gg, parts, n, world_rank());
+  autan::LocalPartition local =
+      autan::extract_partition(global, gg, parts, n, world_rank(), ghosts);
   return Setup{std::move(global), std::move(gg), std::move(parts), std::move(local)};
 }
 
@@ -427,6 +431,391 @@ TEST_CASE("A halo pattern that does not fit the communicator is rejected", "[hal
     CHECK(e.code() == autan::ErrorCode::halo_device_unsupported);
   }
 #endif
+}
+
+namespace {
+
+// The row of the cell with global id `id`: (id + 1) % 4 entries (an empty row every fourth cell),
+// keyed 10 id + 3 - j, so not sorted; value v of entry j is -0.0 for v = 0, 0.1 (id + 1) + j
+// for v = 1 (not a float), and id + j / 4 + v / 16 otherwise.
+std::int64_t row_length(std::int64_t id) { return (id + 1) % 4; }
+
+autan::CellRows row_of(std::int64_t id, int stride) {
+  autan::CellRows r;
+  r.stride = stride;
+  for (std::int64_t j = 0; j < row_length(id); ++j) {
+    r.keys.push_back(10 * id + 3 - j);
+    for (int v = 0; v < stride; ++v) {
+      const double x = v == 0   ? -0.0
+                       : v == 1 ? 0.1 * static_cast<double>(id + 1) + static_cast<double>(j)
+                                : static_cast<double>(id) + static_cast<double>(j) / 4.0 + v / 16.0;
+      r.values.push_back(x);
+    }
+  }
+  r.offsets.push_back(static_cast<autan::offset_t>(r.keys.size()));
+  return r;
+}
+
+// The rows of `mesh`'s first `n` cells, by global id, as one CellRows.
+autan::CellRows rows_of(const autan::Mesh& mesh, index_t n, int stride) {
+  autan::CellRows all;
+  all.stride = stride;
+  for (index_t c = 0; c < n; ++c) {
+    const autan::CellRows r = row_of(mesh.cell_global_id()[at(c)], stride);
+    all.keys.insert(all.keys.end(), r.keys.begin(), r.keys.end());
+    all.values.insert(all.values.end(), r.values.begin(), r.values.end());
+    all.offsets.push_back(static_cast<autan::offset_t>(all.keys.size()));
+  }
+  return all;
+}
+
+void require_everywhere(autan::ErrorCode expected, const std::function<void()>& action) {
+  try {
+    action();
+    FAIL_CHECK("expected " << autan::error_code_string(expected));
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == expected);
+  }
+}
+
+// What the ranks hand to MPI_Alltoallv while armed: per call, the datatypes and the summed send
+// and receive counts. The observer sits at the MPI boundary (PMPI) and passes every call on.
+struct Exchange {
+  MPI_Datatype send, receive;
+  std::int64_t sent, received;
+};
+bool observing = false;
+std::vector<Exchange> observed;
+
+struct Observe {
+  Observe() {
+    observed.clear();
+    observed.reserve(16);
+    observing = true;
+  }
+  ~Observe() { observing = false; }
+  Observe(const Observe&) = delete;
+  Observe& operator=(const Observe&) = delete;
+};
+
+bool same_doubles(std::span<const double> a, std::span<const double> b) {
+  return a.size() == b.size() &&
+         (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(double)) == 0);
+}
+
+}  // namespace
+
+// NOLINTBEGIN(modernize-avoid-c-arrays,cppcoreguidelines-avoid-c-arrays,readability-inconsistent-declaration-parameter-name)
+extern "C" int MPI_Alltoallv(const void* sendbuf, const int sendcounts[], const int sdispls[],
+                             MPI_Datatype sendtype, void* recvbuf, const int recvcounts[],
+                             const int rdispls[], MPI_Datatype recvtype, MPI_Comm comm) {
+  if (observing && observed.size() < observed.capacity()) {
+    int n = 0;
+    PMPI_Comm_size(comm, &n);
+    Exchange e{sendtype, recvtype, 0, 0};
+    for (int q = 0; q < n; ++q) {
+      if (sendbuf != MPI_IN_PLACE) e.sent += sendcounts[q];
+      e.received += recvcounts[q];
+    }
+    observed.push_back(e);
+  }
+  return PMPI_Alltoallv(sendbuf, sendcounts, sdispls, sendtype, recvbuf, recvcounts, rdispls,
+                        recvtype, comm);
+}
+// NOLINTEND(modernize-avoid-c-arrays,cppcoreguidelines-avoid-c-arrays,readability-inconsistent-declaration-parameter-name)
+
+TEST_CASE("Every selected ghost receives its owner's row and nothing else travels",
+          "[halo][rows]") {
+  // forward_rows with a mask per ghost slot: a selected ghost gets its owner's whole row, bit for
+  // bit; the others an empty row, and only the selected rows are sent. The mask depends on the
+  // receiving rank and the ghost slot, so one cell can be selected by one receiver, or for one
+  // periodic image, and not for another. The expected rows and counts come from the global ids.
+  const MeshKind kind = GENERATE(MeshKind::tetra, MeshKind::hexa, MeshKind::hybrid,
+                                 MeshKind::polyhedral, MeshKind::periodic);
+  const autan::GhostStencil stencil =
+      GENERATE(autan::GhostStencil::face2, autan::GhostStencil::vertex3);
+  Setup s = setup(kind, stencil);
+  const autan::Mesh& m = s.local.mesh;
+  const index_t n_owned = m.n_owned_cells();
+  const auto n_ghosts = at(m.n_cells() - n_owned);
+  const auto gid = [&](std::size_t g) { return m.cell_global_id()[at(n_owned) + g]; };
+  const int me = world_rank();
+  // The polyhedron (the cell with the most faces) is always selected where it is a ghost.
+  std::vector<int> faces(at(s.global.n_cells()), 0);
+  for (std::size_t f = 0; f < s.global.owner().size(); ++f) {
+    ++faces[at(s.global.owner()[f])];
+    if (f < s.global.neighbour().size()) ++faces[at(s.global.neighbour()[f])];
+  }
+  const auto polyhedron =
+      static_cast<std::int64_t>(std::distance(faces.begin(), std::ranges::max_element(faces)));
+  std::vector<std::uint8_t> wanted(n_ghosts), all(n_ghosts, 1), none(n_ghosts, 0);
+  for (std::size_t g = 0; g < n_ghosts; ++g) {
+    const std::int64_t id = gid(g);
+    wanted[g] = (kind == MeshKind::polyhedral && id == polyhedron) ||
+                (7 * id + me + static_cast<std::int64_t>(g)) % 3 != 0;
+  }
+
+  // Expected traffic, independent of the slot correspondence under test: each ghost names its
+  // owner (the global partition) and whether it is selected; each rank sums what it owes.
+  std::vector<std::int64_t> mine;  // owner, global id, selected: one triple per ghost
+  for (std::size_t g = 0; g < n_ghosts; ++g) {
+    mine.insert(mine.end(), {s.parts[at(gid(g))], gid(g), wanted[g]});
+  }
+  const int n = world_size();
+  std::vector<int> counts(at(n)), displs(at(n));
+  const int count = static_cast<int>(mine.size());
+  MPI_Allgather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+  for (int q = 1; q < n; ++q) displs[at(q)] = displs[at(q - 1)] + counts[at(q - 1)];
+  std::vector<std::int64_t> every(at(displs.back() + counts.back()));
+  MPI_Allgatherv(mine.data(), count, MPI_INT64_T, every.data(), counts.data(), displs.data(),
+                 MPI_INT64_T, MPI_COMM_WORLD);
+  std::int64_t owed = 0, owed_all = 0, due = 0, due_all = 0;
+  for (std::size_t t = 0; t < every.size(); t += 3) {
+    if (every[t] != me) continue;
+    owed += every[t + 2] != 0 ? row_length(every[t + 1]) : 0;
+    owed_all += row_length(every[t + 1]);
+  }
+  for (std::size_t g = 0; g < n_ghosts; ++g) {
+    due += wanted[g] != 0 ? row_length(gid(g)) : 0;
+    due_all += row_length(gid(g));
+  }
+  const auto n_sent = static_cast<std::int64_t>(s.local.halo.send_cells.size());
+  const auto n_recv = static_cast<std::int64_t>(n_ghosts);
+
+  for (const int stride : {0, 3}) {
+    const autan::CellRows owned = rows_of(m, n_owned, stride);
+    const auto run = [&](std::span<const std::uint8_t> mask, std::int64_t sent,
+                         std::int64_t received) {
+      autan::CellRows out;
+      {
+        const Observe watch;
+        out = autan::forward_rows(s.local.halo, owned, mask, MPI_COMM_WORLD);
+      }
+      // G667-b': the mask (1 B, receiver to owner), the lengths, keys and values, in that order.
+      const std::vector<Exchange> want{{MPI_UINT8_T, MPI_UINT8_T, n_recv, n_sent},
+                                       {MPI_INT64_T, MPI_INT64_T, n_sent, n_recv},
+                                       {MPI_INT64_T, MPI_INT64_T, sent, received},
+                                       {MPI_DOUBLE, MPI_DOUBLE, sent * stride, received * stride}};
+      CHECK(observed.size() == want.size());
+      for (std::size_t i = 0; i < std::min(observed.size(), want.size()); ++i) {
+        CHECK(observed[i].send == want[i].send);
+        CHECK(observed[i].receive == want[i].receive);
+        CHECK(observed[i].sent == want[i].sent);
+        CHECK(observed[i].received == want[i].received);
+      }
+      return out;
+    };
+    const autan::CellRows full = run(all, owed_all, due_all);
+    const autan::CellRows some = run(wanted, owed, due);
+    const autan::CellRows nothing = run(none, 0, 0);
+    CHECK(full.stride == stride);
+    CHECK(some.stride == stride);
+    CHECK(nothing.stride == stride);
+    // G667-b, c: the CSR of each output against its independent sizes. A rank whose output is
+    // misshapen skips the slices but stays in the collectives.
+    std::vector<autan::offset_t> full_offsets{0}, some_offsets{0};
+    for (std::size_t g = 0; g < n_ghosts; ++g) {
+      full_offsets.push_back(full_offsets.back() + row_length(gid(g)));
+      some_offsets.push_back(some_offsets.back() + (wanted[g] != 0 ? row_length(gid(g)) : 0));
+    }
+    const auto sized = [&](const autan::CellRows& r, const std::vector<autan::offset_t>& o) {
+      return r.offsets == o && r.keys.size() == at(o.back()) &&
+             r.values.size() == at(o.back()) * at(stride);
+    };
+    const bool shaped = sized(full, full_offsets) && sized(some, some_offsets) &&
+                        sized(nothing, std::vector<autan::offset_t>(n_ghosts + 1, 0));
+    CHECK(shaped);
+    if (!shaped) continue;
+    // G667-a: each selected row equals, bit for bit, the all-ones row and the oracle row.
+    const auto keys_of = [](const autan::CellRows& r, std::size_t g) {
+      return std::span(r.keys).subspan(at(r.offsets[g]), at(r.offsets[g + 1] - r.offsets[g]));
+    };
+    const auto values_of = [&](const autan::CellRows& r, std::size_t g) {
+      return std::span(r.values).subspan(at(r.offsets[g]) * at(stride),
+                                         at(r.offsets[g + 1] - r.offsets[g]) * at(stride));
+    };
+    for (std::size_t g = 0; g < n_ghosts; ++g) {
+      const autan::CellRows oracle = row_of(gid(g), stride);
+      CHECK(std::ranges::equal(keys_of(full, g), oracle.keys));
+      CHECK(same_doubles(values_of(full, g), oracle.values));
+      if (wanted[g] == 0) continue;
+      CHECK(std::ranges::equal(keys_of(some, g), keys_of(full, g)));
+      CHECK(same_doubles(values_of(some, g), values_of(full, g)));
+    }
+  }
+
+  // The selection covers what it must, on cells whose row is not empty: a cell selected by one
+  // receiver and not by another (4 and 8 ranks), two images of one cell selected differently
+  // (the periodic mesh on 1 rank), the polyhedron selected somewhere (2 ranks or more), a
+  // selected and an unselected non-empty row, and a selected multi-entry row (unsorted keys).
+  std::array<int, 6> seen{};
+  for (std::size_t g = 0; g < n_ghosts; ++g) {
+    if (row_length(gid(g)) == 0) {
+      seen[0] |= wanted[g];
+      continue;
+    }
+    seen[1] |= wanted[g] == 0 ? 1 : 0;
+    seen[2] |= wanted[g] != 0 && row_length(gid(g)) > 1 ? 1 : 0;
+    seen[3] |= wanted[g] != 0 && gid(g) == polyhedron ? 1 : 0;
+    for (std::size_t h = g + 1; h < n_ghosts; ++h) {
+      seen[4] |= gid(h) == gid(g) && wanted[h] != wanted[g] ? 1 : 0;
+    }
+  }
+  // The receiving rank of each gathered triple, from the gather's segments.
+  std::vector<int> receiver(every.size() / 3);
+  for (int q = 0; q < n; ++q) {
+    for (int t = displs[at(q)]; t < displs[at(q)] + counts[at(q)]; t += 3) receiver[at(t / 3)] = q;
+  }
+  std::int64_t split = 0;
+  for (std::size_t t = 0; t < every.size(); t += 3) {
+    for (std::size_t u = t + 3; u < every.size() && split == 0; u += 3) {
+      split = receiver[u / 3] != receiver[t / 3] && every[u + 1] == every[t + 1] &&
+                      every[u + 2] != every[t + 2] && row_length(every[t + 1]) > 0
+                  ? 1
+                  : 0;
+    }
+  }
+  MPI_Allreduce(MPI_IN_PLACE, seen.data(), static_cast<int>(seen.size()), MPI_INT, MPI_MAX,
+                MPI_COMM_WORLD);
+  if (n > 1 || kind == MeshKind::periodic) {
+    CHECK(seen[0] == 1);
+    CHECK(seen[1] == 1);
+    CHECK(seen[2] == 1);
+  }
+  if (kind == MeshKind::polyhedral && n > 1) CHECK(seen[3] == 1);
+  if (kind == MeshKind::periodic && n == 1) CHECK(seen[4] == 1);
+  if (n >= 4) CHECK(split == 1);
+}
+
+TEST_CASE("forward_rows refuses together and bounds the selected rows", "[halo][rows]") {
+  // G667-d and the count range: every rank refuses when only rank 0's input is wrong; the
+  // bound applies to the selected rows, sent and received.
+  Setup s = setup(MeshKind::periodic);
+  const autan::Mesh& m = s.local.mesh;
+  const index_t n_owned = m.n_owned_cells();
+  const auto n_ghosts = at(m.n_cells() - n_owned);
+  const std::vector<std::uint8_t> all(n_ghosts, 1);
+  const int me = world_rank();
+  if (world_size() > 1) {
+    require_everywhere(autan::ErrorCode::halo_inconsistent, [&] {
+      (void)autan::forward_rows(s.local.halo, rows_of(m, n_owned, me == 0 ? 2 : 3), all,
+                                MPI_COMM_WORLD);
+    });
+    require_everywhere(autan::ErrorCode::halo_inconsistent, [&] {
+      autan::HaloPattern bent = s.local.halo;
+      if (me == 0) bent.send_offsets.front() = 1;
+      (void)autan::forward_rows(bent, rows_of(m, n_owned, 3), all, MPI_COMM_WORLD);
+    });
+  }
+  require_everywhere(autan::ErrorCode::partition_invalid_request, [&] {
+    autan::CellRows bad = rows_of(m, n_owned, 3);
+    if (me == 0) bad.values.push_back(0.0);
+    (void)autan::forward_rows(s.local.halo, bad, all, MPI_COMM_WORLD);
+  });
+  // The mask one byte short, one byte long, and a byte 2 (rank 0 holds periodic images).
+  REQUIRE(n_ghosts > 0);
+  for (const int change : {-1, 1, 0}) {
+    std::vector<std::uint8_t> mask = all;
+    if (me == 0 && change < 0) mask.pop_back();
+    if (me == 0 && change > 0) mask.push_back(1);
+    if (me == 0 && change == 0) mask.front() = 2;
+    require_everywhere(autan::ErrorCode::partition_invalid_request, [&] {
+      (void)autan::forward_rows(s.local.halo, rows_of(m, n_owned, 3), mask, MPI_COMM_WORLD);
+    });
+  }
+  autan::HaloPattern self;
+  self.neighbours = {0};
+  self.send_cells = {0};
+  self.send_offsets = {1, 2};
+  self.recv_offsets = {0, 1};
+  const std::vector<std::uint8_t> one_slot{1};
+  require_everywhere(autan::ErrorCode::halo_inconsistent, [&] {
+    (void)autan::forward_rows(self, row_of(1, 1), one_slot, MPI_COMM_SELF);
+  });
+
+  // 2048 slots of one entry at 2^20 values from rank 0 to itself: 2^31 values if all are
+  // selected (refused), none or one selected (sent).
+  constexpr int wide = 1 << 20;
+  constexpr index_t slots = 2048;
+  autan::HaloPattern large;
+  large.rank = me;
+  large.n_ranks = world_size();
+  autan::CellRows one;
+  one.stride = wide;
+  if (me == 0) {
+    large.neighbours = {0};
+    large.send_cells.assign(slots, 0);
+    large.send_offsets = {0, slots};
+    large.recv_offsets = {0, slots};
+    one = row_of(0, wide);
+  }
+  const auto n_large = me == 0 ? at(slots) : 0;
+  require_everywhere(autan::ErrorCode::partition_invalid_request, [&] {
+    (void)autan::forward_rows(large, one, std::vector<std::uint8_t>(n_large, 1), MPI_COMM_WORLD);
+  });
+  for (const int selected : {0, 1}) {
+    std::vector<std::uint8_t> mask(n_large, 0);
+    if (!mask.empty()) mask[at(slots / 2)] = static_cast<std::uint8_t>(selected);
+    const autan::CellRows got = autan::forward_rows(large, one, mask, MPI_COMM_WORLD);
+    const std::int64_t entries = me == 0 ? selected * row_length(0) : 0;
+    CHECK(got.keys.size() == at(entries));
+    CHECK(got.values.size() == at(entries) * at(wide));
+  }
+
+  if (world_size() < 2) return;
+  // Rank 0 receives 1024 slots from itself and 1024 from rank 1: each sender within the range,
+  // their sum beyond it (refused). Then rank 0 sends one row to rank 1 only: a send-only and a
+  // receive-only rank in a transfer that succeeds, the other ranks idle.
+  autan::HaloPattern gather;
+  gather.rank = me;
+  gather.n_ranks = world_size();
+  autan::CellRows from;
+  from.stride = wide;
+  std::size_t n_gather = 0;
+  if (me == 0) {
+    gather.neighbours = {0, 1};
+    gather.send_cells.assign(slots / 2, 0);
+    gather.send_offsets = {0, slots / 2, slots / 2};
+    gather.recv_offsets = {0, slots / 2, slots};
+    from = row_of(0, wide);
+    n_gather = at(slots);
+  } else if (me == 1) {
+    gather.neighbours = {0};
+    gather.send_cells.assign(slots / 2, 0);
+    gather.send_offsets = {0, slots / 2};
+    gather.recv_offsets = {0, 0};
+    from = row_of(4, wide);
+  }
+  require_everywhere(autan::ErrorCode::partition_invalid_request, [&] {
+    (void)autan::forward_rows(gather, from, std::vector<std::uint8_t>(n_gather, 1), MPI_COMM_WORLD);
+  });
+  autan::HaloPattern pass;
+  pass.rank = me;
+  pass.n_ranks = world_size();
+  autan::CellRows given;
+  given.stride = 3;
+  std::size_t n_pass = 0;
+  if (me == 0) {
+    pass.neighbours = {1};
+    pass.send_cells = {0};
+    pass.send_offsets = {0, 1};
+    pass.recv_offsets = {0, 0};
+    given = row_of(6, 3);
+  } else if (me == 1) {
+    pass.neighbours = {0};
+    pass.send_offsets = {0, 0};
+    pass.recv_offsets = {0, 1};
+    n_pass = 1;
+  }
+  const autan::CellRows got =
+      autan::forward_rows(pass, given, std::vector<std::uint8_t>(n_pass, 1), MPI_COMM_WORLD);
+  const autan::CellRows oracle = row_of(6, 3);
+  if (me == 1) {
+    CHECK(got.keys == oracle.keys);
+    CHECK(same_doubles(got.values, oracle.values));
+  } else {
+    CHECK(got.keys.empty());
+  }
 }
 
 TEST_CASE("Graph levels exchange their nodes and edges through HaloExchange", "[halo][graph]") {

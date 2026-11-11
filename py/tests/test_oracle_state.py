@@ -50,7 +50,12 @@ def two_faces(mesh_variant: Callable[..., autan.MeshInfo], tmp_path: Path) -> Pa
     def edit(document: dict[str, Any]) -> None:
         for zone in document["boundary_zones"]:
             if zone["name"] == "farfield":
-                zone.update(faces=2, type=None, native_type=None)
+                zone.update(
+                    faces=2,
+                    type=None,
+                    native_type=None,
+                    first_cell_height={"min": 1.0, "median": 1.5, "max": 2.0},
+                )
 
     path = tmp_path / "two.meshinfo.json"
     path.write_text(json.dumps(mesh_variant("crm-hl", edit).document()))
