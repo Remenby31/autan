@@ -46,7 +46,7 @@ def mesh_document(name: str) -> dict[str, Any]:
 
 def stencil_of(document: dict[str, Any]) -> str:
     """The ghost stencil of ``document``'s partition (the one its fixture's case declares: CRM's
-    SA reads vertex4), face2 without a partition."""
+    SA under "run" reads vertex3), face2 without a partition."""
     return str((document.get("partition") or {}).get("ghost_stencil", "face2"))
 
 

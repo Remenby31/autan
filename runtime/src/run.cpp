@@ -406,6 +406,11 @@ class NoGhosts final : public GhostExchange {
  public:
   void forward(std::span<float* const> /*c*/, MemorySpace /*s*/, void* /*stream*/) override {}
   void forward(std::span<double* const> /*c*/, MemorySpace /*s*/, void* /*stream*/) override {}
+  CellRows forward_rows(const CellRows& owned, std::span<const std::uint8_t> /*wanted*/) override {
+    CellRows none;
+    none.stride = owned.stride;
+    return none;
+  }
 };
 
 // A private copy of a file and the SHA-256 of the bytes copied: what is

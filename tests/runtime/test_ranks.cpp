@@ -1,11 +1,18 @@
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <stdexcept>
+#include <vector>
 
 #include <catch2/catch_session.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include "autan/core/error.hpp"
+#include "autan/core/geometry.hpp"
+#include "autan/partition/partition.hpp"
 #include "comm.hpp"
+#include "fixtures.hpp"
 
 #ifdef AUTAN_HAVE_MPI
 #include <mpi.h>
@@ -41,6 +48,55 @@ TEST_CASE("argmin takes the least value and, among equals, the least id", "[runt
 TEST_CASE("max over the ranks, in double", "[runtime][ranks]") {
   CHECK(comm->max(static_cast<double>(comm->rank()) + 0.5) ==
         static_cast<double>(comm->size()) - 0.5);
+}
+
+TEST_CASE("one rank's ghost exchange gives no fit rows to a part without ghosts",
+          "[runtime][ranks]") {
+  // A one-rank run on a part (reproducibility "ranks") with a physics that receives its ghosts'
+  // rows: without periodic images there is no ghost, so no row and a mask of no byte. Periodic
+  // images still refuse rows (E0144), and a mask of another length is the caller's error.
+  if (comm->size() != 1) SKIP("the exchange of a one-rank run");
+  const autan::Mesh box =
+      autan::assemble(autan::to_face_based(autan::test::box(3, autan::test::BoxFill::hexa)));
+  const autan::Geometry g = autan::compute_geometry(box);
+  const auto part =
+      autan::extract_partition(box, g, std::vector<std::int32_t>(g.cell_volume.size(), 0), 1, 0,
+                               autan::GhostStencil::vertex3);
+  REQUIRE(part.mesh.n_cells() == part.mesh.n_owned_cells());
+  autan::CellRows owned;
+  owned.stride = 19;
+  owned.offsets.assign(static_cast<std::size_t>(part.mesh.n_owned_cells()) + 1, 0);
+  const auto exchange = comm->ghost_exchange(part);
+  const autan::CellRows got = exchange->forward_rows(owned, {});
+  CHECK(got.stride == 19);
+  CHECK(got.offsets == std::vector<autan::offset_t>{0});
+  CHECK(got.keys.empty());
+  CHECK(got.values.empty());
+  const std::vector<std::uint8_t> one{1};
+  CHECK_THROWS_AS(exchange->forward_rows(owned, one), std::logic_error);
+
+  autan::CellwiseMesh cells = autan::test::box(3, autan::test::BoxFill::hexa);
+  cells.face_zones[0].kind = autan::BcKind::periodic;
+  cells.face_zones[1].kind = autan::BcKind::periodic;
+  cells.periodic.push_back(
+      {.zone_a = 0, .zone_b = 1, .translation = std::array<double, 3>{1, 0, 0}});
+  const autan::Mesh periodic = autan::assemble(autan::to_face_based(std::move(cells)));
+  const autan::Geometry pg = autan::compute_geometry(periodic);
+  const auto images =
+      autan::extract_partition(periodic, pg, std::vector<std::int32_t>(pg.cell_volume.size(), 0), 1,
+                               0, autan::GhostStencil::vertex3);
+  REQUIRE(images.mesh.n_cells() > images.mesh.n_owned_cells());
+  autan::CellRows rows;
+  rows.stride = 19;
+  rows.offsets.assign(static_cast<std::size_t>(images.mesh.n_owned_cells()) + 1, 0);
+  const std::vector<std::uint8_t> mask(
+      static_cast<std::size_t>(images.mesh.n_cells() - images.mesh.n_owned_cells()), 0);
+  try {
+    (void)comm->ghost_exchange(images)->forward_rows(rows, mask);
+    FAIL("expected E0144");
+  } catch (const autan::Error& e) {
+    CHECK(e.code() == autan::ErrorCode::halo_inconsistent);
+  }
 }
 
 int main(int argc, char** argv) {
