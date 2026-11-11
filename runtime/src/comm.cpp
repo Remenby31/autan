@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <initializer_list>
+#include <stdexcept>
 #include <string_view>
 
 #include "autan/core/error.hpp"
@@ -38,6 +39,22 @@ class SelfExchange final : public GhostExchange {
   }
   void forward(std::span<double* const> components, MemorySpace space, void* stream) override {
     run(components, space, stream);
+  }
+  // A one-rank run on a part, under reproducibility "ranks", with a physics that receives its
+  // ghosts' rows: without periodic images the part has no ghost and gets no row. Rows are not
+  // exchanged across periodic pairs: Navier-Stokes, the only caller, refuses them (E0706), and
+  // keys carry no image shift.
+  CellRows forward_rows(const CellRows& owned, std::span<const std::uint8_t> wanted) override {
+    const auto ghosts = static_cast<std::size_t>(part_.mesh.n_cells() - part_.mesh.n_owned_cells());
+    if (wanted.size() != ghosts) {
+      throw std::logic_error("forward_rows: the mask holds one byte per ghost");
+    }
+    if (ghosts != 0) {
+      throw Error(ErrorCode::halo_inconsistent, "rows are not exchanged across periodic pairs");
+    }
+    CellRows none;
+    none.stride = owned.stride;
+    return none;
   }
 
  private:
@@ -102,6 +119,9 @@ class MpiGhosts final : public GhostExchange {
   }
   void forward(std::span<double* const> components, MemorySpace space, void* stream) override {
     exchange(space).forward(components, stream);
+  }
+  CellRows forward_rows(const CellRows& owned, std::span<const std::uint8_t> wanted) override {
+    return autan::forward_rows(part_.halo, owned, wanted, comm_);
   }
 
  private:

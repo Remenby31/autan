@@ -143,8 +143,9 @@ jobs:
         run: cmake --build build
       # One test per hosted CPU, so that the test step stays well inside the job's timeout on a
       # slow runner. These are the tests gpu-tests also runs in parallel (no MPI, no GPU here).
+      # The `certificate` tests run in gpu-tests, optimised (seconds there, minutes in Debug).
       - name: Test
-        run: ctest --test-dir build --output-on-failure -j "$(getconf _NPROCESSORS_ONLN)"
+        run: ctest --test-dir build -LE certificate --output-on-failure -j "$(getconf _NPROCESSORS_ONLN)"
 
   mpi:
     # The multi-rank tests use no GPU: they run here, on every pull request including drafts,
