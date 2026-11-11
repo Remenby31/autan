@@ -1855,8 +1855,8 @@ TEST_CASE("several ranks give the one-rank solution to round-off", "[euler][mpi]
 }
 
 // The fp64 first-order start's last step of each steady configuration of hybrid.solver-input.json
-// (its drop or stall rule): measured at 83b40ec8 in gpu-tests' unoptimised build on 2026-11-09
-// (t648-o0b).
+// (its drop or stall rule). A regression pin, not a specification value: measured at 83b40ec8 in
+// gpu-tests' unoptimised build on 2026-11-09 (t648-o0b); a failure means the fp64 switch moved.
 static int fp64_last_first_order(const std::string& model, const std::string& linear) {
   if (model == "laminar") return linear == "gauss-seidel" ? 53 : 44;
   return linear == "gauss-seidel" ? 44 : 37;
@@ -1920,6 +1920,9 @@ static void ns_on_ranks(const char* model, const char* linear, bool steady, cons
     // (euler.md), from its first full window to the cap, since the rule fixes no single step.
     using autan::physics::FirstOrderStart;
     if (std::string_view(precision) == "fp64") {
+      // The rule's bound (euler.md), then the pin.
+      REQUIRE(switched >= 1);
+      REQUIRE(switched <= FirstOrderStart::max_steps + 1);
       REQUIRE(switched == fp64_last_first_order(model, linear));
     } else {
       REQUIRE(switched >= static_cast<long>(FirstOrderStart::window));
