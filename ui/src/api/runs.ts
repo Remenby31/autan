@@ -231,22 +231,32 @@ function computeOrders(columns: HistoryColumns, run: Rule, from: number): void {
   const series = [...columns.residuals];
   const firsts: Record<string, number> =
     reference ?? Object.fromEntries(series.map(([name, values]) => [name, values[0] ?? 0]));
-  const floor = FLOOR * Math.max(0, ...Object.values(firsts).filter((v) => v > 0 && v < Infinity));
+  const finite = (v: number | undefined): v is number => v !== undefined && v > 0 && v < Infinity;
+  const floor = FLOOR * Math.max(0, ...Object.values(firsts).filter(finite));
+  // A momentum component drops from the largest first residual of the momentum components (#544).
+  const momentum = Math.max(
+    0,
+    ...series
+      .filter(([name]) => name.startsWith("momentum-"))
+      .map(([name]) => firsts[name])
+      .filter(finite),
+  );
   for (let k = from; k < columns.iteration.length; k++) {
     let slowest = Number.POSITIVE_INFINITY;
     let comparable = series.length > 0;
     for (const [name, values] of series) {
       const value = values[k];
-      const first = firsts[name];
-      if (value === undefined || first === undefined) {
+      const own = firsts[name];
+      if (value === undefined || own === undefined) {
         comparable = false;
         continue;
       }
-      if (!columns.woken.has(name) && first >= 0 && first < floor) {
+      if (!columns.woken.has(name) && own >= 0 && own < floor) {
         if (value >= 0 && value <= floor) continue;
         columns.woken.add(name);
       }
       if (plateau.has(name)) continue;
+      const first = name.startsWith("momentum-") ? momentum : own;
       if (value === 0 && first >= 0) continue;
       if (first > 0 && value > 0 && first < Infinity && value < Infinity)
         slowest = Math.min(slowest, Math.log10(first) - Math.log10(value));
