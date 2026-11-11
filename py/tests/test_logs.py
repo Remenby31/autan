@@ -86,9 +86,21 @@ def _diagnostic_codes(out: str) -> list[str]:
     return [d["code"] for d in json.loads(out[out.index('{\n  "ok"') :])["diagnostics"]]
 
 
-class Follower:
-    """`autan logs -f --json RUN` in its own process, each printed chunk with its arrival."""
+# The process groups of the SDK writing a run and of its autan-run, which SolverBackend starts
+# in a session of its own (Linux /proc).
+def _groups(writer: subprocess.Popen[bytes]) -> list[int]:
+    children = Path(f"/proc/{writer.pid}/task/{writer.pid}/children").read_text().split()
+    return [writer.pid, *(int(child) for child in children)]
 
+
+def _signal(groups: list[int], number: signal.Signals) -> None:
+    for group in groups:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(group, number)
+
+
+# `autan logs -f --json RUN` in its own process, each printed chunk with its arrival.
+class Follower:
     def __init__(self, run: Path) -> None:
         self.process = subprocess.Popen(
             [sys.executable, "-m", "autan.cli", "logs", "-f", "--json", str(run)],
@@ -166,9 +178,9 @@ def test_a_broken_run_directory_is_e0701(
         assert _diagnostic_codes(capsys.readouterr().out) == ["E0701"]
 
 
+# A copy of a run directory taken while the runtime writes it, cut to its complete lines; the
+# run is stopped once copied.
 def _running_copy(tmp_path: Path) -> Path:
-    """A copy of a run directory taken while the runtime writes it, cut to its complete lines;
-    the run is stopped once copied."""
     case, meshinfo = _inputs(tmp_path)
     runs = tmp_path / "runs"
     writer = subprocess.Popen(
@@ -229,23 +241,26 @@ def test_follow_holds_back_a_partial_line_and_takes_its_rewrite(tmp_path: Path) 
 def test_follow_prints_every_line_live_until_the_final_status(tmp_path: Path, ending: str) -> None:
     case, meshinfo = _inputs(tmp_path)
     runs = tmp_path / "runs"
-    # The SDK and its autan-run in a process group of their own, held while the follower starts.
+    # The SDK and its autan-run, held while the follower starts.
     writer = subprocess.Popen(
         [sys.executable, "-c", RUN, str(case), str(meshinfo), str(RELAXATION), str(runs)],
         env=_env(AUTAN_TEST_PAUSE_MS=PAUSE_MS, **ENDINGS[ending]),
         start_new_session=True,
     )
     follower = None
+    groups = [writer.pid]
     try:
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline and not list(runs.glob("run-*/run.json")):
             time.sleep(0.02)
-        os.killpg(writer.pid, signal.SIGSTOP)
+        groups = _groups(writer)
+        assert len(groups) == 2, "the SDK and its autan-run"
+        _signal(groups, signal.SIGSTOP)
         [run] = runs.glob("run-*")
         follower = Follower(run)
         while not follower.printed and time.monotonic() < deadline:
             time.sleep(0.02)
-        os.killpg(writer.pid, signal.SIGCONT)
+        _signal(groups, signal.SIGCONT)
         # When each complete line appears in the file, and whether the run was then running.
         appeared: list[tuple[float, bool]] = []
         while follower.process.poll() is None and time.monotonic() < deadline:
@@ -263,8 +278,7 @@ def test_follow_prints_every_line_live_until_the_final_status(tmp_path: Path, en
         seen = (run / "log.jsonl").read_bytes().count(b"\n")
         appeared.extend((time.monotonic(), False) for _ in range(seen - len(appeared)))
     finally:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(writer.pid, signal.SIGKILL)
+        _signal(groups, signal.SIGKILL)
         writer.wait()
         if follower is not None:
             follower.process.kill()
