@@ -312,14 +312,17 @@ def partition_groups(spec: CaseSpec, device_kind: DeviceKind) -> str:
 
 
 # The ghost stencil a run's partition holds: the one its physics declares (runtime.md,
-# Registration). Compressible Navier-Stokes and Spalart-Allmaras read the quadratic gradient and
-# the viscous boundary fits, four vertex rings with their Jacobian; the Euler physics, and the
+# Registration). Compressible Navier-Stokes and Spalart-Allmaras read the viscous boundary fits:
+# under reproducibility "ranks" four vertex rings, each rank fitting its ghost face neighbours
+# too; otherwise three, those fits received from their owners. The Euler physics, and the
 # incompressible cases no viscous physics serves, read face2.
 def partition_ghost_stencil(spec: CaseSpec) -> str:
     viscous = isinstance(spec.physics, Compressible) and not isinstance(
         spec.physics.turbulence, Inviscid
     )
-    return "vertex4" if viscous else "face2"
+    if not viscous:
+        return "face2"
+    return "vertex4" if spec.physics.reproducibility == "ranks" else "vertex3"
 
 
 def _check_prepared(

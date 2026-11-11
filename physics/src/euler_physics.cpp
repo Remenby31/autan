@@ -23,6 +23,7 @@
 #include "autan/physics/first_order_start.hpp"
 #include "autan/physics/manufactured.hpp"
 #include "autan/physics/navier_stokes.hpp"
+#include "autan/physics/navier_stokes_device.hpp"
 #include "autan/physics/point_vortex.hpp"
 #include "autan/physics/spalart_allmaras.hpp"
 #include "autan/runtime/exact_sum.hpp"
@@ -130,8 +131,8 @@ struct SaState {
       : model(mesh, geometry, flow, t, ft2, keys) {}
   SpalartAllmaras<P> model;
   std::vector<double> rnu, rhs, dx, diag, upper, lower;
-  // Under global keys or on a partition: the owned cells by global colour, which solve() sweeps
-  // with an exchange after each, the same sweeps on any number of ranks.
+  // The owned cells by global colour, which solve() sweeps with an exchange after each: the same
+  // sweeps on any number of ranks and in any cell order.
   std::vector<std::vector<std::size_t>> colours;
   double nt_inf = 0.0;  ///< m^2/s, the freestream's
   std::vector<typename P::state> s;
@@ -153,7 +154,7 @@ class EulerPhysics final : public runtime::Physics {
   // The ghost stencil the flow's scheme reads (PhysicsRegistry::Entry::ghosts).
   static std::optional<GhostStencil> ghosts(const runtime::SolverInput& in) {
     if constexpr (is_viscous) {
-      return navier_stokes_ghost_stencil();
+      return navier_stokes_ghost_stencil(in.reproducibility == "ranks");
     } else {
       return ghost_stencil(flow_scheme(in));
     }
@@ -273,12 +274,29 @@ class EulerPhysics final : public runtime::Physics {
     apply_vortices();
     if (ctx.device >= 0) {
 #ifdef AUTAN_PHYSICS_CUDA
-      if constexpr (is_viscous) {
-        throw std::logic_error("the Navier-Stokes physics has no device stepper");
-      } else {
+      {
+        // Euler<P>'s or NavierStokes<P>'s (laminar only: SA has no device entry, E0706).
         device_ = make_device_stepper<P>(mesh, ctx.geometry, euler_, gas_.gamma, second_order_,
                                          ctx.ranks, ctx.ghosts, ctx.stream);
         device_->upload(u_);
+        if constexpr (is_viscous) {
+          const bool exp_log = std::ranges::any_of(in.boundaries, [](const auto& b) {
+            return b.kind == "farfield" || b.kind == "inlet";
+          });
+          if (in.precision == "fp32+acc64" && exp_log) {
+            const double gain = device_stencil_gain(euler_.euler(), mesh, ctx.geometry);
+            if (device_gain_warns(true, exp_log, gain)) {
+              ctx.log.warn("W0717",
+                           "the device comparison on this combination is not covered by a tight "
+                           "bound (#586 2(b): G beyond 4.79, the largest G at which tightness was "
+                           "measured)",
+                           nlohmann::json{{"G", gain},
+                                          { "G_covered",
+                                            device_covered_gain }}
+                               .dump());
+            }
+          }
+        }
         if (in.time.kind == "steady") {
           ctx.log.write("warning", "solver",
                         "steady case on the device: explicit SSP-RK3 with local time steps, not "
@@ -706,12 +724,9 @@ class EulerPhysics final : public runtime::Physics {
     }
     // The ghosts' density may not be filled yet: their owners' rho nt.
     fill_ghost_values(t.rnu);
-    if (keys_ || owned_ < n_) {
-      t.colours.assign(static_cast<std::size_t>(ctx_.n_colours), {});
-      for (std::size_t c = 0; c < owned_; ++c) {
-        t.colours[static_cast<std::size_t>(ctx_.cell_colours[c])].push_back(c);
-      }
-    }
+    // ADR 0005 (B): SA's system is swept by the runtime's colours on any number of ranks and
+    // whatever the flow's linear solver, so that a device repeats the same sweeps.
+    t.colours = colour_groups(mesh, ctx_.cell_colours, ctx_.n_colours, owned_);
     t.rhs.assign(n_, 0.0);
     t.dx.assign(n_, 0.0);
     t.diag.assign(n_, 0.0);
@@ -1156,12 +1171,8 @@ class EulerPhysics final : public runtime::Physics {
         for (std::size_t c = 0; c < n_; ++c) t.rhs[c] = -static_cast<double>(t.res[c]);
         std::fill(t.dx.begin(), t.dx.end(), 0.0);
         t.model.assemble(shift, t.diag, t.upper, t.lower);
-        if (t.colours.empty()) {
-          t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, nt_sweeps);
-        } else {
-          t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, nt_sweeps, &t.colours,
-                        [this](std::span<double> x) { fill_ghost_values(x); });
-        }
+        t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, nt_sweeps, t.colours,
+                      [this](std::span<double> x) { fill_ghost_values(x); });
         // Local under-relaxation of the SA update: rho nt changes by at most a fraction of
         // max(|rho nt|, rho nt_inf) per step, which the converged state never reaches. Owned
         // cells; the ghosts take their owners' values.
@@ -1490,6 +1501,9 @@ class EulerPhysics final : public runtime::Physics {
     }
     void forward(std::span<double* const> components) override {
       ghosts_.forward(components, MemorySpace::host, nullptr);
+    }
+    CellRows forward_rows(const CellRows& owned, std::span<const std::uint8_t> wanted) override {
+      return ghosts_.forward_rows(owned, wanted);
     }
 
    private:
@@ -1824,6 +1838,30 @@ std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverI
   }
   return euler_scope(in, ranks);
 }
+
+// The Navier-Stokes physics on a device: one rank, no point vortex, the host's limits otherwise;
+// steady cases take the device's explicit steps. Registered for laminar flow only (ADR 0005): SA
+// on a device has no entry, E0706.
+std::optional<runtime::PhysicsRefusal> navier_stokes_device_scope(const runtime::SolverInput& in,
+                                                                  int ranks) {
+  if (ranks > 1) {
+    return runtime::PhysicsRefusal{
+        .message =
+            "the Navier-Stokes physics runs on one device only, not " + std::to_string(ranks),
+        .path = "devices.kind",
+        .data_json = nlohmann::json{{"ranks", ranks}}.dump()};
+  }
+  for (std::size_t i = 0; i < in.boundaries.size(); ++i) {
+    if (in.boundaries[i].point_vortex) {
+      return runtime::PhysicsRefusal{
+          .message = "the Navier-Stokes physics on a device has no point vortex; boundary zone '" +
+                     in.boundaries[i].zone + "'",
+          .path = "boundaries[" + std::to_string(i) + "].point_vortex",
+          .data_json = nlohmann::json{{"zone", in.boundaries[i].zone}}.dump()};
+    }
+  }
+  return navier_stokes_scope(in, ranks);
+}
 #endif
 
 // EulerPhysics::restart_fields' names: the conserved variables, the averaging sums and weight,
@@ -1853,6 +1891,47 @@ std::vector<std::string> euler_restart_names(const runtime::SolverInput& in, boo
 }
 
 }  // namespace
+
+template <class P>
+double device_stencil_gain(const Euler<P>& flow, const Mesh& mesh, const Geometry& g) {
+  const auto nc = static_cast<std::size_t>(mesh.n_cells());
+  std::vector<double> reach(nc, 0.0);
+  for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
+    auto at = [&](std::size_t c) {
+      const double d = std::hypot(g.face_centroid_x[f] - g.cell_centroid_x[c],
+                                  g.face_centroid_y[f] - g.cell_centroid_y[c],
+                                  g.face_centroid_z[f] - g.cell_centroid_z[c]);
+      reach[c] = std::max(reach[c], d);
+    };
+    at(static_cast<std::size_t>(mesh.owner()[f]));
+    if (f < static_cast<std::size_t>(mesh.n_interior_faces())) {
+      at(static_cast<std::size_t>(mesh.neighbour()[f]));
+    }
+  }
+  auto gain = [&](auto offsets, std::size_t entries, const std::vector<double>& w) {
+    double worst = 0.0;
+    for (std::size_t c = 0; c < nc; ++c) {
+      double sum = 0.0;
+      for (auto e = static_cast<std::size_t>(offsets[c]);
+           e < static_cast<std::size_t>(offsets[c + 1]); ++e) {
+        sum += std::hypot(w[e], w[entries + e], w[2 * entries + e]);
+      }
+      worst = std::max(worst, sum * reach[c]);
+    }
+    return worst;
+  };
+  const auto& st = flow.stencil();
+  double worst = gain(st.offsets, st.entries.size(), flow.gradient_weights());
+  if (flow.scheme().gradient_fit == GradientFit::quadratic) {
+    const auto q = flow.quadratic_gradient();
+    worst = std::max(worst, gain(q.offsets, q.entries.size(), q.weights));
+  }
+  return worst;
+}
+
+template double device_stencil_gain(const Euler<kernels::fp64>&, const Mesh&, const Geometry&);
+template double device_stencil_gain(const Euler<kernels::fp32_acc64>&, const Mesh&,
+                                    const Geometry&);
 
 // linear_solver = "lines": the multigrid's fine lines, computed on the global mesh, which the
 // partition keeps whole.
@@ -1898,6 +1977,14 @@ void register_navier_stokes(runtime::PhysicsRegistry& registry) {
                  EulerPhysics<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>::ghosts, {},
                  /*wall_distance=*/std::string(model) == "sa");
   }
+#ifdef AUTAN_PHYSICS_CUDA
+  registry.add({"compressible", "laminar", "fp64", "cuda"},
+               factory<kernels::fp64, NavierStokes<kernels::fp64>>(), navier_stokes_device_scope,
+               /*several_ranks=*/false, {}, euler_restart_names);
+  registry.add({"compressible", "laminar", "fp32+acc64", "cuda"},
+               factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>(),
+               navier_stokes_device_scope, /*several_ranks=*/false, {}, euler_restart_names);
+#endif
 }
 
 }  // namespace autan::physics

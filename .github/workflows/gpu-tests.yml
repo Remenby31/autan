@@ -1,6 +1,8 @@
-# Builds the solver with CUDA, MPI, METIS and Scotch and runs the whole test suite (CPU and GPU)
-# on a DGX Spark runner labelled `tests` (spark; spark-5359 is kept for benchmarks), under the
-# GPU lock. Self-hosted runners never run fork pull requests: the job condition skips them and
+# Builds the solver with CUDA, MPI, METIS and Scotch and runs the whole test suite. The GPU tests
+# and the generator's run on a DGX Spark runner labelled `tests`, under the GPU lock. The CPU tests
+# run on hosted arm64 runners, in the published dev image and with the same configuration, split
+# into three shards (job cpu-tests). The Spark runs them too, on the nightly and on a manual run,
+# so that a difference only GB10 shows is still caught. Self-hosted runners never run fork pull requests: the job condition skips them and
 # the runner's job-started hook refuses them (docs/infra/runners.md).
 name: gpu-tests
 
@@ -8,7 +10,7 @@ on:
   push:
     branches: [main]
     paths: &paths
-      [codegen/**, kernels/**, physics/**, core/**, runtime/**, partition/**, io/**, tests/**, CMakeLists.txt, .github/workflows/gpu-tests.yml]
+      [codegen/**, kernels/**, physics/**, core/**, runtime/**, partition/**, io/**, tests/**, CMakeLists.txt, .github/workflows/gpu-tests.yml, bench/ci/cpu-test-shards.py, bench/ci/gb10-health.py, bench/ci/cpu-test-skips.txt]
   pull_request:
     paths: *paths
     # ready_for_review: a draft that becomes ready runs at once; drafts themselves are skipped.
@@ -27,7 +29,221 @@ concurrency:
   group: gpu-tests-${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # gpu-tests' configuration, shared by the Spark job and the hosted CPU shards so that both
+  # build the same tests.
+  CONFIGURE: >-
+    -G Ninja -DAUTAN_ENABLE_CUDA=ON -DAUTAN_ENABLE_MPI=ON
+    -DAUTAN_ENABLE_METIS=ON -DAUTAN_ENABLE_SCOTCH=ON -DCMAKE_CUDA_ARCHITECTURES=121
+    -DAUTAN_WARNINGS_AS_ERRORS=ON -DCMAKE_BUILD_TYPE=Release
+    -DCMAKE_CXX_FLAGS_RELEASE=-O2 -DCMAKE_CUDA_FLAGS_RELEASE=-O2
+
 jobs:
+  # The CPU tests the Spark ran before the GPU tests, on hosted arm64 runners: the same two
+  # selections (-LE 'gpu|mpi|certificate' with -j 4, then -L mpi -LE gpu with -j 1), dealt into three shards
+  # by bench/ci/cpu-test-shards.py, which checks that each CPU test is in exactly one; job
+  # cpu-tests-check then checks the same across the three runners. Each shard builds the tree
+  # itself, in the dev image gpu-image.yml published from docker/dev, pinned by digest. Like the
+  # Spark runner's image, the pin follows deployment, not a pull request's docker/dev: a warning
+  # says when docker/dev has changed since, and the nightly on GB10 catches a difference. No GPU
+  # is visible, as on the Spark, and no limit is added: the Spark's CPU step had no watchdog.
+  cpu-tests:
+    name: CPU tests (hosted arm64, shard ${{ matrix.shard }}/3)
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       !github.event.pull_request.draft)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: read # pull the dev image from GHCR
+      issues: read # look for an open GB10-only CPU difference
+    container:
+      # ghcr.io/remenby31/autan-dev:a14f2685e44a782a05b629a4f30feca321c9eba8-arm64, published by
+      # gpu-image.yml from docker/dev at tree c5ed7be0 (run 41318786224).
+      image: ghcr.io/remenby31/autan-dev@sha256:95e7b65c4e7a8c6514e2b96159a20a1739b12b29b60be6a1ee44b30a226af601
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      # The Spark runner's container limit (16 GiB). In a private cgroup namespace the solver
+      # reads its memory limit at the namespace root; without one there it warns (W0713) before
+      # the diagnostics some tests expect first (runtime/src/host_memory.cpp).
+      options: --memory 16g
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    defaults:
+      run:
+        shell: bash
+    env:
+      CUDA_VISIBLE_DEVICES: ""
+      # The container runs as root. Open MPI refuses root unless told, and 8-rank tests need more
+      # slots than the runner's 4 cores; both through the environment, so that the configured
+      # test commands stay the Spark's. Shared memory only: hosted runners have no fabric.
+      OMPI_ALLOW_RUN_AS_ROOT: "1"
+      OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: "1"
+      OMPI_MCA_rmaps_base_oversubscribe: "1"
+      PRTE_MCA_rmaps_default_mapping_policy: ":oversubscribe"
+      OMPI_MCA_pml: ob1
+      OMPI_MCA_btl: self,sm
+      OMPI_MCA_osc: ^ucx
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The checkout belongs to another user than the container's root: git, which the build runs
+      # too (runtime/cmake/build_info.cmake), needs it declared.
+      - name: Let git read the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Is the pinned image docker/dev's?
+        run: |
+          tree=$(git rev-parse HEAD:docker/dev)
+          [ "$tree" = c5ed7be0431c08d00c7cb43d698908591beb268b ] ||
+            echo "::warning::docker/dev is now tree $tree, the pinned image tree c5ed7be0: once gpu-image.yml has published the new image, pin it here"
+      # Fails closed (bench/ci/gb10-health.py): an open gb10-cpu-difference issue, a last nightly
+      # that did not pass its GB10 CPU step and was not cleared since, or GitHub's API unreadable.
+      - name: The CPU tests are healthy on GB10
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        # -P: bench/ci has a bisect.py that would shadow the standard library's.
+        run: python3 -P bench/ci/gb10-health.py
+      - name: Configure (gpu-tests' configuration)
+        run: |
+          # CONFIGURE is a list of arguments: split on purpose.
+          # shellcheck disable=SC2086
+          cmake -S . -B build $CONFIGURE
+      - name: Build
+        run: cmake --build build
+      - name: Deal the CPU tests into three shards (each test in exactly one)
+        id: split
+        run: bench/ci/cpu-test-shards.py build "$RUNNER_TEMP" 3
+      # MPI tests one at a time: they busy-poll, and concurrent ranks on shared cores starve each
+      # other.
+      - name: CPU tests, shard ${{ matrix.shard }} of 3
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          serial=$(cat "$RUNNER_TEMP/cpu-$SHARD-serial")
+          mpi=$(cat "$RUNNER_TEMP/cpu-$SHARD-mpi")
+          # The JUnit reports record the tests that ran, for cpu-tests-check.
+          mkdir -p "$RUNNER_TEMP/shard"
+          if [ -n "$serial" ]; then
+            ctest --test-dir build -I "$serial" -j 4 --output-on-failure --no-tests=error \
+              --output-junit "$RUNNER_TEMP/shard/junit-serial.xml"
+          fi
+          if [ -n "$mpi" ]; then
+            ctest --test-dir build -I "$mpi" -j 1 --output-on-failure --no-tests=error \
+              --output-junit "$RUNNER_TEMP/shard/junit-mpi.xml"
+          fi
+      # A GB10 incident opened while this shard ran fails it too.
+      - name: Still healthy on GB10
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        # -P: bench/ci has a bisect.py that would shadow the standard library's.
+        run: python3 -P bench/ci/gb10-health.py
+      - name: Keep what this shard ran
+        if: ${{ !cancelled() && steps.split.outcome == 'success' }}
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/shard"
+          cp "$RUNNER_TEMP"/cpu-all-*.names "$RUNNER_TEMP/shard/"
+          cp "$RUNNER_TEMP"/cpu-"$SHARD"-*.names "$RUNNER_TEMP/shard/" 2>/dev/null || true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() && steps.split.outcome == 'success' }}
+        with:
+          name: cpu-shard-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/shard/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Across the three runners and the Spark: every shard succeeded, each listed the same two sets
+  # as the Spark's build of the same commit, and the tests their JUnit reports show (passed, or
+  # skipped and listed in bench/ci/cpu-test-skips.txt) are, across the shards, each test of each
+  # set exactly once. A shard that dealt, built
+  # or ran differently would show here.
+  cpu-tests-check:
+    name: CPU tests (hosted arm64, each of the Spark's CPU tests run exactly once)
+    needs: [cpu-tests, tests]
+    if: ${{ !cancelled() && needs.cpu-tests.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: bench/ci/cpu-test-skips.txt
+          sparse-checkout-cone-mode: false
+      - name: Every shard succeeded
+        env:
+          SHARDS: ${{ needs.cpu-tests.result }}
+        run: |
+          [ "$SHARDS" = success ] || { echo "::error::the CPU shards ended $SHARDS, not success"; exit 1; }
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: cpu-shard-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: shards
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: cpu-inventory-gb10-${{ github.run_id }}-${{ github.run_attempt }}
+          path: gb10
+      - name: Same sets, disjoint shards, nothing left out
+        run: |
+          python3 - <<'EOF'
+          import pathlib, sys
+          import xml.etree.ElementTree as ET
+          root = pathlib.Path("shards")
+          dirs = sorted(d for d in root.iterdir() if d.is_dir())
+          errors = []
+          allowed = dict(
+              line.split("\t", 1)
+              for line in pathlib.Path("bench/ci/cpu-test-skips.txt").read_text().splitlines()
+              if line and not line.startswith("#")
+          )
+          if len(dirs) != 3:
+              errors.append(f"{len(dirs)} shard listings, not 3")
+          for name in ("serial", "mpi"):
+              spark = (pathlib.Path("gb10") / f"cpu-all-{name}.names").read_text().split("\n")
+              listed = {d.name: (d / f"cpu-all-{name}.names").read_text().split("\n") for d in dirs}
+              errors += [
+                  f"set {name}: {d} built other tests than the Spark"
+                  for d, a in listed.items() if a != spark
+              ]
+              every = set(spark) - {""}
+              seen = {}
+              for d in dirs:
+                  # What ran: the JUnit report's test cases, each run and passed.
+                  report = d / f"junit-{name}.xml"
+                  if not report.exists():
+                      continue
+                  for case in ET.parse(report).getroot().iter("testcase"):
+                      t = case.get("name", "")
+                      # Run and passed, or skipped and listed in bench/ci/cpu-test-skips.txt
+                      # (GB10 skips it the same way); any other skip is an error, as a failure.
+                      bad = [e for e in ("failure", "error") if case.find(e) is not None]
+                      if bad or case.get("status") in ("fail", "failed"):
+                          errors.append(f"{t}: failed in {d.name} ({case.get('status')}, {bad})")
+                      if case.find("skipped") is not None or case.get("status") in ("notrun", "disabled", "skipped"):
+                          if t in allowed:
+                              print(f"::notice::CPU test shards: skipped in {d.name}, allowed ({allowed[t]}): {t}")
+                          else:
+                              errors.append(f"{t}: skipped in {d.name}, not in bench/ci/cpu-test-skips.txt")
+                      if t in seen:
+                          errors.append(f"{t}: in {seen[t]} and {d.name}")
+                      seen[t] = d.name
+              errors += [f"set {name}, run by no shard: {t}" for t in sorted(every - set(seen))]
+              errors += [f"set {name}, run but not in the set: {t}" for t in sorted(set(seen) - every)]
+              print(f"set {name}: {len(every)} tests, {len(seen)} run across the shards")
+          for e in errors:
+              print(f"::error::CPU test shards: {e}")
+          sys.exit(1 if errors else 0)
+          EOF
+
   tests:
     if: >-
       github.event_name != 'pull_request' ||
@@ -37,6 +253,9 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: read
+    outputs:
+      gb10-cpu: ${{ steps.gb10-cpu.outcome }}
+      runner: ${{ runner.name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -47,22 +266,45 @@ jobs:
         id: scope
         if: github.event_name == 'pull_request'
         run: echo "paths=$(git diff --name-only HEAD^1 HEAD -- | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+      # Optimised (-O2) with NDEBUG left undefined (assertions in dependencies stay on): without
+      # a build type the host code was built at -O0, which made the GPU tests' host references
+      # ~6x slower (an NS bits test: 89 s here, 14.5 s in a Release build). The CPU Debug job
+      # keeps covering -O0.
+      # The bitwise contract does not depend on the level: -ffp-contract=off and --fmad=false
+      # are set for every build type (CMakeLists.txt).
       - name: Configure with CUDA, MPI, METIS and Scotch
-        run: >-
-          cmake -S . -B build -G Ninja -DAUTAN_ENABLE_CUDA=ON -DAUTAN_ENABLE_MPI=ON
-          -DAUTAN_ENABLE_METIS=ON -DAUTAN_ENABLE_SCOTCH=ON -DCMAKE_CUDA_ARCHITECTURES=121
-          -DAUTAN_WARNINGS_AS_ERRORS=ON
+        run: |
+          # CONFIGURE is a list of arguments: split on purpose.
+          # shellcheck disable=SC2086
+          cmake -S . -B build $CONFIGURE
       - name: Build
+        id: build
         run: cmake --build build
-      # CPU tests outside the GPU lock, with no GPU visible: a test that needs one but lacks the
-      # `gpu` label fails here instead of running without the lock. MPI tests one at a time: they
-      # busy-poll, and concurrent ranks on shared cores starve each other.
-      - name: CPU tests (no GPU, outside the lock)
+      # This build's CPU tests, for cpu-tests-check: the hosted shards must have run exactly these.
+      - name: List the CPU tests (what the hosted shards must run)
+        run: |
+          mkdir -p "$RUNNER_TEMP/inventory"
+          bench/ci/cpu-test-shards.py build "$RUNNER_TEMP/inventory" 3
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cpu-inventory-gb10-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/inventory/cpu-all-*.names
+          if-no-files-found: error
+          retention-days: 7
+      # The SA colour sweeps' certificate (T2c, #163): nightly, on pushes to main, and on pull
+      # requests that touch the SA assembly or sweeps, the colouring or the step that calls them.
+      - name: Certificate tests (SA colour sweeps)
         env:
           CUDA_VISIBLE_DEVICES: ""
+          EVENT: ${{ github.event_name }}
+          CHANGED: ${{ steps.scope.outputs.paths }}
         run: |
-          ctest --test-dir build -LE 'gpu|mpi' -j 4 --output-on-failure --no-tests=error
-          ctest --test-dir build -L mpi -LE gpu -j 1 --output-on-failure --no-tests=error
+          pattern='spalart_allmaras|colouring|cell_colours|physics/src/euler_physics\.cpp|test_sa_sweeps|tests/physics/CMakeLists\.txt|\.github/workflows/gpu-tests\.yml'
+          if [[ $EVENT != pull_request ]] || grep -Eq "$pattern" <<<"$CHANGED"; then
+            ctest --test-dir build -L certificate --output-on-failure --no-tests=error
+          else
+            echo "no change to the SA sweeps: certificate tests not run"
+          fi
       - name: Give this job priority on the GPU lock
         run: bench/ci/priority.sh start 90
       # The GPU tests in two holds of the lock, each well under its 10 minutes: all of them took
@@ -131,11 +373,30 @@ jobs:
       - name: Release the GPU lock priority
         if: always()
         run: bench/ci/priority.sh stop
+      # The whole CPU suite on GB10 too, on the nightly and on a manual run: the hosted shards run
+      # it on every change, on another arm64 CPU. Last, after the GPU steps and outside the lock,
+      # with no GPU visible: a test that needs one but lacks the `gpu` label fails here. A nightly
+      # failure here opens an issue labelled gb10-cpu-difference, which the hosted shards refuse
+      # to pass while it is open. MPI tests one at a time: they busy-poll, and concurrent ranks
+      # on shared cores starve each other.
+      - name: CPU tests on GB10 (nightly and manual runs; no GPU, outside the lock)
+        id: gb10-cpu
+        if: >-
+          !cancelled() && steps.build.outcome == 'success' &&
+          (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          CUDA_VISIBLE_DEVICES: ""
+          RUNNER: ${{ runner.name }}
+        run: |
+          echo "CPU tests on GB10, runner $RUNNER"
+          ctest --test-dir build -LE 'gpu|mpi|certificate' -j 4 --output-on-failure --no-tests=error
+          ctest --test-dir build -L mpi -LE gpu -j 1 --output-on-failure --no-tests=error
 
   report-nightly:
     needs: tests
     # A nightly failure on main becomes an issue naming the commits since the last green night.
-    if: always() && github.event_name == 'schedule' && needs.tests.result == 'failure'
+    # Any end but success: a hang that reaches the timeout ends cancelled, not failed.
+    if: always() && github.event_name == 'schedule' && needs.tests.result != 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -147,11 +408,28 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GB10_CPU: ${{ needs.tests.outputs.gb10-cpu }}
+          RUNNER: ${{ needs.tests.outputs.runner }}
         run: |
           good=$(gh api "repos/$GH_REPO/actions/workflows/gpu-tests.yml/runs?event=schedule&status=success&per_page=1" \
             --jq '.workflow_runs[0].head_sha // empty')
           range=${good:+$good..$GITHUB_SHA}
           gh label create gpu-tests-nightly --force --color B60205 --description "The nightly GPU test run failed"
-          gh issue create --label gpu-tests-nightly \
+          labels=gpu-tests-nightly
+          # Not passed, whatever the reason (failed, cancelled, timed out, never reached): the
+          # hosted shards also read the nightly's step (bench/ci/gb10-health.py), so a report
+          # that fails here still blocks them.
+          if [ "$GB10_CPU" != success ]; then
+            open=$(gh issue list --label gb10-cpu-difference --state open --json number --jq '.[0].number // empty')
+            if [ -n "$open" ]; then
+              # One incident at a time: a later night adds to the open one.
+              gh issue comment "$open" --body "The CPU tests failed on GB10 again in the nightly, on runner ${RUNNER:-unknown}: $RUN_URL"
+            else
+              gh label create gb10-cpu-difference --force --color B60205 \
+                --description "The CPU tests failed on GB10 in the nightly: the hosted CPU shards fail until it is closed"
+              labels=$labels,gb10-cpu-difference
+            fi
+          fi
+          gh issue create --label "$labels" \
             --title "gpu-tests nightly failed on ${GITHUB_SHA:0:10}" \
-            --body "The nightly gpu-tests run on main failed: $RUN_URL. Commits since the last green night: ${range:-unknown (no green night yet)}; compare with https://github.com/$GH_REPO/compare/${range/../...}."
+            --body "The nightly gpu-tests run on main failed, on runner ${RUNNER:-unknown}: $RUN_URL. Commits since the last green night: ${range:-unknown (no green night yet)}; compare with https://github.com/$GH_REPO/compare/${range/../...}."

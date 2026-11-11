@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -15,6 +16,7 @@
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
 #include "autan/io/cgns.hpp"
+#include "autan/partition/cell_rows.hpp"
 #include "autan/partition/partition.hpp"
 #include "autan/runtime/input.hpp"
 #include "autan/runtime/ranks.hpp"
@@ -54,6 +56,10 @@ class Log {
   /// JSON object.
   virtual void write(std::string_view level, std::string_view source, std::string_view message,
                      std::string_view code = {}, std::string_view data_json = "{}") = 0;
+  /// A registry warning (a W code) of the physics: logged at level warning, source solver, and
+  /// listed in run.json `diagnostics` as the runtime's own are. Another code is std::logic_error.
+  virtual void warn(std::string_view code, std::string_view message,
+                    std::string_view data_json = "{}") = 0;
 };
 
 /// The state of the previous run a run starts from (input.start), read from
@@ -77,6 +83,14 @@ class GhostExchange {
   virtual ~GhostExchange() = default;
   virtual void forward(std::span<float* const> components, MemorySpace space, void* stream) = 0;
   virtual void forward(std::span<double* const> components, MemorySpace space, void* stream) = 0;
+  /// The row of every ghost `wanted` selects (one byte, 0 or 1, per ghost), in ghost order, from
+  /// the row its owner gives in `owned` (one per owned cell; partition's forward_rows), on the
+  /// host; an empty row elsewhere. Collective: every rank calls it, with the same stride. A part
+  /// without ghosts gets no row. An exchange that carries no rows throws std::logic_error.
+  virtual CellRows forward_rows(const CellRows& /*owned*/,
+                                std::span<const std::uint8_t> /*wanted*/) {
+    throw std::logic_error("this ghost exchange carries no rows");
+  }
 };
 
 /// Valid until the run ends; a physics may keep a copy.
