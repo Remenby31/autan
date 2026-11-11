@@ -342,22 +342,20 @@ def json_schema(name: str) -> dict[str, Any]:
 
 
 def _diff_text(report: compare.Report) -> str:
-    lines = [
-        f"record   {e.name}: {e.a!r} | {e.b!r}" for e in report.record if e.compared and not e.agree
-    ]
-    lines += [
-        f"history  {s.name}: first at iteration {s.first}, max abs {s.max_abs:.3e}, rel {s.max_rel:.3e}"
-        for s in report.history
-        if not s.agree
-    ]
-    lines += [
-        f"solution {s.name}: max abs {s.max_abs:.3e}, rel {s.max_rel:.3e}"
-        for s in report.fields
-        if not s.agree
-    ]
+    lines = []
+    for e in report.record:
+        mark = "reported" if not e.compared else ("same" if e.agree else "DIFFERS")
+        lines.append(f"record   {mark:<8} {e.name}: {e.a!r} | {e.b!r}")
+    for s in report.history:
+        mark = "same" if s.agree else f"DIFFERS from iteration {s.first}"
+        lines.append(f"history  {s.name}: {mark}, max abs {s.max_abs:.3e}, rel {s.max_rel:.3e}")
+    lines.append(f"solution {report.solution}")
+    for s in report.fields:
+        mark = "same" if s.agree else "DIFFERS"
+        lines.append(f"solution {s.name}: {mark}, max abs {s.max_abs:.3e}, rel {s.max_rel:.3e}")
     mode = "bit for bit" if report.bitwise else f"within rtol {report.rtol:g}"
-    verdict = f"the runs agree {mode}" if report.agree else f"the runs differ ({mode})"
-    return "\n".join([*lines, f"solution: {report.solution}", verdict])
+    lines.append(f"the runs agree {mode}" if report.agree else f"the runs differ ({mode})")
+    return "\n".join(lines)
 
 
 def command_diff(args: argparse.Namespace) -> int:

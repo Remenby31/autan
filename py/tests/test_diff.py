@@ -59,9 +59,9 @@ def _label(node: Any) -> str:
     return "" if label is None else bytes(np.asarray(label)).rstrip(b"\0 ").decode()
 
 
-# Every solution array whose bytes differ between two solution.cgns, read with h5py: the oracle
-# the report's list of differing arrays must equal.
-def _differing_arrays(a: Path, b: Path) -> set[str]:
+# The solution arrays that differ between two solution.cgns, read with h5py: bit for bit, or by
+# docs/sdk/diff.md's rule at `rtol` (equal or adjacent FP64 numbers, or within rtol relatively).
+def _differing_arrays(a: Path, b: Path, rtol: float | None = None) -> set[str]:
     out = set()
     with h5py.File(a / "solution.cgns", "r") as fa, h5py.File(b / "solution.cgns", "r") as fb:
         for group in SOLUTIONS:
@@ -71,12 +71,16 @@ def _differing_arrays(a: Path, b: Path) -> set[str]:
             names = {n for n in (*fa[path], *fb[path]) if _label(fa[path].get(n)) == "DataArray_t"}
             for name in names:
                 xa, xb = fa[f"{path}/{name}/ data"][...], fb[f"{path}/{name}/ data"][...]
-                if xa.tobytes() != xb.tobytes():
+                if rtol is None:
+                    differs = xa.tobytes() != xb.tobytes()
+                else:
+                    close = np.abs(xa - xb) <= rtol * np.maximum(np.abs(xa), np.abs(xb))
+                    differs = not np.all((xa == xb) | (np.nextafter(xa, xb) == xb) | close)
+                if differs:
                     out.add(f"{group}/{name}")
     return out
 
 
-# A copy of run directory `run` with one value of FlowSolution/Pressure changed by `change`.
 def _changed_copy(run: Path, to: Path, change: Any) -> Path:
     copy = to / run.name
     shutil.copytree(run, copy)
@@ -115,20 +119,16 @@ def test_a_difference_is_named_wherever_it_is(
 ) -> None:
     text = INVISCID + "case.time = autan.Steady(max_iterations=5, linear_solver='gauss-seidel')\n"
     base = _run(tmp_path, "base", text)
-    # A perturbed freestream: the record (the case) and exactly the arrays whose bytes differ.
+    # A perturbed freestream: the record (the case) and exactly the arrays that differ, in each mode.
     perturbed = _run(tmp_path, "mach", text.replace("mach=0.2", "mach=0.2 * 1.001"))
-    oracle = _differing_arrays(base, perturbed)
-    assert oracle
-    # Bit for bit, the report names exactly those arrays; within the default tolerance, only
-    # arrays among them (a field the change moves by less than 1e-6 relative agrees).
-    for flags, exact in ((("--bitwise",), True), ((), False)):
+    for flags, rtol in ((("--bitwise",), None), ((), 1e-6)):
         status, report = _report(capsys, str(base), str(perturbed), *flags)
         assert status == 1
         assert "case.sha256" in report["differences"]
         named = {d for d in report["differences"] if d.split("/")[0] in SOLUTIONS}
-        assert named
-        assert named == oracle if exact else named <= oracle
-    # The same numbers, the record alone differing: a copy whose run.json says "stopped".
+        oracle = _differing_arrays(base, perturbed, rtol)
+        assert oracle
+        assert named == oracle
     stopped = tmp_path / "stopped" / base.name
     shutil.copytree(base, stopped)
     info = json.loads((stopped / "run.json").read_text())
@@ -136,7 +136,6 @@ def test_a_difference_is_named_wherever_it_is(
     autan.Results.open(stopped)
     status, report = _report(capsys, str(base), str(stopped))
     assert (status, report["differences"]) == (1, ["status"])
-    # Data alone: the last bit of one value flipped, then one value scaled by 1.001.
     flipped = _changed_copy(
         base,
         tmp_path / "flip",
@@ -148,6 +147,19 @@ def test_a_difference_is_named_wherever_it_is(
     scaled = _changed_copy(base, tmp_path / "scale", lambda v: v * 1.001)
     status, report = _report(capsys, str(base), str(scaled))
     assert (status, report["differences"]) == (1, ["FlowSolution/Pressure"])
+    # The history alone: one residual of iteration 3 scaled by 1.001.
+    changed = tmp_path / "history" / base.name
+    shutil.copytree(base, changed)
+    lines = [json.loads(line) for line in (changed / "history.jsonl").read_text().splitlines()]
+    line = next(x for x in lines if x["iteration"] == 3)
+    density = line["residuals"]["density"]
+    line["residuals"]["density"] = density * 1.001
+    (changed / "history.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
+    status, report = _report(capsys, str(base), str(changed))
+    assert (status, report["differences"]) == (1, ["history.residuals.density"])
+    assert report["history_first_difference"] == 3
+    [series] = [s for s in report["history"] if s["name"] == "residuals.density"]
+    assert series["max_rel"] == pytest.approx(1 - 1 / 1.001, rel=1e-9)
 
 
 def test_a_run_that_cannot_be_read_exits_2_with_e0701(

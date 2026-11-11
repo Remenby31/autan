@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from pydantic import BaseModel
 
+from autan.errors import CaseError, Location, diagnostic
 from autan.results import IDENTITY, Results
 
 if TYPE_CHECKING:
@@ -190,18 +191,29 @@ def _history(
     return out, (min(firsts) if firsts else None)
 
 
+def _array(results: Results, name: str, node: cgns.Node, dtype: type) -> NDArray[Any]:
+    data = np.asarray(node.data)
+    if data.dtype != dtype:
+        where = Location(file=str(results.path / "solution.cgns"))
+        message = f"{name} is {data.dtype}, results.md writes it as {np.dtype(dtype)}"
+        raise CaseError([diagnostic("E0701", message, location=where)])
+    return data.ravel()
+
+
 def _arrays(results: Results) -> dict[str, NDArray[Any]]:
     zone: cgns.Node = results._zone()
     out: dict[str, NDArray[Any]] = {}
     for group in _SOLUTIONS:
         if group in zone.children:
             for node in zone.child(group).with_label("DataArray_t"):
-                out[f"{group}/{node.name}"] = np.asarray(node.data).ravel()
+                name = f"{group}/{node.name}"
+                out[name] = _array(results, name, node, np.float64)
     if "WallSolution" in zone.children:
         region = zone.child("WallSolution")
         out["WallSolution/PointList"] = np.asarray(region.child("PointList").data).ravel()
         for node in region.with_label("DataArray_t"):
-            out[f"WallSolution/{node.name}"] = np.asarray(node.data).ravel()
+            name = f"WallSolution/{node.name}"
+            out[name] = _array(results, name, node, np.float64)
     return out
 
 
@@ -210,7 +222,10 @@ def _solution(
 ) -> tuple[str, list[Series]]:
     if a.run.mesh.sha256 != b.run.mesh.sha256:
         return "not compared: the meshes differ", []
-    has_a, has_b = ((r.path / "solution.cgns").exists() for r in (a, b))
+    # results.md: readers do not use solution.cgns while the run is running.
+    has_a, has_b = (
+        r.run.status != "running" and (r.path / "solution.cgns").exists() for r in (a, b)
+    )
     if not has_a and not has_b:
         return "neither run has a solution", []
     if has_a != has_b:
