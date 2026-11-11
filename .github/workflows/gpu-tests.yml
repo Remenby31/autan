@@ -70,6 +70,9 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3]
+    defaults:
+      run:
+        shell: bash
     env:
       CUDA_VISIBLE_DEVICES: ""
       # The container runs as root. Open MPI refuses root unless told, and 8-rank tests need more
@@ -86,10 +89,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The checkout belongs to another user than the container's root: git, which the build runs
+      # too (runtime/cmake/build_info.cmake), needs it declared.
+      - name: Let git read the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Is the pinned image docker/dev's?
         run: |
-          # The checkout belongs to another user than the container's root: git needs it declared.
-          tree=$(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD:docker/dev)
+          tree=$(git rev-parse HEAD:docker/dev)
           [ "$tree" = c5ed7be0431c08d00c7cb43d698908591beb268b ] ||
             echo "::warning::docker/dev is now tree $tree, the pinned image tree c5ed7be0: once gpu-image.yml has published the new image, pin it here"
       - name: No open GB10-only CPU difference
