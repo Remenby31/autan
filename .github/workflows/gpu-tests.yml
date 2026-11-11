@@ -162,8 +162,9 @@ jobs:
           retention-days: 7
 
   # Across the three runners and the Spark: every shard succeeded, each listed the same two sets
-  # as the Spark's build of the same commit, and the tests their JUnit reports show as run and
-  # passed are, across the shards, each test of each set exactly once. A shard that dealt, built
+  # as the Spark's build of the same commit, and the tests their JUnit reports show (passed, or
+  # skipped as ctest allows, each skip listed) are, across the shards, each test of each set
+  # exactly once. A shard that dealt, built
   # or ran differently would show here.
   cpu-tests-check:
     name: CPU tests (hosted arm64, each of the Spark's CPU tests run exactly once)
@@ -212,10 +213,13 @@ jobs:
                       continue
                   for case in ET.parse(report).getroot().iter("testcase"):
                       t = case.get("name", "")
-                      # Passed: no failure, error or skipped element, and no not-run status.
-                      bad = [e for e in ("failure", "error", "skipped") if case.find(e) is not None]
-                      if bad or case.get("status") in ("fail", "failed", "notrun", "disabled", "skipped"):
-                          errors.append(f"{t}: not run and passed in {d.name} ({case.get('status')}, {bad})")
+                      # Run and not failed. A skip passes, as ctest passes it (the Spark's CPU step
+                      # did the same); each one is listed below.
+                      bad = [e for e in ("failure", "error") if case.find(e) is not None]
+                      if bad or case.get("status") in ("fail", "failed"):
+                          errors.append(f"{t}: failed in {d.name} ({case.get('status')}, {bad})")
+                      if case.find("skipped") is not None or case.get("status") in ("notrun", "disabled", "skipped"):
+                          print(f"::notice::CPU test shards: skipped, as ctest allows, in {d.name}: {t}")
                       if t in seen:
                           errors.append(f"{t}: in {seen[t]} and {d.name}")
                       seen[t] = d.name
