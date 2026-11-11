@@ -49,6 +49,19 @@ Conventions for every gate (a gate identifier in a row means `autan-vv verify <r
 | Degraded meshes, gate `degraded-mesh-convergence` | in `fp64`, every equation's residual (ν̂ included) at least 8 orders below its reference ([case-schema.md](../contracts/case-schema.md#time)) on the last line of each run's history, recomputed from the history whatever the run's status, within the `max_iterations` its case declares; the steady MMS `euler`, `navier_stokes` and `rans_sa` runs on the perturbed families (`--perturbation 0.3 --seed 2026`) at every level of their order gate, an order gate's runs on those families being reused; `fp32+acc64` drops reported, not gated | PLAN M3 ("convergence on degraded meshes"); *ours*: 8 orders leaves forces converged to < 0.01 %. Cases, levels and budget agreed on #616 before any run |
 | Navier-Stokes and SA operators on a CUDA device, laminar runs end to end (ADR 0005, #586) | Residual, SA terms, eddy viscosity and wall distance bit for bit with the host under identity keys where no `exp` or `log` is evaluated. SA source, farfield and inlet faces: within the tolerances #586 declares, which must be tight (> 10× a defect of the tested size). Covered in `fp32+acc64` up to stencil gain G = 4.79, the largest measured; beyond it, coverage assumes tightness is monotone in G, and no measured failure contradicts or anchors that. Beyond it: W0717, fix `fp64`; #608 (beta) for a tight bound there. Unsteady laminar runs bit for bit at every step (identity keys). Agreement over several steps with the host's default run: not demonstrated, reported only (#619) | #586, runs `gpunssa-d7-*` |
 
+## M4 — SDK and CLI
+
+Set on 2026-11-11 for `logs`, `diff` and the results API's DLPack export ([#684](https://github.com/Remenby31/autan/issues/684), [#685](https://github.com/Remenby31/autan/issues/685), [#686](https://github.com/Remenby31/autan/issues/686)). Each gate runs in CI on runs of the shipped `autan-run`, not on fixtures.
+
+| Criterion | Threshold | Source |
+|---|---|---|
+| `autan logs` | every line of a run's `log.jsonl` reads as the shape of [results.md](../contracts/results.md), and `--json` prints it byte for byte; `-f` returns on each final status and prints no line twice; a missing or malformed run directory exits 2 with its code | PLAN M4; *ours*: the log is a contract, so the command must lose nothing of it |
+| `autan diff`, determinism | two runs of one case under reproducibility `"ranks"`, on 1 and on 2 ranks: exit 0 with `--bitwise` | PLAN M4; *ours*: runtime.md promises those bits, and `diff` must confirm them |
+| `autan diff`, a difference | the same case with a perturbed freestream: exit 1, the report naming every field that differs | PLAN M4; *ours* |
+| Results through DLPack | every array the results API returns exports through DLPack on the host (`kDLCPU`) without a copy: the consumer's array shares the results' memory | PLAN M4; *ours* |
+
+Export without leaving the GPU is out of the alpha: it is a beta item, and needs in-process bindings to the runtime. The other M4 items (`plan`'s y+, VTK output, the TMR cases driven end to end by the SDK) are set here when they are scheduled.
+
 ## M5 — multi-GPU and precision
 
 | Criterion | Threshold | Source |
@@ -73,4 +86,4 @@ Conventions for every gate (a gate identifier in a row means `autan-vv verify <r
 | HLPW-5 test case 1, CRM-HL wing-body at α 11° (verification) | our continuum CL, CD, CM inside the envelope of the HLPW-5 SA-neg submissions, whose spread is ΔCL ≈ 0.005, ΔCD ≈ 5 counts, ΔCM ≈ 0.003; the absolute envelope is transcribed from the summary's figure 5 when M7 starts | HLPW-5 summary (NTRS 20240014255); datasets §M7 |
 | HLPW-5 test case 2.4, near CLmax (validation) | report CL(α) and CLmax against the matching submissions and the experiment; no gate (RANS scatter near CLmax is about 0.5 in CL) | HLPW-5 summary; state-of-the-art.md §1.3 |
 
-Milestones M4 and M8–M11 gate on functionality or on cases still to be added; their numbers will be set here when those cases enter the library.
+Milestones M8–M11 gate on functionality or on cases still to be added; their numbers will be set here when those cases enter the library.
