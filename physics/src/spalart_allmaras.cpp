@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <span>
 #include <stdexcept>
@@ -329,6 +330,17 @@ std::vector<std::vector<std::size_t>> colour_groups(const Mesh& mesh,
   std::vector<std::vector<std::size_t>> groups(static_cast<std::size_t>(n_colours));
   for (std::size_t c = 0; c < owned; ++c) groups[static_cast<std::size_t>(colours[c])].push_back(c);
   return groups;
+}
+
+void update_rho_nt(std::span<double> q, std::span<const double> dx, std::span<const double> rho,
+                   double nt_inf, double alpha) {
+  if (dx.size() < q.size() || rho.size() < q.size()) {
+    throw std::invalid_argument("update_rho_nt: dx and rho must cover the updated cells");
+  }
+  for (std::size_t c = 0; c < q.size(); ++c) {
+    const double scale = std::max(std::abs(q[c]), rho[c] * nt_inf);
+    q[c] += alpha * std::clamp(dx[c], -sa_max_decrease * scale, sa_max_increase * scale);
+  }
 }
 
 }  // namespace autan::physics

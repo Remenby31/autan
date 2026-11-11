@@ -167,7 +167,10 @@ if(AUTAN_ENABLE_CUDA AND AUTAN_ENABLE_CGNS)
     test_navier_stokes_device.cpp
     ${PROJECT_SOURCE_DIR}/tests/core/fixtures.cpp
   )
-  target_include_directories(autan_euler_device_tests PRIVATE ${PROJECT_SOURCE_DIR}/tests/core)
+  target_include_directories(
+    autan_euler_device_tests
+    PRIVATE ${PROJECT_SOURCE_DIR}/tests/core ${PROJECT_BINARY_DIR}/physics/generated
+  )
   target_link_libraries(
     autan_euler_device_tests
     PRIVATE

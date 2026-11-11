@@ -179,6 +179,94 @@ __global__ void store_scalar(kernels::index_t n, const double* v, S* s) {
   s[c] = static_cast<S>(v[c]);
 }
 
+// The j-th incidence of cell c, in the CSR or the sliced layout (kernels::Topology).
+__device__ inline kernels::offset_t incidence(const kernels::Topology& t, kernels::index_t c,
+                                              kernels::offset_t j) {
+  return t.cell_face_offsets[c] + j * t.incidence_stride;
+}
+__device__ inline kernels::offset_t incidences(const kernels::Topology& t, kernels::index_t c) {
+  return t.incidence_length != nullptr ? t.incidence_length[c]
+                                       : t.cell_face_offsets[c + 1] - t.cell_face_offsets[c];
+}
+
+// SpalartAllmaras<P>::assemble's diagonal under global keys: shift + max(0, cell block), then the
+// cell's faces in Topology::cell_faces order, in the host's arithmetic.
+template <class J>
+__global__ void sa_assemble_diagonal(kernels::Topology t, const double* shift, const J* cell_jac,
+                                     const J* face_jac, const J* bnd_jac, double* diag) {
+  const auto c = static_cast<kernels::index_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (c >= t.n_cells) return;
+  const double x = static_cast<double>(cell_jac[c]);
+  double d = shift[c] + (0.0 < x ? x : 0.0);
+  const auto m = incidences(t, c);
+  for (kernels::offset_t j = 0; j < m; ++j) {
+    const auto f = t.cell_faces[incidence(t, c, j)];
+    if (f >= t.n_interior_faces) {
+      d += static_cast<double>(bnd_jac[f]);
+    } else if (t.owner[f] == c) {
+      d += static_cast<double>(face_jac[f]);
+    } else {
+      d -= static_cast<double>(face_jac[t.n_faces + f]);
+    }
+  }
+  diag[c] = d;
+}
+
+// A(owner, neighbour) = dF/d(rho nt) of the neighbour, A(neighbour, owner) = -dF/d(rho nt) of the
+// owner (no reversed faces on one rank).
+template <class J>
+__global__ void sa_assemble_off_diagonal(kernels::Topology t, const J* face_jac, double* upper,
+                                         double* lower) {
+  const auto f = static_cast<kernels::index_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (f >= t.n_interior_faces) return;
+  upper[f] = static_cast<double>(face_jac[t.n_faces + f]);
+  lower[f] = -static_cast<double>(face_jac[f]);
+}
+
+// One colour of SpalartAllmaras<P>::solve: each thread relaxes one cell of the colour, its row
+// summing its interior faces in Topology::cell_faces order. No two cells of a colour are
+// neighbours, so the cells of a launch read none of each other's values.
+__global__ void sa_relax_colour(kernels::Topology t, const kernels::index_t* cells,
+                                kernels::index_t count, const double* diag, const double* upper,
+                                const double* lower, const double* b, double* dx) {
+  const auto i = static_cast<kernels::index_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (i >= count) return;
+  const auto c = cells[i];
+  double r = b[c];
+  const auto m = incidences(t, c);
+  for (kernels::offset_t j = 0; j < m; ++j) {
+    const auto f = t.cell_faces[incidence(t, c, j)];
+    if (f >= t.n_interior_faces) continue;
+    const auto o = t.owner[f];
+    const auto n = t.neighbour[f];
+    r -= o == c ? upper[f] * dx[n] : lower[f] * dx[o];
+  }
+  dx[c] = r / diag[c];
+}
+
+// b = -R in FP64, as the host's step forms it.
+template <class R>
+__global__ void sa_negate(kernels::index_t n, const R* res, double* b) {
+  const auto c = static_cast<kernels::index_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (c >= n) return;
+  b[c] = -static_cast<double>(res[c]);
+}
+
+// update_rho_nt, in the host's arithmetic: std::max(a, b) is (a < b ? b : a) and std::clamp(v,
+// lo, hi) is (v < lo ? lo : hi < v ? hi : v).
+__global__ void sa_update(kernels::index_t n, double* q, const double* dx, const double* rho,
+                          double nt_inf, double alpha) {
+  const auto c = static_cast<kernels::index_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (c >= n) return;
+  const double a = fabs(q[c]);
+  const double reference = rho[c] * nt_inf;
+  const double scale = a < reference ? reference : a;
+  const double lo = -sa_max_decrease * scale;
+  const double hi = sa_max_increase * scale;
+  const double v = dx[c];
+  q[c] += alpha * (v < lo ? lo : hi < v ? hi : v);
+}
+
 // SpalartAllmaras<P> on the device of a NavierStokesStepper<P>: the loops of
 // kernels/spalart_allmaras.py on the flow's arrays, in the host's order.
 template <class P>
@@ -199,6 +287,9 @@ class SpalartAllmarasDevice final : public DeviceSpalartAllmaras<P> {
     wall_ = copy_of(h.wall_distance, n_, s);
     nt_grad_ = gpu::DeviceArray<element<decltype(A::nt_grad)>>(3 * n_, s);
     res_ = gpu::DeviceArray<element<decltype(A::nt_res)>>(n_, s);
+    cell_jac_ = gpu::DeviceArray<element<decltype(A::nt_cell_jac)>>(n_, s);
+    face_jac_ = gpu::DeviceArray<element<decltype(A::nt_face_jac)>>(2 * nf_, s);
+    bnd_jac_ = gpu::DeviceArray<element<decltype(A::nt_bnd_jac)>>(nf_, s);
     flow.mesh().bind(a_);
     // SpalartAllmaras<P>::Impl::share: the flow's arrays, gradient stencil and weights.
     const auto& d = flow.flow();
@@ -219,6 +310,9 @@ class SpalartAllmarasDevice final : public DeviceSpalartAllmaras<P> {
     a_.wall_distance = wall_.get();
     a_.nt_grad = nt_grad_.get();
     a_.nt_res = res_.get();
+    a_.nt_cell_jac = cell_jac_.get();
+    a_.nt_face_jac = face_jac_.get();
+    a_.nt_bnd_jac = bnd_jac_.get();
     a_.gas_constant[0] = h.gas_constant[0];
     a_.p_ref[0] = h.p_ref[0];
     a_.mu_ref[0] = h.mu_ref[0];
@@ -226,6 +320,14 @@ class SpalartAllmarasDevice final : public DeviceSpalartAllmaras<P> {
     a_.sutherland_s[0] = h.sutherland_s[0];
     a_.sutherland[0] = h.sutherland[0];
     a_.ft2_on[0] = h.ft2_on[0];
+    // The implicit step's scope, from the host's topology: global keys (gathers in the global
+    // order), no ghost cell, no face reversed against its global orientation.
+    const auto& ht = h.topo;
+    bool reversed = false;
+    if (ht.face_reversed != nullptr) {
+      for (std::size_t f = 0; f < nf_; ++f) reversed = reversed || ht.face_reversed[f] != 0;
+    }
+    one_part_ = ht.rank_independent && ht.n_owned_cells == ht.n_cells && !reversed;
   }
 
   void residual(std::span<const double> rnu, std::span<double> res) override {
@@ -251,6 +353,65 @@ class SpalartAllmarasDevice final : public DeviceSpalartAllmaras<P> {
     sk::gpu_loops::boundary_eddy_viscosities(a_, sched);
   }
 
+  void residual_and_jacobian(std::span<const double> rnu, std::span<double> res) override {
+    implicit_scope();
+    evaluate_jacobian(rnu);
+    const auto r = res_.download(flow_.stream());
+    if (res.size() != r.size()) throw std::invalid_argument("res does not match the cells");
+    for (std::size_t i = 0; i < r.size(); ++i) res[i] = static_cast<double>(r[i]);
+  }
+
+  void jacobians(std::span<double> cell, std::span<double> face,
+                 std::span<double> boundary) override {
+    implicit_scope();
+    widen(cell_jac_.download(flow_.stream()), cell);
+    widen(face_jac_.download(flow_.stream()), face);
+    widen(bnd_jac_.download(flow_.stream()), boundary);
+  }
+
+  void assemble(std::span<const double> shift, std::span<double> diag, std::span<double> upper,
+                std::span<double> lower) override {
+    implicit_scope();
+    assemble_on_device(shift);
+    diag_.download(diag, flow_.stream());
+    upper_.download(upper, flow_.stream());
+    lower_.download(lower, flow_.stream());
+  }
+
+  void solve(std::span<const double> diag, std::span<const double> upper,
+             std::span<const double> lower, std::span<const double> b, std::span<double> dx,
+             int sweeps, const std::vector<std::vector<std::size_t>>& colours) override {
+    implicit_scope();
+    system();
+    diag_.upload(diag, flow_.stream());
+    upper_.upload(upper, flow_.stream());
+    lower_.upload(lower, flow_.stream());
+    b_.upload(b, flow_.stream());
+    dx_.upload(std::span<const double>(dx), flow_.stream());
+    sweep(sweeps, colours);
+    dx_.download(dx, flow_.stream());
+  }
+
+  void step(std::span<double> rnu, std::span<const double> shift, std::span<const double> rho,
+            double nt_inf, double alpha, int sweeps,
+            const std::vector<std::vector<std::size_t>>& colours) override {
+    implicit_scope();
+    if (rho.size() != n_) throw std::invalid_argument("rho does not match the cells");
+    evaluate_jacobian(rnu);
+    assemble_on_device(shift);
+    const auto st = flow_.stream();
+    sa_negate<<<blocks(n_), device::block, 0, st>>>(index(n_), res_.get(), b_.get());
+    check(cudaGetLastError(), "sa_negate");
+    check(cudaMemsetAsync(dx_.get(), 0, n_ * sizeof(double), st), "sa dx zero");
+    sweep(sweeps, colours);
+    rho_.upload(rho, st);
+    q_.upload(std::span<const double>(rnu), st);
+    sa_update<<<blocks(n_), device::block, 0, st>>>(index(n_), q_.get(), dx_.get(), rho_.get(),
+                                                    nt_inf, alpha);
+    check(cudaGetLastError(), "sa_update");
+    q_.download(rnu, st);
+  }
+
  private:
   void store(std::span<const double> rnu) {
     if (rnu.size() != n_) throw std::invalid_argument("rho nt does not match the cells");
@@ -258,6 +419,86 @@ class SpalartAllmarasDevice final : public DeviceSpalartAllmaras<P> {
     store_scalar<<<blocks(n_), device::block, 0, flow_.stream()>>>(
         static_cast<kernels::index_t>(n_), input_.get(), rnu_.get());
     check(cudaGetLastError(), "store_scalar");
+  }
+
+  static kernels::index_t index(std::size_t n) { return static_cast<kernels::index_t>(n); }
+
+  template <class T>
+  static void widen(const std::vector<T>& v, std::span<double> out) {
+    if (out.size() != v.size()) throw std::invalid_argument("a Jacobian block size does not match");
+    for (std::size_t i = 0; i < v.size(); ++i) out[i] = static_cast<double>(v[i]);
+  }
+
+  // The implicit step's scope (ADR 0005, B; #163 step 7b): one rank, no ghost cells, the global
+  // order equal to the local one, so the gathers follow SpalartAllmaras<P>::assemble's keyed path.
+  void implicit_scope() const {
+    if (!one_part_) {
+      throw std::invalid_argument(
+          "the device SA step runs on one rank without ghost cells, under identity keys");
+    }
+  }
+
+  void evaluate_jacobian(std::span<const double> rnu) {
+    const auto& sched = flow_.mesh().schedule();
+    store(rnu);
+    sk::gpu_loops::nt_values(a_, sched);
+    sk::gpu_loops::boundary_values(a_, sched);
+    sk::gpu_loops::nt_gradients(a_, sched);
+    sk::gpu_loops::nt_sources_jacobian(a_, sched);
+    constexpr auto deterministic = gpu::Strategy::store_gather;
+    sk::gpu_loops::nt_faces_jacobian(a_, deterministic, sched);
+    sk::gpu_loops::nt_boundaries_jacobian(a_, deterministic, sched);
+  }
+
+  void system() {
+    if (diag_.size() == n_) return;
+    const auto st = flow_.stream();
+    shift_ = gpu::DeviceArray<double>(n_, st);
+    diag_ = gpu::DeviceArray<double>(n_, st);
+    upper_ = gpu::DeviceArray<double>(static_cast<std::size_t>(a_.topo.n_interior_faces), st);
+    lower_ = gpu::DeviceArray<double>(static_cast<std::size_t>(a_.topo.n_interior_faces), st);
+    b_ = gpu::DeviceArray<double>(n_, st);
+    dx_ = gpu::DeviceArray<double>(n_, st);
+    rho_ = gpu::DeviceArray<double>(n_, st);
+    q_ = gpu::DeviceArray<double>(n_, st);
+  }
+
+  void assemble_on_device(std::span<const double> shift) {
+    system();
+    const auto st = flow_.stream();
+    shift_.upload(shift, st);
+    sa_assemble_diagonal<<<blocks(n_), device::block, 0, st>>>(
+        a_.topo, shift_.get(), cell_jac_.get(), face_jac_.get(), bnd_jac_.get(), diag_.get());
+    check(cudaGetLastError(), "sa_assemble_diagonal");
+    const auto ni = static_cast<std::size_t>(a_.topo.n_interior_faces);
+    if (ni > 0) {
+      sa_assemble_off_diagonal<<<blocks(ni), device::block, 0, st>>>(a_.topo, face_jac_.get(),
+                                                                     upper_.get(), lower_.get());
+      check(cudaGetLastError(), "sa_assemble_off_diagonal");
+    }
+  }
+
+  // Colours 0 ... n-1 then n-1 ... 0, `sweeps` times, one launch per colour in stream order.
+  void sweep(int sweeps, const std::vector<std::vector<std::size_t>>& colours) {
+    const auto st = flow_.stream();
+    colour_cells_.clear();
+    for (const auto& cells : colours) {
+      std::vector<kernels::index_t> v(cells.size());
+      for (std::size_t i = 0; i < cells.size(); ++i) v[i] = index(cells[i]);
+      colour_cells_.emplace_back(std::span<const kernels::index_t>(v), st);
+    }
+    auto colour = [&](std::size_t k) {
+      const auto count = colours[k].size();
+      if (count == 0) return;
+      sa_relax_colour<<<blocks(count), device::block, 0, st>>>(
+          a_.topo, colour_cells_[k].get(), index(count), diag_.get(), upper_.get(), lower_.get(),
+          b_.get(), dx_.get());
+      check(cudaGetLastError(), "sa_relax_colour");
+    };
+    for (int s = 0; s < sweeps; ++s) {
+      for (std::size_t k = 0; k < colours.size(); ++k) colour(k);
+      for (std::size_t k = colours.size(); k-- > 0;) colour(k);
+    }
   }
 
   NavierStokesStepper<P>& flow_;
@@ -271,6 +512,12 @@ class SpalartAllmarasDevice final : public DeviceSpalartAllmaras<P> {
   gpu::DeviceArray<element<decltype(A::wall_distance)>> wall_;
   gpu::DeviceArray<element<decltype(A::nt_grad)>> nt_grad_;
   gpu::DeviceArray<element<decltype(A::nt_res)>> res_;
+  gpu::DeviceArray<element<decltype(A::nt_cell_jac)>> cell_jac_;
+  gpu::DeviceArray<element<decltype(A::nt_face_jac)>> face_jac_;
+  gpu::DeviceArray<element<decltype(A::nt_bnd_jac)>> bnd_jac_;
+  gpu::DeviceArray<double> shift_, diag_, upper_, lower_, b_, dx_, rho_, q_;
+  std::vector<gpu::DeviceArray<kernels::index_t>> colour_cells_;
+  bool one_part_ = false;
   A a_{};
 };
 

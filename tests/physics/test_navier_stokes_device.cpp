@@ -28,6 +28,7 @@
 #include "autan/core/mesh.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/kernels/runtime.hpp"
+#include "autan/partition/partition.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/navier_stokes.hpp"
 #include "autan/physics/navier_stokes_device.hpp"
@@ -35,6 +36,8 @@
 #include "autan/physics/spalart_allmaras_device.hpp"
 #include "autan/runtime/ranks.hpp"
 #include "fixtures.hpp"
+#include "sa_reference.hpp"
+#include "spalart_allmaras.hpp"
 
 namespace {
 
@@ -434,6 +437,233 @@ TEMPLATE_TEST_CASE("the device's Spalart-Allmaras residual and eddy viscosity ma
   INFO("flow residual with the eddy viscosity: " << differ << " of " << 5 * n
                                                  << " differ, by at most " << ulps << " ulp");
   CHECK(differ == 0);
+}
+
+TEMPLATE_TEST_CASE("the device's implicit SA step has the host's bits", "[spalart-allmaras][gpu]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // #163 step 7b (declaration 6787134013), on tet, hex, poly and hybrid, both signs of nt:
+  // T1 the colour sweep of a given system, bit for bit; T2 the Jacobian blocks and the assembly:
+  // face and boundary blocks and the off-diagonal entries bit for bit, the cell block bit for bit
+  // with nt < 0 and within 64 eps_C D_c V_c with nt > 0 (D_c the source derivative's terms
+  // above), the device's assembly equal to the host's assembly of the device's blocks; T3 a whole
+  // step with nt < 0 bit for bit with the host's (production update included); T4 the residual of
+  // residual_and_jacobian under #586's criteria 1 and 2a.
+  using P = TestType;
+  const auto* file = GENERATE(as<const char*>{}, "tet-gmsh/tet-gmsh.ascii.msh", "hex/hex.ascii.msh",
+                              "poly/polyMesh", "hybrid/hybrid.ascii.msh");
+  const double sign = GENERATE(-1.0, 1.0);
+  CAPTURE(file, sign);
+  const Problem pb(Source{file}, Flux::roe, true, GradientFit::quadratic, 300.0);
+  const auto n = pb.n;
+  const auto ni = pb.ni;
+  const auto nf = ni + pb.nb;
+  const auto& g = pb.g;
+
+  NavierStokes<P> host(pb.mesh, pb.g, air, pb.s, pb.t, &pb.keys);
+  host.set_boundary(pb.kind, pb.data);
+  host.set_second_order(true);
+  std::vector<typename P::state> stored(5 * n);
+  host.state(pb.u, stored);
+  constexpr double nt_max = 1.5;
+  auto nt_at = [&](double x, double y, double z) {
+    return sign * (1.0 + 0.5 * std::sin(2.0 * x + 3.0 * y + z));
+  };
+  std::vector<double> rnu(n), dist(n), nt_b(pb.nb, 0.0), nt_source(n);
+  double d_min = std::numeric_limits<double>::infinity();
+  for (std::size_t c = 0; c < n; ++c) {
+    rnu[c] = pb.u[c] * nt_at(g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]);
+    dist[c] = g.cell_centroid_y[c] + 0.05;
+    // Large sources of both signs in some cells, so that T3's update meets both clamp bounds.
+    nt_source[c] = c % 13 == 0 ? 1.0e5
+                   : c % 13 == 1
+                       ? -1.0e5
+                       : 0.1 * std::cos(4.0 * g.cell_centroid_z[c] - g.cell_centroid_x[c]);
+    d_min = std::min(d_min, dist[c]);
+  }
+  for (std::size_t b = 0; b < pb.nb; ++b) {
+    const auto f = ni + b;
+    nt_b[b] = nt_at(g.face_centroid_x[f], g.face_centroid_y[f], g.face_centroid_z[f]);
+  }
+  auto model = [&](bool ft2, double far) {
+    auto m = std::make_unique<SpalartAllmaras<P>>(pb.mesh, pb.g, host, pb.t, ft2);
+    m->set_boundary(nt_b);
+    std::vector<double> d(dist);
+    for (auto& v : d) v += far;
+    m->set_wall_distance(d);
+    m->set_source(nt_source);
+    return m;
+  };
+  std::vector<typename P::state> rs(n);
+  for (std::size_t c = 0; c < n; ++c) rs[c] = typename P::state(rnu[c]);
+  std::vector<typename P::residual> r_flow(5 * n), r_sa(n);
+  host.residual(stored, r_flow);
+  auto sa = model(true, 0.0);
+  autan::runtime::OneRank rank;
+  NoGhosts ghosts;
+  auto device = autan::physics::make_device_stepper<P>(pb.mesh, pb.g, host, air.gamma, true, rank,
+                                                       ghosts, nullptr, &pb.keys);
+  auto sa_device = autan::physics::make_device_spalart_allmaras<P>(*sa, *device);
+  std::vector<double> d_flow(5 * n);
+  device->residual(pb.u, d_flow);
+
+  // Host: residual, Jacobian blocks, assembly with a shift that leaves some rows weakly dominant
+  // (so that the clamp acts in T3), the colour groups of the runtime's colouring.
+  sa->residual_and_jacobian(rs, r_sa);
+  REQUIRE(finite(r_sa));
+  const auto& hd = sa->data();
+  std::vector<double> shift(n);
+  for (std::size_t c = 0; c < n; ++c) {
+    shift[c] = g.cell_volume[c] * (c % 3 == 0 ? 1.0e-3 : 50.0);
+  }
+  std::vector<double> diag(n), upper(ni), lower(ni);
+  sa->assemble(shift, diag, upper, lower);
+  const auto colours = autan::colour_cells(pb.mesh);
+  const auto n_colours = *std::ranges::max_element(colours) + 1;
+  const auto groups = autan::physics::colour_groups(pb.mesh, colours, n_colours, n);
+
+  // T4: the residual of the new entry point.
+  std::vector<double> d_res(n);
+  sa_device->residual_and_jacobian(rnu, d_res);
+  REQUIRE(finite(d_res));
+  constexpr double omega_max = 2.0 * 46.1, rho_max = 1.3;
+  const double s_ref = rho_max * (autan::test::sa_cb1 * omega_max * nt_max +
+                                  2.0 * autan::test::sa_cw1 * std::pow(nt_max / d_min, 2));
+  const double eps = std::numeric_limits<typename P::compute>::epsilon();
+  {
+    double worst = 0.0;
+    for (std::size_t c = 0; c < n; ++c) {
+      worst = std::max(worst, std::abs(d_res[c] - static_cast<double>(r_sa[c])) /
+                                  (64.0 * eps * s_ref * g.cell_volume[c]));
+    }
+    const auto [differ, ulps] = bit_difference(r_sa, d_res);
+    INFO("T4 residual: " << differ << " of " << n << " differ, by at most " << ulps << " ulp; "
+                         << worst << " times 2a's tolerance");
+    if (sign < 0.0) {
+      CHECK(differ == 0);
+    } else {
+      CHECK(worst <= 1.0);
+    }
+  }
+
+  // T2: the Jacobian blocks.
+  std::vector<double> d_cell(n), d_face(2 * nf), d_bnd(nf);
+  sa_device->jacobians(d_cell, d_face, d_bnd);
+  REQUIRE((finite(d_cell) && finite(d_face) && finite(d_bnd)));
+  CHECK(bit_difference(std::span(hd.nt_face_jac, 2 * nf), d_face).first == 0);
+  CHECK(bit_difference(std::span(hd.nt_bnd_jac, nf), d_bnd).first == 0);
+  const std::span host_cell(hd.nt_cell_jac, n);
+  if (sign < 0.0) {
+    CHECK(bit_difference(host_cell, d_cell).first == 0);
+  } else {
+    // nu = mu / rho with Sutherland's law at mu_ref = 0.5 (Problem), T = p / (rho R); Omega from
+    // the flow's gradients.
+    const auto a = host.arrays();
+    std::vector<double> envelope(n);
+    // A defect dropping fw' (or ft2') moves the cell block by that term times V: its share of the
+    // envelope's sum over 64 eps_C (declaration correction 6794696488), the largest over cells.
+    double fw_ratio = 0.0, ft2_ratio = 0.0;
+    for (std::size_t c = 0; c < n; ++c) {
+      const auto w = flow(g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]);
+      const double temp = w[4] / (w[0] * air.gas_constant);
+      const double mu =
+          pb.t.mu_ref * std::pow(temp / pb.t.t_ref, 1.5) * (pb.t.t_ref + pb.t.s) / (temp + pb.t.s);
+      auto gr = [&](std::size_t k, std::size_t j) {
+        return static_cast<double>(a.flow.grad[(3 * k + j) * n + c]);
+      };
+      const double omega =
+          std::hypot(gr(3, 1) - gr(2, 2), gr(1, 2) - gr(3, 0), gr(2, 0) - gr(1, 1));
+      const auto terms =
+          autan::test::source_derivative_terms(rnu[c] / pb.u[c], mu / pb.u[c], omega, dist[c]);
+      envelope[c] = 64.0 * eps * g.cell_volume[c] * terms.sum;
+      REQUIRE((std::isfinite(envelope[c]) && envelope[c] > 0.0));
+      fw_ratio = std::max(fw_ratio, terms.fw / terms.sum / (64.0 * eps));
+      ft2_ratio = std::max(ft2_ratio, terms.ft2 / terms.sum / (64.0 * eps));
+    }
+    WARN(file << ": a cell block without fw' would be " << fw_ratio << ", without ft2' "
+              << ft2_ratio << " times the envelope (largest over cells)");
+    CHECK((fw_ratio > 10.0 && ft2_ratio > 10.0));
+    auto distance = [&](std::span<const double> cell) {
+      double worst = 0.0;
+      for (std::size_t c = 0; c < n; ++c) {
+        worst =
+            std::max(worst, std::abs(cell[c] - static_cast<double>(host_cell[c])) / envelope[c]);
+      }
+      return worst;
+    };
+    const auto [differ, ulps] = bit_difference(host_cell, d_cell);
+    INFO("T2(c) cell block: " << differ << " of " << n << " differ, by at most " << ulps << " ulp; "
+                              << distance(d_cell) << " times the envelope");
+    CHECK(distance(d_cell) <= 1.0);
+    // Its sensitivity to derivative-only defects (fw' or ft2' dropped) is shown by mutants of the
+    // generated Jacobian through tools/mutate.py (declaration 6787134013), not here.
+  }
+  // The device's assembly is the host's assembly of the device's blocks.
+  {
+    std::vector<double> d_diag(n), d_upper(ni), d_lower(ni);
+    sa_device->assemble(shift, d_diag, d_upper, d_lower);
+    CHECK(bit_difference(upper, d_upper).first == 0);
+    CHECK(bit_difference(lower, d_lower).first == 0);
+    if (sign < 0.0) CHECK(bit_difference(diag, d_diag).first == 0);
+    // The host's assembly fed the device's cell blocks (the face blocks are the same bits).
+    auto reassembled = model(true, 0.0);
+    std::vector<typename P::residual> r_re(n);
+    reassembled->residual_and_jacobian(rs, r_re);
+    auto* cell = const_cast<typename P::jac*>(reassembled->data().nt_cell_jac);
+    for (std::size_t c = 0; c < n; ++c) cell[c] = static_cast<typename P::jac>(d_cell[c]);
+    std::vector<double> diag_re(n), upper_re(ni), lower_re(ni);
+    reassembled->assemble(shift, diag_re, upper_re, lower_re);
+    CHECK(bit_difference(diag_re, d_diag).first == 0);
+    // With nt > 0 some cell blocks are negative, so the assembly's max(0, .) acts.
+    if (sign > 0.0) CHECK(std::ranges::any_of(d_cell, [](double v) { return v < 0.0; }));
+  }
+
+  // T1: the colour sweep of the host's system, from a non-zero initial guess.
+  {
+    std::vector<double> b(n), x0(n);
+    for (std::size_t c = 0; c < n; ++c) {
+      b[c] = std::sin(static_cast<double>(c));
+      x0[c] = 1.0e-3 * std::cos(static_cast<double>(c));
+    }
+    std::vector<double> one, four;
+    for (const int pairs : {1, 4}) {
+      CAPTURE(pairs);
+      auto h = x0;
+      auto d = x0;
+      sa->solve(diag, upper, lower, b, h, pairs, groups);
+      sa_device->solve(diag, upper, lower, b, d, pairs, groups);
+      CHECK(bit_difference(h, d).first == 0);
+      (pairs == 1 ? one : four) = h;
+    }
+    CHECK(bit_difference(one, four).first > 0);
+  }
+
+  // T3: one whole step with nt < 0, the host's production update included.
+  if (sign < 0.0) {
+    std::vector<double> rho(n);
+    for (std::size_t c = 0; c < n; ++c) {
+      rho[c] = pb.u[c] * (1.0 + 0.01 * std::sin(3.0 * g.cell_centroid_x[c]));
+    }
+    const double nt_inf = 1.0, alpha = 0.7;
+    // Host: as the steady step takes it.
+    std::vector<double> rhs(n), dx(n, 0.0);
+    for (std::size_t c = 0; c < n; ++c) rhs[c] = -static_cast<double>(r_sa[c]);
+    sa->solve(diag, upper, lower, rhs, dx, 4, groups);
+    auto q = rnu;
+    autan::physics::update_rho_nt(q, dx, rho, nt_inf, alpha);
+    // The fixture reaches both clamp bounds, the unclamped case and both branches of the scale.
+    std::size_t low = 0, high = 0, unclamped = 0, by_q = 0, by_rho = 0;
+    for (std::size_t c = 0; c < n; ++c) {
+      const double s = std::max(std::abs(rnu[c]), rho[c] * nt_inf);
+      (std::abs(rnu[c]) < rho[c] * nt_inf ? by_rho : by_q) += 1;
+      (dx[c] < -0.5 * s ? low : dx[c] > 2.0 * s ? high : unclamped) += 1;
+    }
+    INFO("clamped low " << low << ", high " << high << ", unclamped " << unclamped
+                        << "; scale by |q| " << by_q << ", by rho nt_inf " << by_rho);
+    CHECK((low > 0 && high > 0 && unclamped > 0 && by_q > 0 && by_rho > 0));
+    auto q_device = rnu;
+    sa_device->step(q_device, shift, rho, nt_inf, alpha, 4, groups);
+    CHECK(bit_difference(q, q_device).first == 0);
+  }
 }
 
 TEMPLATE_TEST_CASE("the device's residual with farfield and inlet faces stays within #586's bound",

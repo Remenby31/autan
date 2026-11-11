@@ -74,10 +74,7 @@ constexpr double linear_failure = 0.9;
 // shortened below min_step is rejected.
 constexpr double max_decrease = 0.5;
 constexpr double min_step = 1e-6;
-// Largest relative decrease and increase of rho nt in one step, and the symmetric Gauss-Seidel
-// sweeps of its scalar system (SA).
-constexpr double nt_max_decrease = 0.5;
-constexpr double nt_max_increase = 2.0;
+// The symmetric Gauss-Seidel sweeps of SA's scalar system.
 constexpr int nt_sweeps = 4;
 constexpr double venkatakrishnan_k = 10.0;
 // Steady cases on a device: SSP-RK3 in pseudo-time with local time steps CFL V / lambda.
@@ -1176,11 +1173,8 @@ class EulerPhysics final : public runtime::Physics {
         // Local under-relaxation of the SA update: rho nt changes by at most a fraction of
         // max(|rho nt|, rho nt_inf) per step, which the converged state never reaches. Owned
         // cells; the ghosts take their owners' values.
-        for (std::size_t c = 0; c < owned_; ++c) {
-          const double scale = std::max(std::abs(t.rnu[c]), u_[c] * t.nt_inf);
-          t.rnu[c] +=
-              alpha * std::clamp(t.dx[c], -nt_max_decrease * scale, nt_max_increase * scale);
-        }
+        update_rho_nt(std::span(t.rnu).first(owned_), t.dx, std::span(u_).first(owned_), t.nt_inf,
+                      alpha);
         fill_ghost_values(t.rnu);
       }
     }
