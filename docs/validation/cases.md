@@ -5,7 +5,7 @@ Source: `vv/src/autan_vv/cases/` and its catalogue `catalog.json` (schema `autan
 ```sh
 uv run autan-vv cases list
 uv run autan-vv cases fetch tmr-2dzp-flatplate      # into ~/.cache/autan-vv/<case>/
-uv run pytest -m network                            # fetch, verify and parse every case
+uv run pytest -m network                            # fetch, verify and parse every case (downloads TMR's 2.98 GB NACA 0012 grid archive among others)
 ```
 
 ## How files are pinned
