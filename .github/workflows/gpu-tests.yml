@@ -210,8 +210,10 @@ jobs:
                       continue
                   for case in ET.parse(report).getroot().iter("testcase"):
                       t = case.get("name", "")
-                      if case.get("status") != "run" or case.find("failure") is not None or case.find("skipped") is not None:
-                          errors.append(f"{t}: not run and passed in {d.name} (status {case.get('status')})")
+                      # Passed: no failure, error or skipped element, and no not-run status.
+                      bad = [e for e in ("failure", "error", "skipped") if case.find(e) is not None]
+                      if bad or case.get("status") in ("fail", "failed", "notrun", "disabled", "skipped"):
+                          errors.append(f"{t}: not run and passed in {d.name} ({case.get('status')}, {bad})")
                       if t in seen:
                           errors.append(f"{t}: in {seen[t]} and {d.name}")
                       seen[t] = d.name
