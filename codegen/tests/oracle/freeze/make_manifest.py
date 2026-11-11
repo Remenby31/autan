@@ -35,6 +35,39 @@ AUX_FILES = [
     "tests/test_oracle_d1.py", "tests/test_oracle_fixtures.py", "tests/test_oracle_heldout.py",
     "tests/test_spike_isolation.py",
 ]  # fmt: skip
+# Stage 2 (#43: declaration 6786763697, amended 6787504754 and 6799616988): the oracle's own files
+# and the auxiliary suite gain the vv-export reader, its tests, the watchdog and the driver.
+FILES_STAGE2 = [
+    *FILES, "oracle/vvexport.py", "oracle/freeze/watchdog.py", "oracle/freeze/collect_stage2.py",
+    "test_oracle_vvexport.py", "test_oracle_stage2.py",
+]  # fmt: skip
+AUX_FILES_STAGE2 = [
+    *AUX_FILES, "tests/test_oracle_vvexport.py", "tests/test_oracle_stage2.py",
+]  # fmt: skip
+# The hosted vv-meshes runs on main d7a8714c (export_cells, gmsh 4.15.2), copied verbatim to
+# spark-5512 ~/cfd/m1-stage2/data/<family>/ (SHA256SUMS 0f55c4ae...).
+STAGE2_RUNS = {
+    (0.0, 11): ("meshes-agglomerated-p0.0-s11", 42952304018),
+    (0.15, 11): ("meshes-agglomerated-p0.15-s11", 42952307240),
+    (0.15, 13): ("meshes-agglomerated-p0.15-s13", 42952310343),
+}
+# (n, perturbation, seed) -> (mesh file, its SHA-256, the export's SHA-256): the definitive hashes
+# (#43, reports/stage2-definitive-hashes-20261111.txt). N16 is added once generated (branch a').
+STAGE2_FILES: dict[tuple[int, float, int], tuple[str, str, str]] = {
+    (12, 0.0, 11): ("agglomerated-n012.msh", "3b6110d8ba18971343975982d3bccf795715dcff60e68ef6a469876a5f37ca1c", "5785d4e0e1740878f2383c198983206d23406b8e0de8e00b104b77a099f1a809"),
+    (24, 0.0, 11): ("agglomerated-n024.msh", "75f201d181aba27141fafe4e1aacdfd583d7410152cc205b7540e624e977563b", "304cc706cbed0ca5d496b8ec94583eb1baa2dd51051ffeee3fd4710977dc50f4"),
+    (6, 0.15, 11): ("agglomerated-dirty-n006.msh", "3bbbaae2c7974c45fb47f3f1a142ebef9ca888e9a028d7d6fe1abbd83f5d9a38", "3f6ede7623e52462b41b516597fe747c8733950e25d028d794bb8b47e0ff52da"),
+    (12, 0.15, 11): ("agglomerated-dirty-n012.msh", "c92b4654324882ae39c28df2a214139bcdb116d8c80b0f54adceff27775e09f9", "1b59af7eba19fd46c28bfc33501ce6469660ab000b9034c2e81a23351c831527"),
+    (24, 0.15, 11): ("agglomerated-dirty-n024.msh", "efc898ede087bfafcc2b8712b1bccc4ee5e130d3c380f7582f3c797a9900df9f", "13a8db369da7949f2bad966f5153b87887af89eeb40ec2045cff9874141bac44"),
+    (6, 0.15, 13): ("agglomerated-dirty-n006.msh", "8bf8290b21ea368806f86d1e643464d6ba1b7541e896fe54bb675a9e7d188268", "cd6aea6579731dbd924b8824209fb81bec31c95cffeff2dae6ca853e13aa019e"),
+    (12, 0.15, 13): ("agglomerated-dirty-n012.msh", "a225c0b1c359926a8a62d35b1d115a6d79d47b728583674e50790e3c846121ff", "c1d5a818049edf6868e217e486d416c492ee006b410aaf0571cb323121e97596"),
+    (24, 0.15, 13): ("agglomerated-dirty-n024.msh", "5fae1f4ad111f90a18ae0348cf3b90fb7fa7f361fa4a5f383a59456294648c1e", "c56f570cf1ab7aebc37b185ee4b647350b2f837dd027c62f5358951db76d9f3d"),
+}  # fmt: skip
+STAGE2_LEVELS = {"a": (6, 12), "a-prime": (6, 12, 16)}
+STAGE2_EXCLUDED = {(6, 0.0, 11)}  # byte-identical to test_meshes' N6 p0 s3 (section 3)
+STAGE2_BOUNDS_S = {"6": 1728, "12": 38727}  # 3 x the measured N6 (576 s) and N12 (12,909 s)
+STAGE2_AUX_BOUND_S = 5799  # 3 x 1,933 s, #668's GB10 run on spark-5512
+STAGE2_RETRY_CAP = 2
 POLICIES = ["fp64", "fp32+acc64", "fp32"]
 METHODS = ["lsq", "gg"]
 FIELDS = [{"a": -7.5, "G": [-0.9, 0.4, 1.3]}, {"a": 250.0, "G": [-0.9, 0.4, 1.3]}]
@@ -67,6 +100,37 @@ def instances() -> list[dict]:
                         "policies": POLICIES, "methods": METHODS, "est_min": est,
                         "machine": machine,
                     })  # fmt: skip
+    return out
+
+
+def instances_stage2(branch: str, files: dict, bounds_s: dict[str, int]) -> list[dict]:
+    """Stage 2's instances for the branch the N16 measurement picked (#43, 6799616988): agglomerated,
+    N in the branch's levels x (p0 s11, p0.15 s11, p0.15 s13), minus the excluded ones. Each names
+    its two files by SHA-256 and its family directory under ~/cfd/m1-stage2/data/."""
+    out = []
+    for n in STAGE2_LEVELS[branch]:
+        if str(n) not in bounds_s:
+            msg = f"no frozen bound for N = {n}"
+            raise SystemExit(msg)
+        for p, seed in ((0.0, 11), (0.15, 11), (0.15, 13)):
+            if (n, p, seed) in STAGE2_EXCLUDED:
+                continue
+            if (n, p, seed) not in files:
+                msg = f"no definitive hashes for N{n} p{p} s{seed}"
+                raise SystemExit(msg)
+            mesh, mesh_sha, cells_sha = files[(n, p, seed)]
+            family, run = STAGE2_RUNS[(p, seed)]
+            out.append({
+                "id": f"s2-agglomerated-N{n}-p{p}-s{seed}", "kind": "agglomerated", "n": n,
+                "perturbation": p, "seed": seed, "source": "vv-export",
+                "files": {
+                    "mesh": {"name": mesh, "sha256": mesh_sha},
+                    "cells": {"name": mesh.removesuffix(".msh") + ".cells.json", "sha256": cells_sha},
+                },
+                "data": family, "provenance": {"vv_meshes_run": run, "attempt": 1},
+                "fields": FIELDS, "policies": POLICIES, "methods": METHODS,
+                "bound_s": bounds_s[str(n)], "machine": "spark-5512",
+            })  # fmt: skip
     return out
 
 
@@ -151,6 +215,9 @@ def main() -> int:
     sys.path.insert(0, str(TESTS))
     from oracle import kernels as kr  # noqa: PLC0415
 
+    if "--stage" in sys.argv:
+        return main_stage2(kr)
+
     manifest = {
         "schema": "autan.adr0003-manifest/1",
         "stage": 1,
@@ -173,6 +240,56 @@ def main() -> int:
         "verdict": "fail-closed (heldout.collect): every instance's record present and passing with full coverage, and the fixtures, boundary cases and controls passing; stage 1 results are recorded, not a verdict; no PASS until stage 2; a stage 1 failure stays a failure",
     }  # fmt: skip
     Path(sys.argv[2]).write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n")
+    return 0
+
+
+def main_stage2(kr: object) -> int:
+    """make_manifest.py FIXTURES OUT COLLECTED --stage 2 --branch a|a-prime [--b16 SECONDS
+    --n16 P,SEED,MESH,MESH_SHA,CELLS_SHA ...]: stage 2's manifest, written once the branch is known."""
+    import argparse  # noqa: PLC0415
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("fixtures")
+    ap.add_argument("out")
+    ap.add_argument("collected")
+    ap.add_argument("--stage", type=int, choices=[2], required=True)
+    ap.add_argument("--branch", choices=sorted(STAGE2_LEVELS), required=True)
+    ap.add_argument("--b16", type=int)
+    ap.add_argument("--n16", action="append", default=[])
+    args = ap.parse_args()
+    files = dict(STAGE2_FILES)
+    bounds = dict(STAGE2_BOUNDS_S)
+    if args.branch == "a-prime":
+        if not args.b16 or len(args.n16) != 3:
+            msg = "branch a-prime needs --b16 and the three N16 files"
+            raise SystemExit(msg)
+        bounds["16"] = args.b16
+        for item in args.n16:
+            p, seed, mesh, mesh_sha, cells_sha = item.split(",")
+            files[(16, float(p), int(seed))] = (mesh, mesh_sha, cells_sha)
+    manifest = {
+        "schema": "autan.adr0003-manifest/1",
+        "stage": 2,
+        "adr": "docs/adr/0003-derived-linear-exactness-bound.md",
+        "declaration": "https://github.com/Remenby31/autan/issues/43#issuecomment-6786763697, amended 6787504754 (vertices) and 6799616988 (levels, bounds, window)",
+        "branch": args.branch,
+        "oracle_sha256": {f"codegen/tests/{f}": sha256(TESTS / f) for f in FILES_STAGE2},
+        "frozen_code_sha256": dict(kr.FROZEN_SHA256),  # type: ignore[attr-defined]
+        "library": "the SHA-256 of the spike library built from this commit is in the freeze record, not here",
+        "instances": instances_stage2(args.branch, files, bounds),
+        "bounds_s": bounds,
+        "aux_bound_s": STAGE2_AUX_BOUND_S,
+        "retry_cap": STAGE2_RETRY_CAP,
+        "data": {"root": "spark-5512 ~/cfd/m1-stage2/data", "runs": {f"p{p} s{seed}": run for (p, seed), (_, run) in STAGE2_RUNS.items()}},
+        "excluded": {"rule": "exclude any candidate whose file SHA-256 or mesh SHA-256 equals that of a mesh generated by a vv test, the list re-hashed at the frozen commit", "excluded": [f"N{n} p{p} s{s}" for n, p, s in sorted(STAGE2_EXCLUDED)]},
+        "positive_fixtures": fixtures(Path(args.fixtures)),
+        "auxiliary_tests": {
+            "rule": "the oracle suite on the frozen build, the stage 2 tests included: every node id below must pass (none skipped, deselected or missing), within aux_bound_s",
+            "node_ids": node_ids(Path(args.collected).read_text()),
+        },
+        "verdict": "fail-closed (heldout.collect, stage 2): every instance's attempt bound, done and passing all its combinations within its bound, at most retry_cap attempts, and the auxiliary suite passing within aux_bound_s; stated as 'acceptance criteria met' on these frozen exports only",
+    }  # fmt: skip
+    Path(args.out).write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n")
     return 0
 
 

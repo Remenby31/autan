@@ -1,0 +1,84 @@
+{
+ "candidates": [
+  {
+   "file_sha256": "3b6110d8ba18971343975982d3bccf795715dcff60e68ef6a469876a5f37ca1c",
+   "mesh_sha256": "320ee4be7cc81971f8152f0f65da9854bb4cb3af2f0450f0663dc36a3bd82661",
+   "n": 12,
+   "perturbation": 0.0,
+   "seed": 11,
+   "source": "hosted vv-meshes, main d7a8714c"
+  },
+  {
+   "file_sha256": "75f201d181aba27141fafe4e1aacdfd583d7410152cc205b7540e624e977563b",
+   "mesh_sha256": "86f5c1529d9c11dfab8215669f27f97b64f298e382505d76be7bbc6d711995cd",
+   "n": 24,
+   "perturbation": 0.0,
+   "seed": 11,
+   "source": "hosted vv-meshes, main d7a8714c"
+  },
+  {
+   "file_sha256": "3bbbaae2c7974c45fb47f3f1a142ebef9ca888e9a028d7d6fe1abbd83f5d9a38",
+   "mesh_sha256": "8d2bff817ba366632ef7c2fe695bd5b2168c21cd998eb7789fb2800903c156a0",
+   "n": 6,
+   "perturbation": 0.15,
+   "seed": 11,
+   "source": "hosted vv-meshes, main d7a8714c"
+  },
+  {
+   "file_sha256": "c92b4654324882ae39c28df2a214139bcdb116d8c80b0f54adceff27775e09f9",
+   "mesh_sha256": "cfad45c1211a5cb6865d01c133c5b60ff2f06a5cbd8d0c7ec516b46d15aedd82",
+   "n": 12,
+   "perturbation": 0.15,
+   "seed": 11,
+   "source": "hosted vv-meshes, main d7a8714c"
+  },
+  {
+   "file_sha256": "efc898ede087bfafcc2b8712b1bccc4ee5e130d3c380f7582f3c797a9900df9f",
+   "mesh_sha256": "3a99c9952a63f9446867fa7096a8dc84aaccce0dcdd7463b0b11636a72fcb6d0",
+   "n": 24,
+   "perturbation": 0.15,
+   "seed": 11,
+   "source": "hosted vv-meshes, main d7a8714c"
+  },
+  {
+   "file_sha256": "8bf8290b21ea368806f86d1e643464d6ba1b7541e896fe54bb675a9e7d188268",
+   "mesh_sha256": "93f1df76195fabca620d587c4ab46fd8fce8332fdd5fa2d8c37dc5ff21edc7de",
+   "n": 6,
+   "perturbation": 0.15,
+   "seed": 13,
+   "source": "hosted vv-meshes, main d7a8714c"
+  },
+  {
+   "file_sha256": "a225c0b1c359926a8a62d35b1d115a6d79d47b728583674e50790e3c846121ff",
+   "mesh_sha256": "0893918e24352a53e3d8213bedd1458f181c0a35ec9d639d5b74accc5f23673d",
+   "n": 12,
+   "perturbation": 0.15,
+   "seed": 13,
+   "source": "hosted vv-meshes, main d7a8714c"
+  },
+  {
+   "file_sha256": "5fae1f4ad111f90a18ae0348cf3b90fb7fa7f361fa4a5f383a59456294648c1e",
+   "mesh_sha256": "fbc5f25651010cca3817c1cfd625d162a5c0ad9d2d163c2007253891c4698ad3",
+   "n": 24,
+   "perturbation": 0.15,
+   "seed": 13,
+   "source": "hosted vv-meshes, main d7a8714c"
+  },
+  {
+   "file_sha256": "fea46520a96c21fd1ec5da72944225f7aadc493540479c4f9f659bd6f98de9a3",
+   "mesh_sha256": "f1e68e9ba38b6706026dc9de64d49a0e3ee0ea4f3682a4b1a71b5d62e5b996cf",
+   "n": 6,
+   "perturbation": 0.0,
+   "seed": 11,
+   "source": "devbox sizing at 89a0aa5d; excluded (section 3)"
+  }
+ ],
+ "expected_collisions": [
+  {
+   "n": 6,
+   "perturbation": 0.0,
+   "seed": 11
+  }
+ ],
+ "note": "ADR 0003 stage 2 candidates (#43): the hashes the vv-test universe is compared with"
+}

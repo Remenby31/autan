@@ -45,6 +45,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 from itertools import product
 from pathlib import Path
@@ -501,6 +502,84 @@ def _collect_auxiliary(
     return failures
 
 
+def _limit(x: Any) -> bool:
+    return _count(x) and x > 0
+
+
+def stage2_limits(manifest: dict[str, Any]) -> tuple[dict[str, int], int, int] | None:
+    """Stage 2's frozen limits: the per-N bound in seconds, the auxiliary suite's, and the retry
+    cap (the declaration's amendment of 2026-11-11, #43). None if any is missing or malformed."""
+    bounds, aux_bound, cap = (
+        manifest.get("bounds_s"),
+        manifest.get("aux_bound_s"),
+        manifest.get("retry_cap"),
+    )
+    if (
+        not isinstance(bounds, dict)
+        or not bounds
+        or not all(isinstance(k, str) and _limit(v) for k, v in bounds.items())
+        or not _limit(aux_bound)
+        or not _limit(cap)
+    ):
+        return None
+    return bounds, aux_bound, cap
+
+
+def _timed_out(rec: Any, bound: int) -> str | None:
+    """Why a stage 2 attempt is over its bound (None if it is within it): the run script's latch,
+    or recorded start and end times that are missing, inconsistent or further apart than the bound."""
+    if not isinstance(rec, dict):
+        return None  # malformed: the frozen rules already count it
+    if rec.get("timeout_latched") is True:
+        return f"timed out: the run script's latch at {bound} s"
+    if rec.get("stage") != "done":
+        return None
+    t0, t1 = rec.get("started_utc_s"), rec.get("ended_utc_s")
+    if not (_finite(t0) and _finite(t1)) or t1 < t0:
+        return "no valid start and end times"
+    if t1 - t0 > bound:
+        return f"ran {t1 - t0:.0f} s, over its bound of {bound} s"
+    return None
+
+
+def _stage2_screen(
+    manifest: dict[str, Any], attempts: dict[str, list[Any]], auxiliary: list[Any]
+) -> tuple[dict[str, list[Any]], list[Any], list[str]]:
+    """Stage 2's rules applied before the frozen ones: an attempt over its bound is made invalid
+    (so decisive), more attempts than the cap is a failure, and so is a missing limit."""
+    failures: list[str] = []
+    limits = stage2_limits(manifest)
+    if limits is None:
+        return attempts, auxiliary, ["the manifest freezes no valid stage 2 limits"]
+    bounds, aux_bound, cap = limits
+    screened: dict[str, list[Any]] = {}
+    for spec in manifest.get("instances") or []:
+        sid = spec.get("id") if isinstance(spec, dict) else None
+        tries = attempts.get(sid) if isinstance(sid, str) else None
+        if not isinstance(tries, list):
+            continue
+        bound = bounds.get(str(spec.get("n")))
+        if bound is None:
+            failures.append(f"{sid}: the manifest freezes no bound for N = {spec.get('n')!r}")
+            continue
+        if len(tries) > cap:
+            failures.append(f"{sid}: {len(tries)} attempts, over the cap of {cap}")
+        out = []
+        for rec in tries:
+            why = _timed_out(rec, bound)
+            if why is not None:
+                rec = {**rec, "invalid": [*(rec.get("invalid") or []), f"invalid: {why}"]}  # noqa: PLW2901
+            out.append(rec)
+        screened[sid] = out
+    aux_out = []
+    for ev in auxiliary:
+        why = _timed_out(ev, aux_bound)
+        aux_out.append({**ev, "stage": f"over its bound: {why}"} if why is not None else ev)
+    if len(auxiliary) > cap:
+        failures.append(f"auxiliary: {len(auxiliary)} attempts, over the cap of {cap}")
+    return screened, aux_out, failures
+
+
 def collect(
     manifest_bytes: bytes,
     manifest_sha256: str,
@@ -516,6 +595,7 @@ def collect(
     library digest (freeze record). `attempts[id]` holds every record written for that instance (one
     file per job attempt). `auxiliary` holds every auxiliary attempt record (`aux` subcommand)."""
     failures: list[str] = []
+    stage: Any = 1
     try:
         if (
             not isinstance(manifest_bytes, bytes)
@@ -527,6 +607,14 @@ def collect(
             if not isinstance(manifest, dict):
                 failures.append("the manifest is not a mapping")
             else:
+                stage = manifest.get("stage", 1)
+                if stage == 2:
+                    attempts, auxiliary, more = _stage2_screen(
+                        manifest,
+                        attempts if isinstance(attempts, dict) else {},
+                        auxiliary if isinstance(auxiliary, list) else [],
+                    )
+                    failures += more
                 instances = manifest.get("instances")
                 if not isinstance(instances, list) or not instances:
                     failures.append("the manifest declares no instance")
@@ -554,13 +642,15 @@ def collect(
                     )
     except Exception:  # noqa: BLE001  total: an error in collection is a failure of the stage
         failures.append("collection failed: " + traceback.format_exc(limit=2))
-    return {
-        "stage": 1,
-        "failures": failures,
-        "state": "FAIL (stays FAIL whatever stage 2 gives)"
-        if failures
-        else "no failure observed in stage 1; not a verdict until stage 2",
-    }
+    if stage == 2:
+        state = "FAIL" if failures else "acceptance criteria met (stage 2, as declared and amended)"
+    else:
+        state = (
+            "FAIL (stays FAIL whatever stage 2 gives)"
+            if failures
+            else "no failure observed in stage 1; not a verdict until stage 2"
+        )
+    return {"stage": stage, "failures": failures, "state": state}
 
 
 def node_outcomes(lines: list[str]) -> tuple[dict[str, str], list[str | None]]:
@@ -653,7 +743,12 @@ def main(argv: list[str] | None = None) -> int:
     base = {"manifest_sha256": manifest_sha256, "library_sha256_expected": args.library_sha256,
             "library_sha256_loaded": kr.library_sha256()}  # fmt: skip
     if args.command == "aux":
-        record: dict[str, Any] = {"schema": AUX_SCHEMA, "stage": "started", **base}
+        record: dict[str, Any] = {
+            "schema": AUX_SCHEMA,
+            "stage": "started",
+            "started_utc_s": time.time(),
+            **base,
+        }
         if not _create(out, record):
             print(f"{out} exists: one file per attempt, never overwritten")
             return 2
@@ -677,10 +772,13 @@ def main(argv: list[str] | None = None) -> int:
             record.update(
                 {"stage": "done", "outcomes": outcomes, "child_library_sha256": libraries}
             )
+        record["ended_utc_s"] = time.time()
         _replace(out, record)
         report.unlink(missing_ok=True)
         return 0
+    started = time.time()
     record = {"schema": SCHEMA, "id": args.instance, "invalid": [], "stage": "manifest", **base}
+    record["started_utc_s"] = started
     if not _create(out, record):
         print(f"{out} exists: one file per attempt, never overwritten")
         return 2
@@ -699,6 +797,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         record["traceback"] = traceback.format_exc()
         record["passed"] = False
+    record["started_utc_s"], record["ended_utc_s"] = started, time.time()
     _replace(out, record)
     return 0
 

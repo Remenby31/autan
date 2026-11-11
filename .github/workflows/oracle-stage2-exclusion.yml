@@ -1,0 +1,58 @@
+# ADR 0003 stage 2's exclusion check (#43, section 3), hosted as the declaration requires: at the
+# commit pushed to the stage 2 branch, every mesh any vv test generates is hashed and compared
+# with the stage 2 candidates (codegen/tests/oracle/freeze/stage2-candidates.json). It fails on a
+# collision not declared, on any vv test not passed, or on an empty universe. Its run URL and the
+# universe artifact go into the freeze record.
+name: oracle-stage2-exclusion
+on:
+  push:
+    branches: [hpc/oracle-stage2]
+    paths:
+      - vv/**
+      - codegen/tests/oracle/freeze/vv_exclusion.py
+      - codegen/tests/oracle/freeze/stage2-candidates.json
+      - .github/workflows/oracle-stage2-exclusion.yml
+  workflow_dispatch:
+permissions: {}
+jobs:
+  exclusion:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.6"
+          enable-cache: false
+      - name: Install the libraries the Gmsh wheel loads
+        timeout-minutes: 5
+        run: >-
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update -q &&
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y -q
+          --no-install-recommends libglu1-mesa libxcursor1 libxft2 libxinerama1 libxrender1
+      - name: Runner image
+        run: echo "ImageOS=$ImageOS ImageVersion=$ImageVersion"
+      - name: Install vv from its lock file, Gmsh included
+        working-directory: vv
+        run: uv sync --locked --all-groups
+      # The V&V job's own selection (ci.yml): network tests deselected, every other one run.
+      - name: Every mesh the vv tests generate, hashed
+        working-directory: vv
+        env:
+          VV_EXCLUSION_OUT: ${{ runner.temp }}/universe.json
+          PYTHONPATH: ${{ github.workspace }}/codegen/tests/oracle/freeze
+        run: uv run --locked --no-sync pytest -p vv_exclusion -m "not network" -q -p no:cacheprovider
+      - name: Compared with the stage 2 candidates
+        run: >-
+          python3 codegen/tests/oracle/freeze/vv_exclusion.py "$RUNNER_TEMP/universe.json"
+          codegen/tests/oracle/freeze/stage2-candidates.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: stage2-exclusion-universe-${{ github.run_id }}
+          path: ${{ runner.temp }}/universe.json
+          if-no-files-found: error
