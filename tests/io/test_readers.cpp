@@ -786,6 +786,24 @@ TEST_CASE("A Fluent file holds at most 16 384 fluid, solid or interior zone reco
   require_error(autan::ErrorCode::io_unsupported,
                 write_temp("sections-over.msh", fluent_column(16386)));
 }
+TEST_CASE("Fluent zone records of short names cost little beside their text", "[io]") {
+  // mesh.md, Readers, and reader-memory.md: 16 383 empty interior zones of one-letter names cost
+  // their text and their records, 16 bytes each, at most twice over: the reader's own bookkeeping
+  // fits the 1 MiB beside the text.
+  std::string zones;
+  for (int i = 0; i < 16383; ++i) zones += "(45 (" + std::to_string(100 + i) + " interior i)())\n";
+  const fs::path plain = write_temp("records-plain.msh", fluent_tet);
+  const fs::path padded = write_temp("records-padded.msh", fluent_tet + zones);
+  const auto added = static_cast<std::int64_t>(zones.size());
+  (void)autan::io::read_mesh(plain);
+  const std::int64_t before = peak_of([&] { (void)autan::io::read_mesh(plain); });
+  std::optional<autan::Mesh> mesh;
+  const std::int64_t after = peak_of([&] { mesh = autan::io::read_mesh(padded); });
+  CAPTURE(before, after, added);
+  CHECK(after - before <= added + (std::int64_t{1} << 20));
+  CHECK(mesh->face_zones().size() == autan::io::read_mesh(plain).face_zones().size());
+}
+
 TEST_CASE("Fluent interior zones no face is in are not kept", "[io]") {
   // mesh.md, Readers: 16 383 empty interior zones of 1024-byte names cost their text.
   std::string zones;
