@@ -1854,22 +1854,22 @@ TEST_CASE("several ranks give the one-rank solution to round-off", "[euler][mpi]
   }
 }
 
-// The steps each steady configuration of hybrid.solver-input.json takes: its last first-order
-// (provisional) step plus 10, so that every run goes past the second-order switch (Jacobian, SA's
-// assembly and sweeps) and stays within CI's per-test timeout unoptimised. fp64: measured at
-// 83b40ec8 in gpu-tests' unoptimised build on 2026-11-09 (t648-o0b). fp32+acc64: the level rule
-// (euler.md) ends the start at the 201st step at the latest, which bounds it whatever the rule's
-// step.
+// The fp64 first-order start's last step of each steady configuration of hybrid.solver-input.json
+// (its drop or stall rule): measured at 83b40ec8 in gpu-tests' unoptimised build on 2026-11-09
+// (t648-o0b).
+static int fp64_last_first_order(const std::string& model, const std::string& linear) {
+  if (model == "laminar") return linear == "gauss-seidel" ? 53 : 44;
+  return linear == "gauss-seidel" ? 44 : 37;
+}
+
+// The steps each steady configuration takes: its last first-order (provisional) step plus 10, so
+// that every run goes past the second-order switch (Jacobian, SA's assembly and sweeps) and stays
+// within CI's per-test timeout unoptimised. fp32+acc64: the level rule (euler.md) ends the start at
+// the 201st step at the latest, which bounds it whatever the rule's step.
 static int past_switch(const std::string& model, const std::string& linear,
                        const std::string& precision) {
   if (precision != "fp64") return autan::physics::FirstOrderStart::max_steps + 1 + 10;
-  int last_first_order = 0;
-  if (model == "laminar") {
-    last_first_order = linear == "gauss-seidel" ? 53 : 44;
-  } else {
-    last_first_order = linear == "gauss-seidel" ? 44 : 37;
-  }
-  return last_first_order + 10;
+  return fp64_last_first_order(model, linear) + 10;
 }
 
 // runtime.md, Ranks: under reproducibility "ranks" the Navier-Stokes physics writes on N ranks the
@@ -1916,7 +1916,15 @@ static void ns_on_ranks(const char* model, const char* linear, bool steady, cons
       const Json e = Json::parse(line);
       if (e["message"] == "first-order start ended") switched = e["iteration"].get<long>();
     }
-    REQUIRE(switched > 0);
+    // The switch's step: in fp64 the measured one; in fp32+acc64 the level rule's bounds
+    // (euler.md), from its first full window to the cap, since the rule fixes no single step.
+    using autan::physics::FirstOrderStart;
+    if (std::string_view(precision) == "fp64") {
+      REQUIRE(switched == fp64_last_first_order(model, linear));
+    } else {
+      REQUIRE(switched >= static_cast<long>(FirstOrderStart::window));
+      REQUIRE(switched <= FirstOrderStart::max_steps + 1);
+    }
     REQUIRE(second == doc["time"]["max_iterations"].get<long>() - switched);
     REQUIRE(second >= 10);
   }
