@@ -1703,9 +1703,10 @@ TEST_CASE("the steady CFL penalty halves after a rise of the relative residual a
   // and otherwise recovers by half, up to 1 (a shortened step, or a failed linear solve, lowers it
   // too; steps next to one, which log a warning, are not judged). Past the first-order start
   // those residuals are the history's, relative to the first second-order line, whose residuals
-  // the restart state holds as the reference, a momentum component's being the largest momentum
-  // component's; the z-momentum, below 1e-12 of the largest residual at iteration 1, is left out
-  // (case-schema.md#time). The restart state also holds the penalty
+  // the restart state holds as the reference, each equation's its own, a momentum component's
+  // too (the shared momentum value judges convergence only); the z-momentum, below 1e-12 of the
+  // largest residual at iteration 1, is left out (case-schema.md#time). The restart state also
+  // holds the penalty
   // after a run's last step, so runs of k - 1 and k steps give step k's change. Steps away from
   // the margin are judged: a rise above 15 % and one below 5 %.
   const std::int64_t steps = 120;
@@ -1734,7 +1735,7 @@ TEST_CASE("the steady CFL penalty halves after a rise of the relative residual a
   REQUIRE(first + 2 < h.size());
   double largest = 0.0;
   for (std::size_t k = 0; k < names.size(); ++k) largest = std::max(largest, at(0, k));
-  // A momentum component drops from the largest momentum component's reference (#544).
+  // The convergence rule's shared momentum value (#544), which the CFL law does not read.
   const double momentum = std::max({reference[1], reference[2], reference[3]});
   auto relative_by = [&](std::size_t i, bool shared) {
     double drop = 0.0;
@@ -1744,18 +1745,18 @@ TEST_CASE("the steady CFL penalty halves after a rise of the relative residual a
     }
     return drop;
   };
-  auto relative = [&](std::size_t i) { return relative_by(i, true); };
+  auto relative = [&](std::size_t i) { return relative_by(i, false); };
   // A run's restart state holds its last step's relative residual. At a step where the momentum
   // sets it and the two rules differ, the run stopped there shows the rule.
   std::size_t shown = first + 1;
   while (shown < h.size() &&
-         std::abs(relative(shown) - relative_by(shown, false)) <= 1e-6 * relative(shown)) {
+         std::abs(relative(shown) - relative_by(shown, true)) <= 1e-6 * relative(shown)) {
     ++shown;
   }
   REQUIRE(shown < h.size());
   const double expected = relative(shown);
-  INFO("line " << shown + 1 << ": relative residual " << expected << ", against own references "
-               << relative_by(shown, false));
+  INFO("line " << shown + 1 << ": relative residual " << expected
+               << ", against the shared momentum value " << relative_by(shown, true));
   const auto at_shown = run(ringleb_slab(0.0, h[shown]["iteration"].get<std::int64_t>()));
   REQUIRE(at_shown.status == ExitStatus::finished);
   CHECK(std::abs(field(at_shown.run, "SolverPreviousDrop", "RestartState").front() - expected) <=

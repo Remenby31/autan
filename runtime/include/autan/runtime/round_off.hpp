@@ -14,10 +14,11 @@ namespace autan::runtime {
 /// case-schema.md#time: an equation whose residual at iteration 1 of the original run is below
 /// 1e-12 of the largest residual there is identically zero (the spanwise momentum of a
 /// one-cell-thick slab); it is exempt while it stays at or below that floor, and once above it
-/// must drop like the others from a reference of its kind (woken_reference()). A momentum
-/// component drops from the largest momentum component's reference (drop_reference()). The
-/// runtime's convergence decision and a physics' pseudo-time step use this one rule: fed the same
-/// reported residuals, they decide the same.
+/// must drop like the others from a reference of its kind (woken_reference()): the runtime's
+/// convergence decision and a physics' pseudo-time step use this one exemption, so that fed the
+/// same reported residuals they exempt the same equations. A momentum component converges against
+/// the largest momentum component's reference (drop_reference()), which the convergence decision
+/// alone uses.
 class RoundOffExemption {
  public:
   /// `names` are the equations; `woken`, those that left their floor earlier in the chain
