@@ -49,9 +49,16 @@ When `docker/dev` changes, the shards warn that the pinned image is older. Once 
 
 ## MPI ranks on a shared Spark
 
-The Spark runners share their cores with Slurm and the job queue (on spark2 the runner's cpuset is `1-19` and Slurm's job cores are `1-15`). Open MPI's default binding pins each rank to one of the machine's lowest-numbered cores, whatever the runner's cpuset. On spark2 those are Slurm's busiest cores, and a multi-rank test crawled behind compute jobs. #265 ("Navier-Stokes at ghost depth 3 repeats bit for bit") timed out at 600 s in 12 of 12 runs, also under `taskset` and with `mpi_yield_when_idle`.
+The Spark runners share their cores with Slurm and the job queue (on spark2 the runner's cpuset is `1-19` and Slurm's job cores are `1-15`).
 
-gpu-tests' Spark job therefore sets the binding policy to `none` (`OMPI_MCA_hwloc_base_binding_policy`, `PRTE_MCA_hwloc_default_binding_policy`). The ranks keep the runner's cpuset, and the kernel places them on free cores: the same test passed 6 of 6 times in about 21 s, with the host busier. The experiments, declared before they ran, and their measurements are in #697. Dedicated runner cores, or a cgroup weight or Slurm allocation for the runner, would harden this further; they need Meta.
+**What was observed** in the runner's container on spark2, with this image's Open MPI 5: each rank of a multi-rank test was bound to a single core among 1–4, inside the runner's cpuset, also when the launcher ran under `taskset -c 16-19`. Those cores are among Slurm's job cores, and the ranks crawled behind compute jobs. #265 ("Navier-Stokes at ghost depth 3 repeats bit for bit") timed out at 600 s in 12 of 12 runs, also with `mpi_yield_when_idle`.
+
+**What changed:** gpu-tests' Spark job sets the binding policy to `none` (`PRTE_MCA_hwloc_default_binding_policy`, Open MPI 5's own name, and `OMPI_MCA_hwloc_base_binding_policy`, both as in the experiment that passed).
+- This is a default: a launch that passes its own `--bind-to` overrides it. gpu-tests' `MPIEXEC_PREFLAGS` carries none.
+- Unbound ranks keep the runner's cpuset, and the kernel may migrate them to free cores. That is not isolation.
+- The same test then passed 6 of 6 times in about 21 s, with the host busier.
+
+The experiments, declared before they ran, and their measurements are in #697. Dedicated runner cores, or a cgroup weight or Slurm allocation for the runner, would harden this further; they need Meta.
 
 ## On a Spark shared with other teams
 
