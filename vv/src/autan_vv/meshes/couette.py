@@ -1,9 +1,10 @@
 """The column of the Couette gates (acceptance.md, M3; issue #596): n hexahedra along y over the
-channel height H, one cell of side WIDTH across x and z.
+channel height H, LAYERS equal cells of side WIDTH across x and one across z.
 
-The oracle is 1D along y, so its order study needs one layer across x and z, and one domain at
+The oracle is 1D along y, so its order study needs equal layers across x and z and one domain at
 every level (harness.md): WIDTH (m) is the same at every level, H/128, so that the cells of the
-finest level n = 128 are cubes. The zones are the box faces: `ymin` is the wall at rest, `ymax`
+finest level n = 128 are cubes. One cell across x would leave the viscous boundary fit three x
+positions, on which x^3 and x coincide, and the solver refuses the fit (#692). The zones are the box faces: `ymin` is the wall at rest, `ymax`
 (the moving wall) and the `xmin`/`xmax` ends take the oracle's states, `zmin`/`zmax` are symmetry
 planes. Written as Fluent ASCII without Gmsh.
 """
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
 
 KIND = "couette"
 WIDTH = 1.0 / 128.0
+LAYERS = 4
 STATE_ZONES = ("ymax", "xmin", "xmax")
 
 
@@ -35,13 +37,15 @@ def grid(n: int) -> tuple[FloatArray, dict[str, IntArray]]:
         raise VVError(msg, code="V0309")
     height = couette().parameters["height"]
     y = height * np.arange(n + 1) / n
-    # Node (i, j, k): x and z indices i, k in {0, 1}, y index j.
-    points = np.array([(WIDTH * i, yj, WIDTH * k) for k in (0, 1) for i in (0, 1) for yj in y])
+    # Node (i, j, k): x index i in 0..LAYERS, y index j, z index k in {0, 1}.
+    points = np.array(
+        [(WIDTH * i, yj, WIDTH * k) for k in (0, 1) for i in range(LAYERS + 1) for yj in y]
+    )
 
-    def node(i: int, j: IntArray, k: int) -> IntArray:
-        return (k * 2 + i) * (n + 1) + j
+    def node(i: IntArray, j: IntArray, k: int) -> IntArray:
+        return (k * (LAYERS + 1) + i) * (n + 1) + j
 
-    j = np.arange(n)
+    i, j = (a.ravel() for a in np.meshgrid(np.arange(LAYERS), np.arange(n), indexing="ij"))
     corners = [
         (0, 0, 0),
         (1, 0, 0),
@@ -52,7 +56,7 @@ def grid(n: int) -> tuple[FloatArray, dict[str, IntArray]]:
         (1, 1, 1),
         (0, 1, 1),
     ]
-    hexes = np.stack([node(i, j + dj, k) for i, dj, k in corners], axis=1)
+    hexes = np.stack([node(i + di, j + dj, k) for di, dj, k in corners], axis=1)
     return points, {"hex": hexes}
 
 

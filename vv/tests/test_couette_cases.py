@@ -27,8 +27,10 @@ if TYPE_CHECKING:
 # T = T_b + (T_t - T_b) y/H + Pr U^2/(2 cp) (y/H)(1 - y/H), uniform p, rho = p/(R T).
 H, U, T_B, T_T, P, MU, PR, GAMMA, R = 1.0, 200.0, 300.0, 320.0, 1.0e5, 1.0e-2, 0.72, 1.4, 287.0
 CP = GAMMA * R / (GAMMA - 1.0)
-# The column's side across x and z, the same at every level: the cell of the finest level, n = 128.
+# The cell's side across x and z, the same at every level: the cell of the finest level, n = 128.
+# Four cells across x, so that the viscous boundary fit sees enough x positions (#692).
 WIDTH = 1.0 / 128.0
+LAYERS = 4
 ZONES = {"xmin", "xmax", "ymin", "ymax", "zmin", "zmax"}
 LEVELS = (8, 16, 32, 64)
 
@@ -51,10 +53,10 @@ def test_a_level_is_one_column_of_n_cells_along_y() -> None:
     for n in (4, 10):
         mesh, version = generate_level("couette", n)
         assert version == ""
-        assert mesh.n_cells == n
+        assert mesh.n_cells == LAYERS * n
         assert {z.name for z in mesh.zones} == ZONES
         np.testing.assert_array_equal(mesh.points.min(axis=0), 0.0)
-        np.testing.assert_allclose(mesh.points.max(axis=0), [WIDTH, H, WIDTH], rtol=1e-15)
+        np.testing.assert_allclose(mesh.points.max(axis=0), [LAYERS * WIDTH, H, WIDTH], rtol=1e-15)
         np.testing.assert_allclose(mesh.geometry.cell_volume, WIDTH**2 * H / n, rtol=1e-12)
     for n, perturbation in ((0, 0.0), (8, 0.3)):
         with pytest.raises(VVError) as err:
@@ -110,15 +112,16 @@ def test_every_level_imposes_the_exact_states_and_solves_one_case(tmp_path: Path
         assert set(document.zones) == {"ymax", "xmin", "xmax"}
         y = (np.arange(n) + 0.5) * H / n
         mid = np.full(n, WIDTH / 2)
+        across = (np.arange(LAYERS) + 0.5) * WIDTH
         expected = {
-            "ymax": np.array([[WIDTH / 2, H, WIDTH / 2]]),
+            "ymax": np.column_stack([across, np.full(LAYERS, H), np.full(LAYERS, WIDTH / 2)]),
             "xmin": np.column_stack([np.zeros(n), y, mid]),
-            "xmax": np.column_stack([np.full(n, WIDTH), y, mid]),
+            "xmax": np.column_stack([np.full(n, LAYERS * WIDTH), y, mid]),
         }
         for name, zone in document.zones.items():
             centroids = np.array(zone.centroids)
             assert zone.faces == len(expected[name])
-            order = np.argsort(centroids[:, 1])
+            order = np.lexsort((centroids[:, 0], centroids[:, 1]))
             np.testing.assert_allclose(centroids[order], expected[name], rtol=0, atol=1e-15)
             exact = _exact(centroids[:, 1])
             values = np.array(zone.values)
