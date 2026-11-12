@@ -32,6 +32,7 @@
 #include <hdf5.h>
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
+#include <sched.h>
 #include <signal.h>
 #include <spawn.h>
 #include <sys/stat.h>
@@ -58,6 +59,9 @@
 #include "autan/runtime/run.hpp"
 #include "planned.hpp"
 #include "relaxation.hpp"
+#ifdef AUTAN_MPIEXEC
+#include "mpiexec_preflags.hpp"
+#endif
 
 extern char** environ;
 
@@ -3249,6 +3253,17 @@ TEST_CASE("A physics' groups reach it whole on one rank", "[runtime][groups]") {
 #ifdef AUTAN_MPIEXEC
 namespace {
 
+const std::vector<std::string> launcher_flags{AUTAN_MPIEXEC_PREFLAGS};
+
+int usable_cores() {
+#ifdef __linux__
+  cpu_set_t set;
+  CPU_ZERO(&set);
+  if (sched_getaffinity(0, sizeof set, &set) == 0) return CPU_COUNT(&set);
+#endif
+  return static_cast<int>(std::thread::hardware_concurrency());
+}
+
 // The arrays of solution.cgns's WallSolution subregion, by name.
 std::map<std::string, std::vector<double>> wall_solution(const fs::path& file) {
   int fn = 0;
@@ -3412,14 +3427,10 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
   Json with_count = doc;
   if (with_count["devices"]["count"] == 1) with_count["devices"]["count"] = ranks;
   std::ofstream(input_file) << with_count.dump();
-  std::vector<std::string> args{AUTAN_MPIEXEC,
-                                AUTAN_MPIEXEC_NUMPROC_FLAG,
-                                std::to_string(ranks),
-                                AUTAN_RUN_RELAXATION,
-                                "--input",
-                                input_file.string(),
-                                "--runs",
-                                (dir / "runs").string()};
+  std::vector<std::string> args{AUTAN_MPIEXEC, AUTAN_MPIEXEC_NUMPROC_FLAG, std::to_string(ranks)};
+  args.insert(args.end(), launcher_flags.begin(), launcher_flags.end());
+  args.insert(args.end(), {AUTAN_RUN_RELAXATION, "--input", input_file.string(), "--runs",
+                           (dir / "runs").string()});
   args.insert(args.end(), extra_args.begin(), extra_args.end());
   std::vector<char*> argv;
   for (auto& a : args) argv.push_back(a.data());
@@ -3598,6 +3609,37 @@ TEST_CASE("The ranks of a host share its memory", "[runtime][mpi]") {
   REQUIRE(info["diagnostics"].size() == 1);
   CHECK(info["diagnostics"][0]["code"] == "W0712");
   CHECK(info["diagnostics"][0]["data"]["required_bytes"] == ranks * huge);
+}
+
+TEST_CASE(
+    "A run on more ranks than the machine has cores starts through the build's launcher flags",
+    "[runtime][mpi]") {
+  // Open MPI 5 refuses more ranks than slots unless told to oversubscribe; the build's
+  // MPIEXEC_PREFLAGS says it, and the environment must not be what does.
+  if (std::ranges::find(launcher_flags, "--oversubscribe") == launcher_flags.end()) {
+    SKIP("the build's MPIEXEC_PREFLAGS has no --oversubscribe");
+  }
+  const int ranks = usable_cores() + 1;
+  CAPTURE(ranks);
+  if (ranks > autan::io::read_mesh(mesh_path).n_cells()) SKIP("more cores than the mesh has cells");
+  struct Unset {
+    std::vector<std::pair<std::string, std::optional<std::string>>> saved;
+    explicit Unset(std::initializer_list<const char*> names) {
+      for (const char* name : names) {
+        const char* v = std::getenv(name);
+        saved.emplace_back(name, v != nullptr ? std::optional<std::string>(v) : std::nullopt);
+        unsetenv(name);
+      }
+    }
+    ~Unset() {
+      for (const auto& [name, v] : saved) {
+        if (v) setenv(name.c_str(), v->c_str(), 1);
+      }
+    }
+    Unset(const Unset&) = delete;
+    Unset& operator=(const Unset&) = delete;
+  } unset{"PRTE_MCA_rmaps_default_mapping_policy", "OMPI_MCA_rmaps_base_oversubscribe"};
+  CHECK_FALSE(run_on_ranks(input(), ranks, {}).empty());
 }
 
 TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {

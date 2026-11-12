@@ -32,11 +32,14 @@ concurrency:
 env:
   # gpu-tests' configuration, shared by the Spark job and the hosted CPU shards so that both
   # build the same tests.
+  # The build's launcher flags declare oversubscription (as ci.yml's MPI job does): a test that
+  # starts more ranks than the machine has cores goes through them, not through the environment.
   CONFIGURE: >-
     -G Ninja -DAUTAN_ENABLE_CUDA=ON -DAUTAN_ENABLE_MPI=ON
     -DAUTAN_ENABLE_METIS=ON -DAUTAN_ENABLE_SCOTCH=ON -DCMAKE_CUDA_ARCHITECTURES=121
     -DAUTAN_WARNINGS_AS_ERRORS=ON -DCMAKE_BUILD_TYPE=Release
     -DCMAKE_CXX_FLAGS_RELEASE=-O2 -DCMAKE_CUDA_FLAGS_RELEASE=-O2
+    -DMPIEXEC_PREFLAGS=--oversubscribe
 
 jobs:
   # The CPU tests the Spark ran before the GPU tests, on hosted arm64 runners: the same two
@@ -272,6 +275,14 @@ jobs:
         id: scope
         if: github.event_name == 'pull_request'
         run: echo "paths=$(git diff --name-only HEAD^1 HEAD -- | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+      # The cores this job may use, as the kernel sees them inside the runner's container. They come
+      # from the host's AUTAN_RUNNER_CPUSET (docs/infra/runners.md); other work uses the rest.
+      - name: Runner cores
+        run: |
+          echo "nproc: $(nproc)"
+          grep Cpus_allowed_list /proc/self/status
+          f=/sys/fs/cgroup/cpuset.cpus.effective
+          echo "cpuset.cpus.effective: $(cat "$f" 2>/dev/null || echo unreadable)"
       # Optimised (-O2) with NDEBUG left undefined (assertions in dependencies stay on): without
       # a build type the host code was built at -O0, which made the GPU tests' host references
       # ~6x slower (an NS bits test: 89 s here, 14.5 s in a Release build). The CPU Debug job
