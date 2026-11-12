@@ -366,7 +366,17 @@ def _rank(
     # The writer also copies the coordinates and writes 64-bit face and cell connectivity.
     k_global = 2 * interior + boundary
     writer = 24 * nodes + 8 * (max(faces, cells) + 1) + 8 * max(counts.face_nodes, k_global)
-    add("solution output", 2 * 8 * cells * fields + writer, phase="iterations", transient=True)
+    # fp32+acc64's steady first-order start also writes its window, 501 FP64 values (#611).
+    steady = isinstance(spec.time, Steady)
+    window = 8 * 501 if spec.physics.precision == "fp32+acc64" and steady else 0
+    if window:
+        add("first-order start window", window, phase="physics")
+    add(
+        "solution output",
+        2 * 8 * cells * fields + writer + 2 * window,
+        phase="iterations",
+        transient=True,
+    )
     # A start reads the previous solution on every rank, every field for a continuation, the
     # n + 1 primitive fields for a warm start, then takes the rank's share and frees the rest;
     # with them the descriptors its writer wrote, unfiltered, which cg_open holds until close
@@ -382,10 +392,12 @@ def _rank(
         # in a start file (E0707 beyond, before cg_open).
         descriptors += _CGNS_TREE + _CGNS_NODE * _CGNS_NODES_MAX + _CGNS_EAGER
         # The physics takes the rank's share when it is built (runtime.md, PhysicsContext), and the
-        # runtime frees it when the physics' constructor returns.
+        # runtime frees it when the physics' constructor returns. The start's copy and the rank's
+        # owned copy of the window coexist for a moment.
+        start_window = 2 * window if start == "continue" else 0
         add(
             "start",
-            8 * (cells + c) * read + metadata + descriptors,
+            8 * (cells + c) * read + metadata + descriptors + start_window,
             phase="input",
             transient=True,
             last="solver",
@@ -519,7 +531,16 @@ def _rank(
             spec.time.linear_solver, c, fi, block, min(mesh.quality.lines.cells, c), mesh
         )
         add(name, persistent, phase="solver")
-        add(f"{name} setup", solver_setup, phase="solver", transient=True)
+        setup_phase: Phase = "solver"
+        if name == "multigrid" and (ranks > 1 or spec.physics.reproducibility == "ranks"):
+            # The hierarchy is built with the zone groups, before the partition (euler_groups).
+            kept, solver_setup = _partition_hierarchy(
+                mesh, mesh_bytes + geometry, interior, solver_setup
+            )
+            add("partition hierarchy", kept, phase="input")
+            setup_phase = "input"
+            _partition_multigrid(add, mesh, c, fi, n, interior)
+        add(f"{name} setup", solver_setup, phase=setup_phase, transient=True)
         # The steady operator's boundary gradient term (Euler::gradient_tangent): the primitives',
         # the gradients' (linear and the band's) and the limiter bounds' tangents, zero tangents of
         # the other inputs, the band flag's, and the step's copy of the direction and its image
@@ -672,6 +693,65 @@ def _agglomeration(mesh: MeshInfo) -> int:
     coarse_edges = 69 * f + 48 * f1 + 296 * n + 156 * n1 + 144 * b
     colouring = 32 * n + 32 * f
     return max(grouping, coarse_edges, colouring)
+
+
+# The steady CPU multigrid on a partition (several ranks, or reproducibility "ranks"): every
+# rank builds the hierarchy on an RCM copy of the global mesh (docs/design/setup-memory.md,
+# Multigrid on a partition). Returns what it keeps for the run and its setup peak: the copy's
+# renumbering, or the copy beside the build's own peak `build`.
+def _partition_hierarchy(
+    mesh: MeshInfo, mesh_and_geometry: int, interior: int, build: float
+) -> tuple[int, float]:
+    counts = mesh.counts
+    cells, faces, nodes = counts.cells, counts.faces, counts.nodes
+    # The order and its inverse, the face maps, each level-0 node's part, the global level 0 and
+    # each level's parts in the distributed operator; its lines, the run's groups, are the
+    # `line groups` component.
+    kept = 8 * cells + 5 * faces + 4 * cells + 16 * cells + 13 * interior
+    kept += 4 * sum(mesh.quality.multigrid.cells_by_level)
+    # renumber_cells' peak (Renumbering), with point_source's growth (4N more) and assemble's
+    # closure check, 16 B a face-node incidence of the largest cell (at most P).
+    renumbering = 40 * cells + 60 * nodes + 50 * faces + 8 * interior + 24 * counts.face_nodes
+    # The copy: its mesh and geometry, and point_source, grown without reserve (8N).
+    copy = mesh_and_geometry + 8 * nodes
+    return kept, max(renumbering, copy + build)
+
+
+# The rank's distributed multigrid on that hierarchy (setup-memory.md, Multigrid on a partition),
+# over its c cells and ghosts and fi interior faces, n equations: two copies of the finest
+# operator's blocks beside the Jacobian's, PartitionMultigrid's over the owned cells and the
+# distributed operator's over its level-0 graph, which imports the remote children of its
+# agglomerates, so is bounded by the global cells and interior faces only; its maps and
+# vectors; its construction's lookups; and, when the coarsest level is solved densely, the
+# blocks every rank gathers to assemble it at each set_operator.
+def _partition_multigrid(
+    add: Callable[..., None], mesh: MeshInfo, c: int, fi: int, n: int, interior: int
+) -> None:
+    b = n * n
+    cells = mesh.counts.cells
+    owned = 8 * b * c + 16 * b * fi + 8 * c + 9 * fi
+    add(
+        "partition multigrid",
+        owned + 8 * b * cells + 16 * b * interior + 16 * n * cells,
+        phase="solver",
+    )
+    levels = mesh.quality.multigrid
+    add(
+        "partition multigrid setup",
+        16 * c + 56 * fi + 8 * sum(levels.cells_by_level),
+        phase="solver",
+        transient=True,
+    )
+    nc, ec = levels.cells_by_level[-1], levels.edges_by_level[-1]
+    if 5 * nc <= _DENSE_UNKNOWNS:
+        # `mine` (twice, its growth) and `all`, 2 + b values a node and 2 + 2b an edge; the
+        # blocks placed again; the incident edges, 24 B a node and 2 entries of 8 B an edge,
+        # twice for their growth, and the old buffer of the list growing (at most E entries).
+        node = 3 * 8 * (2 + b) + 8 * b + 24
+        edge = 3 * 8 * (2 + 2 * b) + 16 * b + 48
+        add(
+            "multigrid coarsest assembly", node * nc + edge * ec, phase="iterations", transient=True
+        )
 
 
 def _reading(mesh: MeshInfo, interior: int, boundary: int) -> int:

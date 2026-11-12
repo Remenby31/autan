@@ -158,7 +158,11 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str, scale: float = 1.0) 
                 "cells": mesh.n_cells,
                 "long_cells": mesh.n_cells,
             },
-            "multigrid": {"cells_by_level": [mesh.n_cells], "edges_by_level": [mesh.n_interior]},
+            "multigrid": {
+                "order": "rcm",
+                "cells_by_level": [mesh.n_cells],
+                "edges_by_level": [mesh.n_interior],
+            },
         },
     }
     return autan.MeshInfo.from_document(document, autan.Location(file=str(path)))

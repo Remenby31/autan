@@ -679,24 +679,54 @@ needs_mpi = pytest.mark.skipif(
 
 @pytest.mark.mpi
 @needs_mpi
-def test_two_ranks_run_and_stop_through_the_launcher(
-    hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
-) -> None:
-    case, _ = hybrid
-    # mesh-info.md: a run on two ranks is planned with the partition of that run.
+@pytest.mark.usefixtures("hybrid")
+def test_two_ranks_run_and_stop_through_the_launcher(tmp_path: Path) -> None:
+    # The hybrid case's inviscid twin: the physics runs the multigrid on a partition for inviscid
+    # flow only. mesh-info.md: a run on two ranks is planned with the partition of that run, its
+    # multigrid's finest lines kept whole (partition.groups "multigrid") and its hierarchy built on
+    # the mesh in RCM order.
+    (tmp_path / "hybrid.py").write_text(CASE.replace("autan.Laminar()", "autan.Inviscid()"))
+    case = autan.load(tmp_path / "hybrid.py")
+    assert isinstance(case.spec.physics.turbulence, autan.Inviscid)
     assert MESH_INFO is not None
     meshinfo = tmp_path / "hybrid.meshinfo.json"
     meshinfo.write_text(
         subprocess.run(
-            # The ghost stencil the plan expects of the case's physics (vertex3: the case is laminar,
-            # under reproducibility "run").
-            [str(MESH_INFO), "--json", "--ranks", "2", "--ghosts", "vertex3", str(MESH)],
+            [
+                str(MESH_INFO),
+                "--json",
+                "--ranks",
+                "2",
+                "--groups",
+                "multigrid",
+                "--multigrid-order",
+                "rcm",
+                str(MESH),
+            ],
             capture_output=True,
             text=True,
             check=True,
         ).stdout
     )
     mesh = autan.MeshInfo.load(meshinfo)
+    assert mesh.partition is not None
+    assert mesh.partition.groups == "multigrid"
+    # mesh-info.md, partition.groups: the tool's partitions, read through the SDK's schema, plan
+    # the case only with the multigrid's finest lines kept whole; with the line smoother's lines
+    # or none, they are another run's (E0212).
+    for groups in ("none", "lines", "multigrid"):
+        command = [str(MESH_INFO), "--json", "--ranks", "2", "--multigrid-order", "rcm"]
+        if groups != "none":
+            command += ["--groups", groups]
+        other = tmp_path / f"{groups}.meshinfo.json"
+        other.write_text(
+            subprocess.run([*command, str(MESH)], capture_output=True, text=True, check=True).stdout
+        )
+        partitioned = autan.MeshInfo.load(other)
+        assert partitioned.partition is not None
+        assert partitioned.partition.groups == groups
+        codes = {d.code for d in case.plan(partitioned, gpus=2, device_kind="cpu").diagnostics}
+        assert ("E0212" in codes) == (groups != "multigrid"), groups
     devices = autan.Devices(kind="cpu", count=2)
     result = case.run(
         mesh,

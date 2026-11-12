@@ -5,6 +5,7 @@
 #include <limits>
 #include <span>
 #include <utility>
+#include <vector>
 
 #include "autan/runtime/exact_sum.hpp"
 
@@ -25,6 +26,8 @@ class Ranks {
   /// The greatest of `value` over all ranks.
   [[nodiscard]] virtual std::int64_t max(std::int64_t value) = 0;
   [[nodiscard]] virtual double max(double value) = 0;
+  /// Every rank's `values`, concatenated in rank order, on every rank; a rank may give none.
+  [[nodiscard]] virtual std::vector<double> all_gather(std::span<const double> values) = 0;
   /// The least `value` over all ranks and the `id` (>= 0) that goes with it,
   /// the least id among equal values: the same pair on any number of ranks.
   /// NaN counts as +infinity, so it wins only when every value is NaN.
@@ -47,6 +50,9 @@ class OneRank final : public Ranks {
   [[nodiscard]] double min(double value) override { return value; }
   [[nodiscard]] std::int64_t max(std::int64_t value) override { return value; }
   [[nodiscard]] double max(double value) override { return value; }
+  [[nodiscard]] std::vector<double> all_gather(std::span<const double> values) override {
+    return {values.begin(), values.end()};
+  }
 };
 
 }  // namespace autan::runtime
