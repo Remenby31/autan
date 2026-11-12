@@ -91,7 +91,6 @@ Outcome run(const std::vector<Level>& levels, const System& s,
       }
       mg.set_operator(diag, upper, lower);
       std::vector<double> b(5 * n, std::numeric_limits<double>::quiet_NaN()), x(5 * n, 0.0);
-      // A start: every local node, ghosts included, takes its global value.
       if (start != nullptr) {
         for (std::size_t i = 0; i < n; ++i) {
           for (std::size_t c = 0; c < 5; ++c)
@@ -284,6 +283,7 @@ TEST_CASE("a distributed K-cycle and GCR solve repeat their bits on 1 to 4 parts
   host.cycle(s.b, want);
   double size = 0.0;
   for (const double v : want) size = std::max(size, std::abs(v));
+  REQUIRE(std::isfinite(size));
   CHECK(max_diff(one_cycle.x, want) <= 1e-10 * size);
 }
 
@@ -378,6 +378,7 @@ TEST_CASE("a distributed two-level cycle without smoothing applies P (P^T A P)^-
   }
   double size = 0.0;
   for (const double v : want) size = std::max(size, std::abs(v));
+  REQUIRE(std::isfinite(size));
   for (const std::int32_t n_parts : {1, 2, 3, 4}) {
     CAPTURE(n_parts);
     const auto x =

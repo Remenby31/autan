@@ -395,7 +395,6 @@ bool check_parts(const autan::Mesh& mesh, const autan::Geometry& g,
       if (l + 1 < levels.size()) CHECK(same_bits(many.e[l], one.e[l]));
     }
     if (constructed) {
-      // The line's owners, literally, and the controls the cut was built for.
       const Level& c = levels[1];
       for (auto j = at(c.line_offsets[line_cut->first]);
            j < at(c.line_offsets[line_cut->first + 1]); ++j)
