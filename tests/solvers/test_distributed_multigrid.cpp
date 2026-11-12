@@ -183,9 +183,15 @@ TEST_CASE("a distributed V-cycle without scaling is the host multigrid's cycle, 
   // by global edge id, the Galerkin operators, the transfers and the coarsest solve (dense LU, or
   // sweeps when the coarsest level is too large for it).
   const fs::path dir{AUTAN_TEST_MESH_DIR};
-  const char* file = GENERATE("tet-gmsh/tet-gmsh.ascii.msh", "hex/hex.ascii.msh", "poly/polyMesh",
-                              "hybrid/hybrid.ascii.msh");
-  const bool direct = GENERATE(true, false);
+  // The hex mesh's 27 cells fit the dense solve at any coarsening, so it runs with it only.
+  const auto [file, direct] =
+      GENERATE(table<const char*, bool>({{"tet-gmsh/tet-gmsh.ascii.msh", true},
+                                         {"tet-gmsh/tet-gmsh.ascii.msh", false},
+                                         {"hex/hex.ascii.msh", true},
+                                         {"poly/polyMesh", true},
+                                         {"poly/polyMesh", false},
+                                         {"hybrid/hybrid.ascii.msh", true},
+                                         {"hybrid/hybrid.ascii.msh", false}}));
   CAPTURE(file, direct);
   const auto mesh = autan::io::read_mesh(dir / file);
   const auto g = autan::compute_geometry(mesh);
@@ -194,12 +200,11 @@ TEST_CASE("a distributed V-cycle without scaling is the host multigrid's cycle, 
   options.scaling = autan::solvers::Scaling::none;
   options.agglomeration.coarsest_nodes = 4;
   // Without the dense coarsest solve: one level of more than 200 cells, swept as the coarsest
-  // (the reference meshes are too small for a coarse level that large). The hex mesh's 27 cells
-  // fit the dense solve, so that case is skipped.
+  // (the reference meshes are too small for a coarse level that large).
   if (!direct) options.agglomeration.coarsest_nodes = std::size_t{1} << 30;
   autan::solvers::Multigrid host(mesh, g, options);
   const std::vector<Level>& levels = host.levels();
-  if (!direct && host.direct_coarsest()) SKIP("this mesh's coarse level fits the dense solve");
+  REQUIRE(host.direct_coarsest() == direct);
   const System s = make_system(levels[0], 7);
   host.set_operator(s.diag, s.upper, s.lower);
   std::vector<double> want(s.b.size(), 0.0);
