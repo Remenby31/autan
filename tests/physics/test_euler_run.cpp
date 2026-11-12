@@ -2519,8 +2519,11 @@ TEST_CASE("a steady case on several ranks converges to the one-rank solution", "
     check_bit_for_bit(one.run, many);
     if (std::string(linear) == "multigrid") {
       // The mesh's own order on N ranks: the partition and the physics' cells differ from RCM's.
+      // Its MeshInfo counts the lines in that order and the hierarchy in RCM's (mesh-info.md).
       REQUIRE(setenv("AUTAN_CELL_ORDER", "input", 1) == 0);
-      const fs::path read_order = run_on_ranks(input("hybrid.solver-input.json", edit), ranks);
+      const fs::path read_order = run_on_ranks(
+          autan_test::planned(input("hybrid.solver-input.json", edit), mesh_path, "input", "rcm"),
+          ranks);
       unsetenv("AUTAN_CELL_ORDER");
       REQUIRE(!read_order.empty());
       check_bit_for_bit(one.run, read_order);
