@@ -377,7 +377,7 @@ void read_mesh_info(const Json& info, SolverInput& in) {
     invalid(lines.at("cells"), "must hold long_cells <= cells <= counts.cells");
   const Object multigrid(quality.get("multigrid"), quality.at("multigrid"),
                          {"order", "cells_by_level", "edges_by_level"});
-  (void)multigrid.tag("order", {"rcm", "input"});
+  in.mesh_info_multigrid_order = multigrid.tag("order", {"rcm", "input"});
   const Json& level_cells = list(multigrid, "cells_by_level");
   const Json& level_edges = list(multigrid, "edges_by_level");
   if (level_cells.empty() || level_edges.size() != level_cells.size())
