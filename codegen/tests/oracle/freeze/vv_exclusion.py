@@ -107,52 +107,75 @@ def pytest_sessionfinish(session: Any, exitstatus: int) -> None:  # noqa: ARG001
     Path(out).write_text(json.dumps(doc, indent=1))
 
 
+def _hit_text(hit: dict[str, Any]) -> str:
+    return f"{hit['test']} ({hit['kind']} n{hit['n']})"
+
+
 def compare(
     universe: dict[str, Any], candidates: dict[str, Any], manifest: dict[str, Any] | None = None
 ) -> list[str]:
+    """Every issue with the universe against the candidates (and the manifest, when given).
+
+    Fail-closed (#43, 6809100033 and its follow-up approval 6810000919): every expected collision
+    must be a candidate and must collide; given the manifest, it must also be excluded and never an
+    instance. Every instance must name its candidate (n, perturbation, seed) and carry exactly that
+    candidate's mesh file; an instance that collides, by its own file hash or its candidate's mesh
+    hash, fails whether or not it is listed."""
     issues = [f"vv test not passed: {t}" for t in universe["not_passed"]]
     if universe.get("exitstatus") != 0:
         issues.append(f"the vv pytest session exited {universe.get('exitstatus')!r}, not 0")
-    if manifest is not None:
-        known = {c["file_sha256"] for c in candidates["candidates"]}
-        issues += [
-            f"instance {i['id']}: its mesh file is no candidate of the exclusion check"
-            for i in manifest.get("instances", [])
-            if i["files"]["mesh"]["sha256"] not in known
-        ]
     if not universe["records"]:
         issues.append("the vv suite generated no mesh: the universe is empty")
     files = {r["file_sha256"]: r for r in universe["records"] if r["file_sha256"]}
     meshes = {r["mesh_sha256"]: r for r in universe["records"]}
+    cand: dict[tuple[Any, Any, Any], dict[str, Any]] = {}
+    for c in candidates["candidates"]:
+        key = (c["n"], c["perturbation"], c["seed"])
+        if key in cand:
+            issues.append(f"N{key[0]} p{key[1]} s{key[2]} is listed twice among the candidates")
+        cand[key] = c
+    known = {c["file_sha256"] for c in candidates["candidates"]}
     expected = {(c["n"], c["perturbation"], c["seed"]) for c in candidates["expected_collisions"]}
+    for n, p, s in sorted(expected, key=str):
+        if (n, p, s) not in cand:
+            issues.append(f"N{n} p{p} s{s} is listed as an expected collision but is no candidate")
+    inst: set[tuple[Any, Any, Any]] = set()
     if manifest is not None:
-        # An expected collision must be an excluded candidate, never an instance (#43, 6809100033
-        # and its follow-up approval): an instance that collides fails, listed or not.
-        inst = {
-            (i.get("n"), i.get("perturbation"), i.get("seed"))
-            for i in manifest.get("instances", [])
-        }
+        instances = manifest.get("instances")
+        if not instances:
+            issues.append("the manifest has no instance")
+        for i in instances or []:
+            key = (i.get("n"), i.get("perturbation"), i.get("seed"))
+            fsha = i.get("files", {}).get("mesh", {}).get("sha256")
+            c = cand.get(key)
+            if None in key:
+                issues.append(f"instance {i.get('id')}: no n, perturbation or seed")
+            if fsha not in known:
+                issues.append(
+                    f"instance {i.get('id')}: its mesh file is no candidate of the exclusion check"
+                )
+            elif c is None or c["file_sha256"] != fsha:
+                issues.append(
+                    f"instance {i.get('id')}: its mesh file is not that of candidate N{key[0]} p{key[1]} s{key[2]}"
+                )
+            inst.add(key)
+            hit = files.get(fsha) or (meshes.get(c["mesh_sha256"]) if c else None)
+            if hit:
+                issues.append(
+                    f"instance N{key[0]} p{key[1]} s{key[2]} collides with {_hit_text(hit)}"
+                )
         excluded = set(manifest.get("excluded", {}).get("excluded", []))
-        for n, p, s in sorted(expected):
+        for n, p, s in sorted(expected, key=str):
             if (n, p, s) in inst:
                 issues.append(
                     f"N{n} p{p} s{s} is listed as an expected collision but is an instance"
                 )
             if f"N{n} p{p} s{s}" not in excluded:
                 issues.append(f"N{n} p{p} s{s} is listed as an expected collision but not excluded")
-    else:
-        inst = set()
-    for c in candidates["candidates"]:
-        key = (c["n"], c["perturbation"], c["seed"])
+    for key, c in cand.items():
         hit = files.get(c["file_sha256"]) or meshes.get(c["mesh_sha256"])
-        if hit and key in inst:
-            issues.append(
-                f"instance N{key[0]} p{key[1]} s{key[2]} collides with {hit['test']} ({hit['kind']} n{hit['n']})"
-            )
-        elif hit and key not in expected:
-            issues.append(
-                f"N{key[0]} p{key[1]} s{key[2]} collides with {hit['test']} ({hit['kind']} n{hit['n']})"
-            )
+        if hit and key not in expected and key not in inst:
+            issues.append(f"N{key[0]} p{key[1]} s{key[2]} collides with {_hit_text(hit)}")
         if not hit and key in expected:
             issues.append(f"N{key[0]} p{key[1]} s{key[2]} was expected to collide and does not")
     return issues
