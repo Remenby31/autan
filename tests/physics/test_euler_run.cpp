@@ -2212,6 +2212,62 @@ TEST_CASE("Spalart-Allmaras on ranks of which one holds no ghost runs as on one 
   }
 }
 
+TEST_CASE("the conservation check's faces file is one absolute file on every rank",
+          "[euler][mpi]") {
+  // docs/design/euler.md, Conservation check: every rank must see the same values, or the run
+  // fails at setup (E0704, results.md). A wrapper, run from the test's directory, gives each rank
+  // AUTAN_CONSERVATION_FACES from its own MPI rank: a file per rank is refused before any step; one
+  // relative name for all starts, and its start event names the file absolutely.
+  const Json doc = input("hybrid.solver-input.json", [](Json& d) {
+    inviscid_along_x(d, "fp64");
+    d["time"]["max_iterations"] = 1;
+  });
+  fs::path dir =
+      fs::temp_directory_path() / ("autan_faces-" + std::to_string(std::random_device()()));
+  fs::create_directories(dir);
+  dir = fs::canonical(dir);
+  const auto wrapper = [&](const std::string& name, const std::string& file) {
+    const fs::path script = dir / name;
+    std::ofstream(script) << "#!/bin/sh\nrank=${OMPI_COMM_WORLD_RANK:-${PMI_RANK:-0}}\ncd '"
+                          << dir.string() << "' || exit 9\nAUTAN_CONSERVATION_FACES=\"" << file
+                          << "\" exec " << AUTAN_RUN << " \"$@\"\n";
+    fs::permissions(script, fs::perms::owner_all);
+    return script.string();
+  };
+  setenv("AUTAN_CONSERVATION", "1", 1);
+  std::string err;
+  const fs::path refused =
+      run_on_ranks(doc, 2, -1, &err, wrapper("per-rank.sh", "faces-${rank}.csv"));
+  INFO(err);
+  REQUIRE(!refused.empty());
+  const Json info = Json::parse(read(refused / "run.json"));
+  CHECK(info["status"] == "failed");
+  CHECK(info["iterations"] == 0);
+  bool e0704 = false, conservation = false;
+  std::ifstream refused_log(refused / "log.jsonl");
+  for (std::string line; std::getline(refused_log, line);) {
+    const Json event = Json::parse(line);
+    e0704 = e0704 || event["code"] == "E0704";
+    conservation = conservation || event["message"] == "conservation";
+  }
+  CHECK(e0704);
+  CHECK_FALSE(conservation);
+  CHECK(!fs::exists(dir / "faces-0.csv"));
+  CHECK(!fs::exists(dir / "faces-1.csv"));
+  const fs::path started = run_on_ranks(doc, 2, 0, &err, wrapper("shared.sh", "faces.csv"));
+  unsetenv("AUTAN_CONSERVATION");
+  REQUIRE(!started.empty());
+  std::string named;
+  std::ifstream log_in(started / "log.jsonl");
+  for (std::string line; std::getline(log_in, line);) {
+    const Json event = Json::parse(line);
+    if (event["message"] == "conservation" && event["data"].contains("faces_file"))
+      named = event["data"]["faces_file"].get<std::string>();
+  }
+  CHECK(named == (dir / "faces.csv").string());
+  CHECK(fs::exists(dir / "faces.csv"));
+}
+
 TEST_CASE("ranks that disagree on planar faces all run the full loops", "[euler][mpi]") {
   // A box of hexahedra with one interior node moved along z, in the part that autan-run's
   // partition gives rank 1 and away from rank 0's ghost layers: rank 0's faces are all planar,

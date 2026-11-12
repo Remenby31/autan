@@ -25,9 +25,11 @@ class LevelCollective : public LevelExchange {
 
 /// The agglomeration multigrid of docs/design/multigrid.md on one rank's share of a partition
 /// (#259 D2): Multigrid's cycle, smoother and coarsest solve over DistributedOperator's levels.
-/// - Lines are whole on one rank (level_parts) and swept in the global line colours, with a
-///   forward exchange before the first colour and after each one; every coupling sums its edges
-///   by global id, so a sweep is Multigrid's, bit for bit, on any number of parts.
+/// - Each line is swept on one rank, in the global line colours, with a forward exchange before
+///   the first colour and after each one; every coupling sums its edges by global id, so a sweep
+///   is Multigrid's, bit for bit, on any number of parts. level_parts keeps the coarse levels'
+///   lines whole; the finest level's are whole only if `cell_parts` keeps them so, which the
+///   caller ensures (the runtime partitions with the multigrid's finest lines as groups).
 /// - The coarsest level, when Multigrid factors it densely, is gathered on every rank in global
 ///   node order and solved by the same dense LU.
 /// - The K-cycle's and the Galerkin scaling's inner products are LevelCollective sums, so they
@@ -36,9 +38,12 @@ class LevelCollective : public LevelExchange {
 /// Vectors are structure of arrays over a level's local nodes (DistributedOperator).
 class DistributedMultigrid {
  public:
+  /// Keeps a reference to `levels`, which must outlive the multigrid.
   DistributedMultigrid(const std::vector<Level>& levels, std::span<const std::int32_t> cell_parts,
                        std::int32_t n_parts, std::int32_t rank, LevelCollective& collective,
                        const MultigridOptions& options = {});
+  DistributedMultigrid(const std::vector<Level>&&, std::span<const std::int32_t>, std::int32_t,
+                       std::int32_t, LevelCollective&, const MultigridOptions& = {}) = delete;
   ~DistributedMultigrid();
   DistributedMultigrid(const DistributedMultigrid&) = delete;
   DistributedMultigrid& operator=(const DistributedMultigrid&) = delete;

@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -1691,17 +1692,27 @@ class EulerPhysics final : public runtime::Physics {
     const double has_point = point != nullptr ? 1.0 : 0.0;
     const double has_file = file != nullptr && *file != '\0' ? 1.0 : 0.0;
     const double readable = point == nullptr || parsed ? 1.0 : 0.0;
-    std::array<double, 6> spread{ctx_.ranks.max(has_point) - ctx_.ranks.min(has_point),
+    // The file, as an absolute path, agreed through its FNV-1a hash's two 32-bit halves, each
+    // exact in a double.
+    const std::string absolute =
+        has_file > 0.0 ? std::filesystem::absolute(file).string() : std::string();
+    std::uint64_t hash = 14695981039346656037ULL;
+    for (const unsigned char c : absolute) hash = (hash ^ c) * 1099511628211ULL;
+    const std::array<double, 2> halves{static_cast<double>(hash >> 32),
+                                       static_cast<double>(hash & 0xffffffffULL)};
+    std::array<double, 8> spread{ctx_.ranks.max(has_point) - ctx_.ranks.min(has_point),
                                  ctx_.ranks.max(has_file) - ctx_.ranks.min(has_file),
                                  1.0 - ctx_.ranks.min(readable)};
     for (std::size_t a = 0; a < 3; ++a) spread[3 + a] = ctx_.ranks.max(p[a]) - ctx_.ranks.min(p[a]);
+    for (std::size_t a = 0; a < 2; ++a)
+      spread[6 + a] = ctx_.ranks.max(halves[a]) - ctx_.ranks.min(halves[a]);
     if (std::ranges::any_of(spread, [](double v) { return v != 0.0; })) {
       throw std::invalid_argument(
           "AUTAN_CONSERVATION_FACE (a point x,y,z) and AUTAN_CONSERVATION_FACES must be the same "
           "on every rank");
     }
     if (has_point > 0.0) selected_at_ = p;
-    if (has_file > 0.0) faces_file_ = file;
+    if (has_file > 0.0) faces_file_ = absolute;
     conservation_ = true;
     const auto bytes = (5 * n_ + 5 * static_cast<std::size_t>(mesh.n_faces())) * sizeof(Res);
     ctx_.log.write(

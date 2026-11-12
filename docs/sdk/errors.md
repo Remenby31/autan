@@ -296,7 +296,7 @@ Fix: Give each group one entry.
 
 **Invalid partition request** (error)
 
-A part count, rank, part index or cell weight is out of range, a group of cells weighs more than 2^31 - 1 in total on two parts or more, or an array has the wrong size.
+A part count, rank, part index or cell weight is out of range, a group of cells weighs more than 2^31 - 1 in total on two parts or more, an array has the wrong size, a graph level repeats a global id, or a halo message or all-gather exceeds MPI's int count range.
 
 Fix: Ask for 1 to N parts (N = number of cells), one rank per part, and a weight of at least 1 per cell.
 
