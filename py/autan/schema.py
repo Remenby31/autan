@@ -246,12 +246,14 @@ def _air() -> IdealGas:
 
 
 class Compressible(Spec):
-    """Density-based compressible flow; ``gas`` is the default medium of fluid zones."""
+    """Density-based compressible flow; ``gas`` is the default medium of fluid zones, ``flux``
+    the convective flux: Roe, HLLC or AUSM+-up."""
 
     kind: Literal["compressible"] = "compressible"
     turbulence: Turbulence
     precision: Precision = "fp32+acc64"
     reproducibility: Reproducibility = "run"
+    flux: Literal["roe", "hllc", "ausm+up"] = "roe"
     gas: IdealGas = Field(default_factory=_air)
 
 
@@ -312,7 +314,10 @@ class Steady(Spec):
     ``max_iterations`` iterations; an implicit physics solves each step's linear system with
     ``linear_solver``. ``coupled_turbulence`` solves the flow and the SA variable together in
     each step (validated on the TMR flat plate only); ``matrix_free`` applies the laminar
-    step's Jacobian without assembling it (validated on the TMR laminar flat plate only)."""
+    step's Jacobian without assembling it (validated on the TMR laminar flat plate only).
+    ``start_order = "second"`` skips the first-order start: for a run started from a converged
+    field (``warm`` or ``initial_state``), whose first steps the first-order start would move
+    away from its solution."""
 
     kind: Literal["steady"] = "steady"
     max_iterations: Count = 10000
@@ -320,6 +325,7 @@ class Steady(Spec):
     linear_solver: Literal["multigrid", "gauss-seidel", "lines"] = "multigrid"
     coupled_turbulence: Annotated[bool, Field(strict=True)] = False
     matrix_free: Annotated[bool, Field(strict=True)] = False
+    start_order: Literal["first", "second"] = "first"
     checkpoint: Checkpoint = Field(default_factory=_default_checkpoint)
 
 

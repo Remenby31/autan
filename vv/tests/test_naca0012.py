@@ -1,7 +1,10 @@
 """NACA 0012 of Vassberg and Jameson (2010): geometry and O-meshes against the paper, force gates
 against the paper's own grid sequences (J. Aircraft 47(4):1152-1166, doi:10.2514/1.46737)."""
 
+import hashlib
 import math
+import time
+from dataclasses import replace
 from pathlib import Path
 
 import autan
@@ -200,8 +203,7 @@ def test_gates_on_the_papers_flo82_sequences() -> None:
         },
     )
     estimates = cases.continuum(transonic_lift)
-    for name in ("naca0012-m080-a125-cl", "naca0012-m080-a125-cd"):
-        assert cases.check(cases.GATES[name], transonic_lift, estimates)["pass"]
+    assert cases.check(cases.GATES["naca0012-m080-a125-cd"], transonic_lift, estimates)["pass"]
     nonlifting = _levels(FLO82_TRANSONIC, {"cd": [0.008338967, 0.008341760, 0.008342211]})
     gate = cases.GATES["naca0012-m080-a000-cd"]
     assert cases.check(gate, nonlifting, cases.continuum(nonlifting))["pass"]
@@ -222,14 +224,124 @@ def test_gates_on_the_papers_flo82_sequences() -> None:
     assert not cases.check(gate, full, cases.continuum(full))["pass"]
 
 
+LIFT = cases.GATES["naca0012-m080-a125-cl"]
+
+
+def _triplet(fine: float, eps21: float, order: float) -> tuple[list[float], list[float]]:
+    """h and values of 2048², 1024², 512² with f2 - f1 = eps21 and (f3 - f2)/(f2 - f1) = 2^order."""
+    f2 = fine + eps21
+    return [1 / 2048, 1 / 1024, 1 / 512], [fine, f2, f2 + eps21 * 2.0**order]
+
+
+def test_lift_interval_on_flo82s_triplet() -> None:
+    # Table 3: FLO82's three finest CL extrapolate to 0.356208937 at order 1.151, inside rule 2's
+    # range, so Fs = 1.25 and no cap; U is then the fine-grid GCI of Celik et al.'s eq. 7.
+    f1, f2, f3 = 0.357142338, 0.358281928, 0.360812844  # 4096², 2048², 1024²
+    p = math.log2((f3 - f2) / (f2 - f1))
+    u = 1.25 * abs(f2 - f1) / (2.0**p - 1.0)
+    verdict = cases.lift_interval(LIFT, [1 / 4096, 1 / 2048, 1 / 1024], [f1, f2, f3])
+    assert verdict["order"] == pytest.approx(1.151, abs=1e-3)
+    assert verdict["safety_factor"] == 1.25
+    assert verdict["value"] == pytest.approx(0.356208937, abs=2e-9)
+    assert verdict["uncertainty"] == pytest.approx(u, rel=1e-12)
+    assert verdict["pass"]
+
+
+@pytest.mark.parametrize(
+    ("order", "safety"), [(0.5001, 1.25), (0.4999, 3.0), (2.4999, 1.25), (2.5001, 3.0), (3.0, 3.0)]
+)
+def test_lift_interval_caps_the_order_at_two_and_widens_outside_its_range(
+    order: float, safety: float
+) -> None:
+    h, values = _triplet(0.352, -1e-4, order)
+    p_eff = min(order, 2.0)
+    verdict = cases.lift_interval(LIFT, h, values)
+    assert verdict["order"] == pytest.approx(order, abs=1e-9)
+    assert verdict["effective_order"] == pytest.approx(p_eff, abs=1e-9)
+    assert verdict["safety_factor"] == safety
+    assert verdict["value"] == pytest.approx(0.352 + 1e-4 / (2.0**p_eff - 1.0), rel=1e-12)
+    assert verdict["uncertainty"] == pytest.approx(safety * 1e-4 / (2.0**p_eff - 1.0), rel=1e-9)
+
+
+def test_lift_interval_fails_an_uncertainty_above_half_the_four_code_range() -> None:
+    # ADR 0004, Consequences: at p = 0.3, Fs = 3.0 makes U about 13 |eps21|. Centred in the range,
+    # the interval overlaps it whatever U, so only the ceiling fails it.
+    centre = (0.348226045 + 0.356208937) / 2.0
+    for eps21, passes in ((-0.003991446 / 13.1, True), (-0.003991446 / 12.9, False)):
+        h, values = _triplet(centre + eps21 / (2.0**0.3 - 1.0), eps21, 0.3)
+        verdict = cases.lift_interval(LIFT, h, values)
+        assert verdict["uncertainty"] / abs(eps21) == pytest.approx(3.0 / (2.0**0.3 - 1.0))
+        assert verdict["pass"] is passes
+
+
+@pytest.mark.parametrize("edge", ["upper", "lower"])
+def test_lift_interval_passes_an_overlap_at_either_edge_of_the_range(edge: str) -> None:
+    # Order 2: Fs = 1.25, CL∞ = f1 - eps21/3 and U = 1.25 |eps21| / 3 = 1.25e-3.
+    eps21, u = -3e-3, 1.25e-3
+    for offset, passes in ((-1e-9, True), (1e-9, False)):
+        value = 0.356208937 + u + offset if edge == "upper" else 0.348226045 - u - offset
+        h, values = _triplet(value + eps21 / 3.0, eps21, 2.0)
+        verdict = cases.lift_interval(LIFT, h, values)
+        assert verdict["uncertainty"] == pytest.approx(u, rel=1e-9)
+        assert verdict["pass"] is passes, (edge, offset)
+
+
+@pytest.mark.parametrize(
+    ("values", "code"),
+    [
+        ([0.3580, 0.3577, 0.3582], "V0107"),  # not monotone
+        ([0.3580, 0.3580, 0.3582], "V0106"),  # two equal values
+        ([0.3580, 0.3582, 0.3583], "V0108"),  # differences growing under refinement
+    ],
+)
+def test_lift_interval_fails_a_triplet_with_no_continuum(values: list[float], code: str) -> None:
+    verdict = cases.lift_interval(LIFT, [1 / 2048, 1 / 1024, 1 / 512], values)
+    assert not verdict["pass"]
+    assert code in verdict["reason"]
+
+
+def test_lift_gate_needs_the_four_levels_and_reports_the_gap_to_flo82() -> None:
+    cl = [0.3602690, 0.3582398, 0.3577427, 0.3581995]
+    verdict = cases.check(LIFT, _levels([256, 512, 1024, 2048], {"cl": cl}), {})
+    assert verdict["pass"] is False
+    assert "V0107" in verdict["reason"]  # the four levels are there; the triplet is not monotone
+    # Rule 5, beside the other codes' gaps of the ADR's table (Tables 9, 8, 5).
+    assert verdict["gap_to_flo82"]["1024"] == pytest.approx(
+        {
+            "autan": 0.3577427 - 0.360812844,
+            "cfl3d-vortex": -0.001640376,
+            "cfl3d": -0.004869133,
+            "overflow": -0.007571132,
+        }
+    )
+    assert verdict["gap_to_flo82"]["2048"]["autan"] == pytest.approx(0.3581995 - 0.358281928)
+    # Order 3 on 512²-2048²: the cap and Fs = 3.0 give CL∞ = f1 - eps21/3 and U = |eps21|.
+    _, values = _triplet(0.354, -1e-4, 3.0)
+    family = _levels([256, 512, 1024, 2048], {"cl": [values[2] + 2e-4, *values[::-1]]})
+    verdict = cases.check(LIFT, family, {})
+    assert verdict["value"] == pytest.approx(0.354 + 1e-4 / 3.0, rel=1e-12)
+    assert verdict["uncertainty"] == pytest.approx(1e-4, rel=1e-9)
+    assert verdict["pass"]
+    for nc in ([128, 256, 512, 1024], [512, 1024, 2048], [256, 512, 1024, 2048, 2048]):
+        verdict = cases.check(LIFT, _levels(nc, {"cl": [0.35] * len(nc)}), {})
+        assert not verdict["pass"]
+        assert "levels" in verdict["reason"]
+    # A count of 256² + 1 cells is not the level NC = 256.
+    off = [replace(lv, n_cells=lv.n_cells + 1) if lv.n_cells == 256 * 256 else lv for lv in family]
+    assert "levels" in cases.check(LIFT, off, {})["reason"]
+
+
 def test_every_gate_is_stated_in_acceptance_md() -> None:
     text = (Path(__file__).parents[2] / "docs/validation/acceptance.md").read_text()
     for gate in cases.GATES.values():
         row = next((line for line in text.splitlines() if f"`{gate.id}`" in line), None)
         assert row is not None, gate.id
-        for value in (gate.target, gate.lower, gate.upper):
+        stated: tuple[float, ...] = (gate.target, gate.lower, gate.upper)
+        if gate.measure == "interval":
+            stated += (gate.tolerance,)
+        for value in stated:
             if value:
-                assert f"{value:g}" in row, gate.id
+                assert repr(value) in row, gate.id
 
 
 def test_study_reads_a_family_of_runs(tmp_path: Path) -> None:
@@ -292,6 +404,27 @@ def test_lifting_cases_carry_the_point_vortex_of_the_flo82_references() -> None:
             assert [float(v.to("m").magnitude) for v in vortex.center] == [0.25, 0.0, 0.0]
 
 
+def test_a_returned_map_is_the_callers_own() -> None:
+    # The construction common to every level is computed once (#536); a caller changing the map it
+    # gets back must not change the next grid.
+    z, kt = naca0012.plane_grid(8)
+    kt.power = 3.0
+    again, _ = naca0012.plane_grid(8)
+    np.testing.assert_array_equal(again, z)
+
+
+def test_level_32_has_the_same_bytes_on_every_cpu(tmp_path: Path) -> None:
+    # #536: the generator's bytes depend on its inputs only, not on the CPU or its C library. These
+    # sha256 were measured identical on x86-64 and aarch64 Linux and on macOS arm64.
+    points, _, _ = naca0012.grid(32)
+    path = tmp_path / "naca0012-n0032.msh"
+    naca0012.generate_level(32, path)
+    sha_points = hashlib.sha256(points.astype("<f8").tobytes()).hexdigest()
+    assert sha_points == "4e28523064d606127db1d4aaeab13114c40ce60cc46adb5a57baf38c2da30520"
+    sha_file = hashlib.sha256(path.read_bytes()).hexdigest()
+    assert sha_file == "3b7ab3cd0e7226becb202b2f324c5adc30d75f15a2ed4cfc5e0350fa13f3fee3"
+
+
 @pytest.mark.parametrize("nc", [8, 64])
 def test_python_writer_writes_the_file_gmsh_writes(nc: int, tmp_path: Path) -> None:
     # The NACA 0012 levels are written without Gmsh (no linux-aarch64 build): the file must be the
@@ -310,7 +443,73 @@ def test_python_writer_writes_the_file_gmsh_writes(nc: int, tmp_path: Path) -> N
         families._write_msh(gmsh, points, cells, boundary, theirs)
     finally:
         gmsh.finalize()
-    assert ours.read_bytes() == theirs.read_bytes()
+    assert_same_file(ours, theirs)
+
+
+def assert_same_file(ours: Path, theirs: Path, shown: int = 3) -> None:
+    """Fail unless the two files hold the same bytes, naming their sha256 and first differing lines.
+
+    The bytes are never compared in an assert: pytest would explain the mismatch with difflib,
+    which takes minutes on files of this size when CI=true turns its truncation off.
+    """
+    a, b = ours.read_bytes(), theirs.read_bytes()
+    if a == b:
+        return
+    lines_a, lines_b = a.splitlines(keepends=True), b.splitlines(keepends=True)
+    differ = [
+        k
+        for k in range(max(len(lines_a), len(lines_b)))
+        if k >= len(lines_a) or k >= len(lines_b) or lines_a[k] != lines_b[k]
+    ]
+    first = [
+        f"  line {k + 1}: {lines_a[k] if k < len(lines_a) else b'<none>'!r}"
+        f" != {lines_b[k] if k < len(lines_b) else b'<none>'!r}"
+        for k in differ[:shown]
+    ]
+    msg = (
+        f"{ours.name} (sha256 {hashlib.sha256(a).hexdigest()}, {len(lines_a)} lines) and "
+        f"{theirs.name} (sha256 {hashlib.sha256(b).hexdigest()}, {len(lines_b)} lines) "
+        f"differ on {len(differ)} lines, first:\n" + "\n".join(first)
+    )
+    raise AssertionError(msg)
+
+
+def test_a_different_file_is_reported_in_seconds(tmp_path: Path) -> None:
+    # Level 32 against a copy whose coordinates differ in their last digit, as another platform's
+    # would (#532): the failure names both sha256 and the first differing lines, in seconds. A
+    # plain == of the bytes would have pytest diff 183 KB with difflib, past the job's timeout,
+    # whenever CI=true turns its truncation off.
+    ours = tmp_path / "ours.msh"
+    naca0012.generate_level(32, ours)
+    lines = ours.read_text().splitlines(keepends=True)
+    start = lines.index("$Nodes\n")
+    for k in range(start + 1, lines.index("$EndNodes\n")):
+        if lines[k].count(" ") == 2:  # a node's coordinates
+            last = lines[k].rstrip("\n")[-1]
+            lines[k] = lines[k].rstrip("\n")[:-1] + ("1" if last != "1" else "2") + "\n"
+    theirs = tmp_path / "theirs.msh"
+    theirs.write_text("".join(lines))
+    original = ours.read_text().splitlines(keepends=True)
+    first = next(k for k, (a, b) in enumerate(zip(original, lines, strict=True)) if a != b)
+    begin = time.perf_counter()
+    with pytest.raises(AssertionError) as err:
+        assert_same_file(ours, theirs)
+    seconds = time.perf_counter() - begin
+    message = str(err.value)
+    assert seconds < 5.0, seconds
+    assert hashlib.sha256(ours.read_bytes()).hexdigest() in message
+    assert hashlib.sha256(theirs.read_bytes()).hexdigest() in message
+    assert f"line {first + 1}:" in message
+
+
+def test_a_difference_in_line_endings_only_is_shown(tmp_path: Path) -> None:
+    ours, theirs = tmp_path / "ours.msh", tmp_path / "theirs.msh"
+    ours.write_bytes(b"$MeshFormat\n4.1 0 8\n")
+    theirs.write_bytes(b"$MeshFormat\r\n4.1 0 8\n")
+    with pytest.raises(AssertionError) as err:
+        assert_same_file(ours, theirs)
+    assert "differ on 1 lines" in str(err.value)
+    assert "line 1:" in str(err.value)
 
 
 def test_python_writer_refuses_what_it_does_not_reproduce(tmp_path: Path) -> None:

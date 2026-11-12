@@ -533,35 +533,41 @@ CellStencil cell_stencil(const Mesh& mesh, const PackedGeometry& g, StencilKind 
     }
     // Cells by (global id, translation), else index; then boundary faces by global id, else
     // index. A periodic image shares its cell's global id: its translation tells them apart.
+    auto shift_of = [&](index_t i) {
+      std::array<double, 3> t{};
+      const auto owned = static_cast<index_t>(n_owned);
+      if (i >= owned && !keys->shift.empty()) {
+        t = keys->shift[static_cast<std::size_t>(i - owned)];
+      }
+      return t;
+    };
     auto by_cell = [&](index_t a, index_t b) {
       if (keys == nullptr || keys->cell.empty()) {
         return a < b;
       }
       auto key = [&](index_t i) {
-        std::array<double, 3> t{};
-        const auto owned = static_cast<index_t>(n_owned);
-        if (i >= owned && !keys->shift.empty()) {
-          t = keys->shift[static_cast<std::size_t>(i - owned)];
-        }
-        return std::make_pair(keys->cell[static_cast<std::size_t>(i)], t);
+        return std::make_pair(keys->cell[static_cast<std::size_t>(i)], shift_of(i));
       };
       const auto ka = key(a);
       const auto kb = key(b);
       return ka != kb ? ka < kb : a < b;
     };
-    auto by = [](std::span<const std::int64_t> key) {
-      return [key](index_t a, index_t b) {
-        if (key.empty()) {
-          return a < b;
-        }
-        const auto ka = key[static_cast<std::size_t>(a)];
-        const auto kb = key[static_cast<std::size_t>(b)];
-        return ka != kb ? ka < kb : a < b;
+    // A boundary face of a periodic image shares its face's global id: its cell's translation
+    // tells them apart.
+    auto by_face = [&](index_t a, index_t b) {
+      if (keys == nullptr || keys->face.empty()) {
+        return a < b;
+      }
+      auto key = [&](index_t f) {
+        return std::make_pair(keys->face[static_cast<std::size_t>(f)],
+                              shift_of(own[static_cast<std::size_t>(f)]));
       };
+      const auto ka = key(a);
+      const auto kb = key(b);
+      return ka != kb ? ka < kb : a < b;
     };
     std::sort(cells.begin(), cells.end(), by_cell);
-    std::sort(bfaces.begin(), bfaces.end(),
-              by(keys != nullptr ? keys->face : std::span<const std::int64_t>{}));
+    std::sort(bfaces.begin(), bfaces.end(), by_face);
     st.entries.insert(st.entries.end(), cells.begin(), cells.end());
     for (const index_t f : bfaces) {
       st.entries.push_back(-f - 1);

@@ -81,11 +81,32 @@ def test_the_shipped_runtime_reports_missing_physics(
     case.physics = autan.Compressible(turbulence=autan.SST())  # no runtime ships SST yet
     with pytest.raises(autan.CaseError) as error:
         case.run(mesh, backend=autan.SolverBackend(executable=RUNTIME), runs=tmp_path / "runs")
-    [found] = error.value.diagnostics
+    # solver-input.md, exit 2: the warnings written before the refusal (W0713 on a host whose
+    # memory cgroup the runtime cannot read), then the error that refused the run, last.
+    *warnings, found = error.value.diagnostics
+    assert {w.code for w in warnings} <= {"W0712", "W0713"}
     assert found.code == "E0706"
     assert found.fix
     assert found.doc.endswith("#e0706")
     assert not any((tmp_path / "runs").iterdir())
+    # The same order from any host: the SDK reports each line, the warning then the error.
+    lines = [
+        {
+            "code": code,
+            "severity": severity,
+            "message": f"{code} from the runtime",
+            "location": {"path": path},
+            "data": {"path": path},
+            "fix": "",
+            "doc": f"https://remenby31.github.io/autan/sdk/errors/#{code.lower()}",
+        }
+        for code, severity, path in (("W0713", "warning", ""), ("E0706", "error", "physics"))
+    ]
+    printed = "; ".join(f"printf '%s\\n' '{json.dumps(line)}' >&2" for line in lines)
+    refusing = _wrapper(tmp_path, f"{printed}; exit 2")
+    with pytest.raises(autan.CaseError) as error:
+        case.run(mesh, backend=autan.SolverBackend(executable=refusing), runs=tmp_path / "runs")
+    assert [d.code for d in error.value.diagnostics] == ["W0713", "E0706"]
 
 
 @pytest.mark.parametrize("linear_solver", ["multigrid", "gauss-seidel", "lines"])
@@ -381,6 +402,41 @@ def _killed(
     return run_dir
 
 
+def test_a_warm_start_through_the_runtime_stops_on_its_source_reference_and_continues(
+    hybrid: tuple[autan.Case, autan.MeshInfo], tmp_path: Path
+) -> None:
+    # case-schema.md#time: a steady warm start from a steady run takes the source's reference,
+    # records it, and a continuation of the warm run repeats the uninterrupted warm run.
+    _, mesh = hybrid
+
+    def case(budget: int, mach: str) -> autan.Case:
+        path = tmp_path / f"m{mach}-{budget}.py"
+        body = CASE.replace("mach=0.2,", f"mach={mach},")
+        path.write_text(body + f"case.time = autan.Steady(max_iterations={budget})\n")
+        return autan.load(path)
+
+    backend = autan.SolverBackend(executable=RELAXATION)
+    source = case(10, "0.2").run(mesh, backend=backend, runs=tmp_path / "source")
+    reference = json.loads((source.path / "history.jsonl").read_text().splitlines()[0])
+    whole = case(10000, "0.25").run(
+        mesh, backend=backend, runs=tmp_path / "whole", start=source, mode="warm"
+    )
+    part = case(5, "0.25").run(
+        mesh, backend=backend, runs=tmp_path / "parts", start=source, mode="warm"
+    )
+    rest = case(10000, "0.25").run(mesh, backend=backend, runs=tmp_path / "parts", start=part)
+    for run in (whole.run, part.run, rest.run):
+        assert run.start is not None
+        assert run.start.residual_reference == reference["residuals"]
+
+    def lines(result: autan.Results) -> list[str]:
+        return (result.path / "history.jsonl").read_text().splitlines()
+
+    assert whole.run.status == "converged"
+    assert lines(part) + lines(rest) == lines(whole)
+    assert rest.field("Density").tobytes() == whole.field("Density").tobytes()
+
+
 @pytest.mark.usefixtures("hybrid")
 def test_a_killed_run_continues_from_its_last_checkpoint(tmp_path: Path) -> None:
     # results.md#checkpointcgns: a run killed between two checkpoints continues from the last
@@ -512,6 +568,9 @@ def _box(
                 "--json",
                 "--scale",
                 str(metres_per(ureg.Unit(mesh_unit))),
+                # The ghost stencil the plan expects of the case's physics (vertex3 when viscous,
+                # under reproducibility "run").
+                *(() if turbulence == "Inviscid" else ("--ghosts", "vertex3")),
                 str(PERIODIC_BOX),
             ],
             capture_output=True,
@@ -629,7 +688,9 @@ def test_two_ranks_run_and_stop_through_the_launcher(
     meshinfo = tmp_path / "hybrid.meshinfo.json"
     meshinfo.write_text(
         subprocess.run(
-            [str(MESH_INFO), "--json", "--ranks", "2", str(MESH)],
+            # The ghost stencil the plan expects of the case's physics (vertex3: the case is laminar,
+            # under reproducibility "run").
+            [str(MESH_INFO), "--json", "--ranks", "2", "--ghosts", "vertex3", str(MESH)],
             capture_output=True,
             text=True,
             check=True,
@@ -679,6 +740,39 @@ def test_two_ranks_run_and_stop_through_the_launcher(
     stopped = autan.Results.open(run_dir)
     assert stopped.run.status == "stopped"
     assert stopped.field("Density").size == mesh.counts.cells  # the solution was written
+
+
+@pytest.mark.mpi
+@needs_mpi
+@pytest.mark.parametrize(("reproducibility", "ghosts"), [("run", "vertex3"), ("ranks", "vertex4")])
+def test_navier_stokes_runs_on_two_ranks_with_the_ghosts_its_mode_declares(
+    reproducibility: str, ghosts: str, tmp_path: Path
+) -> None:
+    # mesh-info.md: the partition of a laminar run on two ranks holds the ghosts its mode declares,
+    # vertex3 outside reproducibility "ranks" and vertex4 under it; the real autan-mesh-info writes
+    # it and the shipped runtime runs the case on it.
+    assert MESH_INFO is not None
+    assert RUNTIME is not None
+    path = tmp_path / "hybrid.py"
+    path.write_text(
+        CASE.replace("autan.Laminar())", f"autan.Laminar(), reproducibility={reproducibility!r})")
+        + "case.time = autan.Steady(max_iterations=5, linear_solver='gauss-seidel')\n"
+    )
+    meshinfo = tmp_path / "hybrid.meshinfo.json"
+    meshinfo.write_text(
+        subprocess.run(
+            [str(MESH_INFO), "--json", "--ranks", "2", "--ghosts", ghosts, str(MESH)],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    )
+    result = autan.load(path).run(
+        autan.MeshInfo.load(meshinfo),
+        backend=autan.SolverBackend(devices=autan.Devices(kind="cpu", count=2), executable=RUNTIME),
+        runs=tmp_path / "runs",
+    )
+    assert (result.run.status, result.run.devices.count) == ("completed", 2)
 
 
 HEX = ROOT / "tests" / "data" / "mesh" / "hex" / "polyMesh"

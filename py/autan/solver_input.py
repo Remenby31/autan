@@ -195,6 +195,14 @@ class TurbulenceInput(_Strict):
 class PhysicsInput(_Strict):
     kind: Literal["compressible", "incompressible"]
     turbulence: TurbulenceInput
+    flux: Literal["roe", "hllc", "ausm+up"] | None
+
+    @model_validator(mode="after")
+    def _flux_of_compressible_flow(self) -> Self:
+        if (self.flux is None) == (self.kind == "compressible"):
+            msg = "flux is given exactly for compressible physics"
+            raise ValueError(msg)
+        return self
 
 
 class FreestreamInput(_Strict):
@@ -316,6 +324,7 @@ class SteadyInput(_Strict):
     linear_solver: Literal["multigrid", "gauss-seidel", "lines"]
     coupled_turbulence: Annotated[bool, Field(strict=True)]
     matrix_free: Annotated[bool, Field(strict=True)]
+    start_order: Literal["first", "second"]
     checkpoint: CheckpointInput
 
 
@@ -822,6 +831,7 @@ def build(
             linear_solver=spec.time.linear_solver,
             coupled_turbulence=spec.time.coupled_turbulence,
             matrix_free=spec.time.matrix_free,
+            start_order=spec.time.start_order,
             checkpoint=_checkpoint(spec.time.checkpoint),
         )
         if isinstance(spec.time, Steady)
@@ -850,7 +860,11 @@ def build(
         memory=MemoryInput(
             bytes_host=plan.memory.bytes_host, bytes_device=plan.memory.bytes_device
         ),
-        physics=PhysicsInput(kind=spec.physics.kind, turbulence=turbulence),
+        physics=PhysicsInput(
+            kind=spec.physics.kind,
+            turbulence=turbulence,
+            flux=spec.physics.flux if isinstance(spec.physics, Compressible) else None,
+        ),
         freestream=freestream,
         boundaries=tuple(boundaries),
         periodic=tuple(
@@ -914,6 +928,10 @@ def json_schema() -> dict[str, Any]:
             }
         }
         for (model, base), values in TURBULENCE_VALUES.items()
+    ]
+    defs["PhysicsInput"]["oneOf"] = [
+        {"properties": {"kind": {"const": "compressible"}, "flux": {"type": "string"}}},
+        {"properties": {"kind": {"const": "incompressible"}, "flux": {"type": "null"}}},
     ]
     defs["StartInput"]["oneOf"] = [
         {"properties": {"residual_reference": {"type": "null"}, "woken": {"type": "null"}}},

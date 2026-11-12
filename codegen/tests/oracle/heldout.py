@@ -41,9 +41,11 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 from itertools import product
 from pathlib import Path
@@ -56,6 +58,7 @@ import numpy as np
 from oracle import kernels as kr
 from oracle import sequences as q
 from oracle import topology as t
+from oracle import vvexport as vx
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -65,6 +68,10 @@ SCHEMA = "autan.adr0003-instance/3"
 AUX_SCHEMA = "autan.adr0003-auxiliary/1"
 SPEC_KEYS = ("id", "kind", "n", "perturbation", "seed", "fields", "policies", "methods")
 KINDS = ("hex", "tet", "hybrid", "poly")
+# Stage 2 (ADR 0003): a vv family level read from its mesh file, its primal cells from its export
+# (vvexport.py), both named in the spec by file name and SHA-256 under the run's data directory.
+VV_SOURCE = "vv-export"
+VV_KINDS = ("tet", "poly", "agglomerated")
 POLICIES = ("fp64", "fp32+acc64", "fp32")
 METHODS = ("lsq", "gg")
 PREFLIGHT = ("manifest", "start", "library")  # stages before any check has run
@@ -116,8 +123,25 @@ def spec_issues(spec: Any) -> list[str]:
             return issues
         if not isinstance(spec["id"], str) or not spec["id"]:
             issues.append("invalid: the instance id is not a non-empty string")
-        if spec["kind"] not in KINDS:
+        vv = spec.get("source") == VV_SOURCE
+        if "source" in spec and not vv:
+            issues.append(f"invalid: unsupported source {spec['source']!r}")
+        if spec["kind"] not in (VV_KINDS if vv else KINDS):
             issues.append(f"invalid: unsupported kind {spec['kind']!r}")
+        if vv:
+            files = spec.get("files")
+            for role in ("mesh", "cells"):
+                f = files.get(role) if isinstance(files, dict) else None
+                if (
+                    not isinstance(f, dict)
+                    or not isinstance(f.get("name"), str)
+                    or not f["name"]
+                    or "/" in f["name"]
+                    or f["name"].startswith(".")
+                    or not isinstance(f.get("sha256"), str)
+                    or not SHA.fullmatch(f["sha256"])
+                ):
+                    issues.append(f"invalid: the {role} file is not named with its SHA-256")
         if not _count(spec["n"]) or spec["n"] <= 0:
             issues.append(f"invalid: N must be a positive integer, got {spec['n']!r}")
         if not _finite(spec["perturbation"]) or spec["perturbation"] < 0:
@@ -160,6 +184,7 @@ def run_instance(
     manifest_sha256: str,
     reuse_geometry: bool = True,
     checkpoint: Callable[[dict[str, Any]], None] = _ignore,
+    data_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Run the declared checks on one instance and return its record; never raises.
     `checkpoint(record)` is called after every step."""
@@ -183,9 +208,50 @@ def run_instance(
             return record
         record["stage"] = "check 1"
         kind, n, p, seed = spec["kind"], spec["n"], spec["perturbation"], spec["seed"]
-        m = s.mesh(meshes.build(kind, n, p, seed=seed))
-        read = t.read_mesh(m)
-        pts, cells, ag = meshes.cells(kind, n, p, seed=seed)
+        if spec.get("source") == VV_SOURCE:
+            if data_dir is None:
+                record["invalid"].append("invalid: a vv-export instance needs a data directory")
+                checkpoint(record)
+                return record
+            files = spec["files"]
+            # Each file read once: the bytes hashed are the bytes used. The mesh reader gets a
+            # private, read-only copy of the verified bytes, never the shared file.
+            data: dict[str, bytes] = {}
+            for role in ("mesh", "cells"):
+                path = data_dir / files[role]["name"]
+                data[role] = path.read_bytes() if path.is_file() else b""
+                if vx.sha256(data[role]) != files[role]["sha256"]:
+                    record["invalid"].append(f"invalid: the {role} file is not the declared one")
+            if record["invalid"]:
+                checkpoint(record)
+                return record
+            try:
+                pts, cells, ag = vx.load_bytes(data["cells"], files["mesh"]["sha256"])
+                vx.check_primal(pts, cells)
+            except vx.Invalid as e:
+                record["invalid"].append(f"invalid: export: {e}")
+                checkpoint(record)
+                return record
+            private = Path(tempfile.mkdtemp(prefix="oracle-vv-"))
+            try:
+                snapshot = private / files["mesh"]["name"]
+                snapshot.write_bytes(data["mesh"])
+                snapshot.chmod(0o400)
+                m = s.read(str(snapshot))
+            finally:
+                shutil.rmtree(private, ignore_errors=True)
+            read = t.read_mesh(m)
+            # The reader keeps only the nodes the faces use; the file may hold others (a vv
+            # agglomerated file keeps every primal node). Its vertices must be exactly the export
+            # points the merged faces use (vvexport.used_points), compared exactly.
+            if issues := vx.vertex_issues(read.points, pts, cells, ag):
+                record["invalid"] += [f"invalid: vertices: {i}" for i in issues]
+                checkpoint(record)
+                return record
+        else:
+            m = s.mesh(meshes.build(kind, n, p, seed=seed))
+            read = t.read_mesh(m)
+            pts, cells, ag = meshes.cells(kind, n, p, seed=seed)
         record["cells"] = m.n_cells
         record["check1"] = t.compare(t.derive(pts, cells, ag), read)
         checkpoint(record)
@@ -436,6 +502,99 @@ def _collect_auxiliary(
     return failures
 
 
+def _limit(x: Any) -> bool:
+    return _count(x) and x > 0
+
+
+def stage2_limits(manifest: dict[str, Any]) -> tuple[dict[str, int], int, int] | None:
+    """Stage 2's frozen limits: the per-N bound in seconds, the auxiliary suite's, and the retry
+    cap (the declaration's amendment of 2026-11-11, #43). None if any is missing or malformed."""
+    bounds, aux_bound, cap = (
+        manifest.get("bounds_s"),
+        manifest.get("aux_bound_s"),
+        manifest.get("retry_cap"),
+    )
+    if (
+        not isinstance(bounds, dict)
+        or not bounds
+        or not all(isinstance(k, str) and _limit(v) for k, v in bounds.items())
+        or not _limit(aux_bound)
+        or not _limit(cap)
+    ):
+        return None
+    return bounds, aux_bound, cap
+
+
+def _timed_out(rec: Any, bound: int) -> str | None:
+    """Why a stage 2 attempt is not accepted on time (None if it is): what the watchdog's marker
+    says (`watchdog_issue`, set by the driver), a missing start time, or a run longer than its
+    bound (the monotonic `elapsed_s` when recorded, else the UTC times)."""
+    if not isinstance(rec, dict):
+        return None  # malformed: the frozen rules already count it
+    if rec.get("watchdog_issue"):
+        return f"watchdog: {rec['watchdog_issue']}"
+    t0, t1, elapsed = rec.get("started_utc_s"), rec.get("ended_utc_s"), rec.get("elapsed_s")
+    if not _finite(t0):
+        return "no valid start time"
+    for key, v in (("ended_utc_s", t1), ("elapsed_s", elapsed)):
+        if v is not None and not _finite(v):
+            return f"an invalid {key}: {v!r}"
+    if elapsed is not None:  # the monotonic duration decides when recorded
+        if elapsed < 0 or elapsed > bound:
+            return f"ran {elapsed:.0f} s, not within its bound of {bound} s"
+    elif t1 is not None and (t1 < t0 or t1 - t0 > bound):
+        return f"start and end times {t0}, {t1} are inconsistent or over its bound of {bound} s"
+    if rec.get("stage") != "done":
+        return None  # an interrupted attempt never passes; it may only be superseded
+    if t1 is None or elapsed is None:
+        return "no end time or elapsed time"
+    return None
+
+
+def _stage2_screen(
+    manifest: dict[str, Any], attempts: dict[str, list[Any]], auxiliary: list[Any]
+) -> tuple[dict[str, list[Any]], list[Any], list[str]]:
+    """Stage 2's rules applied before the frozen ones: an attempt over its bound is made invalid
+    (so decisive), more attempts than the cap is a failure, and so is a missing limit."""
+    failures: list[str] = []
+    limits = stage2_limits(manifest)
+    if limits is None:
+        return attempts, auxiliary, ["the manifest freezes no valid stage 2 limits"]
+    bounds, aux_bound, cap = limits
+    known = {spec.get("id") for spec in manifest.get("instances") or [] if isinstance(spec, dict)}
+    failures += [
+        f"an attempt for {sid!r}, which is no instance of the manifest"
+        for sid in attempts
+        if sid not in known
+    ]
+    screened: dict[str, list[Any]] = dict(attempts)
+    for spec in manifest.get("instances") or []:
+        sid = spec.get("id") if isinstance(spec, dict) else None
+        tries = attempts.get(sid) if isinstance(sid, str) else None
+        if not isinstance(tries, list):
+            continue
+        bound = bounds.get(str(spec.get("n")))
+        if bound is None:
+            failures.append(f"{sid}: the manifest freezes no bound for N = {spec.get('n')!r}")
+            continue
+        if len(tries) > cap:
+            failures.append(f"{sid}: {len(tries)} attempts, over the cap of {cap}")
+        out = []
+        for rec in tries:
+            why = _timed_out(rec, bound)
+            if why is not None:
+                rec = {**rec, "invalid": [*(rec.get("invalid") or []), f"invalid: {why}"]}  # noqa: PLW2901
+            out.append(rec)
+        screened[sid] = out
+    aux_out = []
+    for ev in auxiliary:
+        why = _timed_out(ev, aux_bound)
+        aux_out.append({**ev, "stage": f"over its bound: {why}"} if why is not None else ev)
+    if len(auxiliary) > cap:
+        failures.append(f"auxiliary: {len(auxiliary)} attempts, over the cap of {cap}")
+    return screened, aux_out, failures
+
+
 def collect(
     manifest_bytes: bytes,
     manifest_sha256: str,
@@ -451,6 +610,7 @@ def collect(
     library digest (freeze record). `attempts[id]` holds every record written for that instance (one
     file per job attempt). `auxiliary` holds every auxiliary attempt record (`aux` subcommand)."""
     failures: list[str] = []
+    stage: Any = 1
     try:
         if (
             not isinstance(manifest_bytes, bytes)
@@ -462,6 +622,14 @@ def collect(
             if not isinstance(manifest, dict):
                 failures.append("the manifest is not a mapping")
             else:
+                stage = manifest.get("stage", 1)
+                if stage == 2:
+                    attempts, auxiliary, more = _stage2_screen(
+                        manifest,
+                        attempts if isinstance(attempts, dict) else {},
+                        auxiliary if isinstance(auxiliary, list) else [],
+                    )
+                    failures += more
                 instances = manifest.get("instances")
                 if not isinstance(instances, list) or not instances:
                     failures.append("the manifest declares no instance")
@@ -489,13 +657,15 @@ def collect(
                     )
     except Exception:  # noqa: BLE001  total: an error in collection is a failure of the stage
         failures.append("collection failed: " + traceback.format_exc(limit=2))
-    return {
-        "stage": 1,
-        "failures": failures,
-        "state": "FAIL (stays FAIL whatever stage 2 gives)"
-        if failures
-        else "no failure observed in stage 1; not a verdict until stage 2",
-    }
+    if stage == 2:
+        state = "FAIL" if failures else "acceptance criteria met (stage 2, as declared and amended)"
+    else:
+        state = (
+            "FAIL (stays FAIL whatever stage 2 gives)"
+            if failures
+            else "no failure observed in stage 1; not a verdict until stage 2"
+        )
+    return {"stage": stage, "failures": failures, "state": state}
 
 
 def node_outcomes(lines: list[str]) -> tuple[dict[str, str], list[str | None]]:
@@ -576,6 +746,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     run.add_argument("--instance", required=True)
     run.add_argument("--rebuild-geometry", action="store_true", help="equivalence check only")
+    run.add_argument("--data", help="directory of the files a vv-export instance names")
     aux.add_argument("pytest_args", nargs=argparse.REMAINDER, help="-- then the pytest arguments")
     args = ap.parse_args(argv)
     out = Path(args.out)
@@ -587,7 +758,13 @@ def main(argv: list[str] | None = None) -> int:
     base = {"manifest_sha256": manifest_sha256, "library_sha256_expected": args.library_sha256,
             "library_sha256_loaded": kr.library_sha256()}  # fmt: skip
     if args.command == "aux":
-        record: dict[str, Any] = {"schema": AUX_SCHEMA, "stage": "started", **base}
+        clock = time.monotonic()
+        record: dict[str, Any] = {
+            "schema": AUX_SCHEMA,
+            "stage": "started",
+            "started_utc_s": time.time(),
+            **base,
+        }
         if not _create(out, record):
             print(f"{out} exists: one file per attempt, never overwritten")
             return 2
@@ -611,10 +788,14 @@ def main(argv: list[str] | None = None) -> int:
             record.update(
                 {"stage": "done", "outcomes": outcomes, "child_library_sha256": libraries}
             )
+        record["ended_utc_s"] = time.time()
+        record["elapsed_s"] = time.monotonic() - clock
         _replace(out, record)
         report.unlink(missing_ok=True)
         return 0
+    started, clock = time.time(), time.monotonic()
     record = {"schema": SCHEMA, "id": args.instance, "invalid": [], "stage": "manifest", **base}
+    record["started_utc_s"] = started
     if not _create(out, record):
         print(f"{out} exists: one file per attempt, never overwritten")
         return 2
@@ -624,6 +805,7 @@ def main(argv: list[str] | None = None) -> int:
         record = run_instance(
             spec, args.library_sha256, manifest_sha256,
             reuse_geometry=not args.rebuild_geometry, checkpoint=lambda r: _replace(out, r),
+            data_dir=Path(args.data) if args.data else None,
         )  # fmt: skip
         record["passed"] = passed(record, spec)
     except Exception:  # noqa: BLE001  a manifest or selection error is an invalid record too
@@ -632,6 +814,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         record["traceback"] = traceback.format_exc()
         record["passed"] = False
+    record["started_utc_s"], record["ended_utc_s"] = started, time.time()
+    record["elapsed_s"] = time.monotonic() - clock
     _replace(out, record)
     return 0
 

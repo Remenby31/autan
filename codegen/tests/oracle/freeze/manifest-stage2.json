@@ -1,0 +1,1472 @@
+{
+ "adr": "docs/adr/0003-derived-linear-exactness-bound.md",
+ "aux_bound_s": 5799,
+ "auxiliary_tests": {
+  "files": [
+   "tests/test_oracle_certified.py",
+   "tests/test_oracle_roots.py",
+   "tests/test_oracle_tidy.py",
+   "tests/test_oracle_topology.py",
+   "tests/test_oracle_geometry.py",
+   "tests/test_oracle_controls.py",
+   "tests/test_oracle_d1.py",
+   "tests/test_oracle_fixtures.py",
+   "tests/test_oracle_heldout.py",
+   "tests/test_spike_isolation.py",
+   "tests/test_oracle_vvexport.py",
+   "tests/test_oracle_stage2.py"
+  ],
+  "node_ids": [
+   "tests/test_oracle_certified.py::test_ties_of_both_parities[1.0-1.1102230246251565e-16]",
+   "tests/test_oracle_certified.py::test_ties_of_both_parities[1.0000000000000002-1.1102230246251565e-16]",
+   "tests/test_oracle_certified.py::test_ties_of_both_parities[-1.0--1.1102230246251565e-16]",
+   "tests/test_oracle_certified.py::test_ties_of_both_parities[4503599627370496.0-0.5]",
+   "tests/test_oracle_certified.py::test_ties_of_both_parities[4503599627370497.0-0.5]",
+   "tests/test_oracle_certified.py::test_ties_of_both_parities_in_binary32",
+   "tests/test_oracle_certified.py::test_subnormals_against_the_hardware[5e-324-0.5-mul]",
+   "tests/test_oracle_certified.py::test_subnormals_against_the_hardware[5e-324-0.75-mul]",
+   "tests/test_oracle_certified.py::test_subnormals_against_the_hardware[5e-324-0.25-mul]",
+   "tests/test_oracle_certified.py::test_subnormals_against_the_hardware[1.5e-323-0.5-mul]",
+   "tests/test_oracle_certified.py::test_subnormals_against_the_hardware[2e-323-0.5-mul]",
+   "tests/test_oracle_certified.py::test_subnormals_against_the_hardware[-5e-324-0.5-mul]",
+   "tests/test_oracle_certified.py::test_subnormals_against_the_hardware[2.2250738585072014e-308-0.5-mul]",
+   "tests/test_oracle_certified.py::test_subnormals_against_the_hardware[2.2250738585072014e-308-0.9999999999999998-mul]",
+   "tests/test_oracle_certified.py::test_subnormals_against_the_hardware[2.2250738585072014e-308-1.1102230246251565e-16-add]",
+   "tests/test_oracle_certified.py::test_subnormals_against_the_hardware[1.5e-323-2.0-div]",
+   "tests/test_oracle_certified.py::test_subnormals_in_binary32",
+   "tests/test_oracle_certified.py::test_exact_subnormals_keep_radius_zero",
+   "tests/test_oracle_certified.py::test_a_zero_centre_with_a_radius_is_sound_where_results_are_subnormal",
+   "tests/test_oracle_certified.py::test_the_largest_finite_value_and_the_overflow_boundary",
+   "tests/test_oracle_certified.py::test_catastrophic_cancellation",
+   "tests/test_oracle_certified.py::test_negative_divisors",
+   "tests/test_oracle_certified.py::test_divisor_radius_near_its_value",
+   "tests/test_oracle_certified.py::test_interval_endpoints_and_chains",
+   "tests/test_oracle_certified.py::test_chains_in_binary32",
+   "tests/test_oracle_certified.py::test_inputs_given_exactly_have_radius_zero",
+   "tests/test_oracle_certified.py::test_widening_only_from_a_declared_narrower_format",
+   "tests/test_oracle_certified.py::test_nothing_outside_the_tests_imports_the_oracle",
+   "tests/test_oracle_roots.py::test_sqrt_bounds_the_hardware_root",
+   "tests/test_oracle_roots.py::test_sqrt_of_operands_at_their_interval_ends",
+   "tests/test_oracle_roots.py::test_sqrt_refuses_an_interval_reaching_zero",
+   "tests/test_oracle_roots.py::test_round_to_reproduces_the_hardware[binary64]",
+   "tests/test_oracle_roots.py::test_round_to_reproduces_the_hardware[binary32]",
+   "tests/test_oracle_roots.py::test_round_to_breaks_ties_to_even_and_handles_subnormals",
+   "tests/test_oracle_roots.py::test_round_sqrt_reproduces_the_hardware[binary64]",
+   "tests/test_oracle_roots.py::test_round_sqrt_reproduces_the_hardware[binary32]",
+   "tests/test_oracle_tidy.py::test_tidy_never_shrinks_and_respects_its_bound",
+   "tests/test_oracle_tidy.py::test_exact_dyadics_keep_their_value_and_radius_zero",
+   "tests/test_oracle_tidy.py::test_a_non_dyadic_value_with_radius_zero_gets_a_radius",
+   "tests/test_oracle_tidy.py::test_ties_go_to_even_on_both_signs",
+   "tests/test_oracle_tidy.py::test_rounding_carries_into_the_next_binade",
+   "tests/test_oracle_tidy.py::test_extreme_scales[-5000]",
+   "tests/test_oracle_tidy.py::test_extreme_scales[-1100]",
+   "tests/test_oracle_tidy.py::test_extreme_scales[-1074]",
+   "tests/test_oracle_tidy.py::test_extreme_scales[-60]",
+   "tests/test_oracle_tidy.py::test_extreme_scales[0]",
+   "tests/test_oracle_tidy.py::test_extreme_scales[60]",
+   "tests/test_oracle_tidy.py::test_extreme_scales[1100]",
+   "tests/test_oracle_tidy.py::test_extreme_scales[5000]",
+   "tests/test_oracle_tidy.py::test_the_radius_is_rounded_up_exactly",
+   "tests/test_oracle_tidy.py::test_every_rule_returns_a_tidied_certificate",
+   "tests/test_oracle_tidy.py::test_the_exactness_refinement_still_gives_radius_zero",
+   "tests/test_oracle_tidy.py::test_eta_and_invalid_after_tidy",
+   "tests/test_oracle_tidy.py::test_long_chains_keep_a_bounded_size",
+   "tests/test_oracle_topology.py::test_the_derivation_agrees_with_the_assembled_mesh[hex-0.0]",
+   "tests/test_oracle_topology.py::test_the_derivation_agrees_with_the_assembled_mesh[hex-0.15]",
+   "tests/test_oracle_topology.py::test_the_derivation_agrees_with_the_assembled_mesh[tet-0.0]",
+   "tests/test_oracle_topology.py::test_the_derivation_agrees_with_the_assembled_mesh[tet-0.15]",
+   "tests/test_oracle_topology.py::test_the_derivation_agrees_with_the_assembled_mesh[hybrid-0.0]",
+   "tests/test_oracle_topology.py::test_the_derivation_agrees_with_the_assembled_mesh[hybrid-0.15]",
+   "tests/test_oracle_topology.py::test_the_derivation_agrees_with_the_assembled_mesh[poly-0.0]",
+   "tests/test_oracle_topology.py::test_the_derivation_agrees_with_the_assembled_mesh[poly-0.15]",
+   "tests/test_oracle_topology.py::test_build_is_to_faces_of_cells",
+   "tests/test_oracle_topology.py::test_two_shells_of_opposite_volume_are_refused",
+   "tests/test_oracle_topology.py::test_a_reversed_polygon_is_refused",
+   "tests/test_oracle_topology.py::test_an_inward_cell_is_refused",
+   "tests/test_oracle_topology.py::test_the_cell_volumes_are_exact",
+   "tests/test_oracle_topology.py::test_corrupted_owner_and_incidences_are_reported",
+   "tests/test_oracle_geometry.py::test_stored_magnitudes_are_the_declared_hypot_bit_for_bit[hex-0.0]",
+   "tests/test_oracle_geometry.py::test_stored_magnitudes_are_the_declared_hypot_bit_for_bit[hex-0.15]",
+   "tests/test_oracle_geometry.py::test_stored_magnitudes_are_the_declared_hypot_bit_for_bit[tet-0.0]",
+   "tests/test_oracle_geometry.py::test_stored_magnitudes_are_the_declared_hypot_bit_for_bit[tet-0.15]",
+   "tests/test_oracle_geometry.py::test_stored_magnitudes_are_the_declared_hypot_bit_for_bit[hybrid-0.0]",
+   "tests/test_oracle_geometry.py::test_stored_magnitudes_are_the_declared_hypot_bit_for_bit[hybrid-0.15]",
+   "tests/test_oracle_geometry.py::test_stored_magnitudes_are_the_declared_hypot_bit_for_bit[poly-0.0]",
+   "tests/test_oracle_geometry.py::test_stored_magnitudes_are_the_declared_hypot_bit_for_bit[poly-0.15]",
+   "tests/test_oracle_geometry.py::test_a_magnitude_shifted_by_one_ulp_is_invalid",
+   "tests/test_oracle_geometry.py::test_the_radius_covers_the_exact_root_of_uncertain_arguments",
+   "tests/test_oracle_geometry.py::test_a_zero_face_is_an_exact_zero_or_invalid",
+   "tests/test_oracle_geometry.py::test_the_stored_geometry_is_the_declared_construction_bit_for_bit[hex-0.0]",
+   "tests/test_oracle_geometry.py::test_the_stored_geometry_is_the_declared_construction_bit_for_bit[hex-0.15]",
+   "tests/test_oracle_geometry.py::test_the_stored_geometry_is_the_declared_construction_bit_for_bit[tet-0.0]",
+   "tests/test_oracle_geometry.py::test_the_stored_geometry_is_the_declared_construction_bit_for_bit[tet-0.15]",
+   "tests/test_oracle_geometry.py::test_the_stored_geometry_is_the_declared_construction_bit_for_bit[hybrid-0.0]",
+   "tests/test_oracle_geometry.py::test_the_stored_geometry_is_the_declared_construction_bit_for_bit[hybrid-0.15]",
+   "tests/test_oracle_geometry.py::test_the_stored_geometry_is_the_declared_construction_bit_for_bit[poly-0.0]",
+   "tests/test_oracle_geometry.py::test_the_stored_geometry_is_the_declared_construction_bit_for_bit[poly-0.15]",
+   "tests/test_oracle_geometry.py::test_the_stored_geometry_is_within_its_certified_radius_of_the_exact_geometry[hex-0.0]",
+   "tests/test_oracle_geometry.py::test_the_stored_geometry_is_within_its_certified_radius_of_the_exact_geometry[hex-0.15]",
+   "tests/test_oracle_geometry.py::test_the_stored_geometry_is_within_its_certified_radius_of_the_exact_geometry[tet-0.0]",
+   "tests/test_oracle_geometry.py::test_the_stored_geometry_is_within_its_certified_radius_of_the_exact_geometry[tet-0.15]",
+   "tests/test_oracle_geometry.py::test_the_stored_geometry_is_within_its_certified_radius_of_the_exact_geometry[hybrid-0.0]",
+   "tests/test_oracle_geometry.py::test_the_stored_geometry_is_within_its_certified_radius_of_the_exact_geometry[hybrid-0.15]",
+   "tests/test_oracle_geometry.py::test_the_stored_geometry_is_within_its_certified_radius_of_the_exact_geometry[poly-0.0]",
+   "tests/test_oracle_geometry.py::test_the_stored_geometry_is_within_its_certified_radius_of_the_exact_geometry[poly-0.15]",
+   "tests/test_oracle_geometry.py::test_partial_precomputed_geometry_is_reported_not_skipped[all]",
+   "tests/test_oracle_geometry.py::test_partial_precomputed_geometry_is_reported_not_skipped[one]",
+   "tests/test_oracle_geometry.py::test_partial_precomputed_geometry_is_reported_not_skipped[row]",
+   "tests/test_oracle_controls.py::test_a_stored_value_moved_beyond_twice_its_radius_fails_check_2[4-face_area]",
+   "tests/test_oracle_controls.py::test_a_stored_value_moved_beyond_twice_its_radius_fails_check_2[6-cell_volume]",
+   "tests/test_oracle_controls.py::test_a_stored_value_moved_beyond_twice_its_radius_fails_check_2[7-face_moment]",
+   "tests/test_oracle_controls.py::test_a_stored_value_moved_beyond_twice_its_radius_fails_check_2[8-cell_centroid]",
+   "tests/test_oracle_controls.py::test_a_common_scaling_of_areas_moments_and_volumes_fails_check_2",
+   "tests/test_oracle_controls.py::test_an_interior_face_with_owner_and_neighbour_swapped_fails_check_1",
+   "tests/test_oracle_controls.py::test_an_incidence_dropped_from_a_cell_fails_check_1",
+   "tests/test_oracle_controls.py::test_the_kernel_output_offset_beyond_the_bound_fails_check_4",
+   "tests/test_oracle_controls.py::test_a_corrupted_weight_fails_checks_2_and_3[1-2.0]",
+   "tests/test_oracle_controls.py::test_a_corrupted_weight_fails_checks_2_and_3[2--1.0]",
+   "tests/test_oracle_controls.py::test_an_incidence_dropped_from_a_cell_fails_check_3",
+   "tests/test_oracle_controls.py::test_a_narrowed_accumulation_makes_checks_3_and_4_invalid[lsq]",
+   "tests/test_oracle_controls.py::test_a_narrowed_accumulation_makes_checks_3_and_4_invalid[gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hex-0.0-fp64-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hex-0.0-fp64-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hex-0.0-fp32+acc64-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hex-0.0-fp32+acc64-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hex-0.0-fp32-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hex-0.0-fp32-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hex-0.15-fp64-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hex-0.15-fp64-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hex-0.15-fp32+acc64-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hex-0.15-fp32+acc64-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hex-0.15-fp32-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hex-0.15-fp32-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[tet-0.0-fp64-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[tet-0.0-fp64-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[tet-0.0-fp32+acc64-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[tet-0.0-fp32+acc64-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[tet-0.0-fp32-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[tet-0.0-fp32-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[tet-0.15-fp64-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[tet-0.15-fp64-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[tet-0.15-fp32+acc64-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[tet-0.15-fp32+acc64-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[tet-0.15-fp32-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[tet-0.15-fp32-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hybrid-0.0-fp64-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hybrid-0.0-fp64-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hybrid-0.0-fp32+acc64-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hybrid-0.0-fp32+acc64-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hybrid-0.0-fp32-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hybrid-0.0-fp32-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hybrid-0.15-fp64-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hybrid-0.15-fp64-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hybrid-0.15-fp32+acc64-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hybrid-0.15-fp32+acc64-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hybrid-0.15-fp32-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[hybrid-0.15-fp32-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[poly-0.0-fp64-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[poly-0.0-fp64-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[poly-0.0-fp32+acc64-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[poly-0.0-fp32+acc64-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[poly-0.0-fp32-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[poly-0.0-fp32-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[poly-0.15-fp64-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[poly-0.15-fp64-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[poly-0.15-fp32+acc64-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[poly-0.15-fp32+acc64-gg]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[poly-0.15-fp32-lsq]",
+   "tests/test_oracle_d1.py::test_the_replay_is_the_kernel_bit_for_bit[poly-0.15-fp32-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hex-0.0-fp64-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hex-0.0-fp64-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hex-0.0-fp32+acc64-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hex-0.0-fp32+acc64-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hex-0.0-fp32-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hex-0.0-fp32-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hex-0.15-fp64-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hex-0.15-fp64-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hex-0.15-fp32+acc64-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hex-0.15-fp32+acc64-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hex-0.15-fp32-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hex-0.15-fp32-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[tet-0.0-fp64-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[tet-0.0-fp64-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[tet-0.0-fp32+acc64-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[tet-0.0-fp32+acc64-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[tet-0.0-fp32-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[tet-0.0-fp32-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[tet-0.15-fp64-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[tet-0.15-fp64-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[tet-0.15-fp32+acc64-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[tet-0.15-fp32+acc64-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[tet-0.15-fp32-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[tet-0.15-fp32-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hybrid-0.0-fp64-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hybrid-0.0-fp64-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hybrid-0.0-fp32+acc64-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hybrid-0.0-fp32+acc64-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hybrid-0.0-fp32-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hybrid-0.0-fp32-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hybrid-0.15-fp64-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hybrid-0.15-fp64-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hybrid-0.15-fp32+acc64-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hybrid-0.15-fp32+acc64-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hybrid-0.15-fp32-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[hybrid-0.15-fp32-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[poly-0.0-fp64-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[poly-0.0-fp64-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[poly-0.0-fp32+acc64-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[poly-0.0-fp32+acc64-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[poly-0.0-fp32-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[poly-0.0-fp32-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[poly-0.15-fp64-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[poly-0.15-fp64-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[poly-0.15-fp32+acc64-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[poly-0.15-fp32+acc64-gg]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[poly-0.15-fp32-lsq]",
+   "tests/test_oracle_d1.py::test_d1_holds_on_the_b_cases[poly-0.15-fp32-gg]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.0-fp64-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.0-fp64-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.0-fp64-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.0-fp64-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.0-fp32+acc64-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.0-fp32+acc64-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.0-fp32+acc64-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.0-fp32+acc64-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.0-fp32-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.0-fp32-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.0-fp32-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.0-fp32-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.15-fp64-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.15-fp64-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.15-fp64-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.15-fp64-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.15-fp32+acc64-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.15-fp32+acc64-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.15-fp32+acc64-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.15-fp32+acc64-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.15-fp32-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.15-fp32-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.15-fp32-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hex-0.15-fp32-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.0-fp64-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.0-fp64-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.0-fp64-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.0-fp64-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.0-fp32+acc64-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.0-fp32+acc64-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.0-fp32+acc64-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.0-fp32+acc64-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.0-fp32-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.0-fp32-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.0-fp32-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.0-fp32-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.15-fp64-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.15-fp64-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.15-fp64-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.15-fp64-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.15-fp32+acc64-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.15-fp32+acc64-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.15-fp32+acc64-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.15-fp32+acc64-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.15-fp32-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.15-fp32-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.15-fp32-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[tet-0.15-fp32-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.0-fp64-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.0-fp64-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.0-fp64-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.0-fp64-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.0-fp32+acc64-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.0-fp32+acc64-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.0-fp32+acc64-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.0-fp32+acc64-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.0-fp32-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.0-fp32-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.0-fp32-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.0-fp32-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.15-fp64-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.15-fp64-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.15-fp64-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.15-fp64-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.15-fp32+acc64-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.15-fp32+acc64-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.15-fp32+acc64-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.15-fp32+acc64-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.15-fp32-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.15-fp32-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.15-fp32-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[hybrid-0.15-fp32-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.0-fp64-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.0-fp64-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.0-fp64-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.0-fp64-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.0-fp32+acc64-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.0-fp32+acc64-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.0-fp32+acc64-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.0-fp32+acc64-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.0-fp32-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.0-fp32-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.0-fp32-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.0-fp32-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.15-fp64-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.15-fp64-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.15-fp64-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.15-fp64-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.15-fp32+acc64-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.15-fp32+acc64-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.15-fp32+acc64-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.15-fp32+acc64-gg-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.15-fp32-lsq-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.15-fp32-lsq-1]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.15-fp32-gg-0]",
+   "tests/test_oracle_d1.py::test_the_bound_holds_on_the_b_cases[poly-0.15-fp32-gg-1]",
+   "tests/test_oracle_d1.py::test_the_generator_follows_the_declared_precision_contract",
+   "tests/test_oracle_d1.py::test_a_generator_storing_an_output_otherwise_is_reported",
+   "tests/test_oracle_d1.py::test_a_missing_finalise_is_reported",
+   "tests/test_oracle_d1.py::test_the_compiled_generated_code_is_the_frozen_text",
+   "tests/test_oracle_d1.py::test_a_change_to_the_frozen_code_is_reported",
+   "tests/test_oracle_d1.py::test_a_missing_finalise_makes_both_checks_invalid_without_raising",
+   "tests/test_oracle_d1.py::test_the_loaded_library_is_identified_by_its_digest",
+   "tests/test_oracle_d1.py::test_a_stale_library_beside_matching_headers_is_reported",
+   "tests/test_oracle_fixtures.py::test_the_approved_exact_set_is_not_empty",
+   "tests/test_oracle_fixtures.py::test_an_approved_exact_fixture_certifies_r_zero_and_gives_g_exactly[poly-constant-N4-fp64-lsq]",
+   "tests/test_oracle_fixtures.py::test_an_approved_exact_fixture_certifies_r_zero_and_gives_g_exactly[poly-constant-N4-fp64-gg]",
+   "tests/test_oracle_fixtures.py::test_an_approved_exact_fixture_certifies_r_zero_and_gives_g_exactly[poly-constant-N4-fp32+acc64-lsq]",
+   "tests/test_oracle_fixtures.py::test_an_approved_exact_fixture_certifies_r_zero_and_gives_g_exactly[poly-constant-N4-fp32+acc64-gg]",
+   "tests/test_oracle_fixtures.py::test_an_approved_exact_fixture_certifies_r_zero_and_gives_g_exactly[poly-constant-N4-fp32-lsq]",
+   "tests/test_oracle_fixtures.py::test_an_approved_exact_fixture_certifies_r_zero_and_gives_g_exactly[poly-constant-N4-fp32-gg]",
+   "tests/test_oracle_fixtures.py::test_an_approved_exact_fixture_certifies_r_zero_and_gives_g_exactly[uniform-hex-constant-N4-fp64-lsq]",
+   "tests/test_oracle_fixtures.py::test_an_approved_exact_fixture_certifies_r_zero_and_gives_g_exactly[uniform-hex-constant-N4-fp64-gg]",
+   "tests/test_oracle_fixtures.py::test_an_approved_exact_fixture_certifies_r_zero_and_gives_g_exactly[uniform-hex-constant-N4-fp32+acc64-lsq]",
+   "tests/test_oracle_fixtures.py::test_an_approved_exact_fixture_certifies_r_zero_and_gives_g_exactly[uniform-hex-constant-N4-fp32+acc64-gg]",
+   "tests/test_oracle_fixtures.py::test_an_approved_exact_fixture_certifies_r_zero_and_gives_g_exactly[uniform-hex-constant-N4-fp32-lsq]",
+   "tests/test_oracle_fixtures.py::test_an_approved_exact_fixture_certifies_r_zero_and_gives_g_exactly[uniform-hex-constant-N4-fp32-gg]",
+   "tests/test_oracle_fixtures.py::test_an_approved_exact_fixture_certifies_r_zero_and_gives_g_exactly[uniform-hex-constant-N8-fp64-lsq]",
+   "tests/test_oracle_fixtures.py::test_an_approved_exact_fixture_certifies_r_zero_and_gives_g_exactly[uniform-hex-constant-N8-fp64-gg]",
+   "tests/test_oracle_fixtures.py::test_an_approved_exact_fixture_certifies_r_zero_and_gives_g_exactly[uniform-hex-constant-N8-fp32+acc64-lsq]",
+   "tests/test_oracle_fixtures.py::test_an_approved_exact_fixture_certifies_r_zero_and_gives_g_exactly[uniform-hex-constant-N8-fp32+acc64-gg]",
+   "tests/test_oracle_fixtures.py::test_an_approved_exact_fixture_certifies_r_zero_and_gives_g_exactly[uniform-hex-constant-N8-fp32-lsq]",
+   "tests/test_oracle_fixtures.py::test_an_approved_exact_fixture_certifies_r_zero_and_gives_g_exactly[uniform-hex-constant-N8-fp32-gg]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[hex-N3-linear-fp64-lsq]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[hex-N3-linear-fp64-gg]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[hex-N3-linear-fp32+acc64-lsq]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[hex-N3-linear-fp32+acc64-gg]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[hex-N3-linear-fp32-lsq]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[hex-N3-linear-fp32-gg]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[single-cell-hex-linear-fp64-lsq]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[single-cell-hex-linear-fp64-gg]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[single-cell-hex-linear-fp32+acc64-lsq]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[single-cell-hex-linear-fp32+acc64-gg]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[single-cell-hex-linear-fp32-lsq]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[single-cell-hex-linear-fp32-gg]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[uniform-hex-constant-N4-fp64-lsq]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[uniform-hex-constant-N4-fp64-gg]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[uniform-hex-constant-N4-fp32+acc64-lsq]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[uniform-hex-constant-N4-fp32+acc64-gg]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[uniform-hex-constant-N4-fp32-lsq]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[uniform-hex-constant-N4-fp32-gg]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[uniform-hex-zero-component-N4-fp64-lsq]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[uniform-hex-zero-component-N4-fp64-gg]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[uniform-hex-zero-component-N4-fp32+acc64-lsq]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[uniform-hex-zero-component-N4-fp32+acc64-gg]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[uniform-hex-zero-component-N4-fp32-lsq]",
+   "tests/test_oracle_fixtures.py::test_a_boundary_case_passes_checks_1_to_4[uniform-hex-zero-component-N4-fp32-gg]",
+   "tests/test_oracle_heldout.py::test_a_complete_clean_record_passes",
+   "tests/test_oracle_heldout.py::test_an_incomplete_malformed_or_inconsistent_record_does_not_pass[<lambda>0]",
+   "tests/test_oracle_heldout.py::test_an_incomplete_malformed_or_inconsistent_record_does_not_pass[<lambda>1]",
+   "tests/test_oracle_heldout.py::test_an_incomplete_malformed_or_inconsistent_record_does_not_pass[<lambda>2]",
+   "tests/test_oracle_heldout.py::test_an_incomplete_malformed_or_inconsistent_record_does_not_pass[<lambda>3]",
+   "tests/test_oracle_heldout.py::test_an_incomplete_malformed_or_inconsistent_record_does_not_pass[<lambda>4]",
+   "tests/test_oracle_heldout.py::test_an_incomplete_malformed_or_inconsistent_record_does_not_pass[<lambda>5]",
+   "tests/test_oracle_heldout.py::test_an_incomplete_malformed_or_inconsistent_record_does_not_pass[<lambda>6]",
+   "tests/test_oracle_heldout.py::test_an_incomplete_malformed_or_inconsistent_record_does_not_pass[<lambda>7]",
+   "tests/test_oracle_heldout.py::test_an_incomplete_malformed_or_inconsistent_record_does_not_pass[<lambda>8]",
+   "tests/test_oracle_heldout.py::test_an_incomplete_malformed_or_inconsistent_record_does_not_pass[<lambda>9]",
+   "tests/test_oracle_heldout.py::test_an_incomplete_malformed_or_inconsistent_record_does_not_pass[<lambda>10]",
+   "tests/test_oracle_heldout.py::test_an_incomplete_malformed_or_inconsistent_record_does_not_pass[<lambda>11]",
+   "tests/test_oracle_heldout.py::test_an_incomplete_malformed_or_inconsistent_record_does_not_pass[<lambda>12]",
+   "tests/test_oracle_heldout.py::test_an_incomplete_malformed_or_inconsistent_record_does_not_pass[<lambda>13]",
+   "tests/test_oracle_heldout.py::test_an_incomplete_malformed_or_inconsistent_record_does_not_pass[<lambda>14]",
+   "tests/test_oracle_heldout.py::test_an_incomplete_malformed_or_inconsistent_record_does_not_pass[<lambda>15]",
+   "tests/test_oracle_heldout.py::test_an_incomplete_malformed_or_inconsistent_record_does_not_pass[<lambda>16]",
+   "tests/test_oracle_heldout.py::test_an_invalid_spec_is_refused_and_never_passes[change0]",
+   "tests/test_oracle_heldout.py::test_an_invalid_spec_is_refused_and_never_passes[change1]",
+   "tests/test_oracle_heldout.py::test_an_invalid_spec_is_refused_and_never_passes[change2]",
+   "tests/test_oracle_heldout.py::test_an_invalid_spec_is_refused_and_never_passes[change3]",
+   "tests/test_oracle_heldout.py::test_an_invalid_spec_is_refused_and_never_passes[change4]",
+   "tests/test_oracle_heldout.py::test_an_invalid_spec_is_refused_and_never_passes[change5]",
+   "tests/test_oracle_heldout.py::test_an_invalid_spec_is_refused_and_never_passes[change6]",
+   "tests/test_oracle_heldout.py::test_an_invalid_spec_is_refused_and_never_passes[change7]",
+   "tests/test_oracle_heldout.py::test_an_invalid_spec_is_refused_and_never_passes[change8]",
+   "tests/test_oracle_heldout.py::test_an_invalid_spec_is_refused_and_never_passes[change9]",
+   "tests/test_oracle_heldout.py::test_an_invalid_spec_is_refused_and_never_passes[change10]",
+   "tests/test_oracle_heldout.py::test_an_exception_in_check_4_keeps_d1_and_every_earlier_step",
+   "tests/test_oracle_heldout.py::test_a_wrong_library_digest_stops_the_instance",
+   "tests/test_oracle_heldout.py::test_an_existing_record_file_is_never_overwritten",
+   "tests/test_oracle_heldout.py::test_collection_passes_only_a_complete_bound_clean_stage",
+   "tests/test_oracle_heldout.py::test_an_attempt_that_reported_an_issue_or_completed_without_passing_is_decisive",
+   "tests/test_oracle_heldout.py::test_a_clean_interruption_may_be_superseded",
+   "tests/test_oracle_heldout.py::test_node_outcomes_need_a_passing_body_and_keep_the_worst_phase",
+   "tests/test_oracle_heldout.py::test_auxiliary_evidence_needs_the_library_the_pytest_process_loaded",
+   "tests/test_oracle_heldout.py::test_a_malformed_attempt_is_decisive_even_when_bound",
+   "tests/test_oracle_heldout.py::test_a_record_file_that_looks_temporary_is_refused",
+   "tests/test_oracle_heldout.py::test_a_preflight_attempt_with_a_recorded_mismatch_is_not_forgiven",
+   "tests/test_oracle_heldout.py::test_collection_is_total_on_malformed_authenticated_input",
+   "tests/test_oracle_heldout.py::test_an_early_invalid_outcome_is_checkpointed",
+   "tests/test_oracle_heldout.py::test_the_auxiliary_wrapper_records_what_pytest_itself_ran",
+   "tests/test_oracle_heldout.py::test_setup_alone_never_makes_a_node_pass",
+   "tests/test_oracle_heldout.py::test_an_unrecognized_report_line_is_never_dropped",
+   "tests/test_oracle_heldout.py::test_an_attempt_in_an_unknown_stage_is_decisive[]",
+   "tests/test_oracle_heldout.py::test_an_attempt_in_an_unknown_stage_is_decisive[bogus]",
+   "tests/test_oracle_heldout.py::test_an_attempt_in_an_unknown_stage_is_decisive[a=9.0 G=[0, 0, 0] fp64 lsq]",
+   "tests/test_spike_isolation.py::test_no_product_target_depends_on_the_spike",
+   "tests/test_spike_isolation.py::test_no_product_file_names_the_test_only_entry_points",
+   "tests/test_spike_isolation.py::test_no_python_outside_the_spike_and_its_tests_imports_it",
+   "tests/test_oracle_vvexport.py::test_check1_finds_no_issue_on_a_file_and_its_export[hex]",
+   "tests/test_oracle_vvexport.py::test_check1_finds_two_cells_relabelled[hex]",
+   "tests/test_oracle_vvexport.py::test_a_reversed_face_of_a_mesh_cell_is_refused[hex]",
+   "tests/test_oracle_vvexport.py::test_a_polygon_listed_twice_by_one_primal_cell_is_refused[hex]",
+   "tests/test_oracle_vvexport.py::test_one_malformed_field_makes_the_export_invalid[hex-schema]",
+   "tests/test_oracle_vvexport.py::test_one_malformed_field_makes_the_export_invalid[hex-point]",
+   "tests/test_oracle_vvexport.py::test_one_malformed_field_makes_the_export_invalid[hex-polygon]",
+   "tests/test_oracle_vvexport.py::test_one_malformed_field_makes_the_export_invalid[hex-map]",
+   "tests/test_oracle_vvexport.py::test_one_malformed_field_makes_the_export_invalid[hex-mesh]",
+   "tests/test_oracle_vvexport.py::test_check1_finds_no_issue_on_a_file_and_its_export[tet]",
+   "tests/test_oracle_vvexport.py::test_check1_finds_two_cells_relabelled[tet]",
+   "tests/test_oracle_vvexport.py::test_a_reversed_face_of_a_mesh_cell_is_refused[tet]",
+   "tests/test_oracle_vvexport.py::test_a_polygon_listed_twice_by_one_primal_cell_is_refused[tet]",
+   "tests/test_oracle_vvexport.py::test_one_malformed_field_makes_the_export_invalid[tet-schema]",
+   "tests/test_oracle_vvexport.py::test_one_malformed_field_makes_the_export_invalid[tet-point]",
+   "tests/test_oracle_vvexport.py::test_one_malformed_field_makes_the_export_invalid[tet-polygon]",
+   "tests/test_oracle_vvexport.py::test_one_malformed_field_makes_the_export_invalid[tet-map]",
+   "tests/test_oracle_vvexport.py::test_one_malformed_field_makes_the_export_invalid[tet-mesh]",
+   "tests/test_oracle_vvexport.py::test_check1_finds_no_issue_on_a_file_and_its_export[hybrid]",
+   "tests/test_oracle_vvexport.py::test_check1_finds_two_cells_relabelled[hybrid]",
+   "tests/test_oracle_vvexport.py::test_a_reversed_face_of_a_mesh_cell_is_refused[hybrid]",
+   "tests/test_oracle_vvexport.py::test_a_polygon_listed_twice_by_one_primal_cell_is_refused[hybrid]",
+   "tests/test_oracle_vvexport.py::test_one_malformed_field_makes_the_export_invalid[hybrid-schema]",
+   "tests/test_oracle_vvexport.py::test_one_malformed_field_makes_the_export_invalid[hybrid-point]",
+   "tests/test_oracle_vvexport.py::test_one_malformed_field_makes_the_export_invalid[hybrid-polygon]",
+   "tests/test_oracle_vvexport.py::test_one_malformed_field_makes_the_export_invalid[hybrid-map]",
+   "tests/test_oracle_vvexport.py::test_one_malformed_field_makes_the_export_invalid[hybrid-mesh]",
+   "tests/test_oracle_vvexport.py::test_check1_finds_no_issue_on_a_file_and_its_export[poly]",
+   "tests/test_oracle_vvexport.py::test_check1_finds_two_cells_relabelled[poly]",
+   "tests/test_oracle_vvexport.py::test_a_reversed_face_of_a_mesh_cell_is_refused[poly]",
+   "tests/test_oracle_vvexport.py::test_a_polygon_listed_twice_by_one_primal_cell_is_refused[poly]",
+   "tests/test_oracle_vvexport.py::test_one_malformed_field_makes_the_export_invalid[poly-schema]",
+   "tests/test_oracle_vvexport.py::test_one_malformed_field_makes_the_export_invalid[poly-point]",
+   "tests/test_oracle_vvexport.py::test_one_malformed_field_makes_the_export_invalid[poly-polygon]",
+   "tests/test_oracle_vvexport.py::test_one_malformed_field_makes_the_export_invalid[poly-map]",
+   "tests/test_oracle_vvexport.py::test_one_malformed_field_makes_the_export_invalid[poly-mesh]",
+   "tests/test_oracle_vvexport.py::test_a_reversed_polygon_inside_an_agglomerated_cell_is_refused",
+   "tests/test_oracle_vvexport.py::test_a_vv_instance_runs_every_check_and_passes[tet]",
+   "tests/test_oracle_vvexport.py::test_a_vv_instance_runs_every_check_and_passes[poly]",
+   "tests/test_oracle_vvexport.py::test_a_vv_instance_without_a_data_directory_is_invalid",
+   "tests/test_oracle_vvexport.py::test_a_vv_instance_with_a_changed_file_is_invalid",
+   "tests/test_oracle_vvexport.py::test_a_node_moved_by_one_ulp_in_the_file_is_refused",
+   "tests/test_oracle_vvexport.py::test_a_malformed_vv_spec_is_invalid[source]",
+   "tests/test_oracle_vvexport.py::test_a_malformed_vv_spec_is_invalid[kind]",
+   "tests/test_oracle_vvexport.py::test_a_malformed_vv_spec_is_invalid[path]",
+   "tests/test_oracle_vvexport.py::test_a_malformed_vv_spec_is_invalid[digest]",
+   "tests/test_oracle_vvexport.py::test_the_real_vv_file_keeps_nodes_its_faces_do_not_use",
+   "tests/test_oracle_vvexport.py::test_a_vertex_set_that_is_not_the_used_points_is_refused[missing]",
+   "tests/test_oracle_vvexport.py::test_a_vertex_set_that_is_not_the_used_points_is_refused[extra]",
+   "tests/test_oracle_vvexport.py::test_a_vertex_set_that_is_not_the_used_points_is_refused[moved]",
+   "tests/test_oracle_vvexport.py::test_a_vertex_set_that_is_not_the_used_points_is_refused[twice]",
+   "tests/test_oracle_vvexport.py::test_a_vv_instance_on_the_real_vv_file_runs_every_check_and_passes",
+   "tests/test_oracle_vvexport.py::test_the_vertices_in_any_order_are_accepted",
+   "tests/test_oracle_vvexport.py::test_an_unused_export_point_among_the_vertices_is_refused",
+   "tests/test_oracle_vvexport.py::test_export_points_sharing_coordinates_are_refused",
+   "tests/test_oracle_stage2.py::test_a_bound_attempt_within_its_bound_meets_the_acceptance_criteria",
+   "tests/test_oracle_stage2.py::test_an_attempt_over_its_bound_or_latched_is_decisive[change0-over its bound]",
+   "tests/test_oracle_stage2.py::test_an_attempt_over_its_bound_or_latched_is_decisive[change1-not within its bound]",
+   "tests/test_oracle_stage2.py::test_an_attempt_over_its_bound_or_latched_is_decisive[change2-no valid end time]",
+   "tests/test_oracle_stage2.py::test_an_attempt_over_its_bound_or_latched_is_decisive[change3-no valid end time]",
+   "tests/test_oracle_stage2.py::test_an_attempt_over_its_bound_or_latched_is_decisive[change4-no valid start time]",
+   "tests/test_oracle_stage2.py::test_an_attempt_over_its_bound_or_latched_is_decisive[change5-an invalid ended_utc_s]",
+   "tests/test_oracle_stage2.py::test_an_attempt_over_its_bound_or_latched_is_decisive[change6-watchdog]",
+   "tests/test_oracle_stage2.py::test_more_attempts_than_the_cap_fail",
+   "tests/test_oracle_stage2.py::test_the_auxiliary_suite_has_its_own_bound",
+   "tests/test_oracle_stage2.py::test_a_stage_2_manifest_without_valid_limits_fails[over0]",
+   "tests/test_oracle_stage2.py::test_a_stage_2_manifest_without_valid_limits_fails[over1]",
+   "tests/test_oracle_stage2.py::test_a_stage_2_manifest_without_valid_limits_fails[over2]",
+   "tests/test_oracle_stage2.py::test_a_stage_2_manifest_without_valid_limits_fails[over3]",
+   "tests/test_oracle_stage2.py::test_an_instance_without_a_frozen_bound_for_its_n_fails",
+   "tests/test_oracle_stage2.py::test_stage_1_is_unchanged",
+   "tests/test_oracle_stage2.py::test_the_watchdog_records_how_the_command_exited",
+   "tests/test_oracle_stage2.py::test_the_watchdog_marks_a_timeout_then_stops_the_command_at_its_bound",
+   "tests/test_oracle_stage2.py::test_the_watchdog_does_not_run_a_command_it_cannot_mark",
+   "tests/test_oracle_stage2.py::test_a_branch_gives_its_instances_each_a_valid_spec[a-5]",
+   "tests/test_oracle_stage2.py::test_a_branch_gives_its_instances_each_a_valid_spec[a-prime-7]",
+   "tests/test_oracle_stage2.py::test_branch_a_prime_needs_its_n16_bound",
+   "tests/test_oracle_stage2.py::test_n16_p0_s11_is_excluded_with_its_reason_and_the_others_come_from_their_own_runs",
+   "tests/test_oracle_stage2.py::test_every_frozen_file_is_a_candidate_of_the_exclusion_check",
+   "tests/test_oracle_stage2.py::test_the_exclusion_check_passes_with_only_the_declared_collision",
+   "tests/test_oracle_stage2.py::test_the_exclusion_check_refuses_a_collision_a_missing_one_a_skip_and_an_empty_universe[universe0-N12 p0.0 s11 collides]",
+   "tests/test_oracle_stage2.py::test_the_exclusion_check_refuses_a_collision_a_missing_one_a_skip_and_an_empty_universe[universe1-expected to collide]",
+   "tests/test_oracle_stage2.py::test_the_exclusion_check_refuses_a_collision_a_missing_one_a_skip_and_an_empty_universe[universe2-vv test not passed]",
+   "tests/test_oracle_stage2.py::test_the_exclusion_check_refuses_a_collision_a_missing_one_a_skip_and_an_empty_universe[universe3-the universe is empty]",
+   "tests/test_oracle_stage2.py::test_a_failing_auxiliary_attempt_stays_decisive_after_a_passing_one",
+   "tests/test_oracle_stage2.py::test_an_attempt_for_an_unknown_instance_fails",
+   "tests/test_oracle_stage2.py::test_an_interrupted_attempt_over_its_bound_is_decisive",
+   "tests/test_oracle_stage2.py::test_the_driver_counts_an_orphan_latch_and_refuses_while_jobs_fly",
+   "tests/test_oracle_stage2.py::test_the_watchdog_kills_what_the_command_leaves_in_its_group",
+   "tests/test_oracle_stage2.py::test_the_watchdog_reports_a_signal_as_128_plus_its_number",
+   "tests/test_oracle_stage2.py::test_the_exclusion_check_needs_a_clean_session_and_every_instance_among_its_candidates",
+   "tests/test_oracle_stage2.py::test_an_expected_collision_must_be_an_excluded_candidate_never_an_instance",
+   "tests/test_oracle_stage2.py::test_the_stage2_manifest_holds_the_branch_bounds_runs_and_reasons[a-levels0-5]",
+   "tests/test_oracle_stage2.py::test_the_stage2_manifest_holds_the_branch_bounds_runs_and_reasons[a-prime-levels1-7]",
+   "tests/test_oracle_stage2.py::test_an_exit_after_the_bound_is_a_timeout",
+   "tests/test_oracle_stage2.py::test_the_driver_refuses_a_marker_over_its_bound"
+  ],
+  "rule": "the oracle suite on the frozen build, the stage 2 tests included: every node id below must pass (none skipped, deselected or missing), within aux_bound_s"
+ },
+ "bounds_s": {
+  "12": 38727,
+  "16": 87183,
+  "6": 1728
+ },
+ "branch": "a-prime",
+ "data": {
+  "root": "spark-5512 ~/cfd/m1-stage2/data",
+  "runs": {
+   "N16 p0.15 s11": 43115495266,
+   "N16 p0.15 s13": 43115499012,
+   "p0.0 s11": 42952304018,
+   "p0.15 s11": 42952307240,
+   "p0.15 s13": 42952310343
+  }
+ },
+ "declaration": "https://github.com/Remenby31/autan/issues/43#issuecomment-6786763697, amended 6787504754 (vertices) and 6799616988 (levels, bounds, window)",
+ "excluded": {
+  "excluded": [
+   "N6 p0.0 s11",
+   "N16 p0.0 s11"
+  ],
+  "reasons": {
+   "N16 p0.0 s11": "byte-identical (file 69d58408..., mesh 5dfb6d5e...) to the vv test test_reference_fv's agglomerated N16 p0 s1, a mesh a vv test generates (section 3), and so to the N16 resource measurement's mesh, which the oracle ran before the freeze (#43, 6809100033 and its follow-up approval)",
+   "N6 p0.0 s11": "byte-identical to test_meshes' N6 p0 s3, a mesh a vv test generates (declaration section 3)"
+  },
+  "rule": "exclude any candidate whose file SHA-256 or mesh SHA-256 equals that of a mesh generated by a vv test, the list re-hashed at the frozen commit"
+ },
+ "frozen_code_sha256": {
+  "codegen/generated/gradients.hpp": "54252a30ead82da4399226cbc725d17570421c19b53cd649119b20f8b285efbb",
+  "codegen/generated/gradients_cpu.hpp": "e17ff4c58b5b9babd9f98522f4b8fbec7067081c2836bd41253113345179a03b",
+  "codegen/include/autan/kernels/runtime.hpp": "06cc008f37b0c6fa6cf179c21fd43e2e39000868ec4946515628eb33097cdb3f"
+ },
+ "instances": [
+  {
+   "bound_s": 1728,
+   "data": "meshes-agglomerated-p0.15-s11",
+   "fields": [
+    {
+     "G": [
+      -0.9,
+      0.4,
+      1.3
+     ],
+     "a": -7.5
+    },
+    {
+     "G": [
+      -0.9,
+      0.4,
+      1.3
+     ],
+     "a": 250.0
+    }
+   ],
+   "files": {
+    "cells": {
+     "name": "agglomerated-dirty-n006.cells.json",
+     "sha256": "3f6ede7623e52462b41b516597fe747c8733950e25d028d794bb8b47e0ff52da"
+    },
+    "mesh": {
+     "name": "agglomerated-dirty-n006.msh",
+     "sha256": "3bbbaae2c7974c45fb47f3f1a142ebef9ca888e9a028d7d6fe1abbd83f5d9a38"
+    }
+   },
+   "id": "s2-agglomerated-N6-p0.15-s11",
+   "kind": "agglomerated",
+   "machine": "spark-5512",
+   "methods": [
+    "lsq",
+    "gg"
+   ],
+   "n": 6,
+   "perturbation": 0.15,
+   "policies": [
+    "fp64",
+    "fp32+acc64",
+    "fp32"
+   ],
+   "provenance": {
+    "attempt": 1,
+    "vv_meshes_run": 42952307240
+   },
+   "seed": 11,
+   "source": "vv-export"
+  },
+  {
+   "bound_s": 1728,
+   "data": "meshes-agglomerated-p0.15-s13",
+   "fields": [
+    {
+     "G": [
+      -0.9,
+      0.4,
+      1.3
+     ],
+     "a": -7.5
+    },
+    {
+     "G": [
+      -0.9,
+      0.4,
+      1.3
+     ],
+     "a": 250.0
+    }
+   ],
+   "files": {
+    "cells": {
+     "name": "agglomerated-dirty-n006.cells.json",
+     "sha256": "cd6aea6579731dbd924b8824209fb81bec31c95cffeff2dae6ca853e13aa019e"
+    },
+    "mesh": {
+     "name": "agglomerated-dirty-n006.msh",
+     "sha256": "8bf8290b21ea368806f86d1e643464d6ba1b7541e896fe54bb675a9e7d188268"
+    }
+   },
+   "id": "s2-agglomerated-N6-p0.15-s13",
+   "kind": "agglomerated",
+   "machine": "spark-5512",
+   "methods": [
+    "lsq",
+    "gg"
+   ],
+   "n": 6,
+   "perturbation": 0.15,
+   "policies": [
+    "fp64",
+    "fp32+acc64",
+    "fp32"
+   ],
+   "provenance": {
+    "attempt": 1,
+    "vv_meshes_run": 42952310343
+   },
+   "seed": 13,
+   "source": "vv-export"
+  },
+  {
+   "bound_s": 38727,
+   "data": "meshes-agglomerated-p0.0-s11",
+   "fields": [
+    {
+     "G": [
+      -0.9,
+      0.4,
+      1.3
+     ],
+     "a": -7.5
+    },
+    {
+     "G": [
+      -0.9,
+      0.4,
+      1.3
+     ],
+     "a": 250.0
+    }
+   ],
+   "files": {
+    "cells": {
+     "name": "agglomerated-n012.cells.json",
+     "sha256": "5785d4e0e1740878f2383c198983206d23406b8e0de8e00b104b77a099f1a809"
+    },
+    "mesh": {
+     "name": "agglomerated-n012.msh",
+     "sha256": "3b6110d8ba18971343975982d3bccf795715dcff60e68ef6a469876a5f37ca1c"
+    }
+   },
+   "id": "s2-agglomerated-N12-p0.0-s11",
+   "kind": "agglomerated",
+   "machine": "spark-5512",
+   "methods": [
+    "lsq",
+    "gg"
+   ],
+   "n": 12,
+   "perturbation": 0.0,
+   "policies": [
+    "fp64",
+    "fp32+acc64",
+    "fp32"
+   ],
+   "provenance": {
+    "attempt": 1,
+    "vv_meshes_run": 42952304018
+   },
+   "seed": 11,
+   "source": "vv-export"
+  },
+  {
+   "bound_s": 38727,
+   "data": "meshes-agglomerated-p0.15-s11",
+   "fields": [
+    {
+     "G": [
+      -0.9,
+      0.4,
+      1.3
+     ],
+     "a": -7.5
+    },
+    {
+     "G": [
+      -0.9,
+      0.4,
+      1.3
+     ],
+     "a": 250.0
+    }
+   ],
+   "files": {
+    "cells": {
+     "name": "agglomerated-dirty-n012.cells.json",
+     "sha256": "1b59af7eba19fd46c28bfc33501ce6469660ab000b9034c2e81a23351c831527"
+    },
+    "mesh": {
+     "name": "agglomerated-dirty-n012.msh",
+     "sha256": "c92b4654324882ae39c28df2a214139bcdb116d8c80b0f54adceff27775e09f9"
+    }
+   },
+   "id": "s2-agglomerated-N12-p0.15-s11",
+   "kind": "agglomerated",
+   "machine": "spark-5512",
+   "methods": [
+    "lsq",
+    "gg"
+   ],
+   "n": 12,
+   "perturbation": 0.15,
+   "policies": [
+    "fp64",
+    "fp32+acc64",
+    "fp32"
+   ],
+   "provenance": {
+    "attempt": 1,
+    "vv_meshes_run": 42952307240
+   },
+   "seed": 11,
+   "source": "vv-export"
+  },
+  {
+   "bound_s": 38727,
+   "data": "meshes-agglomerated-p0.15-s13",
+   "fields": [
+    {
+     "G": [
+      -0.9,
+      0.4,
+      1.3
+     ],
+     "a": -7.5
+    },
+    {
+     "G": [
+      -0.9,
+      0.4,
+      1.3
+     ],
+     "a": 250.0
+    }
+   ],
+   "files": {
+    "cells": {
+     "name": "agglomerated-dirty-n012.cells.json",
+     "sha256": "c1d5a818049edf6868e217e486d416c492ee006b410aaf0571cb323121e97596"
+    },
+    "mesh": {
+     "name": "agglomerated-dirty-n012.msh",
+     "sha256": "a225c0b1c359926a8a62d35b1d115a6d79d47b728583674e50790e3c846121ff"
+    }
+   },
+   "id": "s2-agglomerated-N12-p0.15-s13",
+   "kind": "agglomerated",
+   "machine": "spark-5512",
+   "methods": [
+    "lsq",
+    "gg"
+   ],
+   "n": 12,
+   "perturbation": 0.15,
+   "policies": [
+    "fp64",
+    "fp32+acc64",
+    "fp32"
+   ],
+   "provenance": {
+    "attempt": 1,
+    "vv_meshes_run": 42952310343
+   },
+   "seed": 13,
+   "source": "vv-export"
+  },
+  {
+   "bound_s": 87183,
+   "data": "meshes-agglomerated-p0.15-s11-n16",
+   "fields": [
+    {
+     "G": [
+      -0.9,
+      0.4,
+      1.3
+     ],
+     "a": -7.5
+    },
+    {
+     "G": [
+      -0.9,
+      0.4,
+      1.3
+     ],
+     "a": 250.0
+    }
+   ],
+   "files": {
+    "cells": {
+     "name": "agglomerated-dirty-n016.cells.json",
+     "sha256": "c02c8dbc6b9fecccc3c5f4421a32850de8f228e142cd954aeabaf4b4219a64ca"
+    },
+    "mesh": {
+     "name": "agglomerated-dirty-n016.msh",
+     "sha256": "c5d273a688573aa7b580fb73bfb4b1cabe3529baf2f68ed70fc461e9018bb411"
+    }
+   },
+   "id": "s2-agglomerated-N16-p0.15-s11",
+   "kind": "agglomerated",
+   "machine": "spark-5512",
+   "methods": [
+    "lsq",
+    "gg"
+   ],
+   "n": 16,
+   "perturbation": 0.15,
+   "policies": [
+    "fp64",
+    "fp32+acc64",
+    "fp32"
+   ],
+   "provenance": {
+    "attempt": 1,
+    "vv_meshes_run": 43115495266
+   },
+   "seed": 11,
+   "source": "vv-export"
+  },
+  {
+   "bound_s": 87183,
+   "data": "meshes-agglomerated-p0.15-s13-n16",
+   "fields": [
+    {
+     "G": [
+      -0.9,
+      0.4,
+      1.3
+     ],
+     "a": -7.5
+    },
+    {
+     "G": [
+      -0.9,
+      0.4,
+      1.3
+     ],
+     "a": 250.0
+    }
+   ],
+   "files": {
+    "cells": {
+     "name": "agglomerated-dirty-n016.cells.json",
+     "sha256": "f01af8b4c962abbd20a8e1ab10745e1c0caa80d938056537fc9cbcf12270d9cc"
+    },
+    "mesh": {
+     "name": "agglomerated-dirty-n016.msh",
+     "sha256": "44761629a94dfd1d5fa91662a70798057acacba3435c8c235001211ac6841d8a"
+    }
+   },
+   "id": "s2-agglomerated-N16-p0.15-s13",
+   "kind": "agglomerated",
+   "machine": "spark-5512",
+   "methods": [
+    "lsq",
+    "gg"
+   ],
+   "n": 16,
+   "perturbation": 0.15,
+   "policies": [
+    "fp64",
+    "fp32+acc64",
+    "fp32"
+   ],
+   "provenance": {
+    "attempt": 1,
+    "vv_meshes_run": 43115499012
+   },
+   "seed": 13,
+   "source": "vv-export"
+  }
+ ],
+ "library": "the SHA-256 of the spike library built from this commit is in the freeze record, not here",
+ "oracle_sha256": {
+  "codegen/tests/oracle/certified.py": "293191513548fba7fad43b013000decd6f77393166b9add49f5443361aa3f63c",
+  "codegen/tests/oracle/freeze/collect_stage2.py": "c6631acf5d3cea2e0c0944190a2672474ebf21f267f99d42d44f2641403bf57f",
+  "codegen/tests/oracle/freeze/equivalence.py": "67ffec409b9638ce5f7c08e30365247eb032b4990ef36c36c3d408404ecbac2e",
+  "codegen/tests/oracle/freeze/fixtures_eval.py": "3b7d61b059611fa5c97583718ed2e27e6de3d4d6a511314af9b5578e78ca0c0e",
+  "codegen/tests/oracle/freeze/make_manifest.py": "198d4fc57539df6c2cad5fed1d7351c7b7ecdef3358d2c11e87fa587f200954e",
+  "codegen/tests/oracle/freeze/nodeid_report.py": "5ad418630d9367d2340c62fbd201a7a06f4299b3e4de4433f5330e80a8fb7094",
+  "codegen/tests/oracle/freeze/watchdog.py": "6eb3f29562b2bc73352cde5a8ea1ff0593fcb7ca3fe148e1222b114799c65876",
+  "codegen/tests/oracle/heldout.py": "1db7f74efaa744d4dcf7f70bd07b9a6b30ebd10843b9daaa2777683de46a5167",
+  "codegen/tests/oracle/kernels.py": "c62cda24ea035464400996ad1f22063e49c7ca058d6f2a500088763499f28d4e",
+  "codegen/tests/oracle/sequences.py": "f5f66838cb08f63e32118adeecf1032159904ca4d9703396eafd06a7ded77120",
+  "codegen/tests/oracle/topology.py": "f4f81159d4627b8a2ec9329e3277007955b26bce0d6c0cc85654150c61f7bbf9",
+  "codegen/tests/oracle/vvexport.py": "8f0823dee5d9ed0e36c2302ab1d22e86fe55df61afb1ee677140a1190ac5a057",
+  "codegen/tests/test_oracle_certified.py": "ca7195ce586f734b86d86188f7cb3f6e9ad0eb1b0a7f9fc430a1d2496afbfe02",
+  "codegen/tests/test_oracle_controls.py": "da951230ccb6a7953a54ed78535e254946df1432a069fe64e697ae7d36025a77",
+  "codegen/tests/test_oracle_d1.py": "e66d63574f61091794d3a7d4613a8af7629dc13b484660d8aaf70cf15759f409",
+  "codegen/tests/test_oracle_fixtures.py": "1a8567bb84ab7f6399f19133d6919562090d1b878c71744e15290843fa83ec62",
+  "codegen/tests/test_oracle_freeze_tooling.py": "f9bfab0a73248d1ce6fbeccd764826e8fd5da5d09d09ea43d1fc16620bfe76d5",
+  "codegen/tests/test_oracle_geometry.py": "8e9da43aeb2150778b6aba93ec4a2e723e006913f5fad52e256f62ea85af60f6",
+  "codegen/tests/test_oracle_heldout.py": "c8a7fe25ccacd72996effd1435b3e3826eb3371f157ff06d516a00b43239f7e0",
+  "codegen/tests/test_oracle_roots.py": "de0f8d9ed6573e2616c89a62c87ea5bf6f2865810bef062fa3da95e1a2069c20",
+  "codegen/tests/test_oracle_stage2.py": "fce68284cdfa645f098c15f0c01b3cdfacc53fd76ceb467b5a362e867b3c0e8c",
+  "codegen/tests/test_oracle_tidy.py": "651779d99150808debf85288696308066805d1d7f28826ab2cf1e55ba2621449",
+  "codegen/tests/test_oracle_topology.py": "485b9d570bb34413e46f4ef69f7ca341d64b14c00aafdd657365121c6c334fe1",
+  "codegen/tests/test_oracle_vvexport.py": "72123fc35ea08d355dbd514009049b30d044a382250c1586fa86b9a57f699877",
+  "codegen/tests/test_spike_isolation.py": "993ad1a68714c583c904b181913a274d79b29f5066e3a32a16a102cb904ac9cb"
+ },
+ "positive_fixtures": {
+  "approved": [
+   "poly-constant-N4",
+   "uniform-hex-constant-N4",
+   "uniform-hex-constant-N8"
+  ],
+  "candidates": [
+   {
+    "certifies_R0_and_g_hat_equals_G_everywhere": false,
+    "checks_1_to_4_issues": 0,
+    "covers_every_entry": true,
+    "geometry_radius_zero": false,
+    "name": "uniform-hex-linear-N4",
+    "per_policy_method": {
+     "fp32+acc64/gg": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp32+acc64/lsq": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp32/gg": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp32/lsq": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp64/gg": {
+      "R0": false,
+      "g_hat_equals_G": false
+     },
+     "fp64/lsq": {
+      "R0": false,
+      "g_hat_equals_G": true
+     }
+    },
+    "spec": {
+     "G": [
+      0.5,
+      -0.25,
+      1.0
+     ],
+     "a": 1.0,
+     "kind": "hex",
+     "n": 4,
+     "perturbation": 0.0,
+     "seed": 0
+    },
+    "why_not_certified": "R > 0: a linear field carries the geometry radii (face/cell centroids, volumes, weights) into the gradient; g_hat = G exactly for LSQ and for fp32 GG, not for fp64 GG"
+   },
+   {
+    "certifies_R0_and_g_hat_equals_G_everywhere": false,
+    "checks_1_to_4_issues": 0,
+    "covers_every_entry": true,
+    "geometry_radius_zero": false,
+    "name": "uniform-hex-linear-N8",
+    "per_policy_method": {
+     "fp32+acc64/gg": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp32+acc64/lsq": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp32/gg": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp32/lsq": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp64/gg": {
+      "R0": false,
+      "g_hat_equals_G": false
+     },
+     "fp64/lsq": {
+      "R0": false,
+      "g_hat_equals_G": true
+     }
+    },
+    "spec": {
+     "G": [
+      0.5,
+      -0.25,
+      1.0
+     ],
+     "a": 1.0,
+     "kind": "hex",
+     "n": 8,
+     "perturbation": 0.0,
+     "seed": 0
+    },
+    "why_not_certified": "as uniform-hex-linear-N4"
+   },
+   {
+    "certifies_R0_and_g_hat_equals_G_everywhere": true,
+    "checks_1_to_4_issues": 0,
+    "covers_every_entry": true,
+    "geometry_radius_zero": false,
+    "name": "uniform-hex-constant-N4",
+    "per_policy_method": {
+     "fp32+acc64/gg": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp32+acc64/lsq": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp32/gg": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp32/lsq": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp64/gg": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp64/lsq": {
+      "R0": true,
+      "g_hat_equals_G": true
+     }
+    },
+    "spec": {
+     "G": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "a": 1.0,
+     "kind": "hex",
+     "n": 4,
+     "perturbation": 0.0,
+     "seed": 0
+    },
+    "why_not_certified": null
+   },
+   {
+    "certifies_R0_and_g_hat_equals_G_everywhere": true,
+    "checks_1_to_4_issues": 0,
+    "covers_every_entry": true,
+    "geometry_radius_zero": false,
+    "name": "uniform-hex-constant-N8",
+    "per_policy_method": {
+     "fp32+acc64/gg": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp32+acc64/lsq": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp32/gg": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp32/lsq": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp64/gg": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp64/lsq": {
+      "R0": true,
+      "g_hat_equals_G": true
+     }
+    },
+    "spec": {
+     "G": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "a": 1.0,
+     "kind": "hex",
+     "n": 8,
+     "perturbation": 0.0,
+     "seed": 0
+    },
+    "why_not_certified": null
+   },
+   {
+    "certifies_R0_and_g_hat_equals_G_everywhere": false,
+    "checks_1_to_4_issues": 0,
+    "covers_every_entry": true,
+    "geometry_radius_zero": false,
+    "name": "uniform-hex-zero-component-N4",
+    "per_policy_method": {
+     "fp32+acc64/gg": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp32+acc64/lsq": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp32/gg": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp32/lsq": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp64/gg": {
+      "R0": false,
+      "g_hat_equals_G": false
+     },
+     "fp64/lsq": {
+      "R0": false,
+      "g_hat_equals_G": true
+     }
+    },
+    "spec": {
+     "G": [
+      0.5,
+      0.0,
+      1.0
+     ],
+     "a": 1.0,
+     "kind": "hex",
+     "n": 4,
+     "perturbation": 0.0,
+     "seed": 0
+    },
+    "why_not_certified": "as uniform-hex-linear-N4 (a zero component does not remove the radii of the others)"
+   },
+   {
+    "certifies_R0_and_g_hat_equals_G_everywhere": false,
+    "checks_1_to_4_issues": 0,
+    "covers_every_entry": true,
+    "geometry_radius_zero": false,
+    "name": "tet-constant-N4",
+    "per_policy_method": {
+     "fp32+acc64/gg": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp32+acc64/lsq": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp32/gg": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp32/lsq": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp64/gg": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp64/lsq": {
+      "R0": true,
+      "g_hat_equals_G": true
+     }
+    },
+    "spec": {
+     "G": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "a": 1.0,
+     "kind": "tet",
+     "n": 4,
+     "perturbation": 0.0,
+     "seed": 0
+    },
+    "why_not_certified": "LSQ certifies R = 0 (zero differences); Green-Gauss has R > 0 (q times the area and moment sums, whose geometry radii are nonzero), with g_hat = G exactly"
+   },
+   {
+    "certifies_R0_and_g_hat_equals_G_everywhere": false,
+    "checks_1_to_4_issues": 0,
+    "covers_every_entry": true,
+    "geometry_radius_zero": false,
+    "name": "hybrid-constant-N4",
+    "per_policy_method": {
+     "fp32+acc64/gg": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp32+acc64/lsq": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp32/gg": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp32/lsq": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp64/gg": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp64/lsq": {
+      "R0": true,
+      "g_hat_equals_G": true
+     }
+    },
+    "spec": {
+     "G": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "a": 1.0,
+     "kind": "hybrid",
+     "n": 4,
+     "perturbation": 0.0,
+     "seed": 0
+    },
+    "why_not_certified": "as tet-constant-N4"
+   },
+   {
+    "certifies_R0_and_g_hat_equals_G_everywhere": true,
+    "checks_1_to_4_issues": 0,
+    "covers_every_entry": true,
+    "geometry_radius_zero": false,
+    "name": "poly-constant-N4",
+    "per_policy_method": {
+     "fp32+acc64/gg": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp32+acc64/lsq": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp32/gg": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp32/lsq": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp64/gg": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp64/lsq": {
+      "R0": true,
+      "g_hat_equals_G": true
+     }
+    },
+    "spec": {
+     "G": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "a": 1.0,
+     "kind": "poly",
+     "n": 4,
+     "perturbation": 0.0,
+     "seed": 0
+    },
+    "why_not_certified": null
+   },
+   {
+    "certifies_R0_and_g_hat_equals_G_everywhere": false,
+    "checks_1_to_4_issues": 0,
+    "covers_every_entry": true,
+    "geometry_radius_zero": false,
+    "name": "hex-perturbed-constant-N4",
+    "per_policy_method": {
+     "fp32+acc64/gg": {
+      "R0": false,
+      "g_hat_equals_G": false
+     },
+     "fp32+acc64/lsq": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp32/gg": {
+      "R0": false,
+      "g_hat_equals_G": false
+     },
+     "fp32/lsq": {
+      "R0": true,
+      "g_hat_equals_G": true
+     },
+     "fp64/gg": {
+      "R0": false,
+      "g_hat_equals_G": false
+     },
+     "fp64/lsq": {
+      "R0": true,
+      "g_hat_equals_G": true
+     }
+    },
+    "spec": {
+     "G": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "a": 1.0,
+     "kind": "hex",
+     "n": 4,
+     "perturbation": 0.15,
+     "seed": 3
+    },
+    "why_not_certified": "LSQ certifies R = 0; Green-Gauss has R > 0 and g_hat != G exactly (perturbed geometry)"
+   },
+   {
+    "certifies_R0_and_g_hat_equals_G_everywhere": false,
+    "checks_1_to_4_issues": 0,
+    "covers_every_entry": true,
+    "geometry_radius_zero": false,
+    "name": "single-cell-hex-linear",
+    "per_policy_method": {
+     "fp32+acc64/gg": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp32+acc64/lsq": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp32/gg": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp32/lsq": {
+      "R0": false,
+      "g_hat_equals_G": true
+     },
+     "fp64/gg": {
+      "R0": false,
+      "g_hat_equals_G": false
+     },
+     "fp64/lsq": {
+      "R0": false,
+      "g_hat_equals_G": true
+     }
+    },
+    "spec": {
+     "G": [
+      0.5,
+      -0.25,
+      1.0
+     ],
+     "a": 1.0,
+     "kind": "hex",
+     "n": 1,
+     "perturbation": 0.0,
+     "seed": 0
+    },
+    "why_not_certified": "as uniform-hex-linear-N4 (boundary case: it passes checks 1-4, it does not certify R = 0)"
+   },
+   {
+    "certifies_R0_and_g_hat_equals_G_everywhere": false,
+    "checks_1_to_4_issues": 0,
+    "covers_every_entry": true,
+    "geometry_radius_zero": false,
+    "name": "hex-N3-linear",
+    "per_policy_method": {
+     "fp32+acc64/gg": {
+      "R0": false,
+      "g_hat_equals_G": false
+     },
+     "fp32+acc64/lsq": {
+      "R0": false,
+      "g_hat_equals_G": false
+     },
+     "fp32/gg": {
+      "R0": false,
+      "g_hat_equals_G": false
+     },
+     "fp32/lsq": {
+      "R0": false,
+      "g_hat_equals_G": false
+     },
+     "fp64/gg": {
+      "R0": false,
+      "g_hat_equals_G": false
+     },
+     "fp64/lsq": {
+      "R0": false,
+      "g_hat_equals_G": false
+     }
+    },
+    "spec": {
+     "G": [
+      0.5,
+      -0.25,
+      1.0
+     ],
+     "a": 1.0,
+     "kind": "hex",
+     "n": 3,
+     "perturbation": 0.0,
+     "seed": 0
+    },
+    "why_not_certified": "as uniform-hex-linear-N4 with N = 3 (non-dyadic 1/3): neither R = 0 nor g_hat = G exactly (boundary case: it passes checks 1-4)"
+   }
+  ],
+  "criterion": "certified exact: R = 0 on every cell and component, g_hat = G exactly, and checks 1-4 clean, for every policy and method (ADR 0003, positive fixtures); selected on B sizes among the declared candidates",
+  "test": "codegen/tests/test_oracle_fixtures.py"
+ },
+ "retry_cap": 2,
+ "schema": "autan.adr0003-manifest/1",
+ "stage": 2,
+ "verdict": "fail-closed (heldout.collect, stage 2): every instance's attempt bound, done and passing all its combinations within its bound, at most retry_cap attempts, and the auxiliary suite passing within aux_bound_s; stated as 'acceptance criteria met' on these frozen exports only"
+}

@@ -255,6 +255,9 @@ def _partition(mesh: MeshInfo, r: int) -> tuple[int, int, int]:
         + 8 * counts.cells
         + 16 * fn  # the local mesh's closure check, at most 16 B a face node
     )
+    if p.ghost_stencil != "face2":
+        # The ring check's degree of every global node and map of the owned node copies.
+        extraction += 4 * counts.nodes + 64 * n
     return kept, halo_device, max(extraction, 8 * counts.cells)
 
 
@@ -414,7 +417,14 @@ def _rank(
     vertex = 32 * share.vertex if viscous else 0
     add("physics setup", packed + 32 * stencil + vertex + marks + first_order, transient=True)
     if viscous:
-        _viscous(add, mesh, share, s, sa=sa)
+        _viscous(
+            add,
+            mesh,
+            share,
+            s,
+            sa=sa,
+            steady=isinstance(spec.time, Steady) and device_kind == "cpu",
+        )
     if device_kind != "cpu":
         # DeviceMesh keeps the face colourings on the host; it holds the packed geometry moved
         # into it until release_host after bind. Its setup passes through three phases in
@@ -461,13 +471,16 @@ def _rank(
         )
         add(name, persistent)
         add(f"{name} setup", solver_setup, transient=True)
-        # The inviscid Krylov operator's derivative of the boundary values a cell's fit keeps
-        # (Euler::gradient_tangent, multigrid and lines): d(prim_b)/d(prim) of every face, the
-        # boundary values' tangents, a discarded increment and the list of those cells. Allocated
-        # only where some cell keeps its boundary faces (a one-cell-thick slab: every cell),
-        # counted on every mesh.
-        if not viscous and spec.time.linear_solver in ("multigrid", "lines"):
-            add("boundary state tangent", 25 * s * f + 40 * (f - fi) + 48 * c)
+        # The steady operator's boundary gradient term (Euler::gradient_tangent): the primitives',
+        # the gradients' (linear and the band's) and the limiter bounds' tangents, zero tangents of
+        # the other inputs, the band flag's, and the step's copy of the direction and its image
+        # (euler_physics.cpp, dv_ and dres_).
+        add("gradient tangent", c * (70 * s + 48))
+        # Its derivative of the boundary values a cell's fit keeps (Euler::gradient_tangent):
+        # d(prim_b)/d(prim) of every face, the boundary values' tangents, a discarded increment and
+        # the list of those cells. Allocated only where some cell keeps its boundary faces (a
+        # one-cell-thick slab: every cell), counted on every mesh.
+        add("boundary state tangent", 25 * s * f + 40 * (f - fi) + 48 * c)
 
     # The peak holds every persistent component and the largest transient one: transients
     # are freed in turn, and later allocations reuse their memory.
@@ -491,7 +504,9 @@ def _rank(
 # (docs/sdk/plan.md): s bytes a state value and a geometry weight, the vertex stencil V, the
 # band B and the boundary fit Q at their MeshInfo bounds. A vector grown by doubling holds at
 # most twice its size, and three times while it moves to a larger buffer.
-def _viscous(add: Callable[..., None], mesh: MeshInfo, share: _Share, s: int, *, sa: bool) -> None:
+def _viscous(
+    add: Callable[..., None], mesh: MeshInfo, share: _Share, s: int, *, sa: bool, steady: bool
+) -> None:
     c, f, fi = share.cells, share.faces, share.interior
     fb, v, b, q = f - fi, share.vertex, share.band, share.fit
     k = 2 * fi + fb
@@ -511,6 +526,11 @@ def _viscous(add: Callable[..., None], mesh: MeshInfo, share: _Share, s: int, *,
         "viscous",
         c * (128 * s + 88) + f * (99 * s + 24) + 64 * fi + 40 * v + q * (8 + 21 * s) + 10 * c * s,
     )
+    # Its steady operator's viscous term (NavierStokes::gradient_tangent, steady CPU runs): the
+    # viscous gradients', the primitives', T and u's and the seven fits' tangents, zero tangents
+    # and a flag.
+    if steady:
+        add("viscous tangent", c * (135 * s + 8))
     # Its own packed geometry with a vertex stencil's node lists, or the fit's coefficients
     # (152 B an entry) and entries (4 B) while they grow, whichever is larger.
     packed = 8 * (25 * f + 4 * c + 4 * k) + 16 * counts.nodes + 8 * counts.face_nodes
@@ -539,7 +559,10 @@ def _linear_solver(
     scale = block / 200
     graph = 300 * cells + 60 * interior
     if solver == "gauss-seidel":
-        return "gauss-seidel", block * cells + 8 * cells, 0
+        # The inverse diagonal blocks, and the GCR around the sweeps: 10 directions and their
+        # images, its residual and a vector with ghosts, n values of 8 B a cell each.
+        n = round((block / 8) ** 0.5)
+        return "gauss-seidel", block * cells + 8 * cells + 22 * 8 * n * cells, 0
     if solver == "lines":
         # Persistent 1 700 n0 + 8 E0, and the lines built on the whole mesh at setup.
         return "lines", scale * 1700 * cells + 8 * interior, graph
