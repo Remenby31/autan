@@ -142,6 +142,7 @@
       "long_cells": 13014000
     },
     "multigrid": {
+      "order": "rcm",
       "cells_by_level": [
         48200000,
         6025000,

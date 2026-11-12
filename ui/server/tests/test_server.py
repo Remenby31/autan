@@ -661,7 +661,7 @@ def _archived_state_run(kind: str, runs: Path, tmp_path: Path) -> tuple[Path, Pa
         # Lines of cells within the 4 cells, as mesh.md bounds them.
         mesh["quality"]["lines"] |= {"cells": 0, "long_cells": 0}
         # One level, as mesh-info.md defines it: the 4 cells in a row and their 3 interior faces.
-        mesh["quality"]["multigrid"] = {"cells_by_level": [4], "edges_by_level": [3]}
+        mesh["quality"]["multigrid"] |= {"cells_by_level": [4], "edges_by_level": [3]}
         mesh["cell_zones"] = [{"name": "fluid", "type": None, "native_type": None, "cells": 4}]
         mesh["interfaces"] = []
         digest = autan.initial_state.write(

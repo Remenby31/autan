@@ -67,7 +67,7 @@ The runner of spark-5512 (`spark`) is a guest on a host whose other teams come f
 | Variable | spark-5512 | Effect |
 |---|---|---|
 | `AUTAN_RUNNER_HOME` | `~/cfd/autan-runner` | the lock's directory (`autan-gpu/`) under it, mounted where jobs expect it (`/home/admin/autan-gpu`); no guard cron, the host's crontab is not ours |
-| `AUTAN_RUNNER_CPUSET` | `10-18` | `--cpuset-cpus` for the runner and its proxy: cores 0–9 belong to another team, core 19 to a campaign |
+| `AUTAN_RUNNER_CPUSET` | `10-12,15-19` | `--cpuset-cpus` for the runner and its proxy: cores 0–9 belong to another team, and cores 13 and 14 to a permanent server reserved through the queue's `EXTERNAL_RESERVE` (Meta, 2026-11-11). 8 cores: 8 slots = the largest multi-rank count of the tests (`autan_halo_tests_8_ranks`; with 7, Open MPI refused it, "not enough slots") |
 | `AUTAN_RUNNER_MEMORY` | `16g` | `--memory` and `--memory-swap` |
 | `AUTAN_RUNNER_NICE` | `10` | the runner, and so every job step, runs at this niceness; without `CAP_SYS_NICE` no job can lower it |
 | `AUTAN_RUNNER_BUILD_JOBS` | `6` | `CMAKE_BUILD_PARALLEL_LEVEL` for the jobs: a CUDA compiler process takes up to 2 GB, so 6 fit in 16 GiB |

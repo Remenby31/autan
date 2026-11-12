@@ -32,6 +32,10 @@ class Comm : public Ranks {
   /// The ghost exchange of a part of this run, for PhysicsContext::ghosts.
   [[nodiscard]] virtual std::unique_ptr<GhostExchange> ghost_exchange(
       const LocalPartition& part) = 0;
+  /// The forward exchange of `pattern` on this run's ranks, each component holding `n_owned`
+  /// owned values then the pattern's ghosts (PhysicsContext::halo_exchange). Collective.
+  [[nodiscard]] virtual std::unique_ptr<GhostExchange> halo_exchange(const HaloPattern& pattern,
+                                                                     index_t n_owned) = 0;
   /// Fills the ghost volumes and centroids of `part` (exchange_ghost_geometry).
   virtual void fill_ghosts(LocalPartition& part) = 0;
 };
