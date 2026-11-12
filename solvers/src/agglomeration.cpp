@@ -8,7 +8,10 @@
 #include <set>
 #include <stdexcept>
 #include <tuple>
+#include <type_traits>
 #include <utility>
+
+#include <picosha2.h>
 
 #include "autan/core/lines.hpp"
 
@@ -645,6 +648,58 @@ std::vector<std::vector<std::size_t>> line_colours(const Level& l) {
     colours[static_cast<std::size_t>(colour[li])].push_back(li);
   }
   return colours;
+}
+
+namespace {
+
+void put_u64(picosha2::hash256_one_by_one& h, std::uint64_t v) {
+  std::array<unsigned char, 8> b{};
+  for (std::size_t k = 0; k < 8; ++k) b[k] = static_cast<unsigned char>(v >> (8U * k));
+  h.process(b.begin(), b.end());
+}
+
+template <class T>
+void put_vector(picosha2::hash256_one_by_one& h, const std::vector<T>& values) {
+  put_u64(h, static_cast<std::uint64_t>(values.size()));
+  if constexpr (std::is_same_v<T, std::uint8_t>) {
+    h.process(values.begin(), values.end());
+  } else {
+    for (const T v : values) put_u64(h, static_cast<std::uint64_t>(static_cast<std::int64_t>(v)));
+  }
+}
+
+}  // namespace
+
+std::string multigrid_sha256(const std::vector<Level>& levels) {
+  picosha2::hash256_one_by_one h;
+  const std::string tag = "autan.multigrid/1";
+  h.process(tag.begin(), tag.end());
+  put_u64(h, static_cast<std::uint64_t>(levels.size()));
+  for (const Level& l : levels) {
+    put_u64(h, static_cast<std::uint64_t>(l.n_nodes));
+    put_vector(h, l.owner);
+    put_vector(h, l.neighbour);
+    put_vector(h, l.line_offsets);
+    put_vector(h, l.line_nodes);
+    put_vector(h, l.coarse_node);
+    put_vector(h, l.coarse_edge);
+    put_vector(h, l.coarse_flipped);
+  }
+  h.finish();
+  return picosha2::get_hash_hex_string(h);
+}
+
+Lines line_groups(const Level& level) {
+  Lines out;
+  for (std::size_t l = 0; l < level.n_lines(); ++l) {
+    const auto b = static_cast<std::size_t>(level.line_offsets[l]);
+    const auto e = static_cast<std::size_t>(level.line_offsets[l + 1]);
+    if (e - b < 2) continue;
+    out.cells.insert(out.cells.end(), level.line_nodes.begin() + static_cast<std::ptrdiff_t>(b),
+                     level.line_nodes.begin() + static_cast<std::ptrdiff_t>(e));
+    out.offsets.push_back(static_cast<offset_t>(out.cells.size()));
+  }
+  return out;
 }
 
 std::vector<Level> agglomerate(const Mesh& mesh, const Geometry& geometry,

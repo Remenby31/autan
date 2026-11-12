@@ -135,6 +135,22 @@ test("an equation converged on its round-off plateau no longer counts; at its fl
   expectOrders(appendHistory(empty(), rows, both).orders, [infinite, infinite, infinite]);
 });
 
+test("a momentum component drops from the largest momentum first residual, whatever the axes", () => {
+  // case-schema.md#time (#544): momentum-y starts 5 orders below momentum-x and ends at 1e-9;
+  // against momentum-x's 1 it has dropped 9 orders, as momentum-x has, and swapping the two
+  // axes gives the same drop. Density keeps its own reference.
+  const line = (iteration: number, x: number, y: number) => ({
+    iteration,
+    time: null,
+    residuals: { density: iteration === 1 ? 1 : 1e-10, "momentum-x": x, "momentum-y": y },
+  });
+  const start = { residual_reference: null, woken: [] };
+  const along = appendHistory(empty(), [line(1, 1, 1e-5), line(2, 1e-9, 1e-9)], run(start));
+  const across = appendHistory(empty(), [line(1, 1e-5, 1), line(2, 1e-9, 1e-9)], run(start));
+  expect(along.orders.at(-1)).toBeCloseTo(9);
+  expect(across.orders.at(-1)).toBeCloseTo(9);
+});
+
 test("an equation missing from a continued run's reference leaves the drop undefined", () => {
   const history = appendHistory(
     empty(),

@@ -12,9 +12,27 @@
 #include "autan/kernels/geometry.hpp"
 #include "autan/partition/partition.hpp"
 #include "autan/solvers/agglomeration.hpp"
+#include "autan/solvers/multigrid.hpp"
 
 namespace autan::io {
 namespace {
+
+// The lines of the multigrid's finest level (solvers::agglomerate with the run's options on the
+// mesh as read, level 0) that hold at least two cells, in the hierarchy's order: the groups a
+// multigrid run on a partition keeps whole (mesh-info.md, partition.groups "multigrid").
+// The groups a multigrid run on a partition keeps whole (#259 D2): the finest lines of the
+// hierarchy it builds on the mesh in RCM order, the geometry carried by renumber_geometry as the
+// run carries it (physics' partition_hierarchy), in the cells of `mesh`.
+Lines multigrid_lines(const Mesh& mesh, const Geometry& geometry) {
+  const std::vector<index_t> new_to_old = rcm_order(mesh);
+  AssemblyMap map;
+  const Mesh rcm = renumber_cells(mesh, new_to_old, &map);
+  const std::vector<solvers::Level> levels = solvers::agglomerate(
+      rcm, renumber_geometry(geometry, new_to_old, map), solvers::MultigridOptions{}.agglomeration);
+  Lines lines = solvers::line_groups(levels.front());
+  for (index_t& c : lines.cells) c = new_to_old[static_cast<std::size_t>(c)];
+  return lines;
+}
 
 struct Stencils {
   std::int64_t face2 = 0, vertex = 0, band = 0, boundary_fit = 0;
@@ -188,37 +206,58 @@ Stencils stencils(const Mesh& mesh, const Geometry& geometry) {
   return out;
 }
 
-// What depends on the cell order: the smoother's lines, and the multigrid's hierarchy, which
-// the run builds with its default options on one rank.
-void count_ordered(const Mesh& mesh, const Geometry& geometry, MeshInfoRun& out) {
+// The smoother's lines, which depend on the cell order.
+void count_lines(const Mesh& mesh, const Geometry& geometry, MeshInfoRun& out) {
   const Lines lines = smoother_lines(mesh, geometry);
   out.line_cells = static_cast<std::int64_t>(cells_in_lines(lines));
   out.long_line_cells = static_cast<std::int64_t>(cells_in_lines(lines, long_line));
+}
+
+// The multigrid's hierarchy, built with the run's default options; it depends on the cell order.
+void count_levels(const Mesh& mesh, const Geometry& geometry, MeshInfoRun& out) {
   for (const auto& level : solvers::agglomerate(mesh, geometry)) {
     out.multigrid_cells.push_back(static_cast<std::int64_t>(level.n_nodes));
     out.multigrid_edges.push_back(static_cast<std::int64_t>(level.owner.size()));
   }
 }
 
+const char* order_name(CellOrder order) { return order == CellOrder::rcm ? "rcm" : "input"; }
+
+// Calls visit with the mesh and its geometry in `order`: as read for input, renumbered by
+// rcm_order (renumber_cells, renumber_geometry) for rcm, as the run renumbers.
+template <class Visit>
+void in_order(const Mesh& mesh, const Geometry& geometry, CellOrder order, const Visit& visit) {
+  if (order == CellOrder::input) {
+    visit(mesh, geometry);
+    return;
+  }
+  AssemblyMap map;
+  const std::vector<index_t> new_to_old = rcm_order(mesh);
+  const Mesh ordered = renumber_cells(mesh, new_to_old, &map);
+  visit(ordered, renumber_geometry(geometry, new_to_old, map));
+}
+
 }  // namespace
 
 MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
-                       std::optional<RanksRequest> ranks, GhostStencil ghosts) {
+                       std::optional<RanksRequest> ranks, GhostStencil ghosts,
+                       std::optional<CellOrder> multigrid_order) {
   // As prepare() does: the coordinates in metres before any geometry.
   std::optional<Mesh> metres;
   const Mesh& mesh = scale == 1.0 ? read : metres.emplace(scaled(read, scale));
   const Geometry geometry = compute_geometry(mesh);
+  const CellOrder levels_order = multigrid_order.value_or(order);
   MeshInfoRun out;
   out.line_scale = scale;
-  if (order == CellOrder::rcm) {
-    out.line_order = "rcm";
-    AssemblyMap map;
-    const std::vector<index_t> new_to_old = rcm_order(mesh);
-    const Mesh ordered = renumber_cells(mesh, new_to_old, &map);
-    count_ordered(ordered, renumber_geometry(geometry, new_to_old, map), out);
-  } else {
-    out.line_order = "input";
-    count_ordered(mesh, geometry, out);
+  out.line_order = order_name(order);
+  out.multigrid_order = order_name(levels_order);
+  in_order(mesh, geometry, order, [&](const Mesh& m, const Geometry& g) {
+    count_lines(m, g, out);
+    if (levels_order == order) count_levels(m, g, out);
+  });
+  if (levels_order != order) {
+    in_order(mesh, geometry, levels_order,
+             [&](const Mesh& m, const Geometry& g) { count_levels(m, g, out); });
   }
 
   // The stencil and ghosts are sets, the same in any cell order. On one rank, the run's partition
@@ -290,14 +329,18 @@ MeshInfoRun run_counts(const Mesh& read, double scale, CellOrder order,
   Lines groups{.offsets = {}, .cells = {}};
   if (ranks->groups == RankGroups::lines) {
     groups = smoother_lines(mesh, geometry);
-    if (groups.cells.empty()) groups.offsets.clear();
+  } else if (ranks->groups == RankGroups::multigrid) {
+    groups = multigrid_lines(mesh, geometry);
   }
+  if (groups.cells.empty()) groups.offsets.clear();
   const std::vector<std::int32_t> parts = partition_cells(mesh, ranks->ranks,
                                                           {.cell_weights = cell_cost_weights(mesh),
                                                            .group_offsets = groups.offsets,
                                                            .group_cells = groups.cells});
   MeshInfoRun::Partition p{.ranks = ranks->ranks,
-                           .groups = ranks->groups == RankGroups::lines ? "lines" : "none",
+                           .groups = ranks->groups == RankGroups::lines       ? "lines"
+                                     : ranks->groups == RankGroups::multigrid ? "multigrid"
+                                                                              : "none",
                            .ghost_stencil = ghost_stencil,
                            .cells = {},
                            .ghosts = {},

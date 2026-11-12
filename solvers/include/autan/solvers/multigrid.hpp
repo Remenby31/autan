@@ -46,6 +46,11 @@ class Multigrid {
   [[nodiscard]] const std::vector<Level>& levels() const noexcept { return levels_; }
   /// Whether the coarsest level is solved by dense LU; otherwise by `coarsest_sweeps` sweeps.
   [[nodiscard]] bool direct_coarsest() const noexcept { return direct_; }
+  /// Level `level`'s operator after set_operator, as set_operator takes it: the fine level's are
+  /// the caller's arrays, the coarse levels' the Galerkin products.
+  [[nodiscard]] std::span<const double> diagonal(std::size_t level) const;
+  [[nodiscard]] std::span<const double> upper(std::size_t level) const;
+  [[nodiscard]] std::span<const double> lower(std::size_t level) const;
 
   /// Sets the fine operator, builds the coarse operators P^T A P and factors every level's
   /// smoother. The fine arrays are referenced, not copied: they must stay unchanged and alive
