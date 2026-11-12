@@ -19,7 +19,7 @@ target_include_directories(
 target_link_libraries(
   autan_solvers
   PUBLIC autan::core autan::partition
-  PRIVATE autan_compile_options
+  PRIVATE autan::picosha2 autan_compile_options
 )
 set_target_properties(autan_solvers PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
