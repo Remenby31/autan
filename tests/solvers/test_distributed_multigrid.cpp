@@ -66,7 +66,8 @@ enum class Action { cycle, solve };
 Outcome run(const std::vector<Level>& levels, const System& s,
             const std::vector<std::int32_t>& parts, std::int32_t n_parts,
             const MultigridOptions& options, Action action,
-            std::vector<std::exception_ptr>* failures = nullptr) {
+            std::vector<std::exception_ptr>* failures = nullptr,
+            const std::vector<double>* start = nullptr) {
   const std::size_t n_cells = levels[0].n_nodes;
   Outcome out{std::vector<double>(5 * n_cells, std::numeric_limits<double>::quiet_NaN()), {}};
   autan::test::Hub hub(n_parts);
@@ -90,6 +91,13 @@ Outcome run(const std::vector<Level>& levels, const System& s,
       }
       mg.set_operator(diag, upper, lower);
       std::vector<double> b(5 * n, std::numeric_limits<double>::quiet_NaN()), x(5 * n, 0.0);
+      // A start: every local node, ghosts included, takes its global value.
+      if (start != nullptr) {
+        for (std::size_t i = 0; i < n; ++i) {
+          for (std::size_t c = 0; c < 5; ++c)
+            x[c * n + i] = (*start)[c * n_cells + at(g.node_source[i])];
+        }
+      }
       for (std::size_t i = 0; i < g.n_owned; ++i) {
         for (std::size_t c = 0; c < 5; ++c) b[c * n + i] = s.b[c * n_cells + at(g.node_source[i])];
       }
@@ -125,6 +133,17 @@ Outcome run(const std::vector<Level>& levels, const System& s,
       throw std::logic_error("the parts' GCR reports differ");
   }
   return out;
+}
+
+// The largest |a - b|, infinite when any entry is not finite, so that NaN never passes.
+double max_diff(const std::vector<double>& a, const std::vector<double>& b) {
+  double diff = 0.0;
+  for (std::size_t k = 0; k < a.size(); ++k) {
+    const double d = std::abs(a[k] - b[k]);
+    if (!std::isfinite(d)) return std::numeric_limits<double>::infinity();
+    diff = std::max(diff, d);
+  }
+  return diff;
 }
 
 bool same_bits(const std::vector<double>& a, const std::vector<double>& b) {
@@ -251,27 +270,29 @@ TEST_CASE("a distributed K-cycle and GCR solve repeat their bits on 1 to 4 parts
   }
   // Two runs at a fixed N = 4 give the same bits.
   const auto four = slabs(g, levels[0], 4);
-  CHECK(same_bits(run(levels, s, four, 4, options, Action::solve).x,
-                  run(levels, s, four, 4, options, Action::solve).x));
+  const Outcome first = run(levels, s, four, 4, options, Action::solve);
+  const Outcome again = run(levels, s, four, 4, options, Action::solve);
+  CHECK(same_bits(first.x, again.x));
+  CHECK(first.report.cycles == again.report.cycles);
+  CHECK(std::bit_cast<std::uint64_t>(first.report.residual_drop) ==
+        std::bit_cast<std::uint64_t>(again.report.residual_drop));
   // The same algorithm as Multigrid's K-cycle, whose inner products are sums in index order:
   // one cycle within 1e-10 of its size (a branch taken differently would leave far more).
   autan::solvers::Multigrid host(mesh, g, options);
   host.set_operator(s.diag, s.upper, s.lower);
   std::vector<double> want(s.b.size(), 0.0);
   host.cycle(s.b, want);
-  double diff = 0.0, size = 0.0;
-  for (std::size_t k = 0; k < want.size(); ++k) {
-    diff = std::max(diff, std::abs(one_cycle.x[k] - want[k]));
-    size = std::max(size, std::abs(want[k]));
-  }
-  CHECK(diff <= 1e-10 * size);
+  double size = 0.0;
+  for (const double v : want) size = std::max(size, std::abs(v));
+  CHECK(max_diff(one_cycle.x, want) <= 1e-10 * size);
 }
 
 TEST_CASE("a distributed two-level cycle without smoothing applies P (P^T A P)^-1 P^T",
           "[multigrid][distributed]") {
-  // #259 D2: with no sweep, no scaling and a dense coarse solve, one cycle from x = 0 is the
-  // Galerkin coarse correction. The oracle builds P^T A P and P^T b from the global blocks and
-  // solves it with a dense LU of its own: within 1e-10 of |x|, on 1 to 4 parts.
+  // #259 D2: with no sweep, no scaling and a dense coarse solve, one cycle from x0 is x0 plus the
+  // Galerkin coarse correction, x0 + P (P^T A P)^-1 P^T (b - A x0). The oracle builds P^T A P and
+  // P^T (b - A x0) from the global blocks and solves it with a dense LU of its own: within 1e-10
+  // of |x|, on 1 to 4 parts, from x0 = 0 and from a random x0.
   const fs::path dir{AUTAN_TEST_MESH_DIR};
   const char* file =
       GENERATE("tet-gmsh/tet-gmsh.ascii.msh", "poly/polyMesh", "hybrid/hybrid.ascii.msh");
@@ -290,6 +311,27 @@ TEST_CASE("a distributed two-level cycle without smoothing applies P (P^T A P)^-
   const System s = make_system(levels[0], 5);
   const Level& f = levels[0];
   const std::size_t n = f.n_nodes, nc = levels[1].n_nodes, m = 5 * nc;
+  const bool from_zero = GENERATE(true, false);
+  CAPTURE(from_zero);
+  std::vector<double> x0(5 * n, 0.0);
+  if (!from_zero) {
+    std::mt19937 rng(17);
+    std::uniform_real_distribution<double> u(-1.0, 1.0);
+    for (double& v : x0) v = u(rng);
+  }
+  // r0 = b - A x0, A's block row of node i: its diagonal block, the upper block of each edge it
+  // owns (towards the neighbour), the lower block of each edge it neighbours (towards the owner).
+  std::vector<double> r0 = s.b;
+  const auto apply = [&](std::size_t i, std::size_t j, const double* a) {
+    for (std::size_t p = 0; p < 5; ++p) {
+      for (std::size_t q = 0; q < 5; ++q) r0[p * n + i] -= a[5 * p + q] * x0[q * n + j];
+    }
+  };
+  for (std::size_t i = 0; i < n; ++i) apply(i, i, &s.diag[25 * i]);
+  for (std::size_t e = 0; e < f.owner.size(); ++e) {
+    apply(at(f.owner[e]), at(f.neighbour[e]), &s.upper[25 * e]);
+    apply(at(f.neighbour[e]), at(f.owner[e]), &s.lower[25 * e]);
+  }
   std::vector<double> ac(m * m, 0.0), bc(m, 0.0);
   const auto put = [&](std::size_t i, std::size_t j, const double* a) {
     const auto I = at(f.coarse_node[i]), J = at(f.coarse_node[j]);
@@ -303,7 +345,7 @@ TEST_CASE("a distributed two-level cycle without smoothing applies P (P^T A P)^-
     put(at(f.neighbour[e]), at(f.owner[e]), &s.lower[25 * e]);
   }
   for (std::size_t i = 0; i < n; ++i) {
-    for (std::size_t c = 0; c < 5; ++c) bc[c * nc + at(f.coarse_node[i])] += s.b[c * n + i];
+    for (std::size_t c = 0; c < 5; ++c) bc[c * nc + at(f.coarse_node[i])] += r0[c * n + i];
   }
   // Gaussian elimination with partial pivoting, written here.
   std::vector<std::size_t> perm(m);
@@ -331,16 +373,17 @@ TEST_CASE("a distributed two-level cycle without smoothing applies P (P^T A P)^-
   }
   std::vector<double> want(5 * n);
   for (std::size_t i = 0; i < n; ++i) {
-    for (std::size_t c = 0; c < 5; ++c) want[c * n + i] = xc[c * nc + at(f.coarse_node[i])];
+    for (std::size_t c = 0; c < 5; ++c)
+      want[c * n + i] = x0[c * n + i] + xc[c * nc + at(f.coarse_node[i])];
   }
   double size = 0.0;
   for (const double v : want) size = std::max(size, std::abs(v));
   for (const std::int32_t n_parts : {1, 2, 3, 4}) {
     CAPTURE(n_parts);
-    const auto x = run(levels, s, slabs(g, levels[0], n_parts), n_parts, options, Action::cycle).x;
-    double diff = 0.0;
-    for (std::size_t k = 0; k < want.size(); ++k) diff = std::max(diff, std::abs(x[k] - want[k]));
-    CHECK(diff <= 1e-10 * size);
+    const auto x =
+        run(levels, s, slabs(g, levels[0], n_parts), n_parts, options, Action::cycle, nullptr, &x0)
+            .x;
+    CHECK(max_diff(x, want) <= 1e-10 * size);
   }
 }
 
