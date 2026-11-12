@@ -141,9 +141,11 @@ def judge_all(
     change_docs: list[dict[str, Any]],
     base_docs: list[dict[str, Any]],
     threshold: float = DEFAULT_THRESHOLD,
+    names: set[str] | None = None,
 ) -> list[Row]:
-    """Every benchmark of the base's results, judged against the change's (result documents,
-    one per run, in run order: the k-th of each side form pair k). All runs must come from one GPU and one config, and agree on each
+    """Every benchmark of the base's results, or only ``names`` (the tracked ones) when given,
+    judged against the change's: result documents, one per run, in run order, the k-th of each
+    side forming pair k. All runs must come from one GPU and one config, and agree on each
     benchmark's metric, unit and direction; a benchmark missing from any run is an error."""
     if not change_docs or not base_docs:
         raise BenchError(Code.TOO_FEW_RUNS, "each side needs at least one run")
@@ -175,7 +177,11 @@ def judge_all(
 
     # Every benchmark's runs gathered before any is judged: a missing or changed benchmark is
     # reported as such, not as whatever the first judged benchmark would raise.
-    gathered = [(ref, runs(change_docs, ref), runs(base_docs, ref)) for ref in first["benchmarks"]]
+    refs = [ref for ref in first["benchmarks"] if names is None or ref["name"] in names]
+    if names is not None and len(refs) != len(names):
+        missing = sorted(names - {ref["name"] for ref in refs})
+        raise BenchError(Code.MISSING_BENCHMARK, f"tracked but not measured: {', '.join(missing)}")
+    gathered = [(ref, runs(change_docs, ref), runs(base_docs, ref)) for ref in refs]
     return [
         judge(ref["name"], ref["unit"], ref["better"], change, base, threshold)
         for ref, change, base in gathered
