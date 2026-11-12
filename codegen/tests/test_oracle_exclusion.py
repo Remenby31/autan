@@ -1,11 +1,10 @@
-"""ADR 0003 stage 2's hosted exclusion check, fail-closed on malformed or inconsistent inputs (#43).
-
-Kept apart from the frozen auxiliary suite: the exclusion check runs on hosted CI, not in the held-out
-runs, and this file is not one of the manifest's hashed oracle files."""
-
 from __future__ import annotations
 
 import copy
+import json
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from oracle.freeze import vv_exclusion as vx_ex
@@ -25,12 +24,8 @@ INST12 = {
 MANIFEST = {"instances": [INST12], "excluded": {"excluded": ["N6 p0.0 s11"]}}
 
 
-def _issues(manifest: dict, candidates: dict = CANDIDATES) -> list[str]:
-    return vx_ex.compare(copy.deepcopy(UNIVERSE), copy.deepcopy(candidates), manifest)
-
-
-def test_a_consistent_manifest_passes() -> None:
-    assert _issues(copy.deepcopy(MANIFEST)) == []
+def _issues(manifest: object, candidates: dict = CANDIDATES) -> list[str]:
+    return vx_ex.compare(copy.deepcopy(UNIVERSE), copy.deepcopy(candidates), manifest)  # type: ignore[arg-type]
 
 
 def _with_instance(**changes: object) -> dict:
@@ -39,36 +34,71 @@ def _with_instance(**changes: object) -> dict:
     return m
 
 
+def _without_n12_digest() -> tuple[dict, dict]:
+    m = _with_instance(files={"mesh": {}})
+    c = copy.deepcopy(CANDIDATES)
+    c["candidates"][1]["file_sha256"] = None
+    return m, c
+
+
+def test_a_consistent_manifest_passes() -> None:
+    assert _issues(copy.deepcopy(MANIFEST)) == []
+
+
 @pytest.mark.parametrize(
     ("manifest", "candidates", "needles"),
     [
-        # An instance without its identity, carrying an excluded candidate's file: it collides.
-        (
+        pytest.param(
             {"instances": [{"id": "i6", "files": {"mesh": {"sha256": "f6"}}}],
              "excluded": {"excluded": ["N6 p0.0 s11"]}},
-            CANDIDATES,
-            ["no n, perturbation or seed", "collides with t6"],
+            CANDIDATES, ["no n, perturbation or seed", "collides with t6"],
+            id="instance-without-identity-carrying-an-excluded-file",
         ),
-        # An N12 identity carrying the N6 file: not its candidate's file, and it collides.
-        (_with_instance(files={"mesh": {"sha256": "f6"}}), CANDIDATES,
-         ["not that of candidate N12 p0.0 s11", "instance N12 p0.0 s11 collides with t6"]),
-        # An expected collision missing from the candidates.
-        (copy.deepcopy(MANIFEST),
-         {**CANDIDATES, "candidates": CANDIDATES["candidates"][1:]},
-         ["is listed as an expected collision but is no candidate"]),
-        # A manifest without instances.
-        ({"excluded": {"excluded": ["N6 p0.0 s11"]}}, CANDIDATES, ["the manifest has no instance"]),
-        # A manifest without exclusions.
-        ({"instances": [INST12]}, CANDIDATES, ["expected collision but not excluded"]),
-        # A candidate listed twice.
-        (copy.deepcopy(MANIFEST),
-         {**CANDIDATES, "candidates": [*CANDIDATES["candidates"], CANDIDATES["candidates"][1]]},
-         ["listed twice among the candidates"]),
+        pytest.param(
+            _with_instance(files={"mesh": {"sha256": "f6"}}), CANDIDATES,
+            ["not that of candidate N12 p0.0 s11", "instance N12 p0.0 s11 collides with t6"],
+            id="identity-and-file-of-different-candidates",
+        ),
+        pytest.param(
+            copy.deepcopy(MANIFEST), {**CANDIDATES, "candidates": CANDIDATES["candidates"][1:]},
+            ["is listed as an expected collision but is no candidate"],
+            id="expected-collision-not-a-candidate",
+        ),
+        pytest.param(
+            {"excluded": {"excluded": ["N6 p0.0 s11"]}}, CANDIDATES,
+            ["the manifest has no instance"], id="manifest-without-instances",
+        ),
+        pytest.param(
+            {"instances": [INST12]}, CANDIDATES, ["expected collision but not excluded"],
+            id="manifest-without-exclusions",
+        ),
+        pytest.param(
+            copy.deepcopy(MANIFEST),
+            {**CANDIDATES, "candidates": [*CANDIDATES["candidates"], CANDIDATES["candidates"][1]]},
+            ["listed twice among the candidates"], id="candidate-listed-twice",
+        ),
+        pytest.param(
+            *_without_n12_digest(),
+            ["a candidate without both digests", "its mesh file is no candidate"],
+            id="instance-and-candidate-without-file-digest",
+        ),
+        pytest.param(None, CANDIDATES, [], id="no-manifest-mode-checks-the-universe-only"),
+        pytest.param([], CANDIDATES, ["the manifest is not a JSON object"], id="manifest-not-an-object"),
     ],
 )  # fmt: skip
 def test_the_exclusion_check_fails_closed(
-    manifest: dict, candidates: dict, needles: list[str]
+    manifest: object, candidates: dict, needles: list[str]
 ) -> None:
     found = _issues(manifest, candidates)
-    for needle in needles:
-        assert any(needle in i for i in found), (needle, found)
+    assert all(any(needle in i for i in found) for needle in needles), (needles, found)
+    assert bool(found) == bool(needles)
+
+
+def test_the_cli_refuses_a_manifest_file_holding_null(tmp_path: Path) -> None:
+    u, c, m = tmp_path / "u.json", tmp_path / "c.json", tmp_path / "m.json"
+    u.write_text(json.dumps(UNIVERSE))
+    c.write_text(json.dumps(CANDIDATES))
+    m.write_text("null")
+    cli = Path(vx_ex.__file__)
+    r = subprocess.run([sys.executable, str(cli), str(u), str(c), str(m)], check=False)
+    assert r.returncode == 2
