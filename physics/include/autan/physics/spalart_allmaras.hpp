@@ -90,4 +90,14 @@ std::vector<std::vector<std::size_t>> colour_groups(const Mesh& mesh,
                                                     std::span<const std::int32_t> colours,
                                                     std::int32_t n_colours, std::size_t owned);
 
+/// Largest relative decrease and increase of rho nt in one implicit SA step.
+inline constexpr double sa_max_decrease = 0.5;
+inline constexpr double sa_max_increase = 2.0;
+
+/// The implicit SA step's update of rho nt (`q`, owned cells) by the solution `dx` of its system:
+/// q += alpha clamp(dx, -sa_max_decrease s, sa_max_increase s), s = max(|q|, rho nt_inf), with
+/// `rho` the flow's density after its own update. The converged state never reaches the clamp.
+void update_rho_nt(std::span<double> q, std::span<const double> dx, std::span<const double> rho,
+                   double nt_inf, double alpha);
+
 }  // namespace autan::physics

@@ -25,6 +25,8 @@
 #include "autan/physics/euler.hpp"
 #include "autan/physics/navier_stokes.hpp"
 #include "autan/physics/spalart_allmaras.hpp"
+#include "sa_reference.hpp"
+#include "spalart_allmaras.hpp"
 #include "stretched_slab.hpp"
 
 namespace {
@@ -984,4 +986,75 @@ TEST_CASE(
   REQUIRE(norm > 0.0);
   CHECK(diff <= 1e-6 * norm);
   if (gradients) CHECK(without >= 1e3 * diff);
+}
+
+TEMPLATE_TEST_CASE("the SA cell block is the derivative of the source in rho nt",
+                   "[spalart-allmaras]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // The generated Jacobian of the source loop against dS/dnt from sa_reference.hpp, written apart
+  // from the generator (#163 step 7b): with a uniform density and a uniform nt > 0, grad rho and
+  // grad nt vanish, so the cell block is -V dS/dnt with S the positive branch, at the exact
+  // vorticity of the linear velocity (|(a_2, 0, -a_0)|) and the wall distance below. A wrong
+  // derivative of fw or ft2 (their exp and log) moves it by far more than the tolerance.
+  using P = TestType;
+  const auto* file = GENERATE(from_range(meshes));
+  CAPTURE(file);
+  const auto mesh = autan::io::read_mesh(mesh_dir / file);
+  const auto g = autan::compute_geometry(mesh);
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  Scheme scheme;
+  scheme.limiter = false;
+  const auto w0 = primitive(0.5, 0.5, 0.5);
+  scheme.reference = {
+      rho, rho * w0[1], rho * w0[2], rho * w0[3],
+      w0[4] / (air.gamma - 1.0) + 0.5 * rho * (w0[1] * w0[1] + w0[2] * w0[2] + w0[3] * w0[3])};
+  Transport t;
+  t.sutherland = false;
+  t.mu_ref = mu;
+  t.prandtl = prandtl;
+  NavierStokes<P> ns(mesh, g, air, scheme, t);
+  std::vector<BoundaryKind> kind(nb, BoundaryKind::state);
+  std::vector<double> data(5 * nb);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const auto f = ni + b;
+    const auto w = primitive(g.face_centroid_x[f], g.face_centroid_y[f], g.face_centroid_z[f]);
+    for (std::size_t k = 0; k < 5; ++k) data[k * nb + b] = w[k];
+  }
+  ns.set_boundary(kind, data);
+  std::vector<double> u(5 * n);
+  for (std::size_t c = 0; c < n; ++c) {
+    const auto w = primitive(g.cell_centroid_x[c], g.cell_centroid_y[c], g.cell_centroid_z[c]);
+    u[c] = rho;
+    for (std::size_t k = 0; k < 3; ++k) u[(1 + k) * n + c] = rho * w[1 + k];
+    u[4 * n + c] = w[4] / (air.gamma - 1.0) + 0.5 * rho * (w[1] * w[1] + w[2] * w[2] + w[3] * w[3]);
+  }
+  std::vector<typename P::state> s(5 * n);
+  std::vector<typename P::residual> r(5 * n);
+  ns.state(u, s);
+  ns.residual(s, r);
+
+  const double nu = mu / rho;
+  const double omega = std::hypot(a[2], a[0]);
+  const auto nt = GENERATE_COPY(0.3 * nu, 3.0 * nu, 30.0 * nu);
+  CAPTURE(nt / nu);
+  SpalartAllmaras<P> sa(mesh, g, ns, t);
+  std::vector<double> d(n), nt_b(nb, nt);
+  for (std::size_t c = 0; c < n; ++c) d[c] = 0.05 + g.cell_centroid_y[c];
+  sa.set_wall_distance(d);
+  sa.set_boundary(nt_b);
+  const std::vector<typename P::state> rn(n, static_cast<typename P::state>(rho * nt));
+  std::vector<typename P::residual> res(n);
+  sa.residual_and_jacobian(rn, res);
+  const double e = std::max(eps<P>(), double{std::numeric_limits<typename P::jac>::epsilon()});
+  const auto* cell = sa.data().nt_cell_jac;
+  double worst = 0.0;
+  for (std::size_t c = 0; c < n; ++c) {
+    const double expected = -g.cell_volume[c] * autan::test::source_derivative(nt, nu, omega, d[c]);
+    const double scale =
+        g.cell_volume[c] * autan::test::source_derivative_terms(nt, nu, omega, d[c]).sum;
+    worst = worse(worst, std::abs(static_cast<double>(cell[c]) - expected) / (64.0 * e * scale));
+  }
+  INFO("worst cell: " << worst << " times 64 eps V sum |t_k|");
+  CHECK(worst <= 1.0);
 }
