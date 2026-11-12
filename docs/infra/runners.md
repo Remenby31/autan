@@ -31,7 +31,8 @@ Jobs run directly in the runner container, which is the dev image with the GPU a
 The Spark runs gpu-tests' build, GPU tests and generator only. The CPU tests (`-LE 'gpu|mpi|certificate'` with `-j 4`, then `-L mpi -LE gpu` with `-j 1`) run on hosted `ubuntu-24.04-arm` runners, in job `cpu-tests`:
 - **Image and build.** Each runner builds the tree itself with the Spark job's configuration (the workflow's `CONFIGURE`). It runs in the dev image `gpu-image.yml` published, pinned by digest.
 - **Shards.** `bench/ci/cpu-test-shards.py` deals the tests into three shards by name, and job `cpu-tests-check` checks across the three runners that each CPU test ran exactly once and passed. A skip passes only when the test is listed in `bench/ci/cpu-test-skips.txt`, with the reason and the GB10 run that skips it the same way; any other skip fails like a failure.
-- **MPI settings.** Open MPI runs as root with oversubscription, through environment variables, so the test commands are the Spark's.
+- **MPI settings.** The build declares oversubscription in its launcher flags (`-DMPIEXEC_PREFLAGS=--oversubscribe`, in `CONFIGURE`), as `ci.yml`'s MPI job does, so a test that starts more ranks than the machine has cores runs. Open MPI also runs as root there, through environment variables.
+- **One test may still skip on GB10.** "A run on more ranks than the machine has cores starts through the build's launcher flags" starts cores + 1 ranks: 5 on the hosted runners, 21 on GB10. On GB10 it skips when the mesh has fewer cells than that. The GB10 nightly's ctest step passes a skip; the hosted shards run the test.
 
 The Spark still runs the whole CPU suite on GB10, last, on the nightly and on a manual run (`workflow_dispatch`). When that step does not pass on the nightly (failed, cancelled, timed out, or never reached), the report opens an issue labelled `gb10-cpu-difference`; later nights comment on the open one.
 
@@ -67,7 +68,7 @@ The runner of spark-5512 (`spark`) is a guest on a host whose other teams come f
 | Variable | spark-5512 | Effect |
 |---|---|---|
 | `AUTAN_RUNNER_HOME` | `~/cfd/autan-runner` | the lock's directory (`autan-gpu/`) under it, mounted where jobs expect it (`/home/admin/autan-gpu`); no guard cron, the host's crontab is not ours |
-| `AUTAN_RUNNER_CPUSET` | `10-18` | `--cpuset-cpus` for the runner and its proxy: cores 0–9 belong to another team, core 19 to a campaign |
+| `AUTAN_RUNNER_CPUSET` | `10-12,15-19` | `--cpuset-cpus` for the runner and its proxy: cores 0–9 belong to another team, and cores 13 and 14 to a permanent server reserved through the queue's `EXTERNAL_RESERVE` (Meta, 2026-11-11). 8 cores: 8 slots = the largest multi-rank count of the tests (`autan_halo_tests_8_ranks`; with 7, Open MPI refused it, "not enough slots") |
 | `AUTAN_RUNNER_MEMORY` | `16g` | `--memory` and `--memory-swap` |
 | `AUTAN_RUNNER_NICE` | `10` | the runner, and so every job step, runs at this niceness; without `CAP_SYS_NICE` no job can lower it |
 | `AUTAN_RUNNER_BUILD_JOBS` | `6` | `CMAKE_BUILD_PARALLEL_LEVEL` for the jobs: a CUDA compiler process takes up to 2 GB, so 6 fit in 16 GiB |

@@ -1174,6 +1174,34 @@ TEST_CASE("the line smoother sweeps the same lines whatever the flow model", "[n
   CHECK(colours(false) == colours(true));
 }
 
+TEST_CASE("SA sweeps in cell order on one rank without keys and by colour under keys",
+          "[navier-stokes]") {
+  // One rank without global keys sweeps SA's system cell by cell, whose four pairs reduce its
+  // residual more than the colours' on the TMR flat plate (#699); under keys, on a partition or on
+  // several ranks, by the runtime's colours, the same sweeps on any number of ranks. Gauss-Seidel
+  // for the flow: "ranks" refuses the multigrid (E1109).
+  auto order = [](const char* reproducibility) {
+    const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+      d["reproducibility"] = reproducibility;
+      d["time"]["linear_solver"] = "gauss-seidel";
+      d["time"]["max_iterations"] = 1;
+    });
+    const auto out = run(doc);
+    INFO(out.err);
+    REQUIRE(out.status == ExitStatus::finished);
+    Json sweeps;
+    std::ifstream log_in(out.run / "log.jsonl");
+    for (std::string line; std::getline(log_in, line);) {
+      const Json event = Json::parse(line);
+      if (event["source"] == "linear" && event["data"].contains("sa_order")) sweeps = event["data"];
+    }
+    REQUIRE(sweeps.is_object());
+    return sweeps["sa_order"].get<std::string>();
+  };
+  CHECK(order("run") == "cell");
+  CHECK(order("ranks") == "colour");
+}
+
 TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[euler]") {
   const char* precision = GENERATE("fp64", "fp32+acc64");
   const bool steady = GENERATE(true, false);
@@ -2189,13 +2217,17 @@ TEST_CASE("Spalart-Allmaras on ranks of which one holds no ghost runs as on one 
   REQUIRE(!many.empty());
   // The partition this test needs: a rank without ghosts beside ranks with some.
   std::vector<std::int64_t> ghosts;
+  std::string sa_order;
   std::istringstream log(read(many / "log.jsonl"));
   for (std::string l; std::getline(log, l);) {
     const auto e = Json::parse(l);
     if (e["source"] == "mpi") ghosts = e["data"]["ghost_cells"].get<std::vector<std::int64_t>>();
+    if (e["source"] == "linear" && e["data"].contains("sa_order")) sa_order = e["data"]["sa_order"];
   }
   REQUIRE(ghosts.size() == 3);
   CHECK(std::ranges::count(ghosts, 0) == 1);
+  // Every rank sweeps SA by colour, the rank without ghosts included (#699), in either mode.
+  CHECK(sa_order == "colour");
   if (std::string(reproducibility) == "ranks") {
     CHECK(read(many / "history.jsonl") == read(one.run / "history.jsonl"));
     const auto a = data_arrays(one.run), b = data_arrays(many);
