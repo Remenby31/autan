@@ -48,37 +48,67 @@
       "name": "xmin",
       "type": null,
       "native_type": "patch",
-      "faces": 24
+      "faces": 24,
+      "first_cell_height": {
+        "min": 0.03125,
+        "median": 0.125,
+        "max": 0.125
+      }
     },
     {
       "name": "xmax",
       "type": null,
       "native_type": "patch",
-      "faces": 24
+      "faces": 24,
+      "first_cell_height": {
+        "min": 0.0625,
+        "median": 0.0625,
+        "max": 0.08333333333333337
+      }
     },
     {
       "name": "ymin",
       "type": "wall",
       "native_type": "wall",
-      "faces": 20
+      "faces": 20,
+      "first_cell_height": {
+        "min": 0.03125,
+        "median": 0.07291666666666666,
+        "max": 0.125
+      }
     },
     {
       "name": "ymax",
       "type": null,
       "native_type": "patch",
-      "faces": 20
+      "faces": 20,
+      "first_cell_height": {
+        "min": 0.03125,
+        "median": 0.07291666666666669,
+        "max": 0.125
+      }
     },
     {
       "name": "zmin",
       "type": null,
       "native_type": "patch",
-      "faces": 24
+      "faces": 24,
+      "first_cell_height": {
+        "min": 0.03125,
+        "median": 0.125,
+        "max": 0.125
+      }
     },
     {
       "name": "zmax",
       "type": "symmetry",
       "native_type": "symmetryPlane",
-      "faces": 24
+      "faces": 24,
+      "first_cell_height": {
+        "min": 0.0625,
+        "median": 0.0625,
+        "max": 0.08333333333333337
+      }
     }
   ],
   "cell_zones": [
@@ -117,6 +147,7 @@
       "long_cells": 0
     },
     "multigrid": {
+      "order": "rcm",
       "cells_by_level": [
         216,
         29
@@ -130,6 +161,7 @@
   "partition": {
     "ranks": 1,
     "groups": "none",
+    "ghost_stencil": "face2",
     "cells_by_rank": [
       216
     ],

@@ -2,28 +2,36 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "autan/core/lines.hpp"
-#include "autan/core/wall_distance.hpp"
 #include "autan/kernels/runtime.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/euler_device.hpp"
 #include "autan/physics/first_order_start.hpp"
 #include "autan/physics/manufactured.hpp"
 #include "autan/physics/navier_stokes.hpp"
+#include "autan/physics/navier_stokes_device.hpp"
 #include "autan/physics/point_vortex.hpp"
 #include "autan/physics/spalart_allmaras.hpp"
 #include "autan/runtime/exact_sum.hpp"
@@ -31,6 +39,7 @@
 #include "autan/solvers/agglomeration.hpp"
 #include "autan/solvers/line_smoother.hpp"
 #include "autan/solvers/multigrid.hpp"
+#include "partition_multigrid.hpp"
 
 namespace autan::physics {
 
@@ -127,10 +136,13 @@ Transport transport_of(const runtime::SolverInput& in) {
 template <class P>
 struct SaState {
   SaState(const Mesh& mesh, const Geometry& geometry, NavierStokes<P>& flow, const Transport& t,
-          bool ft2)
-      : model(mesh, geometry, flow, t, ft2) {}
+          bool ft2, const kernels::GlobalKeys* keys)
+      : model(mesh, geometry, flow, t, ft2, keys) {}
   SpalartAllmaras<P> model;
   std::vector<double> rnu, rhs, dx, diag, upper, lower;
+  // The owned cells by global colour, which solve() sweeps with an exchange after each: the same
+  // sweeps on any number of ranks and in any cell order.
+  std::vector<std::vector<std::size_t>> colours;
   double nt_inf = 0.0;  ///< m^2/s, the freestream's
   std::vector<typename P::state> s;
   std::vector<typename P::residual> res;
@@ -147,6 +159,15 @@ class EulerPhysics final : public runtime::Physics {
   using State = typename P::state;
   using Res = typename P::residual;
   static constexpr bool is_viscous = !std::is_same_v<Flow, Euler<P>>;
+
+  // The ghost stencil the flow's scheme reads (PhysicsRegistry::Entry::ghosts).
+  static std::optional<GhostStencil> ghosts(const runtime::SolverInput& in) {
+    if constexpr (is_viscous) {
+      return navier_stokes_ghost_stencil(in.reproducibility == "ranks");
+    } else {
+      return ghost_stencil(flow_scheme(in));
+    }
+  }
 
   explicit EulerPhysics(const PhysicsContext& ctx)
       : exempt_(runtime::residual_names(ctx.input), ctx.input.start && ctx.input.start->woken
@@ -188,16 +209,33 @@ class EulerPhysics final : public runtime::Physics {
       // Under reproducibility "ranks", each row sums its neighbours in global face order.
       if (keys_) matrix_->order_rows(*keys_);
       if (in.time.linear_solver == "multigrid") {
-        multigrid_.emplace(mesh, ctx.geometry);
+        // On a partition (several ranks, or reproducibility "ranks"), the hierarchy of the run's
+        // RCM mesh, from euler_groups: the one-rank RCM path's, the same bits on any number of
+        // ranks and in either order.
+        if (ctx.setup != nullptr) {
+          partitioned_.emplace(ctx);
+        } else {
+          multigrid_.emplace(mesh, ctx.geometry);
+        }
+        const auto& levels = partitioned_ ? partitioned_->levels() : multigrid_->levels();
+        const bool lu =
+            partitioned_ ? partitioned_->direct_coarsest() : multigrid_->direct_coarsest();
         nlohmann::json nodes = nlohmann::json::array(), edges = nlohmann::json::array();
-        for (const auto& l : multigrid_->levels()) {
+        for (const auto& l : levels) {
           nodes.push_back(l.n_nodes);
           edges.push_back(l.owner.size());
+        }
+        // The hierarchy actually used, the same on every rank (checked collectively).
+        const std::string digest = solvers::multigrid_sha256(levels);
+        const double key = static_cast<double>(std::stoull(digest.substr(0, 12), nullptr, 16));
+        if (ctx.ranks.max(key) != -ctx.ranks.max(-key)) {
+          throw std::logic_error("the ranks' multigrid hierarchies differ");
         }
         ctx.log.write("info", "linear", "agglomeration multigrid", {},
                       nlohmann::json{{"nodes", nodes},
                                      {"edges", edges},
-                                     {"coarsest", multigrid_->direct_coarsest() ? "lu" : "sweeps"}}
+                                     {"coarsest", lu ? "lu" : "sweeps"},
+                                     {"multigrid_sha256", digest}}
                           .dump());
       } else if (in.time.linear_solver == "lines") {
         // The multigrid's fine lines, kept whole by the partition, swept over the runtime's
@@ -227,6 +265,14 @@ class EulerPhysics final : public runtime::Physics {
     } else {
       second_order_ = true;
     }
+    // case-schema.md#time: start_order "second" skips the first-order start
+    // (euler.md#time-stepping).
+    if (in.time.kind == "steady" && in.time.start_order == "second") {
+      second_order_ = true;
+      euler_.set_second_order(true);
+      ctx.log.write("info", "solver", "the steady run starts at second order (time.start_order)",
+                    {}, nlohmann::json{{"start_order", "second"}}.dump());
+    }
     if (mms) set_source(*mms);
     std::map<std::string, const runtime::CellZoneInput*> zones;
     for (const auto& z : in.cell_zones) zones[z.zone] = &z;
@@ -254,12 +300,29 @@ class EulerPhysics final : public runtime::Physics {
     apply_vortices();
     if (ctx.device >= 0) {
 #ifdef AUTAN_PHYSICS_CUDA
-      if constexpr (is_viscous) {
-        throw std::logic_error("the Navier-Stokes physics has no device stepper");
-      } else {
+      {
+        // Euler<P>'s or NavierStokes<P>'s (laminar only: SA has no device entry, E0706).
         device_ = make_device_stepper<P>(mesh, ctx.geometry, euler_, gas_.gamma, second_order_,
                                          ctx.ranks, ctx.ghosts, ctx.stream);
         device_->upload(u_);
+        if constexpr (is_viscous) {
+          const bool exp_log = std::ranges::any_of(in.boundaries, [](const auto& b) {
+            return b.kind == "farfield" || b.kind == "inlet";
+          });
+          if (in.precision == "fp32+acc64" && exp_log) {
+            const double gain = device_stencil_gain(euler_.euler(), mesh, ctx.geometry);
+            if (device_gain_warns(true, exp_log, gain)) {
+              ctx.log.warn("W0717",
+                           "the device comparison on this combination is not covered by a tight "
+                           "bound (#586 2(b): G beyond 4.79, the largest G at which tightness was "
+                           "measured)",
+                           nlohmann::json{{"G", gain},
+                                          { "G_covered",
+                                            device_covered_gain }}
+                               .dump());
+            }
+          }
+        }
         if (in.time.kind == "steady") {
           ctx.log.write("warning", "solver",
                         "steady case on the device: explicit SSP-RK3 with local time steps, not "
@@ -283,9 +346,11 @@ class EulerPhysics final : public runtime::Physics {
       throw std::logic_error("the Euler physics was built without CUDA");
 #endif
     }
+    setup_conservation();
   }
 
-  StepReport step(std::int64_t /*iteration*/) override {
+  StepReport step(std::int64_t iteration) override {
+    iteration_ = iteration;
     pressure_valid_ = false;
     // A steady step that solves the first-order start is provisional (case-schema.md#time).
     const bool provisional = ctx_.input.time.kind == "steady" && !second_order_;
@@ -305,6 +370,10 @@ class EulerPhysics final : public runtime::Physics {
       report.diverged_cell = bad;
       return report;
     }
+    if (conservation_ && !conservation_started_) {
+      conservation_started_ = true;
+      check_conservation("start", iteration_ - 1);
+    }
     if (ctx_.input.time.kind == "steady") {
       steady_step(report);
     } else {
@@ -313,6 +382,11 @@ class EulerPhysics final : public runtime::Physics {
     for (auto& v : vortices_) v.circulation = v.next;
     apply_vortices();
     if (!report.diverged_cell) report.diverged_cell = first_invalid_cell();
+    // On the state the step leaves, so that the last "step" event is the written solution's; every
+    // rank agrees on the divergence, which the check would not survive.
+    if (conservation_ && ctx_.ranks.max(report.diverged_cell ? 1.0 : 0.0) == 0.0) {
+      check_conservation("step", iteration_);
+    }
     return report;
   }
 
@@ -339,7 +413,7 @@ class EulerPhysics final : public runtime::Physics {
       }
       out.push_back({.name = "AverageWeight", .values = std::vector<double>(owned_, mean_weight_)});
     }
-    if (sa_) out.push_back({.name = "DensityNuTilde", .values = sa_->rnu});
+    if (sa_) out.push_back({.name = "DensityNuTilde", .values = owned(sa_->rnu, 0)});
     // The steady solver's own state, one uniform field per value (cell-centred, as RestartState).
     if (ctx_.input.time.kind == "steady") {
       for (const auto& [name, value] : solver_state()) {
@@ -351,6 +425,11 @@ class EulerPhysics final : public runtime::Physics {
                      .values = std::vector<double>(owned_, vortices_[i].circulation)});
     }
     return out;
+  }
+
+  [[nodiscard]] std::vector<io::Field> restart_scalars() const override {
+    if (!level_rule || ctx_.input.time.kind != "steady") return {};
+    return {{.name = start_window, .values = first_order_.window_state()}};
   }
 
   // Phi_k = f_k sqrt(sum_i A_i^2 / N), A_i the surface of cell i and f_k the face flux magnitude
@@ -408,8 +487,8 @@ class EulerPhysics final : public runtime::Physics {
     }
     if (sa_) {
       if (mean) throw std::invalid_argument("time averages of SA runs are not supported");
-      io::Field nt{.name = "TurbulentSANuTilde", .values = std::vector<double>(n_)};
-      for (std::size_t c = 0; c < n_; ++c) nt.values[c] = sa_->rnu[c] / u_[c];
+      io::Field nt{.name = "TurbulentSANuTilde", .values = std::vector<double>(owned_)};
+      for (std::size_t c = 0; c < owned_; ++c) nt.values[c] = sa_->rnu[c] / u_[c];
       out.push_back(std::move(nt));
     }
     return out;
@@ -485,15 +564,20 @@ class EulerPhysics final : public runtime::Physics {
   static Flow make_flow(const PhysicsContext& ctx, const Gas& gas,
                         const kernels::GlobalKeys* keys) {
     if constexpr (is_viscous) {
-      // The quadratic gradient in every cell: with the linear one near the boundary only, or with
-      // the fit to cell averages, ns-mms-order loses its order on tetrahedra or hexahedra
-      // (docs/design/euler.md, Quadratic gradient).
-      Scheme s = scheme(ctx.input);
-      s.gradient_fit = GradientFit::quadratic;
-      return Flow(ctx.mesh, ctx.geometry, gas, s, transport_of(ctx.input));
+      return Flow(ctx.mesh, ctx.geometry, gas, flow_scheme(ctx.input), transport_of(ctx.input),
+                  keys, ctx.ghost_stencil);
     } else {
-      return Flow(ctx.mesh, ctx.geometry, gas, scheme(ctx.input), keys);
+      return Flow(ctx.mesh, ctx.geometry, gas, flow_scheme(ctx.input), keys, ctx.ghost_stencil);
     }
+  }
+
+  static Scheme flow_scheme(const runtime::SolverInput& in) {
+    Scheme s = scheme(in);
+    // The quadratic gradient in every cell: with the linear one near the boundary only, or with
+    // the fit to cell averages, ns-mms-order loses its order on tetrahedra or hexahedra
+    // (docs/design/euler.md, Quadratic gradient).
+    if constexpr (is_viscous) s.gradient_fit = GradientFit::quadratic;
+    return s;
   }
 
   struct Vortex {
@@ -510,7 +594,10 @@ class EulerPhysics final : public runtime::Physics {
     const double c = std::sqrt(*in.cell_zones.front().medium.gamma * f.pressure / f.density);
     const double speed = std::max(f.speed, c);
     Scheme s;
-    s.flux = Flux::roe;
+    s.flux = in.flux == "hllc"      ? Flux::hllc
+             : in.flux == "ausm+up" ? Flux::ausm_up
+             : in.flux == "roe"     ? Flux::roe
+                                    : throw std::invalid_argument("unknown flux '" + in.flux + "'");
     // A manufactured solution is smooth by construction: verification measures the design
     // order of the unlimited scheme (docs/design/euler.md, Limiter and verification).
     s.limiter = !in.verification.has_value();
@@ -552,8 +639,13 @@ class EulerPhysics final : public runtime::Physics {
         auto state = solver_state();
         for (auto& [name, value] : state) value = find(start.restart_fields, name)->front();
         set_solver_state(state);
+        if (level_rule) first_order_.restore_window(*find(start.scalars, start_window));
       }
-      if (sa_) sa_->rnu = *find(start.restart_fields, "DensityNuTilde");
+      if (sa_) {
+        const auto& v = *find(start.restart_fields, "DensityNuTilde");
+        std::copy(v.begin(), v.end(), sa_->rnu.begin());
+        fill_ghost_values(sa_->rnu);
+      }
       if (mean_weight_ > 0.0) {
         for (std::size_t k = 0; k < 6; ++k) {
           const auto& v = *find(start.restart_fields, std::string("AverageSum") + field_names[k]);
@@ -571,6 +663,7 @@ class EulerPhysics final : public runtime::Physics {
     if (sa_) {
       const auto& nt = *find(start.fields, "TurbulentSANuTilde");
       for (std::size_t c = 0; c < owned_; ++c) sa_->rnu[c] = rho[c] * nt[c];
+      fill_ghost_values(sa_->rnu);
     }
   }
 
@@ -626,8 +719,10 @@ class EulerPhysics final : public runtime::Physics {
       throw std::invalid_argument("the SA physics runs steady cases only");
     }
     sa_ = std::make_unique<SaState<P>>(mesh, g, euler_, transport_of(in),
-                                       mms == nullptr || mms->turbulence() != "sa-noft2");
+                                       mms == nullptr || mms->turbulence() != "sa-noft2",
+                                       keys_ ? &*keys_ : nullptr);
     auto& t = *sa_;
+    t.model.set_ghosts(&ghost_fill_);
     const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
     const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
     std::vector<std::array<double, 3>> cells(n_), bfaces(nb);
@@ -650,13 +745,10 @@ class EulerPhysics final : public runtime::Physics {
     } else {
       std::map<std::string, std::string> kinds;
       for (const auto& b : in.boundaries) kinds[b.zone] = b.kind;
-      std::vector<index_t> walls;
-      for (std::size_t z = 0; z < mesh.face_zones().size(); ++z) {
-        const auto it = kinds.find(mesh.face_zones()[z].name);
-        if (it != kinds.end() && it->second == "wall") walls.push_back(static_cast<index_t>(z));
-      }
-      if (walls.empty()) throw std::invalid_argument("the SA physics needs a wall");
-      d = wall_distance(mesh, g, walls);
+      // The runtime's, from the walls of the whole mesh: a cell's nearest wall may lie in
+      // another part.
+      if (ctx_.wall_distance.empty()) throw std::invalid_argument("the SA physics needs a wall");
+      d.assign(ctx_.wall_distance.begin(), ctx_.wall_distance.end());
       for (std::size_t b = 0; b < nb; ++b) {
         const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[ni + b])];
         const auto it = kinds.find(zone.name);
@@ -673,6 +765,11 @@ class EulerPhysics final : public runtime::Physics {
       const auto zi = static_cast<std::size_t>(mesh.cell_zone()[c]);
       t.rnu[c] = u_[c] * zones.at(mesh.cell_zones()[zi].name)->initial.nu_tilde.value_or(0.0);
     }
+    // The ghosts' density may not be filled yet: their owners' rho nt.
+    fill_ghost_values(t.rnu);
+    // ADR 0005 (B): SA's system is swept by the runtime's colours on any number of ranks and
+    // whatever the flow's linear solver, so that a device repeats the same sweeps.
+    t.colours = colour_groups(mesh, ctx_.cell_colours, ctx_.n_colours, owned_);
     t.rhs.assign(n_, 0.0);
     t.dx.assign(n_, 0.0);
     t.diag.assign(n_, 0.0);
@@ -966,16 +1063,23 @@ class EulerPhysics final : public runtime::Physics {
       // Loosely coupled: the SA residual at the same state, after the flow's evaluation.
       auto& t = *sa_;
       t.model.residual_and_jacobian(t.stored(t.rnu), t.res);
-      double sum = 0.0;
-      for (const auto r : t.res) sum += static_cast<double>(r) * static_cast<double>(r);
-      report.residuals.push_back(std::sqrt(sum / static_cast<double>(n_)));
+      // As record_norms: an exact sum over the owned cells, the same bits in any order.
+      std::array<runtime::ExactSum, 2> sum;
+      for (std::size_t c = 0; c < owned_; ++c) {
+        const double r = static_cast<double>(t.res[c]);
+        sum[0].add(r * r);
+      }
+      sum[1].add(static_cast<double>(owned_));
+      ctx_.ranks.sum(sum);
+      report.residuals.push_back(std::sqrt(sum[0].value() / sum[1].value()));
     }
     euler_.spectral_radius(lambda_);
     // Largest relative residual over the equations, of the order being solved, leaving out the
     // equations at the round-off floor (the runtime's rule, decided on the reported residuals):
     // their ratio is round-off and would set the CFL number.
-    const double drop = relative_drop(norms.empty() ? report.residuals : norms, report.residuals);
-    switch_order(drop);
+    const std::vector<double>& first = norms.empty() ? report.residuals : norms;
+    const double drop = relative_drop(first, report.residuals);
+    switch_order(drop, first);
     // Switched evolution relaxation, CFL = CFL_0 / (relative residual), times a penalty halved
     // after each step the admissibility check shortened or whose relative residual rose, and
     // recovering by half otherwise.
@@ -995,20 +1099,35 @@ class EulerPhysics final : public runtime::Physics {
     try {
       if (multigrid_) {
         multigrid_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
-        if constexpr (is_viscous) {
-          linear = multigrid_->solve(rhs_, du_, linear_max_cycles, linear_tolerance);
-        } else {
-          // As Multigrid::solve, GCR preconditioned by one cycle, on the operator with the
-          // boundary faces' gradient term.
-          krylov_residual_ = rhs_;
-          linear = gcr_.solve(
-              [&](std::span<const double> v, std::span<double> y) {
-                matrix_->multiply(v, y);
-                add_boundary_gradient_term(v, y);
-              },
-              [&](std::span<const double> r, std::span<double> z) { multigrid_->cycle(r, z); },
-              krylov_residual_, du_, linear_max_cycles, linear_tolerance);
-        }
+        // As Multigrid::solve, GCR preconditioned by one cycle, on the operator with the
+        // boundary faces' gradient term.
+        krylov_residual_ = rhs_;
+        linear = gcr_.solve(
+            [&](std::span<const double> v, std::span<double> y) {
+              matrix_->multiply(v, y);
+              add_boundary_gradient_term(v, y);
+            },
+            [&](std::span<const double> r, std::span<double> z) { multigrid_->cycle(r, z); },
+            krylov_residual_, du_, linear_max_cycles, linear_tolerance);
+      } else if (partitioned_) {
+        // As Multigrid::solve, with the inner products and largest entries of the line sweeps'
+        // GCR: exact sums and maxima over the owned cells of every rank. set_operator throws on
+        // every rank when a block is singular on any.
+        partitioned_->set_operator(matrix_->diagonals(), matrix_->uppers(), matrix_->lowers());
+        if (krylov_v_.size() != rhs_.size()) krylov_v_.assign(rhs_.size(), 0.0);
+        krylov_residual_ = rhs_;
+        linear = gcr_.solve(
+            [&](std::span<const double> v, std::span<double> y) {
+              std::copy(v.begin(), v.end(), krylov_v_.begin());
+              fill_ghosts(krylov_v_);
+              matrix_->multiply(krylov_v_, y);
+              add_boundary_gradient_term(krylov_v_, y);
+            },
+            [&](std::span<const double> r, std::span<double> z) { partitioned_->cycle(r, z); },
+            krylov_residual_, du_, linear_max_cycles, linear_tolerance,
+            {.dot = [this](std::span<const double> u,
+                           std::span<const double> v) { return owned_dot(u, v); },
+             .max_abs = [this](std::span<const double> u) { return owned_max_abs(u); }});
       } else if (lines_) {
         // GCR preconditioned by the line sweeps, as the multigrid's outer iteration; its inner
         // products are exact sums over the owned cells of every rank.
@@ -1046,10 +1165,27 @@ class EulerPhysics final : public runtime::Physics {
         if (ctx_.ranks.max(singular ? 1.0 : 0.0) > 0.0) {
           throw std::domain_error("singular diagonal block");
         }
-        matrix_->gauss_seidel(rhs_, du_, gauss_seidel_sweeps, colours_,
-                              [this](std::span<double> x) { fill_ghosts(x); });
-        // A fixed number of sweeps: no residual is measured, only a singular block fails.
-        linear.residual_drop = 0.0;
+        // GCR preconditioned by the symmetric sweeps, as the line smoother's outer iteration, on
+        // the operator with the boundary faces' gradient term; its inner products are exact sums
+        // over the owned cells of every rank.
+        auto exchange = [this](std::span<double> x) { fill_ghosts(x); };
+        if (krylov_v_.size() != rhs_.size()) krylov_v_.assign(rhs_.size(), 0.0);
+        krylov_residual_ = rhs_;
+        linear = gcr_.solve(
+            [&](std::span<const double> v, std::span<double> y) {
+              std::copy(v.begin(), v.end(), krylov_v_.begin());
+              fill_ghosts(krylov_v_);
+              matrix_->multiply(krylov_v_, y);
+              add_boundary_gradient_term(krylov_v_, y);
+            },
+            [&](std::span<const double> r, std::span<double> z) {
+              std::fill(z.begin(), z.end(), 0.0);
+              matrix_->gauss_seidel(r, z, gauss_seidel_sweeps, colours_, exchange);
+            },
+            krylov_residual_, du_, linear_max_cycles, linear_tolerance,
+            {.dot = [this](std::span<const double> u,
+                           std::span<const double> v) { return owned_dot(u, v); },
+             .max_abs = [this](std::span<const double> u) { return owned_max_abs(u); }});
       }
     } catch (const std::domain_error&) {
       linear = {};  // a singular block: the solve failed
@@ -1098,14 +1234,17 @@ class EulerPhysics final : public runtime::Physics {
         for (std::size_t c = 0; c < n_; ++c) t.rhs[c] = -static_cast<double>(t.res[c]);
         std::fill(t.dx.begin(), t.dx.end(), 0.0);
         t.model.assemble(shift, t.diag, t.upper, t.lower);
-        t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, nt_sweeps);
+        t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, nt_sweeps, t.colours,
+                      [this](std::span<double> x) { fill_ghost_values(x); });
         // Local under-relaxation of the SA update: rho nt changes by at most a fraction of
-        // max(|rho nt|, rho nt_inf) per step, which the converged state never reaches.
-        for (std::size_t c = 0; c < n_; ++c) {
+        // max(|rho nt|, rho nt_inf) per step, which the converged state never reaches. Owned
+        // cells; the ghosts take their owners' values.
+        for (std::size_t c = 0; c < owned_; ++c) {
           const double scale = std::max(std::abs(t.rnu[c]), u_[c] * t.nt_inf);
           t.rnu[c] +=
               alpha * std::clamp(t.dx[c], -nt_max_decrease * scale, nt_max_increase * scale);
         }
+        fill_ghost_values(t.rnu);
       }
     }
   }
@@ -1151,20 +1290,18 @@ class EulerPhysics final : public runtime::Physics {
   // Sum of u v over the owned cells of every rank, exact: the same bits on any partition.
   // y += the boundary faces' derivative through the reconstruction's gradients, which the
   // assembled blocks drop: in large far-field cells the step without it is unstable at the CFL
-  // numbers the SER reaches (ONERA M6, #244). The inviscid flow only.
+  // numbers the SER reaches (ONERA M6, #244).
   void add_boundary_gradient_term(std::span<const double> v, std::span<double> y) {
-    if constexpr (!is_viscous) {
-      // The step that switches to second order solves the first-order system it assembled.
-      if (!jacobian_second_order_) return;
-      if (dv_.size() != 5 * n_) {
-        dv_.assign(5 * n_, State(0));
-        dres_.assign(5 * n_, Res(0));
-      }
-      for (std::size_t i = 0; i < 5 * n_; ++i) dv_[i] = State(v[i]);
-      std::fill(dres_.begin(), dres_.end(), Res(0));
-      euler_.gradient_tangent(state_, dv_, dres_, Flow::Faces::boundary);
-      for (std::size_t i = 0; i < 5 * n_; ++i) y[i] += static_cast<double>(dres_[i]);
+    // The step that switches to second order solves the first-order system it assembled.
+    if (!jacobian_second_order_) return;
+    if (dv_.size() != 5 * n_) {
+      dv_.assign(5 * n_, State(0));
+      dres_.assign(5 * n_, Res(0));
     }
+    for (std::size_t i = 0; i < 5 * n_; ++i) dv_[i] = State(v[i]);
+    std::fill(dres_.begin(), dres_.end(), Res(0));
+    euler_.gradient_tangent(state_, dv_, dres_, Flow::Faces::boundary);
+    for (std::size_t i = 0; i < 5 * n_; ++i) y[i] += static_cast<double>(dres_[i]);
   }
 
   double owned_dot(std::span<const double> u, std::span<const double> v) {
@@ -1186,6 +1323,13 @@ class EulerPhysics final : public runtime::Physics {
       }
     }
     return ctx_.ranks.max(m);
+  }
+
+  // Fills the ghost values of one cell array (n_ values) from their owners. On every rank: the
+  // exchange is collective, even for a part without ghosts.
+  void fill_ghost_values(std::span<double> x) {
+    std::array<double*, 1> c{x.data()};
+    ctx_.ghosts.forward(std::span<double* const>(c), MemorySpace::host, nullptr);
   }
 
   void fill_ghosts(std::span<double> x) {
@@ -1340,7 +1484,9 @@ class EulerPhysics final : public runtime::Physics {
     double drop = 0.0;
     if (first_norms_.empty()) first_norms_ = current;
     for (std::size_t k = 0; k < 5; ++k) {
-      // A woken equation drops from the reference of its kind, as in the convergence rule.
+      // A woken equation drops from the reference of its kind, as in the convergence rule; the
+      // others from their own. The shared momentum value judges convergence only: driving the
+      // CFL number, it slows energy's tail on the TMR flat plate.
       if (exempt_.exempt(k)) continue;
       const double from = exempt_.woken(k) ? exempt_.woken_reference(k) : first_norms_[k];
       if (from > 0.0) drop = std::max(drop, current[k] / from);
@@ -1351,10 +1497,22 @@ class EulerPhysics final : public runtime::Physics {
   // First-order start: its approximate Jacobian is exact, so the steps are robust far from the
   // solution; second order from the step after the first-order residual has dropped. The device
   // starts the same way, so that both solve the same sequence of problems.
-  void switch_order(double drop) {
+  void switch_order(double drop, const std::vector<double>& residuals) {
     if (second_order_) return;
-    // Also once the drop is on a round-off plateau: in fp32+acc64 three orders can lie below it.
-    if (first_order_.ends_after(drop)) {
+    // fp64: also once the drop has stalled. fp32+acc64: once every watched equation's level is
+    // within the band above its round-off floor, where three orders can lie below round-off.
+    std::array<double, FirstOrderStart::equations> floors{};
+    if (level_rule) {
+      if (scales_.empty()) scales_ = residual_scales();
+      // The equations exempt at this step are not watched, as the convergence rule leaves them.
+      for (std::size_t k = 0; k < FirstOrderStart::equations; ++k)
+        floors[k] = exempt_.exempt(k) ? 0.0 : runtime::round_off_floor * scales_[k];
+    }
+    if (first_order_.ends_after(drop, residuals, floors)) {
+      ctx_.log.write(
+          "info", "solver", "first-order start ended", {},
+          nlohmann::json{{"rule", FirstOrderStart::name(first_order_.end())}, {"drop", drop}}
+              .dump());
       second_order_ = true;
       euler_.set_second_order(true);
       if (device_) device_->set_second_order(true);
@@ -1389,7 +1547,8 @@ class EulerPhysics final : public runtime::Physics {
     // The exemption is decided on the residuals the runtime receives, as on the host.
     if (steady)
       switch_order(
-          relative_drop(r.residuals, report.residuals.empty() ? r.residuals : report.residuals));
+          relative_drop(r.residuals, report.residuals.empty() ? r.residuals : report.residuals),
+          r.residuals);
     if (report.residuals.empty()) report.residuals = r.residuals;
     if (!steady) report.time_step = r.time_step;
     report.diverged_cell = r.invalid;
@@ -1420,6 +1579,9 @@ class EulerPhysics final : public runtime::Physics {
     }
     void forward(std::span<double* const> components) override {
       ghosts_.forward(components, MemorySpace::host, nullptr);
+    }
+    CellRows forward_rows(const CellRows& owned, std::span<const std::uint8_t> wanted) override {
+      return ghosts_.forward_rows(owned, wanted);
     }
 
    private:
@@ -1461,6 +1623,302 @@ class EulerPhysics final : public runtime::Physics {
     }
   }
 
+  // AUTAN_CONSERVATION=1 turns on check_conservation (docs/design/euler.md, Conservation check)
+  // on the host steps of the inviscid physics without periodic pairs; elsewhere a warning says it
+  // is not honoured. One decision on every rank: the check is collective.
+  void setup_conservation() {
+    const char* value = std::getenv("AUTAN_CONSERVATION");
+    const double asked = ctx_.ranks.max(value == nullptr ? 0.0 : 1.0);
+    if (asked == 0.0) return;
+    // The first refusal, as a code reduced over the ranks before any rank returns.
+    const bool invalid = value != nullptr && std::string_view(value) != "1";
+    const double local = invalid                        ? 1.0
+                         : ctx_.device >= 0             ? 2.0
+                         : is_viscous                   ? 3.0
+                         : !ctx_.input.periodic.empty() ? 4.0
+                                                        : 0.0;
+    const double refused = ctx_.ranks.max(local);
+    static constexpr std::array<std::pair<const char*, const char*>, 5> reasons{
+        {{"", ""},
+         {"value", "its value is not 1 on some rank"},
+         {"device", "the device steps have no face-flux pass"},
+         {"viscous", "the face fluxes it sums leave out the viscous ones"},
+         {"periodic", "a periodic face and its image are two fluxes"}}};
+    const auto& [reason, why] = reasons[static_cast<std::size_t>(refused)];
+    if (refused > 0.0) {
+      ctx_.log.write(
+          "warning", "solver",
+          std::string("AUTAN_CONSERVATION is set, no conservation check: ") + why, {},
+          nlohmann::json{{"environment", "AUTAN_CONSERVATION"}, {"reason", reason}}.dump());
+      return;
+    }
+    const auto& mesh = ctx_.mesh;
+    const auto owner = mesh.owner();
+    const auto neighbour = mesh.neighbour();
+    const auto offsets = mesh.cell_face_offsets();
+    const auto owned = [&](index_t c) { return static_cast<std::size_t>(c) < owned_; };
+    // The terms the face loops add into each owned cell: its faces among the owned ones.
+    std::vector<std::int64_t> terms(owned_, 0);
+    for (index_t f = 0; f < mesh.n_owned_interior_faces(); ++f) {
+      const auto i = static_cast<std::size_t>(f);
+      if (owned(owner[i])) ++terms[static_cast<std::size_t>(owner[i])];
+      if (owned(neighbour[i])) ++terms[static_cast<std::size_t>(neighbour[i])];
+      if (owned(owner[i]) != owned(neighbour[i])) interface_faces_.push_back(i);
+    }
+    for (index_t f = mesh.n_interior_faces(); f < mesh.n_owned_faces(); ++f) {
+      ++terms[static_cast<std::size_t>(owner[static_cast<std::size_t>(f)])];
+    }
+    std::int64_t faces = 0, most = 0;
+    for (std::size_t c = 0; c < owned_; ++c) {
+      faces = std::max<std::int64_t>(faces, offsets[c + 1] - offsets[c]);
+      most = std::max(most, terms[c]);
+    }
+    max_faces_ = ctx_.ranks.max(faces);
+    max_terms_ = ctx_.ranks.max(most);
+    // AUTAN_CONSERVATION_FACE and AUTAN_CONSERVATION_FACES, and the point, agreed over the ranks
+    // before any rank branches on them: the check's gathers follow them.
+    const char* point = std::getenv("AUTAN_CONSERVATION_FACE");
+    const char* file = std::getenv("AUTAN_CONSERVATION_FACES");
+    std::array<double, 3> p{};
+    bool parsed = point != nullptr;
+    const char* s = point;
+    for (std::size_t a = 0; parsed && a < 3; ++a) {
+      char* end = nullptr;
+      p[a] = std::strtod(s, &end);
+      parsed = end != s && *end == (a < 2 ? ',' : '\0') && std::isfinite(p[a]);
+      s = end + 1;
+    }
+    const double has_point = point != nullptr ? 1.0 : 0.0;
+    const double has_file = file != nullptr && *file != '\0' ? 1.0 : 0.0;
+    const double readable = point == nullptr || parsed ? 1.0 : 0.0;
+    std::array<double, 6> spread{ctx_.ranks.max(has_point) - ctx_.ranks.min(has_point),
+                                 ctx_.ranks.max(has_file) - ctx_.ranks.min(has_file),
+                                 1.0 - ctx_.ranks.min(readable)};
+    for (std::size_t a = 0; a < 3; ++a) spread[3 + a] = ctx_.ranks.max(p[a]) - ctx_.ranks.min(p[a]);
+    if (std::ranges::any_of(spread, [](double v) { return v != 0.0; })) {
+      throw std::invalid_argument(
+          "AUTAN_CONSERVATION_FACE (a point x,y,z) and AUTAN_CONSERVATION_FACES must be the same "
+          "on every rank");
+    }
+    if (has_point > 0.0) selected_at_ = p;
+    if (has_file > 0.0) faces_file_ = file;
+    conservation_ = true;
+    const auto bytes = (5 * n_ + 5 * static_cast<std::size_t>(mesh.n_faces())) * sizeof(Res);
+    ctx_.log.write(
+        "info", "solver",
+        "conservation check on: each host step evaluates the residual's face part and "
+        "every face's flux once more",
+        {},
+        nlohmann::json{
+            {"residuals_per_step", 1}, {"face_flux_passes_per_step", 1}, {"bytes", bytes}}
+            .dump());
+  }
+
+  // On the current state (`at`: "start" before the first step, "step" after each; `iteration`, the
+  // history iteration whose state it is, the start's being the one before the first step), with the
+  // current scheme: R^F, the residual's face part, from the face loops (Euler::face_parts),
+  // against the face fluxes of the write-only loops. Per equation over the owned cells, each an
+  // exact sum over the ranks with the terms added one by one: `faces` sums R^F, `boundary` the
+  // fluxes of the owned cells' boundary faces, E the former minus the latter, D the |flux| of
+  // every incidence of an owned cell. An interface face is evaluated on both of its ranks: the
+  // two values, in the orientation of the mesh as read, must have the same bits.
+  void check_conservation(const char* at, std::int64_t iteration) {
+    if constexpr (!is_viscous) {
+      const auto& mesh = ctx_.mesh;
+      const auto nf = static_cast<std::size_t>(mesh.n_faces());
+      if (face_flux_.empty()) {
+        res_faces_.assign(5 * n_, Res(0));
+        face_flux_.assign(5 * nf, Res(0));
+      }
+      euler_.state(u_, state_);
+      // A steady host step assembles its residual in the fused Jacobian loops: those, then.
+      euler_.face_parts(state_, res_faces_, face_flux_, matrix_.has_value());
+      const auto owner = mesh.owner();
+      const auto neighbour = mesh.neighbour();
+      const auto owned = [&](index_t c) { return static_cast<std::size_t>(c) < owned_; };
+      const auto flux = [&](std::size_t k, std::size_t f) {
+        return static_cast<double>(face_flux_[k * nf + f]);
+      };
+      // Per equation k: E at k, D at 5 + k, boundary at 10 + k, faces at 15 + k.
+      std::array<runtime::ExactSum, 20> sums;
+      for (std::size_t k = 0; k < 5; ++k) {
+        for (std::size_t c = 0; c < owned_; ++c) {
+          const auto r = static_cast<double>(res_faces_[k * n_ + c]);
+          sums[k].add(r);
+          sums[15 + k].add(r);
+        }
+        for (auto f = static_cast<std::size_t>(mesh.n_interior_faces());
+             f < static_cast<std::size_t>(mesh.n_owned_faces()); ++f) {
+          sums[k].add(-flux(k, f));
+          sums[5 + k].add(std::abs(flux(k, f)));
+          sums[10 + k].add(flux(k, f));
+        }
+        for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_owned_interior_faces()); ++f) {
+          if (owned(owner[f])) sums[5 + k].add(std::abs(flux(k, f)));
+          if (owned(neighbour[f])) sums[5 + k].add(std::abs(flux(k, f)));
+        }
+      }
+      ctx_.ranks.sum(sums);
+      // Every rank's interface faces: global id, then the five fluxes. Without the global keys a
+      // face is evaluated in its local orientation, negated back where it runs against the mesh
+      // as read.
+      std::vector<double> mine;
+      mine.reserve(6 * interface_faces_.size());
+      for (const auto f : interface_faces_) {
+        const bool flip = !keys_ && !ctx_.face_reversed.empty() && ctx_.face_reversed[f] != 0;
+        mine.push_back(static_cast<double>(ctx_.face_global_id[f]));
+        for (std::size_t k = 0; k < 5; ++k) mine.push_back(flip ? -flux(k, f) : flux(k, f));
+      }
+      const auto all = ctx_.ranks.all_gather(mine);
+      std::vector<std::size_t> rows(all.size() / 6);
+      std::iota(rows.begin(), rows.end(), std::size_t{0});
+      std::ranges::stable_sort(rows, {}, [&](std::size_t i) { return all[6 * i]; });
+      std::int64_t mismatches = 0;
+      nlohmann::json first = nullptr;
+      for (std::size_t i = 0; i < rows.size();) {
+        std::size_t j = i + 1;
+        while (j < rows.size() && all[6 * rows[j]] == all[6 * rows[i]]) ++j;
+        bool same = j - i == 2;
+        for (std::size_t k = 1; same && k < 6; ++k) {
+          same = std::bit_cast<std::uint64_t>(all[6 * rows[i] + k]) ==
+                 std::bit_cast<std::uint64_t>(all[6 * rows[i + 1] + k]);
+        }
+        if (!same) {
+          if (mismatches == 0) first = static_cast<std::int64_t>(all[6 * rows[i]]);
+          ++mismatches;
+        }
+        i = j;
+      }
+      const auto names = runtime::residual_names(ctx_.input);
+      nlohmann::json data{
+          {"at", at},
+          {"iteration", iteration},
+          {"equations", std::vector<std::string>(names.begin(), names.begin() + 5)}};
+      const std::array<const char*, 4> keys{"E", "D", "boundary", "faces"};
+      for (std::size_t q = 0; q < keys.size(); ++q) {
+        nlohmann::json v = nlohmann::json::array();
+        for (std::size_t k = 0; k < 5; ++k) v.push_back(sums[5 * q + k].value());
+        data[keys[q]] = v;
+      }
+      data["max_faces"] = max_faces_;
+      data["max_terms"] = max_terms_;
+      data["flux_mismatch"] = mismatches;
+      data["first_mismatch"] = first;
+      if (selected_at_) data["selected_face"] = selected_face(*selected_at_);
+      if (!faces_file_.empty() && std::string_view(at) == "start") {
+        write_face_fluxes(data);
+        data["faces_file"] = faces_file_;
+      }
+      ctx_.log.write("info", "solver", "conservation", {}, data.dump());
+    }
+  }
+
+  // Face f as a row: global id, centroid, then the five fluxes in its global orientation
+  // (the write-only loops' values of the last check).
+  void face_row(std::size_t f, std::vector<double>& out) const {
+    const auto nf = static_cast<std::size_t>(ctx_.mesh.n_faces());
+    const bool reversed = !ctx_.face_reversed.empty() && ctx_.face_reversed[f] != 0;
+    const bool flip = !keys_ && reversed;
+    const auto& g = ctx_.geometry;
+    out.push_back(static_cast<double>(ctx_.face_global_id.empty() ? static_cast<std::int64_t>(f)
+                                                                  : ctx_.face_global_id[f]));
+    out.insert(out.end(), {g.face_centroid_x[f], g.face_centroid_y[f], g.face_centroid_z[f]});
+    for (std::size_t k = 0; k < 5; ++k) {
+      const auto v = static_cast<double>(face_flux_[k * nf + f]);
+      out.push_back(flip ? -v : v);
+    }
+  }
+
+  // The interior faces whose global-left cell this rank owns: each face of the mesh on one rank.
+  template <class Visit>
+  void for_left_owned_faces(Visit visit) const {
+    const auto owner = ctx_.mesh.owner();
+    const auto neighbour = ctx_.mesh.neighbour();
+    for (std::size_t f = 0; f < static_cast<std::size_t>(ctx_.mesh.n_owned_interior_faces()); ++f) {
+      const bool reversed = !ctx_.face_reversed.empty() && ctx_.face_reversed[f] != 0;
+      const auto left = static_cast<std::size_t>(reversed ? neighbour[f] : owner[f]);
+      if (left < owned_) visit(f, left);
+    }
+  }
+
+  // AUTAN_CONSERVATION_FACE: the interior faces whose centroid lies within 1e-6 of `at` in every
+  // coordinate, over the ranks. With exactly one, its global id, global-left cell, the rank that
+  // owns that cell, whether it lies on a partition interface, and its flux.
+  [[nodiscard]] nlohmann::json selected_face(const std::array<double, 3>& at) const {
+    const auto& g = ctx_.geometry;
+    const auto cells = ctx_.mesh.cell_global_id();
+    const auto owner = ctx_.mesh.owner();
+    const auto neighbour = ctx_.mesh.neighbour();
+    std::vector<double> mine;
+    for_left_owned_faces([&](std::size_t f, std::size_t left) {
+      const std::array<double, 3> c{g.face_centroid_x[f], g.face_centroid_y[f],
+                                    g.face_centroid_z[f]};
+      for (std::size_t a = 0; a < 3; ++a) {
+        if (!(std::abs(c[a] - at[a]) <= 1e-6)) return;
+      }
+      face_row(f, mine);
+      mine.push_back(
+          static_cast<double>(cells.empty() ? static_cast<std::int64_t>(left) : cells[left]));
+      mine.push_back(static_cast<double>(ctx_.ranks.rank()));
+      const bool interface = static_cast<std::size_t>(owner[f]) >= owned_ ||
+                             static_cast<std::size_t>(neighbour[f]) >= owned_;
+      mine.push_back(interface ? 1.0 : 0.0);
+    });
+    const auto all = ctx_.ranks.all_gather(mine);
+    nlohmann::json out{{"at", at}, {"matches", all.size() / 12}};
+    if (all.size() == 12) {
+      out["id"] = static_cast<std::int64_t>(all[0]);
+      out["centroid"] = {all[1], all[2], all[3]};
+      out["flux"] = {all[4], all[5], all[6], all[7], all[8]};
+      out["left_cell"] = static_cast<std::int64_t>(all[9]);
+      out["rank"] = static_cast<std::int64_t>(all[10]);
+      out["interface"] = all[11] != 0.0;
+    }
+    return out;
+  }
+
+  // AUTAN_CONSERVATION_FACES: every face of the mesh once, gathered to rank 0, which writes a JSON
+  // line (the event's equations, E, D and max_faces, and the counts of interior and boundary
+  // faces), a CSV header, then one row per face in ascending global id: id, 1 for a boundary face
+  // and 0 for an interior one, centroid, the five signed fluxes.
+  void write_face_fluxes(const nlohmann::json& event) const {
+    std::vector<double> mine;
+    const auto row = [&](std::size_t f, double flag) {
+      face_row(f, mine);
+      mine.insert(mine.end() - 8, flag);
+    };
+    for_left_owned_faces([&](std::size_t f, std::size_t) { row(f, 0.0); });
+    for (auto f = static_cast<std::size_t>(ctx_.mesh.n_interior_faces());
+         f < static_cast<std::size_t>(ctx_.mesh.n_owned_faces()); ++f) {
+      row(f, 1.0);
+    }
+    const auto all = ctx_.ranks.all_gather(mine);
+    if (ctx_.ranks.rank() != 0) return;
+    std::vector<std::size_t> rows(all.size() / 10);
+    std::iota(rows.begin(), rows.end(), std::size_t{0});
+    std::ranges::sort(rows, {}, [&](std::size_t i) { return all[10 * i]; });
+    const std::int64_t boundary =
+        std::ranges::count_if(rows, [&](std::size_t i) { return all[10 * i + 1] != 0.0; });
+    std::ofstream out(faces_file_, std::ios::binary | std::ios::trunc);
+    const nlohmann::json head{{"schema", "autan.conservation-faces/1"},
+                              {"equations", event["equations"]},
+                              {"E", event["E"]},
+                              {"D", event["D"]},
+                              {"max_faces", event["max_faces"]},
+                              {"faces", static_cast<std::int64_t>(rows.size()) - boundary},
+                              {"boundary_faces", boundary}};
+    out << head.dump() << "\nface,boundary,x,y,z";
+    for (const auto& name : event["equations"]) out << ',' << name.get<std::string>();
+    out << '\n' << std::setprecision(17);
+    for (const auto i : rows) {
+      out << static_cast<std::int64_t>(all[10 * i]) << ',' << (all[10 * i + 1] != 0.0 ? 1 : 0);
+      for (std::size_t j = 2; j < 10; ++j) out << ',' << all[10 * i + j];
+      out << '\n';
+    }
+    out.close();
+    if (!out) throw std::runtime_error("AUTAN_CONSERVATION_FACES: cannot write " + faces_file_);
+  }
+
   runtime::RoundOffExemption exempt_;
   bool exempt_logged_ = false;
 
@@ -1474,13 +1932,18 @@ class EulerPhysics final : public runtime::Physics {
   std::unique_ptr<SaState<P>> sa_;   // SA-neg runs only
   std::array<double, 5> reference_;  // the state the cells store differences from
   std::vector<double> u_, stage_, mean_, rhs_, du_, first_norms_;
-  FirstOrderStart first_order_;
-  std::optional<BlockMatrix> matrix_;            // steady runs only
-  std::optional<solvers::Multigrid> multigrid_;  // linear_solver = "multigrid"
-  std::optional<solvers::LineSmoother> lines_;   // linear_solver = "lines"
-  solvers::Gcr gcr_;                             // and its outer iteration
-  std::vector<double> krylov_residual_;
-  std::vector<std::vector<std::size_t>> colours_;  // linear_solver = "gauss-seidel": owned cells
+  // fp32+acc64 ends the first-order start on the level rule, fp64 on the stall (#611).
+  static constexpr bool level_rule = std::is_same_v<P, kernels::fp32_acc64>;
+  static constexpr const char* start_window = "SolverStartWindow";
+  FirstOrderStart first_order_{level_rule};
+  std::vector<double> scales_;         // Phi_k of residual_scales(), for the level rule's floors
+  std::optional<BlockMatrix> matrix_;  // steady runs only
+  std::optional<solvers::Multigrid> multigrid_;     // linear_solver = "multigrid"
+  std::optional<PartitionMultigrid> partitioned_;   // and on a partition
+  std::optional<solvers::LineSmoother> lines_;      // linear_solver = "lines"
+  solvers::Gcr gcr_;                                // and its outer iteration
+  std::vector<double> krylov_residual_, krylov_v_;  // the GCR's residual; a vector with ghosts
+  std::vector<std::vector<std::size_t>> colours_;   // linear_solver = "gauss-seidel": owned cells
   double cfl_cap_ = cfl_max;  // after a shortened or rejected step: half its CFL number
   double cfl_ = cfl_start;
   double penalty_ = 1.0;
@@ -1493,6 +1956,14 @@ class EulerPhysics final : public runtime::Physics {
   std::vector<Res> res_, dres_;
   std::vector<double> boundary_data_;  // set_boundary's data, before any vortex
   std::vector<Vortex> vortices_;
+  bool conservation_ = false;
+  bool conservation_started_ = false;  // the event on the state the run starts from is logged
+  std::int64_t iteration_ = 0;         // the history iteration of the step being taken
+  std::optional<std::array<double, 3>> selected_at_;  // AUTAN_CONSERVATION_FACE
+  std::string faces_file_;                            // AUTAN_CONSERVATION_FACES
+  std::int64_t max_faces_ = 0, max_terms_ = 0;
+  std::vector<std::size_t> interface_faces_;
+  std::vector<Res> res_faces_, face_flux_;
 };
 
 template <class P, class Flow>
@@ -1538,26 +2009,12 @@ std::optional<runtime::PhysicsRefusal> euler_scope(const runtime::SolverInput& i
       }
     }
   }
-  // Under reproducibility "ranks" Gauss-Seidel and "lines" sum each row in global face order;
-  // the multigrid still agglomerates, smooths and sums in local cell order.
-  if (in.reproducibility == "ranks" && in.time.kind == "steady" &&
-      in.time.linear_solver == "multigrid") {
+  // The multigrid agglomerates the mesh as read, whose cells have no periodic images.
+  if (in.time.kind == "steady" && in.time.linear_solver == "multigrid" && !in.periodic.empty()) {
     return runtime::PhysicsRefusal{
         .message =
-            "the steady multigrid does not give the same bits on any number of ranks yet; "
-            "linear_solver = \"gauss-seidel\" or \"lines\" does",
-        .path = "reproducibility",
-        .data_json = "{}",
-        .code = "E1109"};
-  }
-  // The multigrid agglomerates one mesh's cells: on a partition, or with periodic image ghosts,
-  // it would be another algorithm. Gauss-Seidel sweeps colours by global id, the same anywhere.
-  if (in.time.kind == "steady" && in.time.linear_solver == "multigrid" &&
-      (ranks > 1 || !in.periodic.empty())) {
-    return runtime::PhysicsRefusal{
-        .message =
-            "the steady multigrid runs on one rank without periodic pairs; set "
-            "linear_solver = \"lines\" or \"gauss-seidel\" until the distributed multigrid lands",
+            "the steady multigrid runs without periodic pairs; set "
+            "linear_solver = \"lines\" or \"gauss-seidel\"",
         .path = "time.linear_solver",
         .data_json = nlohmann::json{{"ranks", ranks}, {"pairs", in.periodic.size()}}.dump()};
   }
@@ -1651,8 +2108,28 @@ std::optional<runtime::PhysicsRefusal> navier_stokes_scope(const runtime::Solver
         .data_json = "{}",
         .code = "E0429"};
   }
-  // NavierStokes<P> and SpalartAllmaras<P> fill no ghost cells of their own (their fields, fits
-  // and Jacobian blocks would be wrong across a periodic pair): one rank, no periodic pairs.
+  // The partitioned multigrid (#259 D2) takes the inviscid physics only: on several ranks the
+  // viscous steady multigrid is refused.
+  if (in.time.kind == "steady" && in.time.linear_solver == "multigrid" && ranks > 1) {
+    return runtime::PhysicsRefusal{
+        .message = "the Navier-Stokes physics runs the steady multigrid on one rank",
+        .path = "physics",
+        .data_json = nlohmann::json{{"ranks", ranks}}.dump()};
+  }
+  // Under reproducibility "ranks" the viscous and turbulence loops, the boundary fit and SA's own
+  // sweeps follow the global order; the steady multigrid still sums in local cell order.
+  if (in.reproducibility == "ranks" && in.time.kind == "steady" &&
+      in.time.linear_solver == "multigrid") {
+    return runtime::PhysicsRefusal{
+        .message =
+            "the steady multigrid does not give the same bits in every cell order yet; "
+            "linear_solver = \"gauss-seidel\" or \"lines\" does",
+        .path = "reproducibility",
+        .data_json = "{}",
+        .code = "E1109"};
+  }
+  // The viscous terms' ghost fills and boundary fits are written for partitions; across a periodic
+  // pair the fits would need image ghosts' translated stencils.
   if (!in.periodic.empty()) {
     return runtime::PhysicsRefusal{
         .message = "the Navier-Stokes physics does not run with periodic pairs yet",
@@ -1742,6 +2219,30 @@ std::optional<runtime::PhysicsRefusal> euler_device_scope(const runtime::SolverI
   }
   return euler_scope(in, ranks);
 }
+
+// The Navier-Stokes physics on a device: one rank, no point vortex, the host's limits otherwise;
+// steady cases take the device's explicit steps. Registered for laminar flow only (ADR 0005): SA
+// on a device has no entry, E0706.
+std::optional<runtime::PhysicsRefusal> navier_stokes_device_scope(const runtime::SolverInput& in,
+                                                                  int ranks) {
+  if (ranks > 1) {
+    return runtime::PhysicsRefusal{
+        .message =
+            "the Navier-Stokes physics runs on one device only, not " + std::to_string(ranks),
+        .path = "devices.kind",
+        .data_json = nlohmann::json{{"ranks", ranks}}.dump()};
+  }
+  for (std::size_t i = 0; i < in.boundaries.size(); ++i) {
+    if (in.boundaries[i].point_vortex) {
+      return runtime::PhysicsRefusal{
+          .message = "the Navier-Stokes physics on a device has no point vortex; boundary zone '" +
+                     in.boundaries[i].zone + "'",
+          .path = "boundaries[" + std::to_string(i) + "].point_vortex",
+          .data_json = nlohmann::json{{"zone", in.boundaries[i].zone}}.dump()};
+    }
+  }
+  return navier_stokes_scope(in, ranks);
+}
 #endif
 
 // EulerPhysics::restart_fields' names: the conserved variables, the averaging sums and weight,
@@ -1772,43 +2273,129 @@ std::vector<std::string> euler_restart_names(const runtime::SolverInput& in, boo
 
 }  // namespace
 
-// linear_solver = "lines": the multigrid's fine lines, computed on the global mesh, which the
-// partition keeps whole.
+template <class P>
+double device_stencil_gain(const Euler<P>& flow, const Mesh& mesh, const Geometry& g) {
+  const auto nc = static_cast<std::size_t>(mesh.n_cells());
+  std::vector<double> reach(nc, 0.0);
+  for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
+    auto at = [&](std::size_t c) {
+      const double d = std::hypot(g.face_centroid_x[f] - g.cell_centroid_x[c],
+                                  g.face_centroid_y[f] - g.cell_centroid_y[c],
+                                  g.face_centroid_z[f] - g.cell_centroid_z[c]);
+      reach[c] = std::max(reach[c], d);
+    };
+    at(static_cast<std::size_t>(mesh.owner()[f]));
+    if (f < static_cast<std::size_t>(mesh.n_interior_faces())) {
+      at(static_cast<std::size_t>(mesh.neighbour()[f]));
+    }
+  }
+  auto gain = [&](auto offsets, std::size_t entries, const std::vector<double>& w) {
+    double worst = 0.0;
+    for (std::size_t c = 0; c < nc; ++c) {
+      double sum = 0.0;
+      for (auto e = static_cast<std::size_t>(offsets[c]);
+           e < static_cast<std::size_t>(offsets[c + 1]); ++e) {
+        sum += std::hypot(w[e], w[entries + e], w[2 * entries + e]);
+      }
+      worst = std::max(worst, sum * reach[c]);
+    }
+    return worst;
+  };
+  const auto& st = flow.stencil();
+  double worst = gain(st.offsets, st.entries.size(), flow.gradient_weights());
+  if (flow.scheme().gradient_fit == GradientFit::quadratic) {
+    const auto q = flow.quadratic_gradient();
+    worst = std::max(worst, gain(q.offsets, q.entries.size(), q.weights));
+  }
+  return worst;
+}
+
+template double device_stencil_gain(const Euler<kernels::fp64>&, const Mesh&, const Geometry&);
+template double device_stencil_gain(const Euler<kernels::fp32_acc64>&, const Mesh&,
+                                    const Geometry&);
+
+// Groups the partition keeps whole, computed on the global mesh: for linear_solver = "lines", the
+// smoother's lines; for "multigrid" on a partition, the hierarchy's level-0 lines (line_groups),
+// with the hierarchy itself.
 runtime::CellGroups euler_groups(const runtime::SolverInput& in, const Mesh& mesh,
-                                 const Geometry& geometry) {
-  if (in.time.kind != "steady" || in.time.linear_solver != "lines") return {};
-  auto lines = smoother_lines(mesh, geometry);
-  if (lines.cells.empty()) return {};
-  return {std::move(lines.offsets), std::move(lines.cells)};
+                                 const Geometry& geometry, int ranks) {
+  if (in.time.kind != "steady") return {};
+  const bool partitioned =
+      in.time.linear_solver == "multigrid" && (ranks > 1 || in.reproducibility == "ranks");
+  if (in.time.linear_solver != "lines" && !partitioned) return {};
+  runtime::CellGroups groups;
+  std::shared_ptr<const Hierarchy> hierarchy;
+  Lines lines;
+  if (partitioned) {
+    hierarchy = partition_hierarchy(mesh, geometry);
+    // The RCM hierarchy's level-0 lines, in read cells.
+    lines = solvers::line_groups(hierarchy->levels.front());
+    for (index_t& c : lines.cells) c = hierarchy->new_to_old[static_cast<std::size_t>(c)];
+  } else {
+    lines = smoother_lines(mesh, geometry);
+  }
+  if (!lines.cells.empty()) {
+    groups.offsets = std::move(lines.offsets);
+    groups.cells = std::move(lines.cells);
+  }
+  groups.setup = std::move(hierarchy);
+  return groups;
+}
+
+// fp32+acc64's first-order start keeps its window in the SolverState (#611).
+std::vector<std::pair<std::string, std::int64_t>> euler_restart_scalars(
+    const runtime::SolverInput& in, bool /*averaging*/) {
+  if (in.precision != "fp32+acc64" || in.time.kind != "steady") return {};
+  return {{"SolverStartWindow", static_cast<std::int64_t>(FirstOrderStart::window_size)}};
 }
 
 void register_euler(runtime::PhysicsRegistry& registry) {
   registry.add({"compressible", "inviscid", "fp64", "cpu"},
                factory<kernels::fp64, Euler<kernels::fp64>>(), euler_scope,
-               /*several_ranks=*/true, euler_groups, euler_restart_names);
+               /*several_ranks=*/true, euler_groups, euler_restart_names,
+               EulerPhysics<kernels::fp64, Euler<kernels::fp64>>::ghosts, euler_restart_scalars);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cpu"},
                factory<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>(), euler_scope,
-               /*several_ranks=*/true, euler_groups, euler_restart_names);
+               /*several_ranks=*/true, euler_groups, euler_restart_names,
+               EulerPhysics<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>::ghosts,
+               euler_restart_scalars);
 #ifdef AUTAN_PHYSICS_CUDA
   registry.add({"compressible", "inviscid", "fp64", "cuda"},
                factory<kernels::fp64, Euler<kernels::fp64>>(), euler_device_scope,
-               /*several_ranks=*/false, {}, euler_restart_names);
+               /*several_ranks=*/false, {}, euler_restart_names,
+               EulerPhysics<kernels::fp64, Euler<kernels::fp64>>::ghosts, euler_restart_scalars);
   registry.add({"compressible", "inviscid", "fp32+acc64", "cuda"},
                factory<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>(), euler_device_scope,
-               /*several_ranks=*/false, {}, euler_restart_names);
+               /*several_ranks=*/false, {}, euler_restart_names,
+               EulerPhysics<kernels::fp32_acc64, Euler<kernels::fp32_acc64>>::ghosts,
+               euler_restart_scalars);
 #endif
 }
 
 void register_navier_stokes(runtime::PhysicsRegistry& registry) {
-  // One rank only: NavierStokes<P> and SpalartAllmaras<P> fill no ghost cells of their own.
   for (const char* model : {"laminar", "sa"}) {
     registry.add({"compressible", model, "fp64", "cpu"},
                  factory<kernels::fp64, NavierStokes<kernels::fp64>>(), navier_stokes_scope,
-                 /*several_ranks=*/false, euler_groups, euler_restart_names);
+                 /*several_ranks=*/true, euler_groups, euler_restart_names,
+                 EulerPhysics<kernels::fp64, NavierStokes<kernels::fp64>>::ghosts,
+                 euler_restart_scalars,
+                 /*wall_distance=*/std::string(model) == "sa");
     registry.add({"compressible", model, "fp32+acc64", "cpu"},
                  factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>(),
-                 navier_stokes_scope, /*several_ranks=*/false, euler_groups, euler_restart_names);
+                 navier_stokes_scope, /*several_ranks=*/true, euler_groups, euler_restart_names,
+                 EulerPhysics<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>::ghosts,
+                 euler_restart_scalars,
+                 /*wall_distance=*/std::string(model) == "sa");
   }
+#ifdef AUTAN_PHYSICS_CUDA
+  registry.add({"compressible", "laminar", "fp64", "cuda"},
+               factory<kernels::fp64, NavierStokes<kernels::fp64>>(), navier_stokes_device_scope,
+               /*several_ranks=*/false, {}, euler_restart_names, {}, euler_restart_scalars);
+  registry.add({"compressible", "laminar", "fp32+acc64", "cuda"},
+               factory<kernels::fp32_acc64, NavierStokes<kernels::fp32_acc64>>(),
+               navier_stokes_device_scope, /*several_ranks=*/false, {}, euler_restart_names, {},
+               euler_restart_scalars);
+#endif
 }
 
 }  // namespace autan::physics

@@ -12,7 +12,7 @@ What each reader holds while it reads, and the bound that covers it, so that the
 | **D** CGNS descriptors, filters and point lists | `source.descriptor_bytes`, `source.filtered_bytes` (largest chunk), HDF5's caches, 12 MiB 64 KiB, and 8 × `source.point_list_ids` + 1 MiB of listed ids | mesh.md, Memory of a CGNS read |
 | **C** chunks | element sections and point lists read 4096 offsets and 2^17 entries at a time: 1 MiB 32 KiB | mesh.md, Memory of a CGNS read |
 | **T** texts | a name, key, header entry or other free text at most 4096 bytes (E0122), `ZoneNames` (families + 1) × 25 600 bytes, `RunMetadata` 64 KiB, a state file's strings 4096 (written in at most 6 each) and numbers 64 characters | mesh.md, E0122; results.md; face-states.md, initial-state.md |
-| **R** refused counts | Fluent fluid, solid and interior zone records ≤ 16 384; a polyMesh uniform list ≤ the faces or cells it labels; a Fluent section header ≤ 8 fields; a state file ≤ 16 384 zones and nesting ≤ its structure; a start's FlowSolution and FlowSolutionMean exactly the run's fields, its RestartState exactly the physics' arrays | mesh.md, Readers; results.md |
+| **R** refused counts | Fluent fluid, solid and interior zone records ≤ 16 384; a polyMesh uniform list ≤ the faces or cells it labels; a Fluent section header ≤ 8 fields; a state file ≤ 16 384 zones and nesting ≤ its structure; a start's FlowSolution and FlowSolutionMean exactly the run's fields, for a continue its RestartState exactly the physics' arrays and its SolverState exactly the physics' names and lengths | mesh.md, Readers; results.md |
 | **F** fixed | independent of the input | — |
 
 A temporary that lives for one item of the input (one element, one face, one record) is listed only when that item's size is not already bounded by its class.
@@ -76,7 +76,7 @@ A temporary that lives for one item of the input (one element, one face, one rec
 | `xyz_`, `node_seen_`, `cell_fluent_zone_`, `cell_element_` | nodes and cells, checked against the file's size | M |
 | `face_offsets_`, `face_nodes_`, `face_cell0_`, `face_cell1_`, `face_block_` and their copies | faces and face nodes | M |
 | `face_blocks_`, `cell_zone_order_` | face and cell sections, bounded by faces and cells | M |
-| `records_`, the last record's offset per zone id (a map node, 64 bytes), read again for the zones cells and faces use and the boundary zones declared without faces | distinct zone ids: fluid, solid and interior ones at most 16 384, the others each a face block's zone or a zone of MeshInfo | R, M |
+| `records_`, the last record's offset per zone id, 16 bytes a record, sorted and made distinct in place before the list grows and once parsed, then grown only if more than half full (at most four times the distinct ids), read again for the zones cells and faces use and the boundary zones declared without faces | distinct zone ids: fluid, solid and interior ones at most 16 384, the others each a face block's zone or a zone of MeshInfo | R, M |
 | a section's raw node or cell-type buffer | that section | M |
 | the mesh's face zones and their names, copied once more into assembly's uniqueness check (`core/src/mesh.cpp`): boundary zones by their record's name, each a zone of MeshInfo; zones of interior faces, whatever their type, by their id, `(interior N)`, at most 30 bytes, their record's name never copied | zones; sections of interior faces, at most 16 384 | M, T, R |
 

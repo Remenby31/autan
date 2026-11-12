@@ -305,10 +305,46 @@ def _vortex_conditions(spec: CaseSpec, boundaries: list[BoundaryResolution]) -> 
 
 
 def partition_groups(spec: CaseSpec, device_kind: DeviceKind) -> str:
-    """The groups a run's partition keeps whole: the line smoother's lines of a steady CPU run
-    with ``linear_solver = "lines"``, none otherwise (docs/contracts/mesh-info.md)."""
-    lines = isinstance(spec.time, Steady) and spec.time.linear_solver == "lines"
-    return "lines" if lines and device_kind == "cpu" else "none"
+    """The groups a run's partition keeps whole (docs/contracts/mesh-info.md, partition.groups):
+    for a steady CPU run, the line smoother's lines with ``linear_solver = "lines"``, the
+    multigrid's finest lines with ``"multigrid"``; none otherwise."""
+    if not isinstance(spec.time, Steady) or device_kind != "cpu":
+        return "none"
+    return {"lines": "lines", "multigrid": "multigrid"}.get(spec.time.linear_solver, "none")
+
+
+def _multigrid_order(
+    spec: CaseSpec, mesh: MeshInfo, gpus: int, device_kind: DeviceKind
+) -> str | None:
+    """The cell order a run's multigrid builds its hierarchy in: for inviscid flow on a partition
+    (several ranks, or reproducibility "ranks"; the multigrid refuses periodic pairs) RCM, the
+    one-rank path's default order, whatever order the run computes in, else the run's cell
+    order (viscous flow runs the multigrid on one rank, and refuses "ranks"); None when the run builds no hierarchy (a steady CPU run with
+    ``linear_solver = "multigrid"`` does)."""
+    if not (
+        isinstance(spec.time, Steady)
+        and spec.time.linear_solver == "multigrid"
+        and device_kind == "cpu"
+    ):
+        return None
+    partitioned = gpus > 1 or spec.physics.reproducibility == "ranks"
+    if partitioned and isinstance(spec.physics.turbulence, Inviscid):
+        return "rcm"
+    return mesh.quality.lines.order
+
+
+# The ghost stencil a run's partition holds: the one its physics declares (runtime.md,
+# Registration). Compressible Navier-Stokes and Spalart-Allmaras read the viscous boundary fits:
+# under reproducibility "ranks" four vertex rings, each rank fitting its ghost face neighbours
+# too; otherwise three, those fits received from their owners. The Euler physics, and the
+# incompressible cases no viscous physics serves, read face2.
+def partition_ghost_stencil(spec: CaseSpec) -> str:
+    viscous = isinstance(spec.physics, Compressible) and not isinstance(
+        spec.physics.turbulence, Inviscid
+    )
+    if not viscous:
+        return "face2"
+    return "vertex4" if spec.physics.reproducibility == "ranks" else "vertex3"
 
 
 def _check_prepared(
@@ -319,8 +355,8 @@ def _check_prepared(
     device_kind: DeviceKind,
     found: list[Diagnostic],
 ) -> None:
-    """The MeshInfo's derived counts are for the run planned: its scale, and on several ranks
-    the same partition (mesh-info.md)."""
+    """The MeshInfo's derived counts are for the run planned: its scale, its multigrid's cell
+    order, and on several ranks the same partition (mesh-info.md)."""
     problems = []
     scale = metres_per(spec.mesh_unit)
     if mesh.quality.lines.scale != scale:
@@ -328,20 +364,38 @@ def _check_prepared(
             f"quality.lines was computed at scale {mesh.quality.lines.scale:g}, "
             f"the case's mesh_unit is {scale:g} m"
         )
-    partition = mesh.partition
-    if gpus == 1 and extracts(spec, mesh, 1) and (partition is None or partition.ranks != 1):
+    want = _multigrid_order(spec, mesh, gpus, device_kind)
+    if want is not None and mesh.quality.multigrid.order != want:
         problems.append(
-            'a run on one rank with periodic pairs or reproducibility "ranks" needs the '
-            "MeshInfo's one-part partition"
+            f"quality.multigrid was built in cell order {mesh.quality.multigrid.order!r}, "
+            f"the run builds its hierarchy in {want!r}"
         )
+    partition = mesh.partition
+    ghost_stencil = partition_ghost_stencil(spec)
+    if gpus == 1 and extracts(spec, mesh, 1):
+        if partition is None or partition.ranks != 1:
+            problems.append(
+                'a run on one rank with periodic pairs or reproducibility "ranks" needs the '
+                "MeshInfo's one-part partition"
+            )
+        elif partition.ghost_stencil != ghost_stencil:
+            problems.append(
+                f"the one-part partition holds {partition.ghost_stencil!r} ghosts, "
+                f"the run's physics reads {ghost_stencil!r}"
+            )
     if gpus > 1:
         groups = partition_groups(spec, device_kind)
         if partition is None:
             problems.append(f"a run on {gpus} ranks needs the MeshInfo's partition for {gpus}")
-        elif (partition.ranks, partition.groups) != (gpus, groups):
+        elif (partition.ranks, partition.groups, partition.ghost_stencil) != (
+            gpus,
+            groups,
+            ghost_stencil,
+        ):
             problems.append(
-                f"the partition is for {partition.ranks} ranks with groups {partition.groups!r}, "
-                f"the run is on {gpus} with groups {groups!r}"
+                f"the partition is for {partition.ranks} ranks with groups {partition.groups!r} "
+                f"and {partition.ghost_stencil!r} ghosts, the run is on {gpus} with groups "
+                f"{groups!r} and {ghost_stencil!r} ghosts"
             )
     found.extend(diagnostic("E0212", problem, location=case.locate("mesh")) for problem in problems)
 

@@ -229,7 +229,7 @@ void read_mesh_info(const Json& info, SolverInput& in) {
   const Json& boundary = list(root, "boundary_zones");
   for (std::size_t i = 0; i < boundary.size(); ++i) {
     const Object z(boundary[i], indexed(root.at("boundary_zones"), i),
-                   {"name", "type", "native_type", "faces"});
+                   {"name", "type", "native_type", "faces", "first_cell_height"});
     const std::string n = name(z);
     if (!boundary_names.insert(n).second) invalid(z.at("name"), "is not unique");
     const std::string type = null_or_tag(
@@ -238,6 +238,24 @@ void read_mesh_info(const Json& info, SolverInput& in) {
     if (!z.is_null("native_type")) (void)z.string("native_type");
     zone_faces[n] = count(z, "faces");
     boundary_faces += zone_faces[n];
+    // mesh-info.md: 0 <= min <= median <= max for a zone with faces, all equal for one face and
+    // the median the mean of the two for two; null without faces.
+    if (z.is_null("first_cell_height") == (zone_faces[n] > 0)) {
+      invalid(z.at("first_cell_height"),
+              zone_faces[n] > 0 ? "must not be null here" : "must be null here");
+    }
+    if (zone_faces[n] > 0) {
+      const Object h(z.get("first_cell_height"), z.at("first_cell_height"),
+                     {"min", "median", "max"});
+      const double least = h.number("min"), median = h.number("median"), most = h.number("max");
+      if (!(0.0 <= least && least <= median && median <= most)) {
+        invalid(z.at("first_cell_height"), "expected 0 <= min <= median <= max");
+      }
+      if ((zone_faces[n] == 1 && !(least == most)) ||
+          (zone_faces[n] == 2 && !(median == (least + most) / 2))) {
+        invalid(z.at("first_cell_height"), "does not fit the zone's face count");
+      }
+    }
     if (type == "periodic") periodic_zones.insert(n);
     zone_order[n] = i;
   }
@@ -358,7 +376,8 @@ void read_mesh_info(const Json& info, SolverInput& in) {
   if (!(long_lines <= in_lines && in_lines <= cells))
     invalid(lines.at("cells"), "must hold long_cells <= cells <= counts.cells");
   const Object multigrid(quality.get("multigrid"), quality.at("multigrid"),
-                         {"cells_by_level", "edges_by_level"});
+                         {"order", "cells_by_level", "edges_by_level"});
+  (void)multigrid.tag("order", {"rcm", "input"});
   const Json& level_cells = list(multigrid, "cells_by_level");
   const Json& level_edges = list(multigrid, "edges_by_level");
   if (level_cells.empty() || level_edges.size() != level_cells.size())
@@ -376,12 +395,14 @@ void read_mesh_info(const Json& info, SolverInput& in) {
   if (info.contains("partition")) {
     const Object part(
         root.get("partition"), root.at("partition"),
-        {"ranks", "groups", "cells_by_rank", "ghosts_by_rank", "faces_by_rank",
+        {"ranks", "groups", "ghost_stencil", "cells_by_rank", "ghosts_by_rank", "faces_by_rank",
          "interior_faces_by_rank", "stencil_entries_by_rank", "vertex_stencil_entries_by_rank",
          "band_entries_by_rank", "boundary_fit_entries_by_rank", "nodes_by_rank",
          "face_nodes_by_rank", "sent_cells_by_rank"});
     const std::int64_t ranks = part.integer("ranks", 1);
-    (void)part.tag("groups", {"none", "lines"});
+    in.mesh_info_ranks = ranks;
+    in.mesh_info_groups = part.tag("groups", {"none", "lines", "multigrid"});
+    (void)part.tag("ghost_stencil", {"face2", "vertex", "vertex2", "vertex3", "vertex4"});
     for (const char* key :
          {"cells_by_rank", "ghosts_by_rank", "faces_by_rank", "interior_faces_by_rank",
           "stencil_entries_by_rank", "vertex_stencil_entries_by_rank", "band_entries_by_rank",
@@ -639,12 +660,15 @@ Start parse_start(const Json& value, const SolverInput& in) {
   if (continued && (steady ? in.time.max_iterations : in.time.steps) <= start.iterations) {
     invalid(o.at("iterations"), "the time budget must exceed the iterations already done");
   }
+  // case-schema.md#time: a steady run continued, or warm-started from a steady run (no time),
+  // takes the convergence reference of the run it starts from; any other start has none.
+  const bool inherits = steady && (continued || !start.time);
   if (o.is_null("residual_reference")) {
-    if (continued && steady) invalid(o.at("residual_reference"), "must not be null here");
+    if (inherits) invalid(o.at("residual_reference"), "must not be null here");
     if (!o.is_null("woken")) invalid(o.at("woken"), "must be null here");
     return start;
   }
-  if (!(continued && steady)) invalid(o.at("residual_reference"), "must be null here");
+  if (!inherits) invalid(o.at("residual_reference"), "must be null here");
   const auto equations = residual_names(in);
   const Object r(o.get("residual_reference"), o.at("residual_reference"), equations);
   std::vector<double> reference;
@@ -665,6 +689,8 @@ Start parse_start(const Json& value, const SolverInput& in) {
       invalid(path, "no equation '" + names.back() + "'");
     if (i > 0 && !(names[i - 1] < names[i])) invalid(path, "names must be sorted and distinct");
   }
+  // A warm start begins with no equation woken (case-schema.md#time).
+  if (!continued && !names.empty()) invalid(o.at("woken"), "must be empty for a warm start");
   start.woken = std::move(names);
   return start;
 }
@@ -723,9 +749,15 @@ SolverInput parse_solver_input(const std::string& text) {
     in.memory_bytes_device = m.integer("bytes_device", 0);
   }
   {
-    const Object p(root.get("physics"), "physics", {"kind", "turbulence"});
+    const Object p(root.get("physics"), "physics", {"kind", "turbulence", "flux"});
     in.physics_kind = p.tag("kind", {"compressible", "incompressible"});
     in.turbulence = parse_turbulence(p, in.physics_kind);
+    // case-schema.md#physics: the convective flux of compressible flow, null otherwise.
+    if (in.physics_kind == "compressible") {
+      in.flux = p.tag("flux", {"roe", "hllc", "ausm+up"});
+    } else if (!p.is_null("flux")) {
+      invalid(p.at("flux"), "expected null: only compressible physics names a flux");
+    }
   }
   const bool compressible = in.physics_kind == "compressible";
   const bool sa = in.turbulence.nu_tilde_ratio.has_value();
@@ -772,13 +804,14 @@ SolverInput parse_solver_input(const std::string& text) {
     if (kind == "steady") {
       const Object o(t, "time",
                      {"kind", "max_iterations", "residual_orders", "linear_solver",
-                      "coupled_turbulence", "matrix_free", "checkpoint"});
+                      "coupled_turbulence", "matrix_free", "start_order", "checkpoint"});
       in.time.kind = "steady";
       in.time.max_iterations = o.integer("max_iterations", 1);
       in.time.residual_orders = o.positive("residual_orders");
       in.time.linear_solver = o.tag("linear_solver", {"multigrid", "gauss-seidel", "lines"});
       in.time.coupled_turbulence = o.boolean("coupled_turbulence");
       in.time.matrix_free = o.boolean("matrix_free");
+      in.time.start_order = o.tag("start_order", {"first", "second"});
       parse_checkpoint(o, in.time);
     } else if (kind == "unsteady") {
       const Object o(t, "time", {"kind", "steps", "dt", "cfl", "average_from", "checkpoint"});
@@ -877,6 +910,21 @@ SolverInput parse_solver_input(const std::string& text) {
         m.is_null("ref_length") ? std::nullopt : std::optional<double>(m.positive("ref_length"));
     fm.moment_center = m.vector3("moment_center");
     in.monitors.push_back(std::move(fm));
+  }
+  // mesh-info.md, partition.groups: a run on several ranks is planned with a partition that keeps
+  // whole the groups it forms, a steady CPU run's line smoother's lines with linear_solver "lines"
+  // or its multigrid's finest lines with "multigrid", none otherwise (the SDK plans with the same
+  // rule, E0212). A run on one rank takes no partition of several from the MeshInfo.
+  if (in.device_count > 1 && in.mesh_info_ranks > 1) {
+    const bool cpu_steady = in.time.kind == "steady" && in.device_kind == "cpu";
+    const std::string formed =
+        cpu_steady && (in.time.linear_solver == "lines" || in.time.linear_solver == "multigrid")
+            ? in.time.linear_solver
+            : "none";
+    if (in.mesh_info_groups != formed) {
+      invalid("mesh_info.partition.groups",
+              "is '" + in.mesh_info_groups + "', but the run keeps '" + formed + "' whole");
+    }
   }
   return in;
 }

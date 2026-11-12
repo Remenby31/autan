@@ -14,18 +14,20 @@ namespace autan::runtime {
 /// case-schema.md#time: an equation whose residual at iteration 1 of the original run is below
 /// 1e-12 of the largest residual there is identically zero (the spanwise momentum of a
 /// one-cell-thick slab); it is exempt while it stays at or below that floor, and once above it
-/// must drop like the others from a reference of its kind (woken_reference()). The runtime's
-/// convergence decision and a physics' pseudo-time step use this one rule: fed the same reported
-/// residuals, they decide the same.
+/// must drop like the others from a reference of its kind (woken_reference()): the runtime's
+/// convergence decision and a physics' pseudo-time step use this one exemption, so that fed the
+/// same reported residuals they exempt the same equations. A momentum component converges against
+/// the largest momentum component's reference (drop_reference()), which the convergence decision
+/// alone uses.
 class RoundOffExemption {
  public:
-  /// `names` are the equations; `woken`, those that left their floor earlier in a continued
-  /// chain (solver-input.md, `start.woken`).
+  /// `names` are the equations; `woken`, those that left their floor earlier in the chain
+  /// (solver-input.md, `start.woken`).
   RoundOffExemption(std::vector<std::string> names, std::vector<std::string> woken)
       : names_(std::move(names)), woken_(std::move(woken)) {}
 
-  /// Sets the floor from the residuals at iteration 1 of the original run (`start.
-  /// residual_reference` in a continuation), unless already set.
+  /// Sets the floor from the run's reference (case-schema.md#time: iteration 1, or `start.
+  /// residual_reference`), unless already set.
   void reference(std::span<const double> first) {
     if (!exempt_.empty()) return;
     first_.assign(first.begin(), first.end());
@@ -39,15 +41,23 @@ class RoundOffExemption {
   /// Whether equation `e` was identically zero at iteration 1 and has left its floor.
   [[nodiscard]] bool woken(std::size_t e) const { return zero_[e] && !exempt_[e]; }
 
-  /// The value a woken equation drops from: the largest residual at iteration 1 of the momentum
-  /// components for a momentum component, which share units, of every equation otherwise.
-  [[nodiscard]] double woken_reference(std::size_t e) const {
-    const bool momentum = names_[e].starts_with("momentum-");
+  /// The value equation `e` drops from in `reference`, one value per equation: for a momentum
+  /// component the largest of the momentum components', which share units, so that the stop does
+  /// not change when the mesh axes are permuted or reflected; its own otherwise.
+  [[nodiscard]] double drop_reference(std::size_t e, std::span<const double> reference) const {
+    if (!names_[e].starts_with("momentum-")) return reference[e];
     double largest = 0.0;
-    for (std::size_t k = 0; k < first_.size(); ++k) {
-      if (!momentum || names_[k].starts_with("momentum-")) largest = std::max(largest, first_[k]);
+    for (std::size_t k = 0; k < reference.size(); ++k) {
+      if (names_[k].starts_with("momentum-")) largest = std::max(largest, reference[k]);
     }
     return largest;
+  }
+
+  /// The value a woken equation drops from: drop_reference() at iteration 1 for a momentum
+  /// component, the largest residual there of every equation otherwise.
+  [[nodiscard]] double woken_reference(std::size_t e) const {
+    if (names_[e].starts_with("momentum-")) return drop_reference(e, first_);
+    return *std::ranges::max_element(first_);
   }
 
   /// This iteration's residuals: the equations that leave their floor now, no longer exempt.

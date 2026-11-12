@@ -19,6 +19,7 @@ uv run autan-vv --help
 | [cases.md](cases.md) | Reference cases (TMR, ONERA M6, RAE 2822): pinned downloads, checksums, parsers |
 | [su2.md](su2.md) | The comparison with SU2: build, fairness protocol, mesh conversion, results |
 | [acceptance.md](acceptance.md) | The numbers each milestone gate must meet, with their sources |
+| [guard.md](guard.md) | The nightly convergence guard on the TMR flat plate: case, gates, outcomes, timers |
 
 ## Typical use by a numerical PR
 

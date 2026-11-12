@@ -31,16 +31,27 @@ set(
   ${AUTAN_PHYSICS_GENERATED}/spalart_allmaras.hpp
   ${AUTAN_PHYSICS_GENERATED}/spalart_allmaras_cpu.hpp
 )
+set(ns_backends cpu)
+if(AUTAN_ENABLE_CUDA)
+  set(ns_backends cpu,gpu)
+  list(
+    APPEND AUTAN_NS_KERNELS
+    ${AUTAN_PHYSICS_GENERATED}/navier_stokes_gpu.cuh
+    ${AUTAN_PHYSICS_GENERATED}/navier_stokes_gpu.cu
+    ${AUTAN_PHYSICS_GENERATED}/spalart_allmaras_gpu.cuh
+    ${AUTAN_PHYSICS_GENERATED}/spalart_allmaras_gpu.cu
+  )
+endif()
 add_custom_command(
   OUTPUT ${AUTAN_NS_KERNELS}
   COMMAND
     ${CMAKE_COMMAND} -E env PYTHONPATH=${PROJECT_SOURCE_DIR}/codegen/src ${Python3_EXECUTABLE} -m
     autan_codegen ${PROJECT_SOURCE_DIR}/kernels/navier_stokes.py --out ${AUTAN_PHYSICS_GENERATED}
-    --backends cpu
+    --backends ${ns_backends}
   COMMAND
     ${CMAKE_COMMAND} -E env PYTHONPATH=${PROJECT_SOURCE_DIR}/codegen/src ${Python3_EXECUTABLE} -m
     autan_codegen ${PROJECT_SOURCE_DIR}/kernels/spalart_allmaras.py --out ${AUTAN_PHYSICS_GENERATED}
-    --backends cpu
+    --backends ${ns_backends}
   DEPENDS
     ${PROJECT_SOURCE_DIR}/kernels/spalart_allmaras.py
     ${PROJECT_SOURCE_DIR}/kernels/navier_stokes.py
@@ -72,7 +83,10 @@ add_library(
   src/spalart_allmaras.cpp
   ${AUTAN_PHYSICS_GENERATED}/euler.hpp
   ${AUTAN_PHYSICS_GENERATED}/euler_cpu.hpp
-  ${AUTAN_NS_KERNELS}
+  ${AUTAN_PHYSICS_GENERATED}/navier_stokes.hpp
+  ${AUTAN_PHYSICS_GENERATED}/navier_stokes_cpu.hpp
+  ${AUTAN_PHYSICS_GENERATED}/spalart_allmaras.hpp
+  ${AUTAN_PHYSICS_GENERATED}/spalart_allmaras_cpu.hpp
 )
 add_library(autan::physics ALIAS autan_physics)
 target_include_directories(
@@ -82,7 +96,7 @@ target_include_directories(
 )
 target_link_libraries(
   autan_physics
-  PUBLIC autan::core autan::kernels
+  PUBLIC autan::core autan::kernels autan::partition
   PRIVATE autan_compile_options nlohmann_json::nlohmann_json
 )
 set_target_properties(autan_physics PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -106,7 +120,7 @@ target_include_directories(autan_physics_mms PRIVATE ${CMAKE_CURRENT_BINARY_DIR}
 
 # The Euler physics behind autan-run's Physics interface; the runtime needs CGNS.
 if(AUTAN_ENABLE_CGNS)
-  add_library(autan_physics_runtime src/euler_physics.cpp)
+  add_library(autan_physics_runtime src/euler_physics.cpp src/partition_multigrid.cpp)
   add_library(autan::physics_runtime ALIAS autan_physics_runtime)
   target_include_directories(
     autan_physics_runtime
@@ -126,6 +140,9 @@ if(AUTAN_ENABLE_CGNS)
       OBJECT
       src/euler_device.cu
       ${AUTAN_PHYSICS_GENERATED}/euler_gpu.cu
+      src/navier_stokes_device.cu
+      ${AUTAN_PHYSICS_GENERATED}/navier_stokes_gpu.cu
+      ${AUTAN_PHYSICS_GENERATED}/spalart_allmaras_gpu.cu
     )
     target_include_directories(autan_physics_device PRIVATE ${AUTAN_PHYSICS_GENERATED})
     target_link_libraries(autan_physics_device PRIVATE autan::physics autan::runtime CUDA::cudart)

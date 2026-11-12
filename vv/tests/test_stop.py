@@ -4,20 +4,23 @@ The histories are written so that their verdict follows from that text by hand: 
 at iteration 1 and exact powers of ten after it, floors of 1e-8, plateaus of constant values.
 """
 
+import itertools
 import math
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import autan
 import numpy as np
 import pytest
 from autan.errors import diagnostic
-from autan.results import Convergence, StartInfo
-from autan.units import K, Pa
+from autan.results import Convergence, StartInfo, field_names
+from autan.units import K, Pa, kg, mol, s
 from autan_vv.errors import VVError
-from autan_vv.harness import verify
+from autan_vv.harness import UNIVERSAL_GAS_CONSTANT, verify
 from autan_vv.meshes.families import cartesian
 from autan_vv.meshes.fluent import write_fluent
+from autan_vv.oracles.registry import get_oracle
 from autan_vv.runs import mesh_info, write_run
 
 Lines = list[dict[str, float]]
@@ -156,27 +159,59 @@ def test_an_identically_zero_equation_is_exempt_until_it_leaves_its_floor(
     assert refused(run) == {"iteration": 3, "equation": "momentum-z"}
 
 
+def test_a_momentum_component_drops_from_the_largest_momentum_residual_whatever_the_axes(
+    freestream_run: Callable[..., Path],
+) -> None:
+    # The flat plate's shape (#544): momentum-y starts five orders below momentum-x. At iteration 2
+    # it is four orders below its own first residual but nine below momentum-x's, the reference of
+    # every momentum component: the run has converged. A permutation of the mesh axes permutes the
+    # momentum residuals (a reflection changes none), and every one gives the same verdict.
+    first = {
+        "density": 1.0,
+        "momentum-x": 1.0,
+        "momentum-y": 1e-5,
+        "momentum-z": 1e-3,
+        "energy": 1.0,
+    }
+    axes = ["momentum-x", "momentum-y", "momentum-z"]
+    for order in itertools.permutations(axes):
+        axis = dict(zip(axes, order, strict=True))
+
+        def relabel(history: Lines, axis: dict[str, str] = axis) -> Lines:
+            old = {new: e for e, new in axis.items()}
+            return [{e: line[old.get(e, e)] for e in EQUATIONS} for line in history]
+
+        verify([freestream_run(residuals=relabel(lines(first, 1e-9)))], "freestream")
+        # momentum-x at 1e-7 has dropped seven orders only.
+        run = freestream_run(residuals=relabel(lines(first, {"momentum-x": 1e-7})))
+        assert refused(run) == {"iteration": 2, "equation": axis["momentum-x"]}
+
+
 def test_an_fp32_run_may_converge_on_a_round_off_plateau_within_ten_floors(
     freestream_run: Callable[..., Path],
 ) -> None:
     floors = dict.fromkeys(EQUATIONS, 1e-8)
 
-    def run(stop: int, value: float, plateau: list[str]) -> Path:
+    def run(stop: int, value: float, plateau: list[str], provisional: int = 0) -> Path:
         # 1.0, then the same value: the level (median of the last 100 counted residuals) is that
-        # value from iteration 100, its first and so its reference; on a plateau from 200.
+        # value from the 100th counted iteration, its first and so its reference; on a plateau
+        # 100 counted iterations later.
         return freestream_run(
             precision="fp32+acc64",
             residuals=lines(1.0, *[value] * (stop - 1)),
             convergence=Convergence(floor=floors, plateau=plateau),
+            provisional=provisional,
         )
 
     verify([run(200, 5e-8, EQUATIONS)], "freestream")
-    # Later: a first-order start of 49 iterations puts it at 249, and one of 201, the longest
-    # (euler.md#time-stepping), at 401 but no later: no prefix fits 402, and the refusal
-    # reports where the run stops without one, 200.
-    verify([run(249, 5e-8, EQUATIONS)], "freestream")
-    verify([run(401, 5e-8, EQUATIONS)], "freestream")
-    assert refused(run(402, 5e-8, EQUATIONS)) == {"iteration": 200, "equation": None}
+    # 49 provisional lines: counting starts at iteration 50, the first level is at 149 and the
+    # plateau holds at 249, not before; unmarked, at 200.
+    verify([run(249, 5e-8, EQUATIONS, provisional=49)], "freestream")
+    assert refused(run(248, 5e-8, EQUATIONS, provisional=49)) == {
+        "iteration": 248,
+        "equation": "density",
+    }
+    assert refused(run(249, 5e-8, EQUATIONS)) == {"iteration": 200, "equation": None}
     assert refused(run(200, 5e-8, [])) == {"iteration": 200, "equation": None}
     # Above ten floors, or before 100 counted iterations without a new reference of the level.
     assert refused(run(200, 2e-7, EQUATIONS)) == {"iteration": 200, "equation": "density"}
@@ -230,3 +265,88 @@ def test_a_plateau_follows_the_residual_level_not_its_lowest_draw(
         ],
         "freestream",
     )
+
+
+def test_degraded_mesh_convergence_judges_each_equations_drop_whatever_the_status(
+    tmp_path: Path,
+) -> None:
+    oracle = get_oracle("mms-euler")
+    gas = autan.IdealGas(
+        name="manufactured",
+        molar_mass=UNIVERSAL_GAS_CONSTANT / oracle.gas_constant * kg / mol,
+        gamma=oracle.gamma,
+        prandtl=0.72,
+        viscosity=autan.ConstantViscosity(mu=1e-5 * Pa * s),
+    )
+    meshes = []
+    for n in (3, 4, 5):
+        mesh, path = cartesian((n, n, n)), tmp_path / f"box-{n}.msh"
+        write_fluent(mesh, path, "fluid")
+        meshes.append((mesh, path))
+
+    def run(level: int, history: Lines, precision: str = "fp64", **options: Any) -> Path:
+        mesh, path = meshes[level]
+        case = autan.Case("degraded", mesh=path)
+        case.physics = autan.Compressible(
+            turbulence=autan.Inviscid(),
+            precision=precision,  # type: ignore[arg-type]
+            gas=gas,
+        )
+        case.freestream(mach=0.3, pressure=1e5 * Pa, temperature=300 * K)
+        case.time = autan.Steady(max_iterations=3, residual_orders=8.0)
+        case.boundary("*").farfield()
+        exact = oracle.fields(mesh.geometry.cell_centroid, None)
+        fields = {k: exact[k] for k in field_names(case.spec)}
+        info = mesh_info(mesh, path, "fluent")
+        return write_run(
+            tmp_path / "runs", case, mesh, info, fields, residuals=history, **options
+        ).path
+
+    gate = "degraded-mesh-convergence"
+    # Converged: 8.5 orders on every equation but momentum-y, identically zero.
+    converged = run(
+        0, [{e: 0.0 if e == "momentum-y" else v for e in EQUATIONS} for v in (1.0, 10.0**-8.5)]
+    )
+    # Completed at max_iterations with density 7 orders down; diverged, residuals rising.
+    completed = run(1, lines(1.0, 1e-5, {"density": 1e-7}), status="completed")
+    diverged = run(
+        2,
+        lines(1e-200, 1e200),
+        status="diverged",
+        diagnostics=(diagnostic("D0107", "divergence", iteration=2),),
+    )
+    report = verify([converged, completed, diverged], "mms-euler", gate)
+    checks = {c["status"]: c for c in report["verdict"]["checks"]}
+    assert checks["converged"]["equations"]["density"]["drop"] == pytest.approx(8.5)
+    assert checks["converged"]["equations"]["momentum-y"] == {
+        "drop": None,
+        "identically_zero": True,
+        "pass": True,
+    }
+    assert checks["converged"]["pass"]
+    assert checks["completed"]["equations"]["density"]["drop"] == pytest.approx(7.0)
+    assert checks["completed"]["equations"]["energy"]["drop"] == pytest.approx(9.0)
+    assert not checks["completed"]["pass"]
+    assert checks["diverged"]["equations"]["density"]["drop"] == pytest.approx(-400.0)
+    assert not checks["diverged"]["pass"]
+    # Nine orders, but on a fourth line past max_iterations = 3.
+    late = run(
+        1,
+        lines(1.0, 1e-3, 1e-7, 1e-9),
+        status="diverged",
+        diagnostics=(diagnostic("D0107", "divergence", iteration=4),),
+    )
+    (check,) = verify([late], "mms-euler", gate)["verdict"]["checks"]
+    assert check["equations"]["density"]["drop"] == pytest.approx(9.0)
+    assert not check["pass"]
+    assert verify([converged, completed], "mms-euler", gate)["verdict"]["pass"] is False
+    assert verify([converged], "mms-euler", gate)["verdict"]["pass"] is True
+    # Outside fp64 the drops are reported, not judged.
+    fp32 = run(0, lines(1.0, 1e-3, 1e-4), "fp32+acc64", status="completed")
+    verdict = verify([fp32], "mms-euler", gate)["verdict"]
+    assert verdict["pass"] is None
+    assert verdict["checks"][0]["equations"]["density"]["drop"] == pytest.approx(4.0)
+    # A run of another physics is still refused.
+    with pytest.raises(VVError) as err:
+        verify([converged], "mms-navier-stokes", gate)
+    assert err.value.code == "V0724"

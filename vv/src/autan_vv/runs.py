@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from autan.errors import Diagnostic
     from autan.results import Convergence, StartInfo
 
-    from autan_vv.meshes.facemesh import FaceMesh, FloatArray
+    from autan_vv.meshes.facemesh import FaceMesh, FloatArray, Zone
 
 KINDS = {
     "tet": "tetra",
@@ -91,6 +91,16 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str, scale: float = 1.0) 
     vertex_entries = int(vertex.sum())
     band = (mesh.n_cells + vertex_entries) * widest
     typed = mesh_format == "fluent"
+    # mesh-info.md, first_cell_height: each boundary face's distance along its normal from its
+    # owner's centroid, per zone (min, median, max), as autan-mesh-info measures it.
+    height = np.abs(np.einsum("ij,ij->i", db, normal[ni:]))
+
+    def first_cell_height(z: Zone) -> dict[str, float] | None:
+        if z.count == 0:
+            return None
+        h = height[z.start - ni : z.start - ni + z.count]
+        return {"min": float(h.min()), "median": float(np.median(h)), "max": float(h.max())}
+
     document = {
         "schema": "autan.mesh-info/1",
         "source": {
@@ -130,6 +140,7 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str, scale: float = 1.0) 
                 "type": NORMALIZED[z.bc_type] if typed else None,
                 "native_type": z.bc_type if typed else None,
                 "faces": z.count,
+                "first_cell_height": first_cell_height(z),
             }
             for z in mesh.zones
         ],
@@ -147,7 +158,11 @@ def mesh_info(mesh: FaceMesh, path: Path, mesh_format: str, scale: float = 1.0) 
                 "cells": mesh.n_cells,
                 "long_cells": mesh.n_cells,
             },
-            "multigrid": {"cells_by_level": [mesh.n_cells], "edges_by_level": [mesh.n_interior]},
+            "multigrid": {
+                "order": "rcm",
+                "cells_by_level": [mesh.n_cells],
+                "edges_by_level": [mesh.n_interior],
+            },
         },
     }
     return autan.MeshInfo.from_document(document, autan.Location(file=str(path)))
@@ -273,6 +288,7 @@ def write_run(
     start: StartInfo | None = None,
     convergence: Convergence | None = None,
     diagnostics: tuple[Diagnostic, ...] = (),
+    provisional: int = 0,
 ) -> autan.Results:
     """Write one finished run of `case` on `mesh` with the given cell fields; return it opened.
 
@@ -280,7 +296,8 @@ def write_run(
     cell in mesh order. `residuals` gives the history, one line per iteration (after
     `start.iterations` for a continuation); without it a steady `converged` run holds unit
     residuals then the same dropped `residual_orders`, any other run one line of unit residuals.
-    `start`, `convergence` and `diagnostics` go to run.json as given. Cases with monitors or time
+    The first `provisional` lines of a steady history are marked provisional. `start`,
+    `convergence` and `diagnostics` go to run.json as given. Cases with monitors or time
     averaging are refused (V0731).
     """
     spec = case.spec
@@ -348,8 +365,17 @@ def write_run(
         if isinstance(spec.time, Steady) and status == "converged":
             residuals.append(dict.fromkeys(ones, 10.0**-spec.time.residual_orders))
     first = start.iterations if start is not None and start.mode == "continue" else 0
+    steady = isinstance(spec.time, Steady)
     for k, line in enumerate(residuals):
-        writer.append({"iteration": first + k + 1, "time": time, "residuals": line, "monitors": {}})
+        record: dict[str, Any] = {
+            "iteration": first + k + 1,
+            "time": time,
+            "residuals": line,
+            "monitors": {},
+        }
+        if steady:
+            record["provisional"] = k < provisional
+        writer.append(record)
     changes = {
         "status": status,
         "iterations": first + len(residuals),

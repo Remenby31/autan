@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "autan/core/geometry.hpp"
@@ -55,6 +56,16 @@ struct AgglomerationOptions {
 /// index. Greedy in line order (each line takes the least colour no earlier neighbouring line
 /// has). A device port of the smoother must sweep these, not a colouring of its own.
 std::vector<std::vector<std::size_t>> line_colours(const Level& level);
+
+/// The lines of at least two nodes of a level, in the level's line order: the groups a partition
+/// of a multigrid run keeps whole (mesh-info.md, partition groups "multigrid").
+Lines line_groups(const Level& level);
+
+/// SHA-256 (hex) of `levels` as built: ASCII "autan.multigrid/1" (no terminator), the level count
+/// (u64), then per level n_nodes (u64) and owner, neighbour, line_offsets, line_nodes,
+/// coarse_node, coarse_edge, coarse_flipped, each as its length (u64) then its values
+/// (two's-complement i64; coarse_flipped u8), little-endian.
+std::string multigrid_sha256(const std::vector<Level>& levels);
 
 /// Agglomeration hierarchy of a mesh without ghost cells, finest level first. Throws
 /// std::invalid_argument on a mesh with ghost cells. Deterministic: the result depends only on

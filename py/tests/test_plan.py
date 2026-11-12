@@ -82,7 +82,13 @@ def test_heat_exchanger_example_plans_two_gases_and_a_solid(
         (
             "crm-hl",
             lambda d: d["boundary_zones"].append(
-                {"name": "ghost", "type": None, "native_type": None, "faces": 0}
+                {
+                    "name": "ghost",
+                    "type": None,
+                    "native_type": None,
+                    "faces": 0,
+                    "first_cell_height": None,
+                }
             ),
             CRM_HL,
             [],
@@ -246,6 +252,7 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
                     "type": "farfield",
                     "native_type": None,
                     "faces": boundary_faces,
+                    "first_cell_height": {"min": 0.01, "median": 0.02, "max": 0.05},
                 }
             ],
             "cell_zones": [{"name": "fluid", "type": None, "native_type": None, "cells": 10}],
@@ -255,17 +262,47 @@ def tiny_mesh(boundary_faces: int) -> autan.MeshInfo:
                 "max_non_orthogonality_deg": 0.0,
                 "max_faces_per_cell": 6,
                 "lines": {"order": "rcm", "scale": 1.0, "cells": 0, "long_cells": 0},
-                "multigrid": {"cells_by_level": [10], "edges_by_level": [20]},
+                "multigrid": {"order": "rcm", "cells_by_level": [10], "edges_by_level": [20]},
             },
         },
         autan.Location(),
     )
 
 
+@pytest.mark.parametrize(
+    ("gpus", "physics", "builds"),
+    [
+        (2, "Inviscid()", "rcm"),
+        (1, 'Inviscid(), reproducibility="ranks"', "rcm"),
+        (1, "Inviscid()", "rcm"),
+        (1, 'Laminar(), reproducibility="ranks"', "rcm"),
+    ],
+)
+def test_the_multigrid_hierarchy_is_for_the_cell_order_the_run_builds_it_in(
+    write_case: Callable[[str], Path], gpus: int, physics: str, builds: str
+) -> None:
+    # mesh-info.md, quality.multigrid: a steady CPU multigrid run of inviscid flow on a partition
+    # (several ranks, or reproducibility "ranks") builds its hierarchy on the mesh in RCM order,
+    # any other on one rank in its cell order, quality.lines' ("rcm" here); a hierarchy in
+    # another order is for another run (E0212).
+    case = autan.load(write_case(TINY.replace("Inviscid())", physics + ")")))
+    document = prepared(tiny_mesh(20).document(), ranks=gpus)
+    if gpus > 1:
+        document["partition"]["groups"] = "multigrid"
+    if "Laminar" in physics:
+        # The viscous physics reads four vertex rings: its partition holds them.
+        document["partition"]["ghost_stencil"] = "vertex4"
+    for order in ("rcm", "input"):
+        document["quality"]["multigrid"]["order"] = order
+        mesh = autan.MeshInfo.from_document(document, autan.Location())
+        codes = diagnostic_codes(case.plan(mesh, gpus=gpus, device_kind="cpu"))
+        assert ("E0212" in codes) == (order != builds)
+
+
 def test_the_memory_estimate_counts_what_each_run_allocates(
     write_case: Callable[[str], Path], crm_mesh: autan.MeshInfo
 ) -> None:
-    # docs/sdk/plan.md, autan.memory/2: per rank, by component; the values are validated
+    # docs/sdk/plan.md, autan.memory/3: per rank, by component; the values are validated
     # against measured peaks, this checks which run allocates what and where.
     def memory(body: str = CRM_HL, **options: Any) -> autan.Memory:
         return autan.load(write_case(body)).plan(crm_mesh, **options).memory
@@ -275,13 +312,70 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
 
     cpu = memory(device_kind="cpu")
     assert names(cpu) >= {"mesh", "physics", "jacobian", "multigrid", "solution output"}
+    # The steady operator's gradient term and its derivative of the boundary values the fit keeps,
+    # on every steady CPU path, viscous included.
+    assert {"gradient tangent", "boundary state tangent"} <= names(cpu)
+    gauss_seidel = CRM_HL + "case.time = autan.Steady(linear_solver='gauss-seidel')\n"
+    assert "boundary state tangent" in names(memory(gauss_seidel, device_kind="cpu"))
     assert cpu.bytes_device == 0
-    # The peak: every persistent component and the largest transient one.
+    # The peak (plan.md): the largest over the runtime's phases of the persistent components
+    # allocated so far, the transients alive across that phase and its own largest transient.
+    phases = ("input", "physics", "solver", "iterations")
+    # The runtime's order (run.cpp, euler_physics.cpp): the input and the line groups; the
+    # physics up to its boundaries' fits; its constructor's block matrix, linear solver and the
+    # turbulence model's setup; the tangents the steady step allocates on first use, the output.
+    expected = {
+        "runtime": "input",
+        "binary hash": "input",
+        "solver input": "input",
+        "solver input setup": "input",
+        "mesh": "input",
+        "mesh setup": "input",
+        "mesh reading": "input",
+        "renumbered mesh": "input",
+        "line groups": "input",
+        "first-order start window": "physics",
+        "physics": "physics",
+        "physics setup": "physics",
+        "quadratic gradient": "physics",
+        "quadratic gradient setup": "physics",
+        "viscous": "physics",
+        "viscous setup": "physics",
+        "spalart-allmaras": "physics",
+        "spalart-allmaras setup": "solver",
+        "jacobian": "solver",
+        "multigrid": "solver",
+        "multigrid setup": "solver",
+        "gradient tangent": "iterations",
+        "viscous tangent": "iterations",
+        "boundary state tangent": "iterations",
+        "solution output": "iterations",
+    }
+    assert {c.name: c.phase for c in cpu.components} == expected
+
+    def at(estimate: autan.Memory, i: int) -> int:
+        alive = 0
+        own = 0
+        for c in estimate.components:
+            first, last = phases.index(c.phase), phases.index(c.last)
+            if (not c.transient and first <= i) or (
+                c.transient and first != last and first <= i <= last
+            ):
+                alive += c.bytes_host
+            elif c.transient and first == last == i:
+                own = max(own, c.bytes_host)
+        return alive + own
+
+    assert cpu.bytes_host == max(at(cpu, i) for i in range(len(phases)))
+    # A viscous run's largest transient, the boundary fit's or the band's setup, is built with the
+    # physics, before the Jacobian and the linear solver exist (#559): it does not add to them.
+    largest = max((c for c in cpu.components if c.transient), key=lambda c: c.bytes_host)
+    assert largest.phase == "physics"
     persistent = sum(c.bytes_host for c in cpu.components if not c.transient)
-    assert cpu.bytes_host == persistent + max(c.bytes_host for c in cpu.components if c.transient)
+    assert cpu.bytes_host < persistent + largest.bytes_host
     # A device run solves explicitly: no Jacobian or linear solver, the state on the device.
     cuda = memory(device_kind="cuda")
-    assert not names(cuda) & {"jacobian", "multigrid"}
+    assert not names(cuda) & {"jacobian", "multigrid", "boundary state tangent"}
     assert cuda.bytes_device > 0
     # The device frees nothing before the iterations: its components add up, all of them.
     on_device = [c.bytes_device for c in cuda.components if c.bytes_device]
@@ -291,9 +385,15 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     gs = memory(
         CRM_HL + "case.time = autan.Steady(linear_solver='gauss-seidel')\n", device_kind="cpu"
     )
-    assert gs.bytes_host < cpu.bytes_host
+
+    # Gauss-Seidel allocates less than the multigrid; the peak, here in the physics phase, does
+    # not depend on it.
+    def solving(estimate: autan.Memory) -> int:
+        return sum(c.bytes_host for c in estimate.components if c.phase == "solver")
+
+    assert solving(gs) < solving(cpu)
     unsteady = memory(CRM_HL + "case.time = autan.Unsteady(steps=10, cfl=1.0)\n", device_kind="cpu")
-    assert not names(unsteady) & {"jacobian", "multigrid"}
+    assert not names(unsteady) & {"jacobian", "multigrid", "boundary state tangent"}
     # Every rank keeps the global mesh; its share of the rest shrinks with the ranks, from the
     # partition the MeshInfo gives for them (mesh-info.md), without which the plan is refused.
     assert "E0212" in diagnostic_codes(autan.load(write_case(CRM_HL)).plan(crm_mesh, gpus=4))
@@ -301,11 +401,47 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
         prepared(mesh_document("crm-hl"), ranks=4), autan.Location()
     )
     four = autan.load(write_case(CRM_HL)).plan(on_four, gpus=4, device_kind="cuda").memory
-    # A steady CPU run with the lines solver keeps its lines whole: a partition without them is
-    # not the run's.
-    lines = autan.load(write_case(CRM_HL + "case.time = autan.Steady(linear_solver='lines')\n"))
-    assert "E0212" in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cpu"))
-    assert "E0212" not in diagnostic_codes(lines.plan(on_four, gpus=4, device_kind="cuda"))
+    # A steady CPU run keeps whole the line smoother's lines with the lines solver, the
+    # multigrid's finest lines with the multigrid (mesh-info.md, partition.groups): a partition
+    # formed with other groups is not the run's. A device run keeps none.
+    # Inviscid flow, whose multigrid runs on a partition, its hierarchy built on the mesh in RCM
+    # order.
+    for solver in ("lines", "multigrid"):
+        body = TINY.replace("linear_solver='multigrid'", f"linear_solver={solver!r}")
+        case = autan.load(write_case(body))
+        for mode in ("none", "lines", "multigrid"):
+            document = prepared(tiny_mesh(20).document(), ranks=4)
+            document["partition"]["groups"] = mode
+            document["quality"]["multigrid"]["order"] = "rcm"
+            labelled = autan.MeshInfo.from_document(document, autan.Location())
+            codes = diagnostic_codes(case.plan(labelled, gpus=4, device_kind="cpu"))
+            assert ("E0212" in codes) == (mode != solver), (solver, mode)
+        document["partition"]["groups"] = "none"
+        plain = autan.MeshInfo.from_document(document, autan.Location())
+        assert "E0212" not in diagnostic_codes(case.plan(plain, gpus=4, device_kind="cuda"))
+    # The ghosts a run's partition holds (mesh-info.md): face2 for inviscid flow; for a viscous
+    # run, laminar or SA, vertex4 under reproducibility "ranks" and vertex3 otherwise. Any other
+    # partition is not the run's. One row per outcome: inviscid in any mode, each viscous model
+    # outside "ranks" (in "run" and in "none"), and under "ranks".
+    rule = {
+        ("Inviscid", "ranks"): "face2",
+        ("Laminar", "run"): "vertex3",
+        ("SA", "none"): "vertex3",
+        ("Laminar", "ranks"): "vertex4",
+    }
+    for (turbulence, reproducibility), needed in rule.items():
+        case = autan.load(
+            write_case(
+                CRM_HL.replace(
+                    "autan.SA())", f'autan.{turbulence}(), reproducibility="{reproducibility}")'
+                )
+            )
+        )
+        for stencil in ("face2", "vertex3", "vertex4"):
+            document = prepared(mesh_document("crm-hl"), ranks=4, ghost_stencil=stencil)
+            on_stencil = autan.MeshInfo.from_document(document, autan.Location())
+            refused = "E0212" in diagnostic_codes(case.plan(on_stencil, gpus=4, device_kind="cuda"))
+            assert refused == (stencil != needed), (turbulence, reproducibility, stencil)
     by_name = {c.name: c for c in four.components}
     assert by_name["mesh"] == {c.name: c for c in cuda.components}["mesh"]
     assert four.bytes_device < cuda.bytes_device / 3
@@ -361,8 +497,14 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     )
     assert by_name["solver input"].bytes_host == bound + 2**16
     assert by_name["solver input setup"].bytes_host == 41 * (bound + 2**16)
-    # The writer adds the coordinates 24N and 64-bit connectivity 8 max(F, C) + 8 max(P, K).
-    assert by_name["solution output"].bytes_host == 2 * 34 * 80 + 24 * 30 + 8 * 41 + 8 * 160
+    # The writer adds the coordinates 24N and 64-bit connectivity 8 max(F, C) + 8 max(P, K); a
+    # steady fp32+acc64 run also writes its first-order start's window, 501 FP64 values, kept
+    # twice as the fields are (#611).
+    assert by_name["solution output"].bytes_host == (
+        2 * 34 * 80 + 24 * 30 + 8 * 41 + 8 * 160 + 2 * 8 * 501
+    )
+    assert by_name["first-order start window"].bytes_host == 8 * 501
+    assert not by_name["first-order start window"].transient
     # RCM order keeps the renumbered mesh (the mesh terms without geometry) and its maps.
     renumbered = 720 + 640 + 640 + 240 + 80 + 200 + 4 * 10 + 5 * 40 + 4 * 30
     assert by_name["renumbered mesh"].bytes_host == renumbered
@@ -417,7 +559,7 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     # The multigrid's levels from quality.multigrid: one coarse level of 2 nodes and 1 edge adds
     # 1000 per node and 410 per edge, and moves the dense LU from 5 x 10 to 5 x 2 unknowns.
     two_levels: dict[str, Any] = tiny_mesh(20).document()
-    two_levels["quality"]["multigrid"] = {"cells_by_level": [10, 2], "edges_by_level": [20, 1]}
+    two_levels["quality"]["multigrid"] |= {"cells_by_level": [10, 2], "edges_by_level": [20, 1]}
     deeper = autan.load(write_case(TINY)).plan(
         autan.MeshInfo.from_document(two_levels, autan.Location()), device_kind="cpu"
     )
@@ -444,6 +586,7 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     assert "E0212" in diagnostic_codes(ranks)
     whole: dict[str, Any] = tiny_mesh(20).document()
     whole["partition"] = one_part(whole)
+    whole["quality"]["multigrid"]["order"] = "rcm"
     parted = autan.load(
         write_case(TINY.replace("Inviscid())", 'Inviscid(), reproducibility="ranks")'))
     ).plan(autan.MeshInfo.from_document(whole, autan.Location()), device_kind="cpu")
@@ -464,6 +607,7 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     split["partition"] = {
         "ranks": 2,
         "groups": "none",
+        "ghost_stencil": "face2",
         "cells_by_rank": [7, 3],
         "ghosts_by_rank": [3, 2],
         "faces_by_rank": [30, 18],
@@ -525,23 +669,81 @@ def test_the_memory_estimate_counts_what_each_run_allocates(
     assert setup == 69 * 20 + 48 * 1 + 296 * 10 + 156 * 2 + 144 * 20
     # A coarse level of 1 cell and no edge leaves the line grouping the largest.
     single: dict[str, Any] = tiny_mesh(20).document()
-    single["quality"]["multigrid"] = {"cells_by_level": [10, 1], "edges_by_level": [20, 0]}
+    single["quality"]["multigrid"] |= {"cells_by_level": [10, 1], "edges_by_level": [20, 0]}
     coarse = autan.load(write_case(TINY)).plan(
         autan.MeshInfo.from_document(single, autan.Location()), device_kind="cpu"
     )
     setup = {c.name: c for c in coarse.memory.components}["multigrid setup"].bytes_host
     assert setup == 160 * 20 + 284 * 10 + 72 * 20
+    # On a partition (here one rank under reproducibility "ranks") every rank builds the hierarchy
+    # on an RCM copy of the global mesh (setup-memory.md, Multigrid on a partition). It keeps the
+    # order and its inverse (8 C), the face maps (5 F), each node's part (4 C), the global level 0
+    # (16 C + 13 F_i) and each level's parts (4 B a node); its lines are the run's line groups.
+    # Both are built before the partition, in the input phase. Its setup holds the copy, the mesh (2 520 B), its point map grown without reserve (8 N) and its
+    # geometry (56 F + 32 C), beside the build's peak, the line grouping above; the copy's
+    # renumbering, 40 C + 60 N + 50 F + 8 F_i + 24 P, is lower. The rank's distributed multigrid
+    # keeps two copies of the finest blocks (200 B a cell, 400 an interior face, for 5
+    # equations), its maps (8 C + 9 F_i) and vectors (80 C); its construction holds 16 C + 56 F_i
+    # and 8 B a node of every level; assembling the dense coarsest level, here level 0, holds
+    # 872 B a node and 1 696 an edge.
+    assert "partition hierarchy" not in by_name
+    ranked = TINY.replace("autan.Inviscid()", 'autan.Inviscid(), reproducibility="ranks"')
+    partitioned = autan.load(write_case(ranked)).plan(tiny_mesh(20), device_kind="cpu")
+    part = {c.name: c for c in partitioned.memory.components}
+    kept = 8 * 10 + 5 * 40 + 4 * 10 + 16 * 10 + 13 * 20 + 4 * 10
+    assert part["partition hierarchy"].bytes_host == kept
+    phases_of = {
+        name: (part[name].phase, part[name].last)
+        for name in (
+            "partition hierarchy",
+            "multigrid setup",
+            "partition multigrid",
+            "partition multigrid setup",
+            "multigrid coarsest assembly",
+        )
+    }
+    assert phases_of == {
+        "partition hierarchy": ("input", "iterations"),
+        "multigrid setup": ("input", "input"),
+        "partition multigrid": ("solver", "iterations"),
+        "partition multigrid setup": ("solver", "solver"),
+        "multigrid coarsest assembly": ("iterations", "iterations"),
+    }
+    copy = 2520 + 8 * 30 + 56 * 40 + 32 * 10
+    build = 160 * 20 + 284 * 10 + 72 * 20
+    assert part["multigrid setup"].bytes_host == copy + build
+    assert copy + build > 40 * 10 + 60 * 30 + 50 * 40 + 8 * 20 + 24 * 160
+    operator = 2 * (200 * 10 + 400 * 20) + 8 * 10 + 9 * 20 + 80 * 10
+    assert part["partition multigrid"].bytes_host == operator
+    assert part["partition multigrid setup"].bytes_host == 16 * 10 + 56 * 20 + 8 * 10
+    assert part["multigrid coarsest assembly"].bytes_host == 872 * 10 + 1696 * 20
     # A start reads the previous solution on every rank and takes the rank's share: 8 (C + C_r)
     # bytes per field, the 34 written fields for a continuation, the 6 primitives for a warm one;
     # and its descriptors at their bounds, held from cg_open: run metadata of 64 KiB, also
     # copied and parsed (40 B a byte), and zone names of 25 600 B for each of the 2 zones and
     # the document; HDF5's default caches; and cg_open's tree, 1 MiB and 16 KiB a node, at the
-    # 16 384 nodes the runtime accepts in a start file.
-    modes: tuple[tuple[Literal["continue", "warm"], int], ...] = (("continue", 34), ("warm", 6))
-    for mode, fields in modes:
+    # 16 384 nodes the runtime accepts in a start file. A continuation of a steady fp32+acc64
+    # run also reads its first-order start's window, 501 FP64 values, and copies the rank's
+    # (#611).
+    modes: tuple[tuple[Literal["continue", "warm"], int, int], ...] = (
+        ("continue", 34, 2 * 8 * 501),
+        ("warm", 6, 0),
+    )
+    for mode, fields, window in modes:
         started = autan.load(write_case(TINY)).plan(tiny_mesh(20), device_kind="cpu", start=mode)
-        assert {c.name: c for c in started.memory.components}["start"].bytes_host == (
+        # The physics reads it while it is built: it stays alive through the solver's setup.
+        retained = {c.name: c for c in started.memory.components}["start"]
+        assert (retained.transient, retained.phase, retained.last) == (True, "input", "solver")
+        # It is alive with everything the physics' constructor allocates: the peak holds them all.
+        built = sum(
+            c.bytes_host
+            for c in started.memory.components
+            if not c.transient and c.phase in ("input", "physics", "solver")
+        )
+        assert started.memory.bytes_host >= built + retained.bytes_host
+        assert retained.bytes_host == (
             8 * (10 + 10) * fields
+            + window
             + 42 * 64 * 2**10
             + 25_600 * 3
             + caches

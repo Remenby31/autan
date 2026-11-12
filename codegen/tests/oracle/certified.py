@@ -106,17 +106,76 @@ def representable(v: Fraction, fmt: Format) -> bool:
     return scaled.denominator == 1
 
 
+CENTRE_BITS = 128  # significant bits of a tidied centre
+RADIUS_BITS = 64  # significant bits of a tidied radius
+
+
+def dyadic_exponent(a: Fraction) -> int:
+    """floor(log2 |a|) for a != 0, exactly."""
+    a = abs(a)
+    e = a.numerator.bit_length() - a.denominator.bit_length()
+    if Fraction(2) ** e > a:
+        e -= 1
+    return e
+
+
+def _nearest_dyadic(v: Fraction, bits: int) -> Fraction:
+    """The dyadic with `bits` significant bits nearest to v, ties to the even last kept bit."""
+    if v == 0:
+        return Fraction(0)
+    scale = Fraction(2) ** (bits - 1 - dyadic_exponent(v))
+    scaled = abs(v) * scale
+    n = scaled.numerator // scaled.denominator
+    rest = scaled - n
+    if rest > Fraction(1, 2) or (rest == Fraction(1, 2) and n % 2 == 1):
+        n += 1
+    out = Fraction(n) / scale
+    return out if v > 0 else -out
+
+
+def _dyadic_ceiling(r: Fraction, bits: int) -> Fraction:
+    """The least dyadic with `bits` significant bits that is >= r >= 0, exactly."""
+    if r == 0:
+        return Fraction(0)
+    scale = Fraction(2) ** (bits - 1 - dyadic_exponent(r))
+    scaled = r * scale
+    n = -(-scaled.numerator // scaled.denominator)
+    return Fraction(n) / scale
+
+
+def tidy(x: Cert) -> Cert:
+    """Re-centre x on the nearest dyadic v' of CENTRE_BITS significant bits (ties to even) and
+    round r + |v - v'| up, exactly, to a dyadic r' of RADIUS_BITS significant bits. Every rule
+    returns tidy(...), on every return path.
+
+    Sound: |computed - v'| <= |computed - v| + |v - v'| <= r + |v - v'| <= r', so [v' - r', v' + r']
+    contains [v - r, v + r]: tidy never shrinks an interval.
+
+    Bound, for the pre-tidy radius r and centre v of each operation, with delta = |v - v'| and
+    q = 2^-63: rounding to 128 bits gives delta <= 2^-128 |v|, and rounding up to 64 bits gives
+    r' <= (r + delta)(1 + q). Hence r' - r <= delta + q (r + delta) <= q r + (1 + q) 2^-128 |v|
+    <= q r + 2^-127 |v|.
+
+    Exactness: r' = 0 exactly when r = 0 and delta = 0, i.e. v' = v. The exactness refinement of
+    the rules, taken on operands of radius 0, therefore decides on their original exact values.
+    The bit-for-bit replays of declared sequences use the emulated executed values, never these
+    centres.
+    """
+    v2 = _nearest_dyadic(x.value, CENTRE_BITS)
+    return Cert(v2, _dyadic_ceiling(x.radius + abs(x.value - v2), RADIUS_BITS), x.fmt)
+
+
 def _rounded(v: Fraction, d: Fraction, fmt: Format) -> Cert:
     """The result of rounding, to `fmt`, an exact operation result within d of v."""
     if abs(v) + d > fmt.max:
         msg = f"{fmt.name}: the result may overflow (|v| + D exceeds the largest finite value)"
         raise Invalid(msg)
     if d == 0 and representable(v, fmt):
-        return Cert(v, Fraction(0), fmt)
+        return tidy(Cert(v, Fraction(0), fmt))  # unchanged: a representable value is dyadic
     r = (1 + fmt.u) * d + fmt.u * abs(v)
     if abs(v) - d < fmt.normal_min:
         r += fmt.eta
-    return Cert(v, r, fmt)
+    return tidy(Cert(v, r, fmt))
 
 
 def add(x: Cert, y: Cert, fmt: Format) -> Cert:
@@ -148,5 +207,5 @@ def cast(x: Cert, fmt: Format, *, narrowing: bool = True) -> Cert:
         if x.fmt is None or not _contains(fmt, x.fmt):
             msg = f"widening to {fmt.name} needs a value of a declared narrower format"
             raise Invalid(msg)
-        return Cert(x.value, x.radius, fmt)
+        return tidy(Cert(x.value, x.radius, fmt))
     return _rounded(x.value, x.radius, fmt)

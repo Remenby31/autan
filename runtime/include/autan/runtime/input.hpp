@@ -91,6 +91,7 @@ struct TimeInput {
   bool coupled_turbulence =
       false;                 ///< steady: the flow and SA solved together (case-schema.md#time)
   bool matrix_free = false;  ///< steady laminar: the matrix-free step (case-schema.md#time)
+  std::string start_order = "first";  ///< steady: "first" or "second" (case-schema.md#time)
   std::int64_t steps = 0;
   std::optional<double> dt, cfl;
   std::optional<std::int64_t> average_from;
@@ -125,8 +126,8 @@ struct Start {
   std::string solution_sha256;
   /// The file of `run` to read: "solution" (solution.cgns) or "checkpoint" (checkpoint.cgns).
   std::string file;
-  /// Residuals at iteration 1 of the original run, in residual_names order;
-  /// set exactly for a steady `continue`.
+  /// The steady convergence reference of the run started from, in residual_names order;
+  /// set exactly for a steady `continue` or a steady `warm` from a steady run.
   std::optional<std::vector<double>> residual_reference;
   /// Equations exempt at iteration 1 that left their floor earlier in the
   /// chain (case-schema.md#time), sorted; set exactly with residual_reference.
@@ -151,7 +152,11 @@ struct SolverInput {
   std::string mesh_info, mesh_info_order;
   double mesh_info_scale = 1.0;
   std::int64_t mesh_info_bytes = 0;  ///< its source.bytes: the size of what the mesh hash covers
-  std::string precision;             ///< "fp32+acc64" or "fp64"
+  /// Its partition's rank count and groups ("none", "lines" or "multigrid"); 0 and "none"
+  /// without a partition.
+  std::int64_t mesh_info_ranks = 0;
+  std::string mesh_info_groups = "none";
+  std::string precision;  ///< "fp32+acc64" or "fp64"
   /// "none", "run" or "ranks" (solver-input.md): which runs repeat the same bits.
   std::string reproducibility = "run";
   std::string device_kind;  ///< cpu, cuda, hip
@@ -159,6 +164,7 @@ struct SolverInput {
   /// `memory`: what one rank allocates at its peak, on the host and on its device.
   std::int64_t memory_bytes_host = 0, memory_bytes_device = 0;
   std::string physics_kind;  ///< compressible, incompressible
+  std::string flux = "roe";  ///< compressible: "roe", "hllc" or "ausm+up" (case-schema.md#physics)
   Turbulence turbulence;
   Freestream freestream;
   std::vector<BoundaryInput> boundaries;

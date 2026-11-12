@@ -17,6 +17,8 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from autan import compare
+from autan import logs as run_logs
 from autan.case import Case, load
 from autan.errors import (
     REGISTRY,
@@ -340,6 +342,66 @@ def json_schema(name: str) -> dict[str, Any]:
     }
 
 
+def _diff_text(report: compare.Report) -> str:
+    lines = []
+    for e in report.record:
+        mark = "reported" if not e.compared else ("same" if e.agree else "DIFFERS")
+        lines.append(f"record   {mark:<8} {e.name}: {e.a!r} | {e.b!r}")
+    for s in report.history:
+        mark = "same" if s.agree else f"DIFFERS from iteration {s.first}"
+        lines.append(f"history  {s.name}: {mark}, max abs {s.max_abs:.3e}, rel {s.max_rel:.3e}")
+    lines.append(f"solution {report.solution}")
+    for s in report.fields:
+        mark = "same" if s.agree else "DIFFERS"
+        lines.append(f"solution {s.name}: {mark}, max abs {s.max_abs:.3e}, rel {s.max_rel:.3e}")
+    mode = "bit for bit" if report.bitwise else f"within rtol {report.rtol:g}"
+    lines.append(f"the runs agree {mode}" if report.agree else f"the runs differ ({mode})")
+    return "\n".join(lines)
+
+
+def command_diff(args: argparse.Namespace) -> int:
+    """Compare two run directories (docs/sdk/diff.md). As ``diff`` and ``cmp``: exit 0 when they
+    agree, 1 when they differ, 2 when they cannot be compared (``E0701``)."""
+    try:
+        report = compare.diff(
+            args.a, args.b, bitwise=args.bitwise, rtol=args.rtol, fields=args.fields
+        )
+    except CaseError as error:
+        _fail(error, args.json)
+        return 2
+    _emit(report.model_dump(mode="json"), args.json, _diff_text(report))
+    return 0 if report.agree else 1
+
+
+def _rtol(text: str) -> float:
+    value = float(text)
+    if not value > 0:
+        message = "must be > 0"
+        raise argparse.ArgumentTypeError(message)
+    return value
+
+
+def command_logs(args: argparse.Namespace) -> int:
+    """Print a run's ``log.jsonl`` (docs/sdk/logs.md): verbatim with ``--json``, one readable
+    line per event otherwise; ``-f`` follows a running run until it ends. Exit 0, or 1 with
+    ``E0701`` when the run directory or a log line breaks results.md."""
+    try:
+        for raw, entry in run_logs.read(Path(args.run), follow=args.follow, level=args.level):
+            if args.json:
+                # The bytes the run wrote, whatever stdout's text encoding.
+                sys.stdout.flush()
+                sys.stdout.buffer.write(raw + b"\n")
+                sys.stdout.buffer.flush()
+            else:
+                sys.stdout.write(run_logs.text(entry) + "\n")
+                sys.stdout.flush()
+    except CaseError as error:
+        return _fail(error, args.json)
+    except KeyboardInterrupt:
+        return 130
+    return 0
+
+
 def command_schema(args: argparse.Namespace) -> int:
     sys.stdout.write(json.dumps(json_schema(args.document), indent=2) + "\n")
     return 0
@@ -396,7 +458,11 @@ def parser() -> argparse.ArgumentParser:
     )
     sub.add_argument("--device-count", type=_positive, default=1, help="autan-run: devices")
     sub.add_argument("--start", help="run directory to start from (default: the freestream)")
-    sub.add_argument("--warm", action="store_true", help="with --start: warm-start, count from 1")
+    sub.add_argument(
+        "--warm",
+        action="store_true",
+        help="with --start: warm-start, count from 1, converge to the start run's residual level",
+    )
     sub.add_argument("--runs", default="runs", help="directory of run directories")
     sub.add_argument("--iterations", type=int, default=200, help="fake: iterations to write")
     sub.add_argument("--pace", type=float, default=0.0, help="fake: seconds per iteration")
@@ -412,7 +478,11 @@ def parser() -> argparse.ArgumentParser:
     sub.add_argument("--device-kind", choices=["cpu", "cuda", "hip"], default="cpu")
     sub.add_argument("--device-count", type=_positive, default=1)
     sub.add_argument("--start", help="run directory to start from (default: the freestream)")
-    sub.add_argument("--warm", action="store_true", help="with --start: warm-start, count from 1")
+    sub.add_argument(
+        "--warm",
+        action="store_true",
+        help="with --start: warm-start, count from 1, converge to the start run's residual level",
+    )
     sub.add_argument("-o", "--output", help="file to write (default: stdout)")
     sub.add_argument("--json", action="store_true", help="diagnostics as JSON on failure")
     sub.set_defaults(func=command_prepare)
@@ -427,6 +497,27 @@ def parser() -> argparse.ArgumentParser:
         help="a downloaded perf-history artifact of gpu-bench (gh run download -n perf-history)",
     )
     sub.set_defaults(func=command_ui)
+
+    sub = commands.add_parser("diff", help="compare two runs: record, history, solution")
+    sub.add_argument("a", help="a run directory")
+    sub.add_argument("b", help="another run directory")
+    sub.add_argument("--fields", nargs="+", help="compare only these solution fields")
+    tolerance = sub.add_mutually_exclusive_group()
+    tolerance.add_argument("--bitwise", action="store_true", help="values agree when bit for bit")
+    tolerance.add_argument(
+        "--rtol", type=_rtol, default=compare.RTOL, help="relative tolerance (default 1e-6)"
+    )
+    sub.add_argument("--json", action="store_true", help="print the report as JSON")
+    sub.set_defaults(func=command_diff)
+
+    sub = commands.add_parser("logs", help="print a run's log, or follow it while it runs")
+    sub.add_argument("run", help="a run directory")
+    sub.add_argument("-f", "--follow", action="store_true", help="wait for the run's end")
+    sub.add_argument(
+        "--level", choices=["info", "warning", "error"], default="info", help="lowest level shown"
+    )
+    sub.add_argument("--json", action="store_true", help="print the log's lines as written")
+    sub.set_defaults(func=command_logs)
 
     sub = commands.add_parser("doctor", help="check GPU, driver, MPI and solver core")
     sub.add_argument("--json", action="store_true", help="print JSON")

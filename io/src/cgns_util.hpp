@@ -159,6 +159,19 @@ class CgioTree {
     check(cgio_read_all_data_type(cgio_, node, "I8", all.data()), "read an integer node");
     for (std::size_t i = 0; i < N; ++i) out[i] = all[i];
   }
+  /// The data type of `node` ("R8", "I4", "MT", ...), from the metadata only.
+  [[nodiscard]] std::string data_type(double node) const {
+    std::array<char, CGIO_MAX_DATATYPE_LENGTH + 1> type{};
+    check(cgio_get_data_type(cgio_, node, type.data()), "read a data type");
+    return type.data();
+  }
+  /// The number of dimensions of `node`'s data, from the metadata only.
+  [[nodiscard]] int dimensions(double node) const {
+    int dims = 0;
+    std::array<cgsize_t, CGIO_MAX_DIMENSIONS> extent{};
+    check(cgio_get_dimensions(cgio_, node, &dims, extent.data()), "read dimensions");
+    return dims;
+  }
   /// The number of values of `node`'s data, from the metadata only.
   [[nodiscard]] std::int64_t values(double node) const {
     int dims = 0;

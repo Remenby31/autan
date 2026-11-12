@@ -6,7 +6,7 @@ What each setup phase holds after the mesh is read and before the first iteratio
 
 | Class | Bound | Charged in (plan.md component) |
 |---|---|---|
-| **M** mesh counts | grows with what MeshInfo counts: nodes `N`, cells `C`, faces `F`, interior faces `F_i`, boundary faces `F_b`, face nodes `P`, zones, periodic pairs | `mesh`, `mesh setup`, `renumbered mesh`, `physics`, `physics setup` |
+| **M** mesh counts | grows with what MeshInfo counts: nodes `N`, cells `C`, faces `F`, interior faces `F_i`, boundary faces `F_b`, face nodes `P`, zones, periodic pairs | `mesh`, `mesh setup`, `renumbered mesh`, `partition hierarchy`, `physics`, `physics setup` |
 | **E** stencil entries | grows with `counts.stencil_entries`, the final stencil after deduplication | `physics`, `physics setup` |
 | **L** multigrid levels | grows with `quality.multigrid` (`cells_by_level`, `edges_by_level`) | the case's `linear_solver` component |
 | **Q** partition | grows with `partition` (`cells_by_rank`, `ghosts_by_rank`, `faces_by_rank`, `interior_faces_by_rank`, `stencil_entries_by_rank`, `nodes_by_rank`, `face_nodes_by_rank`, `sent_cells_by_rank`) | `partition`, the per-rank counts of every component |
@@ -52,6 +52,7 @@ Every rank reads the whole mesh and runs these steps on it, so every row is held
 | `local`, `ghosts_of`'s sets and frontiers, `first_layer`, `faces` (`extract.cpp:278`–`344`) | `L_r`, `G_r`, `F_r` | Q |
 | the `nodes` map (`extract.cpp:380`) and the local `MeshInput`'s `x`, `y`, `z`, `face_nodes` by `push_back` (`extract.cpp:389`–`404`) | `N_r`, `P_r` | Q |
 | the local `MeshInput`'s face and cell arrays, `assemble`'s temporaries, the local mesh, geometry, `face_global_id`, `face_reversed` (`extract.cpp:364`–`447`, `mesh.cpp:273`–`377`) | `F_r`, `F_ir`, `L_r`, `G_r` | Q |
+| with a vertex `GhostStencil`: the rings' cells, walked node copies and faces (`rings_of`), and `check_rings`' degree, 4 B a global node, and map of the walked node copies, 64 B each | N, `N_r` | M: 4N; Q |
 | one neighbour's ghosts, recomputed for each neighbour in turn (`extract.cpp:472`) | that neighbour's `C_q` + `G_q` | Q |
 | send lists, slots and interface faces (`extract.cpp:473`–`494`), `HaloExchange`'s index copies and messages (`halo_exchange.cpp:322`–`336`) | `S_r`, `G_r` | Q |
 | `host_slots`, `host_ghosts`: 16 components of 8 B each, whatever the run moves (`halo_exchange.cpp:366`) | `S_r`, `G_r` | Q |
@@ -102,6 +103,26 @@ Peaks: `rcm_order`, 37C + 8`F_i`; `renumber_cells`, 40C + 56N + 50F + 8`F_i` + 8
 This assumes every cell is in some line (lines ≤ `C`) and counts push_back capacity at 2×. Measured with a counting `operator new` around `agglomerate` (main bd3285e0), the heap peak is 0.54–0.80 of max(P1, P2) on 43 meshes: the TMR plates, RAE ×3, NACA, the bumps and every MMS family level up to hybrid n048. It is 0.60 on NACA 0012 1024² (1.05 M cells, 479 MB) and 0.74 on DPW4 (21.6 M cells, 8.97 GB).
 
 The coarsening ratio is enforced for cells and edges (a level keeps at most 0.8 of the finer level's `cells_by_level` and `edges_by_level`, `agglomeration.cpp:662-664`), so the hierarchy holds at most 5 `C` nodes and 5 `F_i` edges. The L class charges MeshInfo's measured counts, which are tighter (0.62 at most for edges, DPW4 level 0 to 1).
+
+### Multigrid on a partition
+
+On several ranks, or on one under reproducibility `"ranks"`, the steady CPU multigrid builds its hierarchy on an RCM copy of the global mesh, on every rank, when the physics computes its zone groups (`partition_hierarchy`, `physics/src/partition_multigrid.cpp:48`, from `euler_groups`, `run.cpp:1558`), before the partition is extracted (`make_part`, `run.cpp:1610`). The unpartitioned one-rank path is unchanged. `b` is a block's values, 25 for 5 equations; `C_r`, `F_ir` the rank's cells with ghosts and interior faces.
+
+| Held | Grows with | Class |
+|---|---|---|
+| `new_to_old` (`rcm_order`) and `old_to_new`, kept in the `Hierarchy` | C: 8C | M: `partition hierarchy` |
+| `renumber_cells`' construction (`MeshInput` copy, `assemble`'s temporaries), as in Renumbering, with `point_source`'s growth and the closure check's scratch (16 B per face-node incidence of the largest cell, `mesh.cpp:197`, ≤ 16P) | 40C + 60N + 50F + 8`F_i` + 24P | M: `multigrid setup` |
+| the RCM `Mesh`, `AssemblyMap`'s `point_source` (by `push_back`: 8N) and `renumber_geometry`'s `Geometry`, alive through `agglomerate`, freed at the end of its block (`:56`–`60`) | the mesh, 8N, 56F + 32C | M: `multigrid setup` |
+| `face_source` and `face_reversed`, moved into the `Hierarchy` | F: 5F | M: `partition hierarchy` |
+| the global level 0 (owner, neighbour, lines, `coarse_node`, `coarse_edge`, `coarse_flipped`), its coarse levels as the L rows above; its lines again as the zone groups, kept by the run (`euler_physics.cpp:2227`, `run.cpp:1608`) | 16C + 13 `F_i`; the groups 12C | M: `partition hierarchy`; the groups: `line groups` |
+| `PartitionMultigrid::parts_` and the distributed operator's `parts_`, each level's node parts (`distributed_operator.cpp:59`) | 4C; 4 B a node of every level | M, L: `partition hierarchy` |
+| `PartitionMultigrid`'s `diag_`, `upper_`, `lower_` (`:121`), over the owned cells and edges, beside the Jacobian's blocks | 8b `C_r` + 16b `F_ir` | Q: `partition multigrid` |
+| the distributed operator's level-0 copy (`distributed_operator.cpp:132`) and `b_`, `x_` (`:124`), over its level-0 graph: owned nodes, ghosts and the remote children its agglomerates import (`partition/src/graph.cpp:56`), which no partition count bounds | 8bC + 16b `F_i` + 16nC | M: `partition multigrid` (a per-rank graph count in MeshInfo would tighten it) |
+| `cell_of_node_`, `face_of_edge_`, `edge_against_` (`:95`–`120`) | 8 `C_r` + 9 `F_ir` | Q: `partition multigrid` |
+| the constructor's `by_id` and `face_of_id` (an `unordered_map`, 56 B an entry with its bucket), the operator's per-level ids | 16 `C_r` + 56 `F_ir`; 8 B a node of every level | Q, L: `partition multigrid setup` |
+| a dense coarsest level (5 `cells_by_level[L−1]` ≤ 1000): at each `set_operator`, the rank's blocks `mine` (2 + b values a node, 2 + 2b an edge, by `push_back`), the gathered `all`, the blocks placed again and the incident edges (`distributed_multigrid.cpp:203`–`245`) | 872 B a node and 1 696 an edge of the coarsest level for b = 25 (the incident lists with their growth and the old buffer of the one growing) | L: `multigrid coarsest assembly` |
+
+**Peak.** The setup transient is the larger of `renumber_cells`' peak (Renumbering) and the copy beside `agglomerate`'s own peak above, both beside the global mesh and geometry; the copy is freed before the extraction, the `Hierarchy` kept through it. `autan-mesh-info`'s `multigrid` groups take the same path (`io/src/mesh_counts.cpp:26`–`35`) and free it on return; the estimate does not cover the tool.
 
 ## Face colouring (`codegen/cpp/colouring.cpp`; « CFD - Générateur kernels »)
 

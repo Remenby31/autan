@@ -340,7 +340,9 @@ def _watcher(script: str) -> str:
     return "\n".join(line.strip() for line in match.group(1).split("\n"))
 
 
-def _history_csv(path: Path, residuals: dict[str, np.ndarray]) -> None:
+def _history_csv(
+    path: Path, residuals: dict[str, np.ndarray], cd: np.ndarray | None = None
+) -> None:
     header = (DATA / "su2-v8.6.0-naca0012-m080-a125-n0032-2d.csv").read_text().split("\n")[0]
     names = [h.strip().strip('"') for h in header.split(",")]
     columns = dict(
@@ -350,7 +352,9 @@ def _history_csv(path: Path, residuals: dict[str, np.ndarray]) -> None:
     rows = [header]
     rows += [
         ",".join(
-            repr(float(np.log10(columns[c][i]))) if c in columns else ("0.01" if c == "Time(sec)" else "0")
+            repr(float(np.log10(columns[c][i]))) if c in columns
+            else repr(float(cd[i])) if c == "CD" and cd is not None
+            else ("0.01" if c == "Time(sec)" else "0")
             for c in names
         )
         for i in range(n)
@@ -360,12 +364,17 @@ def _history_csv(path: Path, residuals: dict[str, np.ndarray]) -> None:
 
 @pytest.mark.skipif(shutil.which("awk") is None, reason="awk is not installed")
 def test_runner_stops_su2_where_the_criterion_is_met(tmp_path: Path) -> None:
+    scripts = Path(__file__).parents[1] / "su2"
+    for script in ("run.sh", "campaign.sh"):
+        assert subprocess.run(["bash", "-n", str(scripts / script)], check=False).returncode == 0
     program = _watcher("run.sh")
     assert program == _watcher("campaign.sh")
     (tmp_path / "watch.awk").write_text(program)
 
-    def stops(residuals: dict[str, np.ndarray], skip_zero: int = 0) -> bool:
-        _history_csv(tmp_path / "history.csv", residuals)
+    def stops(
+        residuals: dict[str, np.ndarray], skip_zero: int = 0, cd: np.ndarray | None = None
+    ) -> bool:
+        _history_csv(tmp_path / "history.csv", residuals, cd)
         cmd = [
             "awk",
             "-F,",
@@ -375,6 +384,8 @@ def test_runner_stops_su2_where_the_criterion_is_met(tmp_path: Path) -> None:
             "stall=2000",
             "-v",
             f"skipzero={skip_zero}",
+            "-v",
+            "stopfile=stop.csv",
             "-f",
             "watch.awk",
             "history.csv",
@@ -406,6 +417,34 @@ def test_runner_stops_su2_where_the_criterion_is_met(tmp_path: Path) -> None:
     assert stops({"d": slow, "u": slow, "w": woken, "e": slow})
     assert not stops({"d": slow, "u": slow, "w": woken, "e": slow}, skip_zero=1)
     assert not stops({**met, "w": woken[:600]}, skip_zero=1)
+    # With a stop.csv (#493): every residual at or below its threshold and CD stationary to 1e-7
+    # over the window. The verdict does not depend on the first residuals; a woken equation at
+    # the floor converges; CD still moving, or one equation above its threshold, does not.
+    stop = "\n".join(
+        [f"threshold,{c},-8.0" for c in ("rms[Rho]", "rms[RhoU]", "rms[RhoV]", "rms[RhoE]")]
+        + ["output,CD", "window,100", "rtol,1e-07"]
+    )
+    (tmp_path / "stop.csv").write_text(stop + "\n")
+    n = 400
+    floor = np.full(n, 1e-9)
+    settled = np.full(n, 2.8e-3)
+    assert stops({"d": floor, "u": floor, "w": floor, "e": floor}, cd=settled)
+    shifted = floor.copy()
+    shifted[:5] = 1e3
+    assert stops({"d": shifted, "u": floor, "w": woken[:n], "e": floor}, cd=settled)
+    moving = 2.8e-3 * (1 + 1e-5 * np.cos(np.arange(n)))
+    assert not stops({"d": floor, "u": floor, "w": floor, "e": floor}, cd=moving)
+    assert not stops({"d": floor, "u": floor, "w": floor, "e": np.full(n, 1e-7)}, cd=settled)
+    # SU2 writes its history in buffered blocks: a last line cut short is not a row.
+    _history_csv(
+        tmp_path / "history.csv", {"d": floor, "u": floor, "w": floor, "e": floor}, settled
+    )
+    text = (tmp_path / "history.csv").read_text()
+    (tmp_path / "history.csv").write_text(text + text.splitlines()[-1][:40])
+    cmd = ["awk", "-F,", "-v", "orders=10", "-v", "stall=2000", "-v", "skipzero=0", "-v",
+           "stopfile=stop.csv", "-f", "watch.awk", "history.csv"]  # fmt: skip
+    assert subprocess.run(cmd, cwd=tmp_path, check=False).returncode == 0
+    (tmp_path / "stop.csv").unlink()
 
 
 def _geometric_like(residuals: dict[str, np.ndarray]) -> history.History:
@@ -486,7 +525,10 @@ def test_study_reproduces_the_papers_extrapolation(tmp_path: Path) -> None:
     assert all(lv["converged"] and lv["iterations"] == 37 for lv in report["levels"])
     assert report["continuum"]["cl"]["estimate"] == pytest.approx(0.356208937, abs=2e-9)
     assert report["continuum"]["cd"]["estimate"] == pytest.approx(0.022684938, abs=2e-9)
-    assert all(v["pass"] for v in report["verdicts"])
+    verdicts = {v["gate"]: v for v in report["verdicts"]}
+    assert verdicts["naca0012-m080-a125-cd"]["pass"]
+    # ADR 0004: the CL gate takes the levels 256² to 2048² only.
+    assert "levels" in verdicts["naca0012-m080-a125-cl"]["reason"]
     assert main(["su2", "study", *map(str, runs), "--out", str(tmp_path / "s.json")]) == 0
     # A level that did not reach the criterion leaves too few levels for an estimate.
     _write_run(runs[0], FLO82_CL[0], FLO82_CD[0], converged=False)
@@ -828,13 +870,21 @@ CFL3D_CD = {816: 0.295438152e-2, 3264: 0.288437885e-2, 13056: 0.286620917e-2,
 
 
 def _flat_plate_run(
-    run: Path, model: str, cells: int, drop: float, first: float = -2.0, nu: float = 0.0
+    run: Path,
+    model: str,
+    cells: int,
+    drop: float,
+    first: float = -2.0,
+    nu: float = 0.0,
+    rows: int = 30,
+    settle: float = 0.0,
 ) -> None:
     from autan_vv.su2 import flatplate  # noqa: PLC0415
 
     run.mkdir(parents=True)
     (run / "m.su2").write_text(f"mesh {cells}\n")
     (run / "case.cfg").write_text("MESH_FILENAME= m.su2\n")
+    shutil.copy(DATA / "su2-v8.6.0-flatplate-35x25-log-freestream.txt", run / "log.txt")
     sha = {f: hashlib.sha256((run / f).read_bytes()).hexdigest() for f in ("m.su2", "case.cfg")}
     (run / "level.json").write_text(json.dumps({
         "model": model, "cells": cells, "case_sha256": sha["case.cfg"],
@@ -848,17 +898,17 @@ def _flat_plate_run(
     header = (DATA / "su2-v8.6.0-flatplate-35x25-history.csv").read_text().split("\n")[0]
     names = [h.strip().strip('"') for h in header.split(",")]
     lines = [header]
-    for i in range(30):
-        rms = first - drop * i / 29
-        row = {"Inner_Iter": i, "Time(sec)": 0.01, "CD": CFL3D_CD[cells]}
+    for i in range(rows):
+        rms = first - drop * i / (rows - 1)
+        row = {"Inner_Iter": i, "Time(sec)": 0.01, "CD": CFL3D_CD[cells] * (1 + settle * 0.97**i)}
         lines.append(",".join(
             str(row.get(n, rms + nu * (n == "rms[nu]") if n.startswith("rms[") else 0.0))
             for n in names
         ))  # fmt: skip
     (run / "history.csv").write_text("\n".join(lines) + "\n")
-    rows = ['"PointID","x","y","Skin_Friction_Coefficient_x"']
-    rows += [f"{k}, {x}, 0.0, {CFL3D_CF[cells]!r}" for k, x in enumerate((0.0, 0.5, 1.5, 2.0))]
-    (run / f"{flatplate.SURFACE}.csv").write_text("\n".join(rows) + "\n")
+    surface = ['"PointID","x","y","Skin_Friction_Coefficient_x"']
+    surface += [f"{k}, {x}, 0.0, {CFL3D_CF[cells]!r}" for k, x in enumerate((0.0, 0.5, 1.5, 2.0))]
+    (run / f"{flatplate.SURFACE}.csv").write_text("\n".join(surface) + "\n")
 
 
 def test_flat_plate_report_against_tmr(tmp_path: Path) -> None:
@@ -882,6 +932,36 @@ def test_flat_plate_report_against_tmr(tmp_path: Path) -> None:
     assert model["continuum"]["cd"]["estimate"] == pytest.approx(2.85924e-3, abs=5e-9)
     assert all(lv["gap"]["CFL3D"] == {"cf": 0.0, "cd": 0.0} for lv in model["levels"])
     assert model["pass"]
+    # The absolute criterion of #493 needs a baseline whose CD settles for a window: thirty
+    # iterations are not one.
+    with pytest.raises(VVError) as err:
+        flatplate.results(root, cache, ("sa-noft2",), absolute=root)
+    assert err.value.code == "V0904"
+    # Runs of 900 iterations whose CD is CFL3D's times 1 + 1e-3 0.97^i: CD is within 1e-7 of its
+    # final value from i = 303 (0.97^i <= 1e-4), so it has been stationary over 500 iterations
+    # from i = 803, the 804th iteration; the residuals are below their thresholds from 303 on.
+    settled = tmp_path / "settled"
+    for cells in CFL3D_CF:
+        _flat_plate_run(settled / "sa-noft2" / f"n{cells}", "sa-noft2", cells, drop=11.0,
+                        rows=900, settle=1e-3)  # fmt: skip
+    absolute = flatplate.results(settled, cache, ("sa-noft2",), absolute=settled)
+    absolute = absolute["models"]["sa-noft2"]
+    assert [lv["absolute"]["iterations"] for lv in absolute["levels"]] == [804] * 5
+    assert absolute["absolute"]["continuum"]["cd"]["estimate"] == pytest.approx(
+        2.85924e-3, abs=5e-9
+    )
+    # The stop.csv `prepare --absolute` writes stops the runner's watcher on that history.
+    finest = settled / "sa-noft2" / "n208896"
+    mesh = hashlib.sha256((finest / "m.su2").read_bytes()).hexdigest()
+    (finest / "stop.csv").write_text(flatplate.stop_csv(flatplate.stop_rule(finest, mesh)))
+    (finest / "watch.awk").write_text(_watcher("run.sh"))
+    cmd = ["awk", "-F,", "-v", "orders=10", "-v", "stall=2000", "-v", "skipzero=0", "-v",
+           "stopfile=stop.csv", "-f", "watch.awk", "history.csv"]  # fmt: skip
+    assert subprocess.run(cmd, cwd=finest, check=False).returncode == 0
+    # Its first 800 iterations do not meet it yet.
+    lines = (finest / "history.csv").read_text().splitlines()
+    (finest / "history.csv").write_text("\n".join(lines[:801]) + "\n")
+    assert subprocess.run(cmd, cwd=finest, check=False).returncode == 1
     # A variant whose first residuals are three orders lower stops 8.5 orders down, at or below the
     # levels the published runs had at the criterion: not converged by the protocol's rule, so no
     # estimate, but converged by the amended one (#195), with CFL3D's continuum again. The
@@ -919,3 +999,210 @@ def test_flat_plate_report_against_tmr(tmp_path: Path) -> None:
     with pytest.raises(VVError) as err:
         flatplate.results(root, cache)
     assert err.value.code == "V0904"
+
+
+def test_absolute_criterion_does_not_depend_on_the_initial_state() -> None:
+    n = 800
+    it = np.arange(n, dtype=np.float64)
+    decay = 1e-2 * 0.9**it + 1e-14
+    cd = 2.8e-3 * (1.0 + 0.5**it)
+    scales = {"d": 1.0, "u": 10.0, "e": 1e5}
+
+    def run(residuals: dict[str, np.ndarray], drag: np.ndarray = cd) -> history.History:
+        return history.History(
+            iterations=it.astype(np.int64), residuals=residuals, cl=np.zeros(n), cd=drag,
+            cmy=np.zeros(n), wall_seconds=None,
+        )  # fmt: skip
+
+    base = run({eq: decay * s for eq, s in scales.items()})
+    # cd is within 1e-7 of its final value from 0.5^i <= 1e-7 (1 + 0.5^799), i = 24; epsilon is the
+    # largest scaled residual there, every equation's being decay[24].
+    eps = history.epsilon(base, scales, ("cd",))
+    assert eps == pytest.approx(decay[24], rel=1e-12)
+    thresholds = {eq: eps * s for eq, s in scales.items()}
+    # The residuals reach the thresholds at 24, cd is then stationary over 500 iterations at 524.
+    at = history.absolute_converged_at(base, thresholds, ("cd",))
+    assert at == 524
+    # First residuals three orders higher: the relative criterion moves, the absolute does not.
+    shifted = {eq: np.where(it < 5, 1e3, 1.0) * decay * s for eq, s in scales.items()}
+    assert history.converged_at(run(shifted), 10.0) != history.converged_at(base, 10.0)
+    assert history.absolute_converged_at(run(shifted), thresholds, ("cd",)) == at
+    # An equation that starts identically zero and wakes to the floor converges.
+    woken = {**base.residuals, "u": np.where(it < 1, 1e-30, 1e-13)}
+    assert history.absolute_converged_at(run(woken), thresholds, ("cd",)) == at
+    # cd moving by 1e-6 never is stationary to 1e-7.
+    wobble = 2.8e-3 * (1.0 + 1e-6 * np.cos(it))
+    assert history.absolute_converged_at(run(base.residuals, wobble), thresholds, ("cd",)) is None
+    # SU2 v8.6.0's own freestream table (35x25 flat plate log): its values, and the flux scales
+    # from them with H = E + p / rho and nu_tilde = 3 mu / rho.
+    fs = history.su2_freestream(
+        (DATA / "su2-v8.6.0-flatplate-35x25-log-freestream.txt").read_text()
+    )
+    assert fs == {"pressure": 114455.0, "density": 1.32905, "energy": 217705.0,
+                  "speed": 69.4448, "viscosity": 1.84592e-05}  # fmt: skip
+    flux = history.flux_scales(fs, 1.0)
+    assert flux["density"] == pytest.approx(1.32905 * 69.4448, rel=1e-15)
+    assert flux["energy"] == pytest.approx(
+        1.32905 * 69.4448 * (217705.0 + 114455.0 / 1.32905), rel=1e-15
+    )
+    assert flux["nu-tilde"] == pytest.approx(3.0 * 1.84592e-05 / 1.32905 * 69.4448, rel=1e-15)
+    # The residuals are in the solver's units, the "Non-dim. value" column; an Euler run prints no
+    # viscosity and has no SA scale.
+    table = (DATA / "su2-v8.6.0-flatplate-35x25-log-freestream.txt").read_text()
+    pressure = "|       Static Pressure|        114455|             1|        Pa|        114455|"
+    assert pressure in table
+    euler = table.replace(pressure, pressure[: -len("114455|")] + "0.7142857|")
+    euler = "\n".join(line for line in euler.splitlines() if "Viscosity" not in line)
+    fs = history.su2_freestream(euler)
+    assert fs["pressure"] == 0.7142857
+    assert "viscosity" not in fs
+    assert "nu-tilde" not in history.flux_scales(fs, 1.0)
+
+
+def _bump_wall(x: np.ndarray) -> np.ndarray:
+    """TMR bump.html: y = 0.05 sin^4(pi x / 0.9 - pi / 3) for 0.3 <= x <= 1.2, else 0."""
+    inside = (x >= 0.3) & (x <= 1.2)
+    return np.where(inside, 0.05 * np.sin(np.pi * x / 0.9 - np.pi / 3.0) ** 4, 0.0)
+
+
+def _assert_closed(elements: np.ndarray, markers: dict[str, np.ndarray]) -> None:
+    """Every cell edge occurs once (a boundary edge, then in exactly one marker, in the cell's
+    direction) or twice in opposite directions (an interior edge)."""
+    from collections import Counter  # noqa: PLC0415
+
+    incidences = Counter(
+        (int(q[k]), int(q[(k + 1) % 4])) for q in elements[:, 1:5] for k in range(4)
+    )
+    assert max(incidences.values()) == 1
+    undirected = Counter(frozenset(e) for e in incidences)
+    assert max(undirected.values()) <= 2
+    for edge, n in undirected.items():
+        if n == 2:
+            a, b = tuple(edge)
+            assert (a, b) in incidences
+            assert (b, a) in incidences
+    boundary = {e for e, n in undirected.items() if n == 1}
+    marked = [frozenset((int(a), int(b))) for m in markers.values() for _, a, b in m]
+    assert len(marked) == len(set(marked))
+    assert set(marked) == boundary
+    for m in markers.values():
+        assert all((int(a), int(b)) in incidences for _, a, b in m)
+
+
+def test_bump_grid_converts_with_su2s_markers(tmp_path: Path) -> None:
+    from autan_vv.su2 import tmr2d  # noqa: PLC0415
+
+    xs = np.array([-25.0, -1.0, 0.0, 0.3, 0.75, 1.2, 1.5, 3.0, 26.5])
+    s = np.array([0.0, 0.01, 0.2, 1.0])
+    wall = _bump_wall(xs)
+    x = np.tile(xs, (len(s), 1))
+    y = wall[None, :] + (5.0 - wall[None, :]) * s[:, None]
+    grid = tmp_path / "bump.p2dfmt"
+    _plot3d_2d(grid, x, y)
+    record = tmr2d.convert("tmr-2dbc-bump", grid, tmp_path / "bump.su2")
+    dim, elements, points, markers = _read_su2_mesh(tmp_path / "bump.su2")
+    assert (dim, record.cells, record.points) == (2, 8 * 3, 9 * 4)
+    areas = np.array([_shoelace(points[q, :2]) for q in elements[:, 1:5]])
+    assert np.all(areas > 0.0)
+    ring = np.vstack([np.column_stack([xs, wall]), np.column_stack([xs[::-1], np.full(9, 5.0)])])
+    assert areas.sum() == pytest.approx(_shoelace(ring), rel=1e-13)
+    assert {k: len(v) for k, v in markers.items()} == {
+        "inlet": 3, "outlet": 3, "upper": 8, "lower_upstream": 2, "bump": 4, "lower_downstream": 2
+    }  # fmt: skip
+
+    def at(name: str) -> np.ndarray:
+        return points[np.unique(markers[name][:, 1:]), :2]
+
+    on_bump = at("bump")
+    assert (on_bump[:, 0].min(), on_bump[:, 0].max()) == (0.0, 1.5)
+    assert on_bump[:, 1] == pytest.approx(_bump_wall(on_bump[:, 0]), abs=1e-15)
+    assert np.all(at("inlet")[:, 0] == -25.0)
+    assert np.all(at("outlet")[:, 0] == 26.5)
+    assert np.all(at("upper")[:, 1] == 5.0)
+    assert np.all(at("lower_upstream")[:, 0] <= 0.0)
+    assert np.all(at("lower_upstream")[:, 1] == 0.0)
+    assert np.all(at("lower_downstream")[:, 0] >= 1.5)
+    assert np.all(at("lower_downstream")[:, 1] == 0.0)
+    _assert_closed(elements, markers)
+    # TMR's own grids start the wall at x = 2.78063975925e-16, which is the wall's start.
+    xs_tmr = np.where(xs == 0.0, 2.78063975925e-16, xs)
+    _plot3d_2d(grid, np.tile(xs_tmr, (len(s), 1)), y)
+    assert tmr2d.convert("tmr-2dbc-bump", grid, tmp_path / "tmr.su2").markers["bump"] == 4
+    # A wall that stops short of x = 1.5 is not the 2DBC grid.
+    _plot3d_2d(grid, x * (1.4 / 1.5) * (x > 0) + x * (x <= 0), y)
+    with pytest.raises(VVError) as err:
+        tmr2d.convert("tmr-2dbc-bump", grid, tmp_path / "bad.su2")
+    assert err.value.code == "V0902"
+
+
+def test_naca_c_grid_closes_its_wake_cut(tmp_path: Path) -> None:
+    from autan_vv.su2 import tmr2d  # noqa: PLC0415
+
+    # A C-grid around a diamond (TE at x = 1, LE at x = 0): the first j line runs from the wake's
+    # end along its lower side, round the diamond and back along the wake's upper side.
+    j0 = np.array([[3, 0], [2, 0], [1, 0], [0.5, -0.1], [0, 0], [0.5, 0.1], [1, 0], [2, 0], [3, 0]])
+    j2 = np.array([[3, -2], [2, -2], [1, -2], [0.5, -2], [-2, 0], [0.5, 2], [1, 2], [2, 2], [3, 2]])
+    lines = np.stack([j0, 0.5 * (j0 + j2), j2]).astype(float)
+    grid = tmp_path / "c.p2dfmt"
+    _plot3d_2d(grid, lines[:, :, 0], lines[:, :, 1])
+    record = tmr2d.convert("tmr-2dn00-naca0012", grid, tmp_path / "c.su2")
+    _, elements, points, markers = _read_su2_mesh(tmp_path / "c.su2")
+    # The three coincident pairs (x = 3, 2, 1 on the wake line) become single points.
+    assert (record.cells, record.points) == (8 * 2, 9 * 3 - 3)
+    assert len(np.unique(points[:, :2], axis=0)) == len(points)
+    assert set(np.unique(elements[:, 1:5])) == set(range(len(points)))
+    areas = np.array([_shoelace(points[q, :2]) for q in elements[:, 1:5]])
+    assert np.all(areas > 0.0)
+    diamond = np.array([[1, 0], [0.5, 0.1], [0, 0], [0.5, -0.1]], dtype=float)
+    # Outer ring (clockwise as listed) less the diamond: 15.0 - 0.1.
+    outer = abs(_shoelace(j2.astype(float)))
+    assert areas.sum() == pytest.approx(outer - abs(_shoelace(diamond)), rel=1e-13)
+    assert {k: len(v) for k, v in markers.items()} == {"airfoil": 4, "farfield": 12}
+    on_airfoil = {tuple(p) for p in points[np.unique(markers["airfoil"][:, 1:]), :2]}
+    assert on_airfoil == {tuple(p) for p in diamond}
+    # The wake cut is interior: its edges are shared, in opposite directions, by the cells on
+    # either side; every other edge is in exactly one marker.
+    _assert_closed(elements, markers)
+    far = points[np.unique(markers["farfield"][:, 1:]), :2]
+    assert all(p[0] == 3.0 or abs(p[1]) == 2.0 or tuple(p) == (-2.0, 0.0) for p in far)
+    # The same grid numbered the other way round (i reversed: clockwise) gives the same mesh.
+    _plot3d_2d(grid, lines[:, ::-1, 0], lines[:, ::-1, 1])
+    tmr2d.convert("tmr-2dn00-naca0012", grid, tmp_path / "r.su2")
+    _, elements_r, points_r, markers_r = _read_su2_mesh(tmp_path / "r.su2")
+    assert np.all(np.array([_shoelace(points_r[q, :2]) for q in elements_r[:, 1:5]]) > 0.0)
+    _assert_closed(elements_r, markers_r)
+    for name in markers:
+        ours = {tuple(p) for p in points[np.unique(markers[name][:, 1:]), :2]}
+        assert {tuple(p) for p in points_r[np.unique(markers_r[name][:, 1:]), :2]} == ours
+    # Wake nodes that coincide only to round-off are still one node.
+    nudged = lines.copy()
+    nudged[0, -2] += [3e-16, 0.0]
+    _plot3d_2d(grid, nudged[:, :, 0], nudged[:, :, 1])
+    assert tmr2d.convert("tmr-2dn00-naca0012", grid, tmp_path / "n.su2").points == 9 * 3 - 3
+    # A blunt trailing edge (the TE pair apart) moves the cut's end to x = 2: the airfoil found
+    # would span 0 to 2, which TMR's sharp-edged chord excludes.
+    blunt = lines.copy()
+    blunt[0, 2] = [1.0, -0.001]
+    blunt[0, 6] = [1.0, 0.001]
+    _plot3d_2d(grid, blunt[:, :, 0], blunt[:, :, 1])
+    with pytest.raises(VVError) as err:
+        tmr2d.convert("tmr-2dn00-naca0012", grid, tmp_path / "blunt.su2")
+    assert err.value.code == "V0902"
+    # A grid whose first j line has no coincident nodes is not a C-grid.
+    lines[0, -1] = [3.0, 0.5]
+    lines[0, 0] = [3.0, -0.5]
+    _plot3d_2d(grid, lines[:, :, 0], lines[:, :, 1])
+    with pytest.raises(VVError) as err:
+        tmr2d.convert("tmr-2dn00-naca0012", grid, tmp_path / "bad.su2")
+    assert err.value.code == "V0902"
+
+
+def test_block_refuses_a_self_intersecting_quadrangle() -> None:
+    from autan_vv.su2 import tmr2d  # noqa: PLC0415
+
+    # Corners (0,0), (2,2), (0,1), (1,0): positive diagonal cross product, but a bow-tie.
+    x = np.array([[0.0, 2.0], [1.0, 0.0]])
+    y = np.array([[0.0, 2.0], [0.0, 1.0]])
+    with pytest.raises(VVError) as err:
+        tmr2d.block(x, y)
+    assert err.value.code == "V0902"

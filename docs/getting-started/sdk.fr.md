@@ -1,5 +1,5 @@
 ---
-source_hash: "9de7ec952081"
+source_hash: "368c6b02be4c"
 ---
 
 # Prise en main du SDK Autan
@@ -37,7 +37,7 @@ boundaries  7/7 zones covered
   …
   fuselage       0.7 M faces  wall           mesh
   …
-memory      650.2 GB per rank (450.5 host, 199.7 cuda) x 1 · 6 equations (autan.memory/2)
+memory      4714.9 GB per rank (4514.4 host, 200.4 cuda) x 1 · 6 equations (autan.memory/3)
 warning[W0205]: mesh '…/crm-hl.cgns' not found; the MeshInfo is taken as given
 plan OK
 ```

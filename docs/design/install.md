@@ -26,7 +26,7 @@ The only system requirement is the GPU driver: NVIDIA driver ≥ 580 on Linux fo
 
 Measured on the prototype: about 40 s on a fresh `ubuntu:24.04` container on the DGX Spark, most of it the Python and NumPy downloads.
 
-Options, all environment variables so `curl | sh` can pass them: `AUTAN_VERSION`, `AUTAN_PYTHON` (default 3.13), `AUTAN_GPU` (`auto`, `cuda`, `cpu`; `cuda` fails without a driver), `AUTAN_FIND_LINKS` (extra wheel directory), `AUTAN_OFFLINE=1` (wheelhouse only, see below), `AUTAN_NO_MODIFY_PATH=1`. Upgrade: rerun the script. Uninstall, with the uv the script installed (users with their own uv can call it instead):
+Options, all environment variables so `curl | sh` can pass them: `AUTAN_VERSION`, `AUTAN_PYTHON` (default 3.13), `AUTAN_GPU` (`auto`, `cuda`, `cpu`; `cuda` fails without a driver), `AUTAN_FIND_LINKS` (extra wheel directory), `AUTAN_OFFLINE=1` (wheelhouse only, see below), `AUTAN_NO_MODIFY_PATH=1`, `AUTAN_GITHUB_TOKEN` (sent with the uv download from GitHub when curl fetches it; CI sets the workflow's read-only token). Upgrade: rerun the script. Uninstall, with the uv the script installed (users with their own uv can call it instead):
 
 ```sh
 ~/.local/share/autan/uv-*/uv tool uninstall autan     # $XDG_DATA_HOME/autan when it is set

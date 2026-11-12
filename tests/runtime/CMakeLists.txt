@@ -1,10 +1,8 @@
-FetchContent_GetProperties(picosha2)
-
 add_executable(autan-run-relaxation relaxation_main.cpp)
 target_link_libraries(autan-run-relaxation PRIVATE autan::runtime autan_compile_options)
 
 add_executable(autan_runtime_tests test_runtime.cpp test_host_memory.cpp)
-target_include_directories(autan_runtime_tests SYSTEM PRIVATE ${picosha2_SOURCE_DIR})
+target_link_libraries(autan_runtime_tests PRIVATE autan::picosha2)
 target_include_directories(autan_runtime_tests PRIVATE ${PROJECT_SOURCE_DIR}/runtime/src)
 target_link_libraries(
   autan_runtime_tests
@@ -24,6 +22,7 @@ target_compile_definitions(
     AUTAN_RUN_RELAXATION="$<TARGET_FILE:autan-run-relaxation>"
     AUTAN_TEST_CMAKE="${CMAKE_COMMAND}"
     AUTAN_TEST_BUILD_INFO="${PROJECT_SOURCE_DIR}/runtime/cmake/build_info.cmake"
+    $<$<BOOL:${AUTAN_ENABLE_METIS}>:AUTAN_HAVE_METIS>
 )
 add_dependencies(autan_runtime_tests autan-run-relaxation)
 if(AUTAN_ENABLE_CUDA)
@@ -34,6 +33,20 @@ if(AUTAN_ENABLE_CUDA)
   endforeach()
 endif()
 if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
+  # The launcher flags of the autan_ranks_tests registrations below, one string literal each.
+  set(autan_mpiexec_preflags "")
+  foreach(flag IN LISTS MPIEXEC_PREFLAGS)
+    string(REPLACE "\\" "\\\\" flag "${flag}")
+    string(REPLACE "\"" "\\\"" flag "${flag}")
+    string(APPEND autan_mpiexec_preflags "\"${flag}\", ")
+  endforeach()
+  file(
+    CONFIGURE
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/generated/mpiexec_preflags.hpp
+    CONTENT "#define AUTAN_MPIEXEC_PREFLAGS @autan_mpiexec_preflags@\n"
+    @ONLY
+  )
+  target_include_directories(autan_runtime_tests PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
   target_compile_definitions(
     autan_runtime_tests
     PRIVATE
@@ -56,8 +69,11 @@ else()
 endif()
 
 # Ranks through the runtime's communicator: one rank here, 1 to 4 under MPI.
-add_executable(autan_ranks_tests test_ranks.cpp)
-target_include_directories(autan_ranks_tests PRIVATE ${PROJECT_SOURCE_DIR}/runtime/src)
+add_executable(autan_ranks_tests test_ranks.cpp ${PROJECT_SOURCE_DIR}/tests/core/fixtures.cpp)
+target_include_directories(
+  autan_ranks_tests
+  PRIVATE ${PROJECT_SOURCE_DIR}/runtime/src ${PROJECT_SOURCE_DIR}/tests/core
+)
 target_link_libraries(autan_ranks_tests PRIVATE autan::runtime Catch2::Catch2 autan_compile_options)
 add_test(NAME autan_ranks_tests COMMAND autan_ranks_tests)
 if(AUTAN_ENABLE_MPI)

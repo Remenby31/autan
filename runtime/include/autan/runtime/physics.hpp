@@ -1,18 +1,22 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
 #include "autan/io/cgns.hpp"
+#include "autan/partition/cell_rows.hpp"
 #include "autan/partition/partition.hpp"
 #include "autan/runtime/input.hpp"
 #include "autan/runtime/ranks.hpp"
@@ -52,6 +56,10 @@ class Log {
   /// JSON object.
   virtual void write(std::string_view level, std::string_view source, std::string_view message,
                      std::string_view code = {}, std::string_view data_json = "{}") = 0;
+  /// A registry warning (a W code) of the physics: logged at level warning, source solver, and
+  /// listed in run.json `diagnostics` as the runtime's own are. Another code is std::logic_error.
+  virtual void warn(std::string_view code, std::string_view message,
+                    std::string_view data_json = "{}") = 0;
 };
 
 /// The state of the previous run a run starts from (input.start), read from
@@ -62,6 +70,8 @@ struct StartState {
   /// averaged, and its RestartState.
   std::vector<io::Field> mean_fields;
   std::vector<io::Field> restart_fields;
+  /// `continue` only: its SolverState, the same on every rank (Physics::restart_scalars).
+  std::vector<io::Field> scalars;
 };
 
 /// Fills the ghost cells of PhysicsContext::mesh from their owners: the
@@ -73,7 +83,22 @@ class GhostExchange {
   virtual ~GhostExchange() = default;
   virtual void forward(std::span<float* const> components, MemorySpace space, void* stream) = 0;
   virtual void forward(std::span<double* const> components, MemorySpace space, void* stream) = 0;
+  /// The row of every ghost `wanted` selects (one byte, 0 or 1, per ghost), in ghost order, from
+  /// the row its owner gives in `owned` (one per owned cell; partition's forward_rows), on the
+  /// host; an empty row elsewhere. Collective: every rank calls it, with the same stride. A part
+  /// without ghosts gets no row. An exchange that carries no rows throws std::logic_error.
+  virtual CellRows forward_rows(const CellRows& /*owned*/,
+                                std::span<const std::uint8_t> /*wanted*/) {
+    throw std::logic_error("this ghost exchange carries no rows");
+  }
 };
+
+/// The forward exchange of a halo pattern of the run's ranks (a multigrid level's nodes,
+/// LocalGraph of partition.hpp): each component holds `n_owned` owned values, then the pattern's
+/// ghosts. Making one is collective: every rank makes the exchanges of the same patterns, in the
+/// same order. The pattern must outlive the exchange.
+using HaloExchanges =
+    std::function<std::unique_ptr<GhostExchange>(const HaloPattern& pattern, index_t n_owned)>;
 
 /// Valid until the run ends; a physics may keep a copy.
 struct PhysicsContext {
@@ -121,6 +146,21 @@ struct PhysicsContext {
   std::span<const index_t> group_cells;
   std::span<const std::int32_t> cell_group_colours;
   std::int32_t n_group_colours = 0;
+  /// What the physics' PartitionGroups built beside the groups (CellGroups::setup), and each
+  /// cell's rank in the mesh as the run read it (zeros on one rank): null and empty without one.
+  const void* setup = nullptr;
+  std::span<const std::int32_t> cell_parts;
+  /// Exchanges of halo patterns other than the mesh's, on the run's ranks.
+  HaloExchanges halo_exchange;
+  /// On a partition, the stencil its ghost cells hold (LocalPartition::ghosts): the one the
+  /// physics declared (PhysicsRegistry::Entry::ghosts). Empty on the whole mesh, which holds
+  /// every stencil.
+  std::optional<GhostStencil> ghost_stencil;
+  /// For a physics whose registry entry asks for it (PhysicsRegistry::Entry::wall_distance) and a
+  /// case with no-slip wall zones: the distance from each cell centroid of `mesh` (owned and
+  /// ghosts) to the walls of the whole mesh read (WallSurface, exact point-triangle projections),
+  /// the same bits on any number of ranks. Empty otherwise.
+  std::span<const double> wall_distance;
 };
 
 // case-schema.md#time: the round-off floor is C * eps32 times an equation's flux scale, C = 0.5.
@@ -155,6 +195,10 @@ class Physics {
   /// Cell-centred state beyond fields(false) that a `continue` needs to go
   /// on bit for bit (earlier time levels, averaging sums); empty when none.
   [[nodiscard]] virtual std::vector<io::Field> restart_fields() const = 0;
+  /// The solver's own state that is not cell-centred and that a `continue` needs to go on bit for
+  /// bit, the same on every rank (rank 0's is written), as named arrays of the lengths its
+  /// registration gives; empty when none.
+  [[nodiscard]] virtual std::vector<io::Field> restart_scalars() const { return {}; }
   /// Pressure and WallShearStressX/Y/Z on `wall_faces` (ascending).
   [[nodiscard]] virtual std::vector<io::Field> wall_fields(
       std::span<const index_t> wall_faces) const = 0;
@@ -196,20 +240,34 @@ using PhysicsScope =
 struct CellGroups {
   std::vector<offset_t> offsets;
   std::vector<index_t> cells;
+  /// What the physics builds from the global mesh in the order the run read it, before
+  /// partitioning (a distributed multigrid's hierarchy): kept for the run and given to the
+  /// physics as PhysicsContext::setup; null for nothing.
+  std::shared_ptr<const void> setup;
 };
 
-/// The groups a physics needs whole on one rank (a smoother's lines), from the global mesh and
-/// its geometry. Every rank calls it once with the same mesh before partitioning, on any number
-/// of ranks, so it must be deterministic; invalid groups are E0140. The physics receives them
-/// as PhysicsContext::group_offsets and group_cells, coloured.
-using PartitionGroups =
-    std::function<CellGroups(const SolverInput& input, const Mesh& mesh, const Geometry& geometry)>;
+/// The groups a physics needs whole on one rank (a smoother's lines), from the global mesh in the
+/// order the run read it, its geometry and the number of ranks the run spans. Every rank calls it
+/// once with the same mesh before partitioning, so it must be deterministic; invalid groups are
+/// E0140. The physics receives them as PhysicsContext::group_offsets and group_cells, coloured.
+using PartitionGroups = std::function<CellGroups(const SolverInput& input, const Mesh& mesh,
+                                                 const Geometry& geometry, int ranks)>;
 
 /// The names of the RestartState arrays the physics writes for `input`, in order, after a run
 /// that averaged or not (Physics::restart_fields). A continued start is read only when its
 /// RestartState holds exactly these (E0707).
 using RestartNames =
     std::function<std::vector<std::string>(const SolverInput& input, bool averaging)>;
+
+/// The names and lengths of the SolverState arrays the physics writes for `input`, in order
+/// (Physics::restart_scalars). A continued start is read only when its SolverState holds exactly
+/// these (E0707).
+using RestartScalars = std::function<std::vector<std::pair<std::string, std::int64_t>>(
+    const SolverInput& input, bool averaging)>;
+/// The ghost stencil the physics' scheme reads for `input`: the partition of a run holds it,
+/// on several ranks, with periodic pairs or under reproducibility "ranks". nullopt: no partition
+/// holds it, and such a run is E0148 before its directory exists.
+using GhostStencils = std::function<std::optional<GhostStencil>(const SolverInput& input)>;
 
 /// The physics a build of autan-run provides; the first matching key wins.
 class PhysicsRegistry {
@@ -222,9 +280,14 @@ class PhysicsRegistry {
     bool several_ranks = false;
     PartitionGroups groups;  ///< empty: no group
     RestartNames restart;    ///< empty: no RestartState
+    GhostStencils ghosts;    ///< empty: face2
+    RestartScalars scalars;  ///< empty: no SolverState
+    /// Whether it reads PhysicsContext::wall_distance.
+    bool wall_distance = false;
   };
   void add(PhysicsKey key, PhysicsFactory factory, PhysicsScope scope = {},
-           bool several_ranks = false, PartitionGroups groups = {}, RestartNames restart = {});
+           bool several_ranks = false, PartitionGroups groups = {}, RestartNames restart = {},
+           GhostStencils ghosts = {}, RestartScalars scalars = {}, bool wall_distance = false);
   /// The entry for `input`, or null when this build has none (E0706).
   [[nodiscard]] const Entry* find(const SolverInput& input) const;
 

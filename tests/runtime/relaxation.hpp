@@ -88,6 +88,8 @@ struct RelaxationOptions {
   /// Checks PhysicsContext's face keys against the mesh file: each local face's global face has
   /// the local face's cells (by global id), swapped when it is marked reversed.
   bool check_keys = false;
+  /// Raises W0717 through Log::warn once constructed, on every rank.
+  bool warn = false;
   std::string refuse_code{};  ///< its scope refuses every input with this code; empty: none
   int expect_ranks = 0;       ///< its scope refuses a run on another number of ranks; 0: any
   /// Symmetric sweeps per step of a smoother in the global colours (PhysicsContext::cell_colours):
@@ -108,6 +110,11 @@ struct RelaxationOptions {
   std::int64_t wake_at = 0;
   std::int64_t sleep_at = 0;  ///< 0: never; from then on, back at silent_residual
   double awake_value = 1e-3;
+  /// An equation the flow excites weakly: its residual is `weak_scale` times the others' law and
+  /// stops decreasing at `weak_stall`; -1: none.
+  std::int64_t weak_equation = -1;
+  double weak_scale = 1e-5;
+  double weak_stall = 1e-12;
   std::vector<double> scales{};  ///< residual_scales(); empty: none
   /// Equation e's residual stops decreasing at (e + 1) times this value; 0: never.
   double plateau = 0.0;
@@ -121,6 +128,12 @@ struct RelaxationOptions {
   /// smoother. The runtime must ask once per rank. 0: none; -1: a malformed group, cell 0
   /// twice; -2: rank 1 alone (by the launcher's rank variable) throws E0140 when asked.
   int groups = 0;
+  /// > 0: the physics keeps a SolverState of a step count (1 value) and a window of the last
+  /// `scalars` iterations, and its growth rises with the count, so that a continue that does not
+  /// restore them leaves the uninterrupted run's bits.
+  int scalars = 0;
+  /// >= 0: on that rank, restart_scalars returns a window one value longer than it registers.
+  int scalars_wrong_rank = -1;
 
   static RelaxationOptions from_environment() {
     RelaxationOptions o;
@@ -138,6 +151,7 @@ struct RelaxationOptions {
     read("AUTAN_TEST_VARY", o.vary);
     read("AUTAN_TEST_ONE_RANK", o.one_rank);
     read("AUTAN_TEST_CHECK_KEYS", o.check_keys);
+    read("AUTAN_TEST_WARN", o.warn);
     read("AUTAN_TEST_COLOUR_SWEEPS", o.colour_sweeps);
     read("AUTAN_TEST_HOLD_BYTES", o.hold_bytes);
     read("AUTAN_TEST_HOLD_RANK", o.hold_rank);
@@ -148,6 +162,8 @@ struct RelaxationOptions {
     read("AUTAN_TEST_SIGNAL_AT", o.signal_at);
     read("AUTAN_TEST_SIGNAL_RANK", o.signal_rank);
     read("AUTAN_TEST_GROUPS", o.groups);
+    read("AUTAN_TEST_SCALARS", o.scalars);
+    read("AUTAN_TEST_SCALARS_WRONG_RANK", o.scalars_wrong_rank);
     read("AUTAN_TEST_TOUCH_AT", o.touch_at);
     read("AUTAN_TEST_TOUCH_RANK", o.touch_rank);
     if (const char* v = std::getenv("AUTAN_TEST_TOUCH_FILE")) o.touch_file = v;
@@ -164,6 +180,12 @@ inline std::vector<std::string> relaxation_restart_names(const autan::runtime::S
   return out;
 }
 
+// Relaxation::restart_scalars' names and lengths.
+inline std::vector<std::pair<std::string, std::int64_t>> relaxation_scalars(int window) {
+  if (window <= 0) return {};
+  return {{"RelaxationSteps", 1}, {"RelaxationWindow", window}};
+}
+
 // An implementation of the runtime's Physics interface that solves nothing:
 // the state starts at each zone's `initial` (or the start's fields), grows by
 // `growth` per step, and every residual decays as r_k = factor^(k-1). It exists to exercise the
@@ -172,6 +194,10 @@ class Relaxation final : public autan::runtime::Physics {
  public:
   Relaxation(const autan::runtime::PhysicsContext& context, RelaxationOptions options)
       : context_(context), options_(options) {
+    if (options.warn) {
+      context.log.warn("W0717", "relaxation physics warning", R"({"source":"relaxation"})");
+    }
+    window_.assign(static_cast<std::size_t>(std::max(options.scalars, 0)), 0.0);
     if (options.hold_rank < 0 || options.hold_rank == context.ranks.rank())
       held_.assign(static_cast<std::size_t>(options.hold_bytes), 1);
 #ifdef AUTAN_HAVE_CUDA
@@ -243,6 +269,11 @@ class Relaxation final : public autan::runtime::Physics {
         for (std::size_t f = 0; f < mean_.size(); ++f) mean_[f].values = restart[f].values;
         weight_ = restart.back().values.at(0);
       }
+      if (options_.scalars > 0) {
+        const auto& scalars = context.start->scalars;
+        steps_ = scalars.at(0).values.at(0);
+        window_ = scalars.at(1).values;
+      }
     }
     if (options_.signal_on_start) std::raise(SIGTERM);
   }
@@ -281,14 +312,26 @@ class Relaxation final : public autan::runtime::Physics {
                                  std::max(r * rms_ * smoothed, options_.plateau));
     }
     report.provisional = iteration < options_.provisional_until;
+    if (options_.weak_equation >= 0) {
+      auto& weak = report.residuals[static_cast<std::size_t>(options_.weak_equation)];
+      weak = std::max(options_.weak_scale * weak, options_.weak_stall);
+    }
     if (options_.silent_equation >= 0) {
       const bool awake = options_.wake_at > 0 && iteration >= options_.wake_at &&
                          (options_.sleep_at == 0 || iteration < options_.sleep_at);
       report.residuals[static_cast<std::size_t>(options_.silent_equation)] =
           awake ? options_.awake_value : options_.silent_residual;
     }
+    // The window's oldest iteration enters too, so that a continue must restore its contents.
+    const double oldest = window_.empty() ? 0.0 : window_.front();
+    const double rate = options_.growth * (1.0 + 1e-3 * steps_ + 1e-5 * oldest);
     for (auto& f : state_) {
-      for (auto& v : f.values) v *= 1.0 + options_.growth;
+      for (auto& v : f.values) v *= 1.0 + rate;
+    }
+    if (options_.scalars > 0) {
+      steps_ += 1.0;
+      std::rotate(window_.begin(), window_.begin() + 1, window_.end());
+      window_.back() = static_cast<double>(iteration);
     }
     check_ghosts();
     const auto& time = context_.input.time;
@@ -375,6 +418,14 @@ class Relaxation final : public autan::runtime::Physics {
       for (auto& v : f.values) v /= weight_;
     }
     return out;
+  }
+
+  [[nodiscard]] std::vector<autan::io::Field> restart_scalars() const override {
+    if (options_.scalars <= 0) return {};
+    auto window = window_;
+    if (options_.scalars_wrong_rank == context_.ranks.rank()) window.push_back(0.0);
+    return {{.name = "RelaxationSteps", .values = {steps_}},
+            {.name = "RelaxationWindow", .values = window}};
   }
 
   [[nodiscard]] std::vector<autan::io::Field> restart_fields() const override {
@@ -604,6 +655,8 @@ class Relaxation final : public autan::runtime::Physics {
   double rms_ = 1.0;
   std::vector<double> smooth_;  // the field colour_sweeps smooths
   std::int64_t last_stepped_iteration_ = 0;
+  double steps_ = 0.0;          // the SolverState (options_.scalars > 0)
+  std::vector<double> window_;  // the last options_.scalars iterations, oldest first
   std::vector<autan::io::Field> state_;
   std::vector<autan::io::Field> mean_;
   double weight_ = 0.0;
@@ -664,12 +717,14 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
   auto asked = std::make_shared<int>(0);
   autan::runtime::PartitionGroups groups;
   if (options.groups == -1) {
-    groups = [](const autan::runtime::SolverInput&, const autan::Mesh&, const autan::Geometry&) {
-      return autan::runtime::CellGroups{.offsets = {0, 2}, .cells = {0, 0}};
+    groups = [](const autan::runtime::SolverInput&, const autan::Mesh&, const autan::Geometry&,
+                int) {
+      return autan::runtime::CellGroups{.offsets = {0, 2}, .cells = {0, 0}, .setup = nullptr};
     };
   }
   if (options.groups == -2) {
-    groups = [](const autan::runtime::SolverInput&, const autan::Mesh&, const autan::Geometry&) {
+    groups = [](const autan::runtime::SolverInput&, const autan::Mesh&, const autan::Geometry&,
+                int) {
       const char* rank = launcher_rank();
       if (rank == nullptr) throw std::runtime_error("no launcher rank");
       if (std::string(rank) == "1")
@@ -680,7 +735,7 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
   if (options.groups > 0) {
     groups = [n = options.groups, group_sizes, asked](const autan::runtime::SolverInput&,
                                                       const autan::Mesh& mesh,
-                                                      const autan::Geometry&) {
+                                                      const autan::Geometry&, int) {
       ++*asked;
       autan::runtime::CellGroups g;
       g.offsets.push_back(0);
@@ -718,7 +773,10 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
             .path = "physics",
             .data_json = "{\"ranks\": " + std::to_string(ranks) + "}"};
       },
-      !options.one_rank, groups, relaxation_restart_names);
+      !options.one_rank, groups, relaxation_restart_names, {},
+      [window = options.scalars](const autan::runtime::SolverInput& /*input*/, bool /*averaging*/) {
+        return relaxation_scalars(window);
+      });
   return registry;
 }
 
