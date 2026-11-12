@@ -249,40 +249,6 @@ std::map<std::string, std::vector<double>> data_arrays(const fs::path& run) {
   return out;
 }
 
-// The arrays of the zone's SolverState (results.md, solution.cgns), keyed by name; empty when the
-// run writes none.
-std::map<std::string, std::vector<double>> solver_state(const fs::path& run) {
-  std::map<std::string, std::vector<double>> out;
-  int fn = 0;
-  REQUIRE(cg_open((run / "solution.cgns").string().c_str(), CG_MODE_READ, &fn) == CG_OK);
-  int user = 0;
-  REQUIRE(cg_goto(fn, 1, "Zone_t", 1, "end") == CG_OK);
-  REQUIRE(cg_nuser_data(&user) == CG_OK);
-  for (int u = 1; u <= user; ++u) {
-    char name[33];
-    REQUIRE(cg_goto(fn, 1, "Zone_t", 1, "end") == CG_OK);
-    REQUIRE(cg_user_data_read(u, name) == CG_OK);
-    if (std::string_view(name) != "SolverState") continue;
-    REQUIRE(cg_goto(fn, 1, "Zone_t", 1, "UserDefinedData_t", u, "end") == CG_OK);
-    int arrays = 0;
-    REQUIRE(cg_narrays(&arrays) == CG_OK);
-    for (int a = 1; a <= arrays; ++a) {
-      char array_name[33];
-      CGNS_ENUMT(DataType_t) type{};
-      int dims = 0;
-      cgsize_t extent[12] = {};
-      REQUIRE(cg_array_info(a, array_name, &type, &dims, extent) == CG_OK);
-      REQUIRE(type == CGNS_ENUMV(RealDouble));
-      REQUIRE(dims == 1);
-      std::vector<double> values(static_cast<std::size_t>(extent[0]));
-      REQUIRE(cg_array_read_as(a, CGNS_ENUMV(RealDouble), values.data()) == CG_OK);
-      out[array_name] = std::move(values);
-    }
-  }
-  cg_close(fn);
-  return out;
-}
-
 // The case of hybrid.solver-input.json made inviscid, with the freestream along x so that it is
 // tangent to the slip wall ymin and the symmetry plane zmax; farfield elsewhere.
 void inviscid_along_x(Json& doc, const char* precision) {
@@ -1807,6 +1773,40 @@ TEST_CASE("cases outside the Euler physics are refused before any directory exis
 
 #ifdef AUTAN_MPIEXEC
 namespace {
+
+// The arrays of the zone's SolverState (results.md, solution.cgns), keyed by name; empty when the
+// run writes none.
+std::map<std::string, std::vector<double>> solver_state(const fs::path& run) {
+  std::map<std::string, std::vector<double>> out;
+  int fn = 0;
+  REQUIRE(cg_open((run / "solution.cgns").string().c_str(), CG_MODE_READ, &fn) == CG_OK);
+  int user = 0;
+  REQUIRE(cg_goto(fn, 1, "Zone_t", 1, "end") == CG_OK);
+  REQUIRE(cg_nuser_data(&user) == CG_OK);
+  for (int u = 1; u <= user; ++u) {
+    char name[33];
+    REQUIRE(cg_goto(fn, 1, "Zone_t", 1, "end") == CG_OK);
+    REQUIRE(cg_user_data_read(u, name) == CG_OK);
+    if (std::string_view(name) != "SolverState") continue;
+    REQUIRE(cg_goto(fn, 1, "Zone_t", 1, "UserDefinedData_t", u, "end") == CG_OK);
+    int arrays = 0;
+    REQUIRE(cg_narrays(&arrays) == CG_OK);
+    for (int a = 1; a <= arrays; ++a) {
+      char array_name[33];
+      CGNS_ENUMT(DataType_t) type{};
+      int dims = 0;
+      cgsize_t extent[12] = {};
+      REQUIRE(cg_array_info(a, array_name, &type, &dims, extent) == CG_OK);
+      REQUIRE(type == CGNS_ENUMV(RealDouble));
+      REQUIRE(dims == 1);
+      std::vector<double> values(static_cast<std::size_t>(extent[0]));
+      REQUIRE(cg_array_read_as(a, CGNS_ENUMV(RealDouble), values.data()) == CG_OK);
+      out[array_name] = std::move(values);
+    }
+  }
+  cg_close(fn);
+  return out;
+}
 
 // Two runs of reproducibility "ranks" on different rank counts: the same history text and the
 // same bit patterns in every field (a signed zero or a NaN cannot pass for an equal value).
