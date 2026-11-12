@@ -1373,6 +1373,19 @@ Prepared prepare(const fs::path& input_file, const PhysicsRegistry& registry, in
                                                  "', but the run computes in cell order '" +
                                                  p.cell_order + "'");
   }
+  // mesh-info.md, quality.multigrid: a steady CPU multigrid builds its hierarchy in RCM order for
+  // inviscid flow on a partition (euler_groups), in the run's cell order otherwise.
+  if (p.input.time.kind == "steady" && p.input.time.linear_solver == "multigrid" &&
+      p.input.device_kind == "cpu") {
+    const bool partitioned =
+        (ranks > 1 || p.input.reproducibility == "ranks") && p.input.turbulence.model == "inviscid";
+    const std::string built = partitioned ? "rcm" : p.cell_order;
+    if (p.input.mesh_info_multigrid_order != built) {
+      invalid("mesh_info.quality.multigrid.order",
+              "is '" + p.input.mesh_info_multigrid_order +
+                  "', but this run builds its hierarchy in cell order '" + built + "'");
+    }
+  }
   if (p.input.mesh_info_scale != p.input.mesh_scale) {
     invalid("mesh_info.quality.lines.scale",
             "counted with " + std::to_string(p.input.mesh_info_scale) +
