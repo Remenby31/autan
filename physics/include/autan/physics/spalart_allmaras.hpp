@@ -60,12 +60,14 @@ class SpalartAllmaras {
   void assemble(std::span<const double> shift, std::span<double> diag, std::span<double> upper,
                 std::span<double> lower) const;
   /// Solves the assembled system A dx = b from the initial guess in `dx` with `sweeps` symmetric
-  /// Gauss-Seidel sweeps over `colours` (the owned cells by global colour, colour_groups): colour
-  /// by colour, forward then backward, `exchange` filling dx's ghosts after each colour. The same
-  /// sweeps on any number of ranks and in any cell order (ADR 0005, option B).
+  /// Gauss-Seidel sweeps. With `colours` (the owned cells by global colour, colour_groups): colour
+  /// by colour, forward then backward, `exchange` filling dx's ghosts after each colour, the same
+  /// sweeps on any number of ranks and in any cell order (ADR 0005, option B). Without: cell by
+  /// cell, 0 ... n - 1 then back, each row's interior faces in increasing index, for one rank
+  /// without ghosts.
   void solve(std::span<const double> diag, std::span<const double> upper,
              std::span<const double> lower, std::span<const double> b, std::span<double> dx,
-             int sweeps, const std::vector<std::vector<std::size_t>>& colours,
+             int sweeps, const std::vector<std::vector<std::size_t>>* colours = nullptr,
              const std::function<void(std::span<double>)>& exchange = {}) const;
   /// The ghost exchange: nt's gradient, computed on the owned cells, is filled into the ghosts.
   void set_ghosts(GhostFill* ghosts) noexcept;

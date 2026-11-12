@@ -20,6 +20,7 @@
 #include "autan/core/mesh.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/kernels/runtime.hpp"
+#include "autan/partition/partition.hpp"
 #include "autan/physics/block_matrix.hpp"
 #include "autan/physics/euler.hpp"
 #include "autan/physics/navier_stokes.hpp"
@@ -319,6 +320,118 @@ TEMPLATE_TEST_CASE("an adiabatic wall at rest exchanges no energy", "[navier-sto
     scale += 2.0 * air.gamma / (air.gamma - 1.0) * p * speed * g.face_area[f];
   }
   CHECK(std::abs(total) <= 64 * std::numeric_limits<typename P::residual>::epsilon() * scale);
+}
+
+// The same closed slab with SA: an implicit SA step, its system swept in cell order or by colour
+// (#699), changes mu_t and so the viscous fluxes, but every interior face still adds its flux to
+// one cell and subtracts it from the other. The walls at rest and the slip faces pass no mass and
+// no energy, so those residuals sum to zero; the momentum residuals sum to the boundary faces'
+// pressure force and viscous traction times area, R_c = sum_f F . S_f (docs/design/euler.md).
+TEMPLATE_TEST_CASE(
+    "an SA step in either sweep order keeps a closed slab's mass momentum and energy",
+    "[navier-stokes]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  using P = TestType;
+  const auto mesh = stretched_slab({.first = 0.05, .nz = 4, .warp = 0.02});
+  const auto g = autan::compute_geometry(mesh);
+  const auto n = static_cast<std::size_t>(mesh.n_cells());
+  const auto ni = static_cast<std::size_t>(mesh.n_interior_faces());
+  const auto nb = static_cast<std::size_t>(mesh.n_boundary_faces());
+  constexpr double p = 1.0e5;
+  Scheme scheme;
+  scheme.limiter = false;
+  scheme.reference = {rho, 0.0, 0.0, 0.0, p / (air.gamma - 1.0)};
+  Transport t;
+  t.sutherland = false;
+  t.mu_ref = mu;
+  t.prandtl = prandtl;
+  NavierStokes<P> ns(mesh, g, air, scheme, t);
+  std::vector<BoundaryKind> kind(nb, BoundaryKind::slip);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const auto& zone = mesh.face_zones()[static_cast<std::size_t>(mesh.face_zone()[ni + b])].name;
+    if (zone == "ymin" || zone == "xmin" || zone == "xmax") kind[b] = BoundaryKind::wall;
+  }
+  ns.set_boundary(kind, std::vector<double>(5 * nb, 0.0));
+  SpalartAllmaras<P> sa(mesh, g, ns, t);
+  sa.set_boundary(std::vector<double>(nb, 0.0));
+  std::vector<double> u(5 * n), wall(n);
+  std::vector<typename P::state> rn(n);
+  double speed = 0.0;
+  for (std::size_t c = 0; c < n; ++c) {
+    const double x = g.cell_centroid_x[c], y = g.cell_centroid_y[c], z = g.cell_centroid_z[c];
+    const std::array<double, 3> v{y * (30.0 + 8.0 * x), 4.0 * y * y,
+                                  y * (-10.0 + 6.0 * x + 2.0 * z)};
+    u[c] = rho;
+    for (std::size_t k = 0; k < 3; ++k) u[(1 + k) * n + c] = rho * v[k];
+    u[4 * n + c] = p / (air.gamma - 1.0) + 0.5 * rho * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    speed = std::max(speed, std::hypot(v[0], v[1], v[2]));
+    rn[c] =
+        static_cast<typename P::state>(rho * 1.0e-3 * (1.0 + 0.5 * std::sin(3.0 * x + 5.0 * z)));
+    wall[c] = std::max(y, 1.0e-3);
+  }
+  sa.set_wall_distance(wall);
+  std::vector<typename P::state> s(5 * n), lambda(n);
+  std::vector<typename P::residual> r(5 * n), r_sa(n);
+  ns.state(u, s);
+  ns.residual(s, r);
+  sa.eddy_viscosity(rn);
+  ns.residual(s, r);
+  ns.spectral_radius(lambda);
+  sa.residual_and_jacobian(rn, r_sa);
+  std::vector<double> shift(n), diag(n), upper(ni), lower(ni), rhs(n);
+  for (std::size_t c = 0; c < n; ++c) {
+    shift[c] = static_cast<double>(lambda[c]) / 10.0;
+    rhs[c] = -static_cast<double>(r_sa[c]);
+  }
+  sa.assemble(shift, diag, upper, lower);
+  const auto colours = autan::colour_cells(mesh);
+  const auto groups =
+      autan::physics::colour_groups(mesh, colours, *std::ranges::max_element(colours) + 1, n);
+  double mass_scale = 0.0, momentum_scale = 0.0, energy_scale = 0.0;
+  for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
+    mass_scale += rho * speed * g.face_area[f];
+    momentum_scale += p * g.face_area[f];
+    energy_scale += 2.0 * air.gamma / (air.gamma - 1.0) * p * speed * g.face_area[f];
+  }
+  std::vector<std::vector<double>> steps;
+  for (const bool by_colour : {false, true}) {
+    CAPTURE(by_colour);
+    std::vector<double> dx(n, 0.0);
+    sa.solve(diag, upper, lower, rhs, dx, 4, by_colour ? &groups : nullptr);
+    std::vector<typename P::state> next(n);
+    for (std::size_t c = 0; c < n; ++c) {
+      next[c] = static_cast<typename P::state>(static_cast<double>(rn[c]) + dx[c]);
+    }
+    sa.eddy_viscosity(next);
+    ns.residual(s, r);
+    std::vector<double> pressure(nb), force(3 * nb), traction(3 * nb);
+    ns.boundary_pressure(pressure, force);
+    ns.viscous_traction(traction);
+    double mass = 0.0, energy = 0.0;
+    std::array<double, 3> momentum{}, boundary{};
+    for (std::size_t c = 0; c < n; ++c) {
+      mass += static_cast<double>(r[c]);
+      for (std::size_t k = 0; k < 3; ++k) momentum[k] += static_cast<double>(r[(1 + k) * n + c]);
+      energy += static_cast<double>(r[4 * n + c]);
+    }
+    for (std::size_t b = 0; b < nb; ++b) {
+      for (std::size_t k = 0; k < 3; ++k) {
+        boundary[k] += force[k * nb + b] + traction[k * nb + b] * g.face_area[ni + b];
+      }
+    }
+    const double e = std::numeric_limits<typename P::residual>::epsilon();
+    CHECK(std::abs(mass) <= 64 * e * mass_scale);
+    // The boundary forces and the residual are two evaluations in the state's precision: their
+    // round-off scales with its epsilon, not with the residual type's.
+    const double es = std::numeric_limits<typename P::state>::epsilon();
+    for (std::size_t k = 0; k < 3; ++k) {
+      CAPTURE(k, momentum[k], boundary[k]);
+      CHECK(std::abs(momentum[k] - boundary[k]) <= 64 * es * momentum_scale);
+    }
+    CHECK(std::abs(energy) <= 64 * e * energy_scale);
+    steps.push_back(std::move(dx));
+  }
+  // The two orders take different steps: each sum above follows its own mu_t.
+  CHECK(steps[0] != steps[1]);
 }
 
 // A slip or outlet face takes nt from the interior and passes none by diffusion (zero normal
