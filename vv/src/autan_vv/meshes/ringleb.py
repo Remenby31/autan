@@ -8,13 +8,12 @@ THICKNESS thick at every level, carries the 2D flow.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 
+from autan_vv.meshes import face_states
 from autan_vv.oracles.inviscid import RINGLEB_K, RINGLEB_SPEED_MIN, _ringleb_state, ringleb_fields
 
 if TYPE_CHECKING:
@@ -22,9 +21,6 @@ if TYPE_CHECKING:
 
     from autan_vv.meshes.facemesh import FaceMesh, FloatArray, IntArray
 
-FACE_STATES_SCHEMA = "autan.face-states/1"
-VARIABLES = ("density", "velocity-x", "velocity-y", "velocity-z", "pressure")
-_ORACLE_FIELDS = ("Density", "VelocityX", "VelocityY", "VelocityZ", "Pressure")
 # Every in-plane side takes the exact state; the two planes of the layer are symmetry planes.
 STATE_ZONES = ("k-min", "k-max", "inflow", "outflow")
 # The same at every level, so that a family covers one domain; about the in-plane cell of n = 16.
@@ -87,34 +83,9 @@ def grid(n: int) -> tuple[FloatArray, dict[str, IntArray], dict[str, IntArray]]:
     return pts, {"hex": hexes}, boundary
 
 
-def face_states(mesh: FaceMesh, mesh_sha256: str) -> dict[str, Any]:
-    """The autan.face-states/1 document of the exact Ringleb flow on the STATE_ZONES of `mesh`."""
-    g = mesh.geometry
-    zones: dict[str, Any] = {}
-    for zone in mesh.zones:
-        if zone.name not in STATE_ZONES:
-            continue
-        faces = zone.start + np.arange(zone.count)
-        centroids = g.face_centroid[faces]
-        fields = ringleb_fields(centroids, extended=True)
-        values = np.stack([fields[name] for name in _ORACLE_FIELDS], axis=1)
-        zones[zone.name] = {
-            "faces": int(zone.count),
-            "centroids": centroids.tolist(),
-            "values": values.tolist(),
-        }
-    return {
-        "schema": FACE_STATES_SCHEMA,
-        "oracle": "ringleb",
-        "mesh_sha256": mesh_sha256,
-        "variables": list(VARIABLES),
-        "zones": zones,
-    }
-
-
 def write_face_states(mesh: FaceMesh, mesh_file: Path, out: Path) -> str:
-    """Write the face states of `mesh`, read from `mesh_file`, to `out`; return their SHA-256."""
-    doc = face_states(mesh, hashlib.sha256(mesh_file.read_bytes()).hexdigest())
-    text = json.dumps(doc, allow_nan=False) + "\n"
-    out.write_text(text)
-    return hashlib.sha256(text.encode()).hexdigest()
+    """Write the exact Ringleb flow on the STATE_ZONES of `mesh`, read from `mesh_file`, to `out`
+    as autan.face-states/1; return its SHA-256."""
+    return face_states.write(
+        mesh, mesh_file, out, "ringleb", STATE_ZONES, lambda x: ringleb_fields(x, extended=True)
+    )

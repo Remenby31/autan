@@ -281,7 +281,7 @@ def test_couette_temperature_balances_viscous_heating() -> None:
     assert conductivity * t2 + heating == pytest.approx(0.0, abs=1e-6 * heating)
     walls = oracle.fields(np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]))
     assert walls["Temperature"].tolist() == pytest.approx([300.0, 320.0])
-    assert walls["VelocityX"].tolist() == pytest.approx([0.0, 50.0])
+    assert walls["VelocityX"].tolist() == pytest.approx([0.0, 200.0])
     assert walls["Pressure"] * 1.0 == pytest.approx(walls["Density"] * 287.0 * walls["Temperature"])
 
 

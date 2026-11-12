@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from autan_vv.errors import VVError
-from autan_vv.meshes import ringleb, tube, vortex
+from autan_vv.meshes import couette, ringleb, tube, vortex
 from autan_vv.meshes.cell_export import write_cell_export
 from autan_vv.meshes.dual import median_dual
 from autan_vv.meshes.facemesh import FaceMesh, FloatArray, IntArray, from_faces, merge_cells
@@ -570,17 +570,17 @@ def generate_level(
     if cells_path is not None and (kind not in EXPORT_KINDS or path is None):
         msg = f"a cell export needs a kind among {EXPORT_KINDS} and a mesh path, got {kind!r}"
         raise VVError(msg, code="V0309")
-    if kind not in (*KINDS, "ringleb", *vortex.KINDS, tube.KIND):
+    if kind not in (*KINDS, "ringleb", *vortex.KINDS, tube.KIND, couette.KIND):
         msg = (
-            f"unknown mesh kind {kind!r}; expected one of {KINDS}, 'ringleb', {vortex.KINDS}"
-            f" or {tube.KIND!r}"
+            f"unknown mesh kind {kind!r}; expected one of {KINDS}, 'ringleb', {vortex.KINDS},"
+            f" {tube.KIND!r} or {couette.KIND!r}"
         )
         raise VVError(msg, code="V0304")
-    if kind == tube.KIND:
+    if kind in (tube.KIND, couette.KIND):
         if perturbation > 0.0:
-            msg = f"{kind} is a 1D family: its levels refine along x only, without perturbation"
+            msg = f"{kind} is a 1D family: its levels refine along one axis, without perturbation"
             raise VVError(msg, code="V0309")
-        points, cells = tube.grid(n)
+        points, cells = tube.grid(n) if kind == tube.KIND else couette.grid(n)
         points = np.array([float(f"{v:.16g}") for v in points.ravel()]).reshape(-1, 3)
         mesh = _to_facemesh(points, cells, _box_boundary(points, cells))
         if path is not None:
