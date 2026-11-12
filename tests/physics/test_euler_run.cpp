@@ -249,6 +249,40 @@ std::map<std::string, std::vector<double>> data_arrays(const fs::path& run) {
   return out;
 }
 
+// The arrays of the zone's SolverState (results.md, solution.cgns), keyed by name; empty when the
+// run writes none.
+std::map<std::string, std::vector<double>> solver_state(const fs::path& run) {
+  std::map<std::string, std::vector<double>> out;
+  int fn = 0;
+  REQUIRE(cg_open((run / "solution.cgns").string().c_str(), CG_MODE_READ, &fn) == CG_OK);
+  int user = 0;
+  REQUIRE(cg_goto(fn, 1, "Zone_t", 1, "end") == CG_OK);
+  REQUIRE(cg_nuser_data(&user) == CG_OK);
+  for (int u = 1; u <= user; ++u) {
+    char name[33];
+    REQUIRE(cg_goto(fn, 1, "Zone_t", 1, "end") == CG_OK);
+    REQUIRE(cg_user_data_read(u, name) == CG_OK);
+    if (std::string_view(name) != "SolverState") continue;
+    REQUIRE(cg_goto(fn, 1, "Zone_t", 1, "UserDefinedData_t", u, "end") == CG_OK);
+    int arrays = 0;
+    REQUIRE(cg_narrays(&arrays) == CG_OK);
+    for (int a = 1; a <= arrays; ++a) {
+      char array_name[33];
+      CGNS_ENUMT(DataType_t) type{};
+      int dims = 0;
+      cgsize_t extent[12] = {};
+      REQUIRE(cg_array_info(a, array_name, &type, &dims, extent) == CG_OK);
+      REQUIRE(type == CGNS_ENUMV(RealDouble));
+      REQUIRE(dims == 1);
+      std::vector<double> values(static_cast<std::size_t>(extent[0]));
+      REQUIRE(cg_array_read_as(a, CGNS_ENUMV(RealDouble), values.data()) == CG_OK);
+      out[array_name] = std::move(values);
+    }
+  }
+  cg_close(fn);
+  return out;
+}
+
 // The case of hybrid.solver-input.json made inviscid, with the freestream along x so that it is
 // tangent to the slip wall ymin and the symmetry plane zmax; farfield elsewhere.
 void inviscid_along_x(Json& doc, const char* precision) {
@@ -2075,16 +2109,16 @@ TEST_CASE("Navier-Stokes at ghost depth 3 repeats bit for bit at a fixed rank co
 
 TEST_CASE("Navier-Stokes under reproducibility ranks gives the bits of the pinned reference",
           "[navier-stokes][mpi][.b3]") {
-  // #651, G-fit v2 B3, hidden: run by hand with AUTAN_REFERENCE_RUN, the autan-run of 0a77fb9f
-  // (#648, vertex4 ghosts under "ranks"), built on the same host. #648's steady cases under
-  // "ranks" on 2 and 4 ranks give through this build the history and every array of the
-  // reference's run of the same input, bit for bit, in fp64: the fp32+acc64 first-order start
-  // ends on the level rule since (#611), which the reference does not have.
+  // #651, G-fit v2 B3, hidden: run by hand with AUTAN_REFERENCE_RUN, the autan-run of bb29a84a
+  // (#652, the first commit of main whose fp32+acc64 first-order start ends on the level rule),
+  // built on the same host with the same configuration. #648's steady cases under "ranks" on 2 and
+  // 4 ranks give through this build the history and every array of the reference's run of the same
+  // input, bit for bit, the SolverState the level rule writes included (#702).
   const char* reference = std::getenv("AUTAN_REFERENCE_RUN");
   if (reference == nullptr) SKIP("AUTAN_REFERENCE_RUN names the reference autan-run");
   const char* model = GENERATE("laminar", "sa");
   const char* linear = GENERATE("gauss-seidel", "lines");
-  const char* precision = "fp64";
+  const char* precision = GENERATE("fp64", "fp32+acc64");
   const int ranks = GENERATE(2, 4);
   INFO(model << " " << linear << " " << precision << " on " << ranks << " ranks");
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
@@ -2104,16 +2138,15 @@ TEST_CASE("Navier-Stokes under reproducibility ranks gives the bits of the pinne
   const fs::path ours = run_on_ranks(doc, ranks, 0, &err);
   INFO(err);
   REQUIRE(!ours.empty());
-  // The reference reads the input of its own version: time.start_order came after it, and
-  // "first", the default, is the only start it has; so did the MeshInfo's multigrid order.
-  Json older = doc;
-  REQUIRE(older["time"]["start_order"] == "first");
-  older["time"].erase("start_order");
-  if (older.contains("mesh_info") && older["mesh_info"]["quality"].contains("multigrid")) {
-    older["mesh_info"]["quality"]["multigrid"].erase("order");
-  }
-  const fs::path theirs = run_on_ranks(older, ranks, 0, &err, reference);
+  const fs::path theirs = run_on_ranks(doc, ranks, 0, &err, reference);
   REQUIRE(!theirs.empty());
+  // Both runs went past the second-order switch, by at least the 10 steps past_switch gives.
+  for (const fs::path& run : {ours, theirs}) {
+    REQUIRE(field(run, "SolverSecondOrder", "RestartState").front() == 1.0);
+    const auto steps = history(run);
+    REQUIRE(std::ranges::count_if(steps, [](const Json& e) { return e["provisional"] == false; }) >=
+            10);
+  }
   CHECK(read(ours / "history.jsonl") == read(theirs / "history.jsonl"));
   const auto a = data_arrays(theirs), b = data_arrays(ours);
   REQUIRE(a.contains("RestartState/SolverSecondOrder"));
@@ -2122,6 +2155,16 @@ TEST_CASE("Navier-Stokes under reproducibility ranks gives the bits of the pinne
     INFO(name);
     REQUIRE(b.contains(name));
     const auto& other = b.at(name);
+    REQUIRE(values.size() == other.size());
+    CHECK(std::memcmp(values.data(), other.data(), values.size() * sizeof(double)) == 0);
+  }
+  const auto sa = solver_state(theirs), sb = solver_state(ours);
+  if (std::string_view(precision) != "fp64") REQUIRE(sa.contains("SolverStartWindow"));
+  CHECK(sa.size() == sb.size());
+  for (const auto& [name, values] : sa) {
+    INFO("SolverState/" << name);
+    REQUIRE(sb.contains(name));
+    const auto& other = sb.at(name);
     REQUIRE(values.size() == other.size());
     CHECK(std::memcmp(values.data(), other.data(), values.size() * sizeof(double)) == 0);
   }
