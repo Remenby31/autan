@@ -324,10 +324,12 @@ TEMPLATE_TEST_CASE("an adiabatic wall at rest exchanges no energy", "[navier-sto
 
 // The same closed slab with SA: an implicit SA step, its system swept in cell order or by colour
 // (#699), changes mu_t and so the viscous fluxes, but every interior face still adds its flux to
-// one cell and subtracts it from the other, and the walls at rest and the slip faces pass no mass
-// and no energy: the mass and energy residuals of the cells sum to zero after either step.
-TEMPLATE_TEST_CASE("an SA step in either sweep order keeps a closed slab's mass and energy balance",
-                   "[navier-stokes]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+// one cell and subtracts it from the other. The walls at rest and the slip faces pass no mass and
+// no energy, so those residuals sum to zero; the momentum residuals sum to the boundary faces'
+// pressure force and viscous traction times area, R_c = sum_f F . S_f (docs/design/euler.md).
+TEMPLATE_TEST_CASE(
+    "an SA step in either sweep order keeps a closed slab's mass momentum and energy",
+    "[navier-stokes]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
   using P = TestType;
   const auto mesh = stretched_slab({.first = 0.05, .nz = 4, .warp = 0.02});
   const auto g = autan::compute_geometry(mesh);
@@ -384,9 +386,10 @@ TEMPLATE_TEST_CASE("an SA step in either sweep order keeps a closed slab's mass 
   const auto colours = autan::colour_cells(mesh);
   const auto groups =
       autan::physics::colour_groups(mesh, colours, *std::ranges::max_element(colours) + 1, n);
-  double mass_scale = 0.0, energy_scale = 0.0;
+  double mass_scale = 0.0, momentum_scale = 0.0, energy_scale = 0.0;
   for (std::size_t f = 0; f < static_cast<std::size_t>(mesh.n_faces()); ++f) {
     mass_scale += rho * speed * g.face_area[f];
+    momentum_scale += p * g.face_area[f];
     energy_scale += 2.0 * air.gamma / (air.gamma - 1.0) * p * speed * g.face_area[f];
   }
   std::vector<std::vector<double>> steps;
@@ -400,13 +403,30 @@ TEMPLATE_TEST_CASE("an SA step in either sweep order keeps a closed slab's mass 
     }
     sa.eddy_viscosity(next);
     ns.residual(s, r);
+    std::vector<double> pressure(nb), force(3 * nb), traction(3 * nb);
+    ns.boundary_pressure(pressure, force);
+    ns.viscous_traction(traction);
     double mass = 0.0, energy = 0.0;
+    std::array<double, 3> momentum{}, boundary{};
     for (std::size_t c = 0; c < n; ++c) {
       mass += static_cast<double>(r[c]);
+      for (std::size_t k = 0; k < 3; ++k) momentum[k] += static_cast<double>(r[(1 + k) * n + c]);
       energy += static_cast<double>(r[4 * n + c]);
+    }
+    for (std::size_t b = 0; b < nb; ++b) {
+      for (std::size_t k = 0; k < 3; ++k) {
+        boundary[k] += force[k * nb + b] + traction[k * nb + b] * g.face_area[ni + b];
+      }
     }
     const double e = std::numeric_limits<typename P::residual>::epsilon();
     CHECK(std::abs(mass) <= 64 * e * mass_scale);
+    // The boundary forces and the residual are two evaluations in the state's precision: their
+    // round-off scales with its epsilon, not with the residual type's.
+    const double es = std::numeric_limits<typename P::state>::epsilon();
+    for (std::size_t k = 0; k < 3; ++k) {
+      CAPTURE(k, momentum[k], boundary[k]);
+      CHECK(std::abs(momentum[k] - boundary[k]) <= 64 * es * momentum_scale);
+    }
     CHECK(std::abs(energy) <= 64 * e * energy_scale);
     steps.push_back(std::move(dx));
   }
