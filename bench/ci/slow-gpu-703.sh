@@ -30,6 +30,12 @@ esac
 
 uv run --locked pytest --backend gpu -m slow --collect-only -q | grep '::' > "$out/slow.txt"
 for k in 0 1 2 3; do awk -v k="$k" 'NR % 4 == k' "$out/slow.txt" > "$out/shard$((k + 1)).txt"; done
+# An empty selection is never a green: pytest given no node id would run the whole suite, and a
+# shard with no test would time nothing. Refuse before any hold.
+for f in "$out"/shard1.txt "$out"/shard2.txt "$out"/shard3.txt "$out"/shard4.txt; do
+  [ -s "$f" ] || { echo "empty selection: $f (slow tests collected: $(wc -l < "$out/slow.txt"))"; exit 3; }
+done
+wc -l "$out"/slow.txt "$out"/shard*.txt >> "$out/env.txt"
 
 # Telemetry every 1 s while a hold runs: per-CPU /proc/stat, CPU pressure, the allowed CPUs of
 # every thread of every pytest process, and the GPU (no other container is inspected).
