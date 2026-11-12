@@ -372,6 +372,8 @@ class CudaStepper : public DeviceStepper<P> {
 
   void upload(std::span<const double> u) override { u_.upload(u, stream_); }
   void download(std::span<double> u) override { u_.download(u, stream_); }
+  // The quadratic fit's stencil on the device (the kernel bench runs band_gradients on it).
+  [[nodiscard]] const kernels::Topology& band_topology() const noexcept { return band_topo_; }
 
  protected:
   virtual void add_terms() {}
