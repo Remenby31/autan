@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -1313,20 +1314,32 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
     require_error(other_order, "E0705");
     CHECK(refused(other_order));
     CHECK(run(input()).status == ExitStatus::finished);
+    // On a partition the hierarchy is RCM's whatever order the run computes in.
     const auto ranks = [](Json& d) { d["reproducibility"] = "ranks"; };
-    for (const std::string built : {"rcm", "input"}) {
-      CAPTURE(built);
-      const Json d = autan_test::planned(input(ranks, "hybrid-verification.solver-input.json"),
-                                         mesh_path, order, built);
-      const Outcome o = run(d);
-      INFO(o.err);
-      if (built == "rcm") {
-        CHECK(o.status == ExitStatus::finished);
-        CHECK(!o.run.empty());
-      } else {
-        require_error(o, "E0705");
-        CHECK(refused(o));
+    const char* given = std::getenv("AUTAN_CELL_ORDER");
+    const std::optional<std::string> caller =
+        given ? std::optional<std::string>(given) : std::nullopt;
+    for (const std::string computes : {"rcm", "input"}) {
+      REQUIRE(setenv("AUTAN_CELL_ORDER", computes.c_str(), 1) == 0);
+      for (const std::string built : {"rcm", "input"}) {
+        CAPTURE(computes, built);
+        const Json d = autan_test::planned(input(ranks, "hybrid-verification.solver-input.json"),
+                                           mesh_path, computes, built);
+        const Outcome o = run(d);
+        INFO(o.err);
+        if (built == "rcm") {
+          CHECK(o.status == ExitStatus::finished);
+          CHECK(!o.run.empty());
+        } else {
+          require_error(o, "E0705");
+          CHECK(refused(o));
+        }
       }
+    }
+    if (caller) {
+      REQUIRE(setenv("AUTAN_CELL_ORDER", caller->c_str(), 1) == 0);
+    } else {
+      unsetenv("AUTAN_CELL_ORDER");
     }
     for (const Json& broken :
          {Json(nullptr), Json::object(), Json{{"schema", "autan.mesh-info/2"}}}) {
