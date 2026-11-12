@@ -1,0 +1,56 @@
+# #703 diagnosis (declared on #703 before any run): proof branch only, never merged. Triggered by a
+# push to proof/slow-gpu-703 from this repository; bench/ci/slow-gpu-703.want names the runner the
+# push is for (spark-75d6 or spark-5512) and the arm order. On any other runner the job stops at
+# its first step, before any build or GPU hold.
+name: slow-gpu-703-diagnosis
+on:
+  push:
+    branches: [proof/slow-gpu-703]
+permissions: {}
+env:
+  CONFIGURE: >-
+    -G Ninja -DAUTAN_ENABLE_CUDA=ON -DAUTAN_ENABLE_MPI=ON
+    -DAUTAN_ENABLE_METIS=ON -DAUTAN_ENABLE_SCOTCH=ON -DCMAKE_CUDA_ARCHITECTURES=121
+    -DAUTAN_WARNINGS_AS_ERRORS=ON -DCMAKE_BUILD_TYPE=Release
+    -DCMAKE_CXX_FLAGS_RELEASE=-O2 -DCMAKE_CUDA_FLAGS_RELEASE=-O2
+    -DMPIEXEC_PREFLAGS=--oversubscribe
+jobs:
+  diagnosis:
+    if: github.repository == 'Remenby31/autan'
+    runs-on: [self-hosted, linux, ARM64, gpu, gb10, tests]
+    timeout-minutes: 190
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The runner this push is for
+        id: want
+        run: |
+          read -r want order < bench/ci/slow-gpu-703.want
+          echo "runner $RUNNER_NAME, wanted $want, order $order"
+          grep Cpus_allowed_list /proc/self/status; nproc
+          if [ "$RUNNER_NAME" = "$want" ]; then echo "go=true" >> "$GITHUB_OUTPUT"; else echo "go=false" >> "$GITHUB_OUTPUT"; fi
+          echo "order=$order" >> "$GITHUB_OUTPUT"
+      - name: Configure and build (gpu-tests' configuration)
+        if: steps.want.outputs.go == 'true'
+        run: |
+          # shellcheck disable=SC2086
+          cmake -S . -B build $CONFIGURE && cmake --build build --target autan_spike_gpu
+      - name: Install the generator's test environment
+        if: steps.want.outputs.go == 'true'
+        working-directory: codegen
+        run: uv sync --locked
+      - name: The declared holds
+        if: steps.want.outputs.go == 'true'
+        working-directory: codegen
+        env:
+          ORDER: ${{ steps.want.outputs.order }}
+        run: bash ../bench/ci/slow-gpu-703.sh "$GITHUB_WORKSPACE/build/codegen/libautan_spike_gpu.so" "$RUNNER_TEMP/d703" "$ORDER"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() && steps.want.outputs.go == 'true' }}
+        with:
+          name: slow-gpu-703-${{ github.run_id }}
+          path: ${{ runner.temp }}/d703/
+          if-no-files-found: error
