@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include "autan/partition/partition.hpp"
@@ -52,6 +53,16 @@ class DistributedOperator {
   }
   [[nodiscard]] std::span<const double> upper(std::size_t level) const { return upper_.at(level); }
   [[nodiscard]] std::span<const double> lower(std::size_t level) const { return lower_.at(level); }
+
+  /// The local edges of owned node `i` of `level`, by increasing global edge id.
+  [[nodiscard]] std::span<const index_t> incident(std::size_t level, std::size_t i) const {
+    const auto& o = node_offsets_.at(level);
+    return std::span<const index_t>(node_edges_[level])
+        .subspan(static_cast<std::size_t>(o[i]), static_cast<std::size_t>(o[i + 1] - o[i]));
+  }
+  /// Block A(i, j) of local edge k seen from its end i, and j.
+  [[nodiscard]] std::pair<const double*, std::size_t> off(std::size_t level, std::size_t k,
+                                                          std::size_t i) const;
 
   /// y = A x on the owned nodes of `level`, after a forward exchange of x's ghosts. Collective.
   void multiply(std::size_t level, std::span<double> x, std::span<double> y);

@@ -188,6 +188,14 @@ void DistributedOperator::galerkin(std::size_t l) {
   forward_blocks(gc.edge_halo, gc.n_owned_edges, mc, w);
 }
 
+std::pair<const double*, std::size_t> DistributedOperator::off(std::size_t level, std::size_t k,
+                                                               std::size_t i) const {
+  const LocalGraph& g = graphs_.at(level);
+  const bool owner = global_owner(g, k) == i;
+  const std::size_t j = at(g.owner[k]) == i ? at(g.neighbour[k]) : at(g.owner[k]);
+  return {owner ? &upper_[level][b2 * k] : &lower_[level][b2 * k], j};
+}
+
 void DistributedOperator::multiply(std::size_t level, std::span<double> x, std::span<double> y) {
   const LocalGraph& g = graphs_.at(level);
   const std::size_t n = g.node_global_id.size();
