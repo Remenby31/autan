@@ -48,6 +48,7 @@
 #include "../io/outside_data.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/io/cgns.hpp"
+#include "autan/io/mesh_counts.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/partition/partition.hpp"
@@ -1309,6 +1310,35 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
     Json other_scale = input();
     other_scale["mesh_info"]["quality"]["lines"]["scale"] = 0.0254;
     require_error(run(other_scale), "E0705");
+#ifdef AUTAN_HAVE_METIS
+    // mesh-info.md, partition.groups: a run on several ranks, this steady CPU multigrid on two,
+    // is planned with a partition that keeps its multigrid's finest lines whole; one formed with
+    // the line smoother's lines or none is another run's. Here one process runs it, so the input
+    // that passes this check is refused for its devices.count instead.
+    {
+      const autan::Mesh read = autan::io::read_mesh(mesh_path);
+      using autan::io::RankGroups;
+      for (const auto& [groups, name] :
+           {std::pair{RankGroups::none, "none"}, std::pair{RankGroups::lines, "lines"},
+            std::pair{RankGroups::multigrid, "multigrid"}}) {
+        CAPTURE(name);
+        const auto counts =
+            autan::io::run_counts(read, 1.0, autan::io::CellOrder::rcm,
+                                  autan::io::RanksRequest{.ranks = 2, .groups = groups});
+        Json d = input();
+        d["devices"]["count"] = 2;
+        d["mesh_info"]["partition"] = Json::parse(autan::io::mesh_info_json(
+            read, autan::io::mesh_hash(mesh_path), autan::io::mesh_bytes(mesh_path),
+            autan::io::mesh_logical_bytes(mesh_path), counts))["partition"];
+        REQUIRE(d["mesh_info"]["partition"]["groups"] == name);
+        const Outcome o = run(d);
+        require_error(o, "E0705");
+        const bool groups_refused =
+            Json::parse(o.err)["location"]["path"] == "mesh_info.partition.groups";
+        CHECK(groups_refused == (groups != RankGroups::multigrid));
+      }
+    }
+#endif
     // The whole contract of mesh-info.md, which Results.open checks on the archived document:
     // each of these breaks one of its members or rules.
     const std::vector<std::function<void(Json&)>> breaks{
@@ -1339,6 +1369,7 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
           auto& edges = m["quality"]["multigrid"]["edges_by_level"][0];
           edges = edges.get<int>() + 1;
         },
+        [](Json& m) { m["quality"]["multigrid"]["order"] = "metis"; },
         [](Json& m) {
           const int cells = m["counts"]["cells"].get<int>();
           m["partition"] = {{"ranks", 2},

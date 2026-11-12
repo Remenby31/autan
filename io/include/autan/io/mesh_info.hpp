@@ -58,13 +58,14 @@ std::optional<ZoneGroups> read_zone_groups(const std::filesystem::path& mesh_pat
 
 /// What a mesh costs the solver that runs on it (docs/contracts/mesh-info.md):
 /// its smoother's lines in a cell order, the stencil and periodic ghosts of a
-/// single-rank run, its multigrid's levels in that cell order, and with `partition` those of
+/// single-rank run, its multigrid's levels in a cell order, and with `partition` those of
 /// each rank of a run on several (autan::io::run_counts computes them).
 struct MeshInfoRun {
   std::string line_order;   // "rcm" or "input"
   double line_scale = 1.0;  // metres per mesh unit the counts were computed with
   std::int64_t line_cells = 0;
   std::int64_t long_line_cells = 0;
+  std::string multigrid_order;  // "rcm" or "input": the cell order the levels were built in
   /// The multigrid's levels, finest (the mesh) first: their nodes and edges.
   std::vector<std::int64_t> multigrid_cells, multigrid_edges;
   std::int64_t stencil_entries = 0;
@@ -74,7 +75,7 @@ struct MeshInfoRun {
   std::int64_t periodic_ghosts = 0;
   struct Partition {
     std::int32_t ranks = 0;
-    std::string groups;         // "none" or "lines"
+    std::string groups;         // "none", "lines" or "multigrid"
     std::string ghost_stencil;  // "face2" or "vertex" (GhostStencil)
     std::vector<std::int64_t> cells, ghosts, faces, interior_faces, stencil_entries;
     std::vector<std::int64_t> vertex_stencil_entries, band_entries, boundary_fit_entries;
