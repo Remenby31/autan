@@ -1,0 +1,83 @@
+[
+  {
+    "name": "M2 box 1 rank fp64",
+    "file": "physics/src/euler.cpp",
+    "from": "        run([&](auto... strategy) { ek::cpu::roe_faces_planar(d, strategy...); });",
+    "to": "        run([&](auto... strategy) { ek::cpu::roe_faces_planar(d, strategy...); });\n        {\n          const auto nf = static_cast<std::size_t>(topo.n_faces);\n          const auto nc = static_cast<std::size_t>(topo.n_cells);\n          std::vector<Res> flux(5 * nf, Res(0));\n          d.face_flux = flux.data();\n          ek::cpu::roe_face_fluxes_planar(d);\n          d.face_flux = nullptr;\n          const std::array<double, 3> at{0.5, 0.25, 0.25};\n          for (std::size_t f = 0; f < static_cast<std::size_t>(topo.n_owned_interior_faces); ++f) {\n            bool here = true;\n            for (std::size_t a = 0; a < 3; ++a) {\n              here = here && std::abs(static_cast<double>(face_centroid[a * nf + f]) - at[a]) <= 1e-6;\n            }\n            const bool flip = !reversed.empty() && reversed[f] != 0;\n            const auto left = static_cast<std::size_t>(flip ? topo.neighbour[f] : topo.owner[f]);\n            if (!here || left >= static_cast<std::size_t>(topo.n_owned_cells)) continue;\n            for (std::size_t k = 0; k < 5; ++k) d.res[k * nc + left] -= static_cast<double>(flux[k * nf + f]);\n          }\n        }",
+    "target": "autan_euler_run_tests autan-run",
+    "exe": "tests/physics/autan_euler_run_tests",
+    "test": "gate 7 passes on the analytic box at its start on 1 rank in fp64"
+  },
+  {
+    "name": "M2 box 1 rank fp32+acc64",
+    "file": "physics/src/euler.cpp",
+    "from": "        run([&](auto... strategy) { ek::cpu::roe_faces_planar(d, strategy...); });",
+    "to": "        run([&](auto... strategy) { ek::cpu::roe_faces_planar(d, strategy...); });\n        {\n          const auto nf = static_cast<std::size_t>(topo.n_faces);\n          const auto nc = static_cast<std::size_t>(topo.n_cells);\n          std::vector<Res> flux(5 * nf, Res(0));\n          d.face_flux = flux.data();\n          ek::cpu::roe_face_fluxes_planar(d);\n          d.face_flux = nullptr;\n          const std::array<double, 3> at{0.5, 0.25, 0.25};\n          for (std::size_t f = 0; f < static_cast<std::size_t>(topo.n_owned_interior_faces); ++f) {\n            bool here = true;\n            for (std::size_t a = 0; a < 3; ++a) {\n              here = here && std::abs(static_cast<double>(face_centroid[a * nf + f]) - at[a]) <= 1e-6;\n            }\n            const bool flip = !reversed.empty() && reversed[f] != 0;\n            const auto left = static_cast<std::size_t>(flip ? topo.neighbour[f] : topo.owner[f]);\n            if (!here || left >= static_cast<std::size_t>(topo.n_owned_cells)) continue;\n            for (std::size_t k = 0; k < 5; ++k) d.res[k * nc + left] -= static_cast<double>(flux[k * nf + f]);\n          }\n        }",
+    "target": "autan_euler_run_tests autan-run",
+    "exe": "tests/physics/autan_euler_run_tests",
+    "test": "gate 7 passes on the analytic box at its start on 1 rank in fp32+acc64"
+  },
+  {
+    "name": "M2 box 4 ranks fp64",
+    "file": "physics/src/euler.cpp",
+    "from": "        run([&](auto... strategy) { ek::cpu::roe_faces_planar(d, strategy...); });",
+    "to": "        run([&](auto... strategy) { ek::cpu::roe_faces_planar(d, strategy...); });\n        {\n          const auto nf = static_cast<std::size_t>(topo.n_faces);\n          const auto nc = static_cast<std::size_t>(topo.n_cells);\n          std::vector<Res> flux(5 * nf, Res(0));\n          d.face_flux = flux.data();\n          ek::cpu::roe_face_fluxes_planar(d);\n          d.face_flux = nullptr;\n          std::array<double, 3> at{};\n          std::sscanf(std::getenv(\"AUTAN_CONSERVATION_FACE\"), \"%lf,%lf,%lf\", &at[0], &at[1], &at[2]);\n          for (std::size_t f = 0; f < static_cast<std::size_t>(topo.n_owned_interior_faces); ++f) {\n            bool here = true;\n            for (std::size_t a = 0; a < 3; ++a) {\n              here = here && std::abs(static_cast<double>(face_centroid[a * nf + f]) - at[a]) <= 1e-6;\n            }\n            const bool flip = !reversed.empty() && reversed[f] != 0;\n            const auto left = static_cast<std::size_t>(flip ? topo.neighbour[f] : topo.owner[f]);\n            if (!here || left >= static_cast<std::size_t>(topo.n_owned_cells)) continue;\n            for (std::size_t k = 0; k < 5; ++k) d.res[k * nc + left] -= static_cast<double>(flux[k * nf + f]);\n          }\n        }",
+    "target": "autan_euler_run_tests autan-run",
+    "exe": "tests/physics/autan_euler_run_tests",
+    "test": "gate 7 passes on the analytic box at its start on 4 ranks in fp64"
+  },
+  {
+    "name": "M2 box 4 ranks fp32+acc64",
+    "file": "physics/src/euler.cpp",
+    "from": "        run([&](auto... strategy) { ek::cpu::roe_faces_planar(d, strategy...); });",
+    "to": "        run([&](auto... strategy) { ek::cpu::roe_faces_planar(d, strategy...); });\n        {\n          const auto nf = static_cast<std::size_t>(topo.n_faces);\n          const auto nc = static_cast<std::size_t>(topo.n_cells);\n          std::vector<Res> flux(5 * nf, Res(0));\n          d.face_flux = flux.data();\n          ek::cpu::roe_face_fluxes_planar(d);\n          d.face_flux = nullptr;\n          std::array<double, 3> at{};\n          std::sscanf(std::getenv(\"AUTAN_CONSERVATION_FACE\"), \"%lf,%lf,%lf\", &at[0], &at[1], &at[2]);\n          for (std::size_t f = 0; f < static_cast<std::size_t>(topo.n_owned_interior_faces); ++f) {\n            bool here = true;\n            for (std::size_t a = 0; a < 3; ++a) {\n              here = here && std::abs(static_cast<double>(face_centroid[a * nf + f]) - at[a]) <= 1e-6;\n            }\n            const bool flip = !reversed.empty() && reversed[f] != 0;\n            const auto left = static_cast<std::size_t>(flip ? topo.neighbour[f] : topo.owner[f]);\n            if (!here || left >= static_cast<std::size_t>(topo.n_owned_cells)) continue;\n            for (std::size_t k = 0; k < 5; ++k) d.res[k * nc + left] -= static_cast<double>(flux[k * nf + f]);\n          }\n        }",
+    "target": "autan_euler_run_tests autan-run",
+    "exe": "tests/physics/autan_euler_run_tests",
+    "test": "gate 7 passes on the analytic box at its start on 4 ranks in fp32+acc64"
+  },
+  {
+    "name": "M1 hybrid16 1 rank fp64",
+    "file": "physics/src/euler.cpp",
+    "from": "        run([&](auto... strategy) { ek::cpu::roe_faces_jacobian(d, strategy...); });",
+    "to": "        run([&](auto... strategy) { ek::cpu::roe_faces_jacobian(d, strategy...); });\n        {\n          const auto nf = static_cast<std::size_t>(topo.n_faces);\n          const auto nc = static_cast<std::size_t>(topo.n_cells);\n          std::vector<Res> flux(5 * nf, Res(0));\n          d.face_flux = flux.data();\n          ek::cpu::roe_face_fluxes(d);\n          d.face_flux = nullptr;\n          const std::array<double, 3> at{0.5, 0.46875, 0.15625};\n          for (std::size_t f = 0; f < static_cast<std::size_t>(topo.n_owned_interior_faces); ++f) {\n            bool here = true;\n            for (std::size_t a = 0; a < 3; ++a) {\n              here = here && std::abs(static_cast<double>(face_centroid[a * nf + f]) - at[a]) <= 1e-6;\n            }\n            const bool flip = !reversed.empty() && reversed[f] != 0;\n            const auto left = static_cast<std::size_t>(flip ? topo.neighbour[f] : topo.owner[f]);\n            if (!here || left >= static_cast<std::size_t>(topo.n_owned_cells)) continue;\n            for (std::size_t k = 0; k < 5; ++k) d.res[k * nc + left] -= static_cast<double>(flux[k * nf + f]);\n          }\n        }",
+    "target": "autan_euler_run_tests autan-run",
+    "exe": "tests/physics/autan_euler_run_tests",
+    "test": "gate 7 passes on hybrid MMS level 16 at R1's solution on 1 rank in fp64"
+  },
+  {
+    "name": "M1 hybrid16 1 rank fp32+acc64",
+    "file": "physics/src/euler.cpp",
+    "from": "        run([&](auto... strategy) { ek::cpu::roe_faces_jacobian(d, strategy...); });",
+    "to": "        run([&](auto... strategy) { ek::cpu::roe_faces_jacobian(d, strategy...); });\n        {\n          const auto nf = static_cast<std::size_t>(topo.n_faces);\n          const auto nc = static_cast<std::size_t>(topo.n_cells);\n          std::vector<Res> flux(5 * nf, Res(0));\n          d.face_flux = flux.data();\n          ek::cpu::roe_face_fluxes(d);\n          d.face_flux = nullptr;\n          const std::array<double, 3> at{0.5, 0.46875, 0.15625};\n          for (std::size_t f = 0; f < static_cast<std::size_t>(topo.n_owned_interior_faces); ++f) {\n            bool here = true;\n            for (std::size_t a = 0; a < 3; ++a) {\n              here = here && std::abs(static_cast<double>(face_centroid[a * nf + f]) - at[a]) <= 1e-6;\n            }\n            const bool flip = !reversed.empty() && reversed[f] != 0;\n            const auto left = static_cast<std::size_t>(flip ? topo.neighbour[f] : topo.owner[f]);\n            if (!here || left >= static_cast<std::size_t>(topo.n_owned_cells)) continue;\n            for (std::size_t k = 0; k < 5; ++k) d.res[k * nc + left] -= static_cast<double>(flux[k * nf + f]);\n          }\n        }",
+    "target": "autan_euler_run_tests autan-run",
+    "exe": "tests/physics/autan_euler_run_tests",
+    "test": "gate 7 passes on hybrid MMS level 16 at R1's solution on 1 rank in fp32+acc64"
+  },
+  {
+    "name": "M1 hybrid16 4 ranks fp64",
+    "file": "physics/src/euler.cpp",
+    "from": "        run([&](auto... strategy) { ek::cpu::roe_faces_jacobian(d, strategy...); });",
+    "to": "        run([&](auto... strategy) { ek::cpu::roe_faces_jacobian(d, strategy...); });\n        {\n          const auto nf = static_cast<std::size_t>(topo.n_faces);\n          const auto nc = static_cast<std::size_t>(topo.n_cells);\n          std::vector<Res> flux(5 * nf, Res(0));\n          d.face_flux = flux.data();\n          ek::cpu::roe_face_fluxes(d);\n          d.face_flux = nullptr;\n          std::array<double, 3> at{};\n          std::sscanf(std::getenv(\"AUTAN_CONSERVATION_FACE\"), \"%lf,%lf,%lf\", &at[0], &at[1], &at[2]);\n          for (std::size_t f = 0; f < static_cast<std::size_t>(topo.n_owned_interior_faces); ++f) {\n            bool here = true;\n            for (std::size_t a = 0; a < 3; ++a) {\n              here = here && std::abs(static_cast<double>(face_centroid[a * nf + f]) - at[a]) <= 1e-6;\n            }\n            const bool flip = !reversed.empty() && reversed[f] != 0;\n            const auto left = static_cast<std::size_t>(flip ? topo.neighbour[f] : topo.owner[f]);\n            if (!here || left >= static_cast<std::size_t>(topo.n_owned_cells)) continue;\n            for (std::size_t k = 0; k < 5; ++k) d.res[k * nc + left] -= static_cast<double>(flux[k * nf + f]);\n          }\n        }",
+    "target": "autan_euler_run_tests autan-run",
+    "exe": "tests/physics/autan_euler_run_tests",
+    "test": "gate 7 passes on hybrid MMS level 16 at R1's solution on 4 ranks in fp64"
+  },
+  {
+    "name": "M1 hybrid16 4 ranks fp32+acc64",
+    "file": "physics/src/euler.cpp",
+    "from": "        run([&](auto... strategy) { ek::cpu::roe_faces_jacobian(d, strategy...); });",
+    "to": "        run([&](auto... strategy) { ek::cpu::roe_faces_jacobian(d, strategy...); });\n        {\n          const auto nf = static_cast<std::size_t>(topo.n_faces);\n          const auto nc = static_cast<std::size_t>(topo.n_cells);\n          std::vector<Res> flux(5 * nf, Res(0));\n          d.face_flux = flux.data();\n          ek::cpu::roe_face_fluxes(d);\n          d.face_flux = nullptr;\n          std::array<double, 3> at{};\n          std::sscanf(std::getenv(\"AUTAN_CONSERVATION_FACE\"), \"%lf,%lf,%lf\", &at[0], &at[1], &at[2]);\n          for (std::size_t f = 0; f < static_cast<std::size_t>(topo.n_owned_interior_faces); ++f) {\n            bool here = true;\n            for (std::size_t a = 0; a < 3; ++a) {\n              here = here && std::abs(static_cast<double>(face_centroid[a * nf + f]) - at[a]) <= 1e-6;\n            }\n            const bool flip = !reversed.empty() && reversed[f] != 0;\n            const auto left = static_cast<std::size_t>(flip ? topo.neighbour[f] : topo.owner[f]);\n            if (!here || left >= static_cast<std::size_t>(topo.n_owned_cells)) continue;\n            for (std::size_t k = 0; k < 5; ++k) d.res[k * nc + left] -= static_cast<double>(flux[k * nf + f]);\n          }\n        }",
+    "target": "autan_euler_run_tests autan-run",
+    "exe": "tests/physics/autan_euler_run_tests",
+    "test": "gate 7 passes on hybrid MMS level 16 at R1's solution on 4 ranks in fp32+acc64"
+  },
+  {
+    "name": "M1 fixture hybrid 1 rank fp64",
+    "file": "physics/src/euler.cpp",
+    "from": "        run([&](auto... strategy) { ek::cpu::roe_faces_jacobian(d, strategy...); });",
+    "to": "        run([&](auto... strategy) { ek::cpu::roe_faces_jacobian(d, strategy...); });\n        {\n          const auto nf = static_cast<std::size_t>(topo.n_faces);\n          const auto nc = static_cast<std::size_t>(topo.n_cells);\n          std::vector<Res> flux(5 * nf, Res(0));\n          d.face_flux = flux.data();\n          ek::cpu::roe_face_fluxes(d);\n          d.face_flux = nullptr;\n          const std::array<double, 3> at{0.75, 0.375, 0.125};\n          for (std::size_t f = 0; f < static_cast<std::size_t>(topo.n_owned_interior_faces); ++f) {\n            bool here = true;\n            for (std::size_t a = 0; a < 3; ++a) {\n              here = here && std::abs(static_cast<double>(face_centroid[a * nf + f]) - at[a]) <= 1e-6;\n            }\n            const bool flip = !reversed.empty() && reversed[f] != 0;\n            const auto left = static_cast<std::size_t>(flip ? topo.neighbour[f] : topo.owner[f]);\n            if (!here || left >= static_cast<std::size_t>(topo.n_owned_cells)) continue;\n            for (std::size_t k = 0; k < 5; ++k) d.res[k * nc + left] -= static_cast<double>(flux[k * nf + f]);\n          }\n        }",
+    "target": "autan_euler_run_tests autan-run",
+    "exe": "tests/physics/autan_euler_run_tests",
+    "test": "gate 7 passes on the fixture hybrid mesh at its steady start on 1 rank in fp64"
+  }
+]

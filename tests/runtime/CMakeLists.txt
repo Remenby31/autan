@@ -22,6 +22,7 @@ target_compile_definitions(
     AUTAN_RUN_RELAXATION="$<TARGET_FILE:autan-run-relaxation>"
     AUTAN_TEST_CMAKE="${CMAKE_COMMAND}"
     AUTAN_TEST_BUILD_INFO="${PROJECT_SOURCE_DIR}/runtime/cmake/build_info.cmake"
+    $<$<BOOL:${AUTAN_ENABLE_METIS}>:AUTAN_HAVE_METIS>
 )
 add_dependencies(autan_runtime_tests autan-run-relaxation)
 if(AUTAN_ENABLE_CUDA)

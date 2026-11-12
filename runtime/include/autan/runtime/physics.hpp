@@ -93,6 +93,13 @@ class GhostExchange {
   }
 };
 
+/// The forward exchange of a halo pattern of the run's ranks (a multigrid level's nodes,
+/// LocalGraph of partition.hpp): each component holds `n_owned` owned values, then the pattern's
+/// ghosts. Making one is collective: every rank makes the exchanges of the same patterns, in the
+/// same order. The pattern must outlive the exchange.
+using HaloExchanges =
+    std::function<std::unique_ptr<GhostExchange>(const HaloPattern& pattern, index_t n_owned)>;
+
 /// Valid until the run ends; a physics may keep a copy.
 struct PhysicsContext {
   const Mesh& mesh;
@@ -139,6 +146,12 @@ struct PhysicsContext {
   std::span<const index_t> group_cells;
   std::span<const std::int32_t> cell_group_colours;
   std::int32_t n_group_colours = 0;
+  /// What the physics' PartitionGroups built beside the groups (CellGroups::setup), and each
+  /// cell's rank in the mesh as the run read it (zeros on one rank): null and empty without one.
+  const void* setup = nullptr;
+  std::span<const std::int32_t> cell_parts;
+  /// Exchanges of halo patterns other than the mesh's, on the run's ranks.
+  HaloExchanges halo_exchange;
   /// On a partition, the stencil its ghost cells hold (LocalPartition::ghosts): the one the
   /// physics declared (PhysicsRegistry::Entry::ghosts). Empty on the whole mesh, which holds
   /// every stencil.
@@ -227,14 +240,18 @@ using PhysicsScope =
 struct CellGroups {
   std::vector<offset_t> offsets;
   std::vector<index_t> cells;
+  /// What the physics builds from the global mesh in the order the run read it, before
+  /// partitioning (a distributed multigrid's hierarchy): kept for the run and given to the
+  /// physics as PhysicsContext::setup; null for nothing.
+  std::shared_ptr<const void> setup;
 };
 
-/// The groups a physics needs whole on one rank (a smoother's lines), from the global mesh and
-/// its geometry. Every rank calls it once with the same mesh before partitioning, on any number
-/// of ranks, so it must be deterministic; invalid groups are E0140. The physics receives them
-/// as PhysicsContext::group_offsets and group_cells, coloured.
-using PartitionGroups =
-    std::function<CellGroups(const SolverInput& input, const Mesh& mesh, const Geometry& geometry)>;
+/// The groups a physics needs whole on one rank (a smoother's lines), from the global mesh in the
+/// order the run read it, its geometry and the number of ranks the run spans. Every rank calls it
+/// once with the same mesh before partitioning, so it must be deterministic; invalid groups are
+/// E0140. The physics receives them as PhysicsContext::group_offsets and group_cells, coloured.
+using PartitionGroups = std::function<CellGroups(const SolverInput& input, const Mesh& mesh,
+                                                 const Geometry& geometry, int ranks)>;
 
 /// The names of the RestartState arrays the physics writes for `input`, in order, after a run
 /// that averaged or not (Physics::restart_fields). A continued start is read only when its
