@@ -1,7 +1,7 @@
-// SpalartAllmaras<P>::solve swept by colour (ADR 0005, option B; #163, step 7a): T1, the
-// algorithm against a reference written from its definition; T2c, its convergence certified
-// with guaranteed (interval) arithmetic, as declared on #163 (T2's dominance bound does not
-// apply to these systems: #163, T2's result).
+// SpalartAllmaras<P>::solve swept by colour (ADR 0005, option B; #163, step 7a) or in cell order
+// (one rank without keys; #699): T1, both against a reference written from their definition; T2c,
+// the colour sweeps' convergence certified with guaranteed (interval) arithmetic, as declared on
+// #163 (T2's dominance bound does not apply to these systems: #163, T2's result).
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -290,12 +290,13 @@ std::vector<double> certified_powers(const System& s,
 
 }  // namespace
 
-TEST_CASE("SA's sweeps by colour give the declared symmetric colour Gauss-Seidel bit for bit",
+TEST_CASE("SA's sweeps by colour and in cell order give their declared Gauss-Seidel bit for bit",
           "[spalart-allmaras]") {
   // T1 (#163, step 7a). The slab's 8 x 12 cells in 3 colours, (i + 2 j) mod 3 (neighbours along x
   // differ by 1, along y by 2), with a system of its own; the hybrid mesh's assembled system in the
   // runtime's colouring. A non-zero initial guess; 1 and 4 symmetric pairs; the reference also in
-  // the reverse order within each colour, which the result does not depend on.
+  // the reverse order within each colour, which the result does not depend on. Without colours,
+  // the cell order of one rank without keys (#699): the same definition, one cell per colour.
   const bool slab = GENERATE(true, false);
   INFO((slab ? "slab, 3 colours" : "hybrid, the runtime's colouring"));
   System s(slab ? autan::test::stretched_slab()
@@ -327,13 +328,19 @@ TEST_CASE("SA's sweeps by colour give the declared symmetric colour Gauss-Seidel
   for (const int pairs : {1, 4}) {
     CAPTURE(pairs);
     auto dx = x0;
-    s.sa->solve(s.diag, s.upper, s.lower, s.b, dx, pairs, groups);
+    s.sa->solve(s.diag, s.upper, s.lower, s.b, dx, pairs, &groups);
     const auto up = reference(s.mesh, s.diag, s.upper, s.lower, s.b,
                               buckets(colours, n_colours, false), x0, pairs);
     const auto down = reference(s.mesh, s.diag, s.upper, s.lower, s.b,
                                 buckets(colours, n_colours, true), x0, pairs);
     CHECK(same_bits(dx, up));
     CHECK(same_bits(up, down));
+    auto by_cell = x0;
+    s.sa->solve(s.diag, s.upper, s.lower, s.b, by_cell, pairs);
+    std::vector<std::vector<std::size_t>> one_each(s.n);
+    for (std::size_t c = 0; c < s.n; ++c) one_each[c] = {c};
+    CHECK(
+        same_bits(by_cell, reference(s.mesh, s.diag, s.upper, s.lower, s.b, one_each, x0, pairs)));
   }
 }
 
@@ -363,7 +370,9 @@ TEST_CASE("SA's sweeps by colour converge within bounds certified by interval ar
           "[spalart-allmaras][.certificate]") {
   // T2c (#163, step 7a). On T2's four systems at CFL 1000:
   // - C_j >= ||M^j||_inf, M the exact iteration matrix of one symmetric pair, j = 1 ... 400;
-  //   the gate C_400 <= 0.9;
+  //   the gate C_400 <= 0.9. It bounds the asymptotic rate only: the 4 colour pairs of a step on
+  //   several ranks or under keys are not certified contractive (C_4 > 1 on tet-gmsh here, and on
+  //   runtime systems of the flat plate and the bump: #699, Parts A and B);
   // - interval sweeps [x]_N from x_0 = 0 enclose the exact iterate x_N and the binary64 one, which
   //   is the production iterate bit for bit (checked at every pair) and lies in [x]_N;
   // - x* lies in [x*] = [x]_2000 +- C_400 / (1 - C_400) ||[x]_2000 - [x]_1600|| (x_N - x* =
@@ -417,7 +426,7 @@ TEST_CASE("SA's sweeps by colour converge within bounds certified by interval ar
   bool same = true, inside = true;
   for (int p = 1; p <= last; ++p) {
     interval_pair(s, by_colour, faces, true, x);
-    s.sa->solve(s.diag, s.upper, s.lower, s.b, production, 1, groups);
+    s.sa->solve(s.diag, s.upper, s.lower, s.b, production, 1, &groups);
     ref = reference(s.mesh, s.diag, s.upper, s.lower, s.b, by_colour, ref, 1);
     same = same && same_bits(production, ref);
     if (std::ranges::find(marks, p) != marks.end()) {
