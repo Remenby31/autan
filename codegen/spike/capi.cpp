@@ -16,6 +16,7 @@
 
 #include "advection_cpu.hpp"
 #include "advection_diffusion_cpu.hpp"
+#include "advection_values_cpu.hpp"
 #include "autan/core/error.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
@@ -496,6 +497,34 @@ void advection(const SpikeMesh& m, std::string_view strategy, const double* q, c
   copy_out(rs, res);
 }
 
+/// The advection face loop's body outputs per interior face, before accumulation (#43).
+template <class P>
+void advection_face_values(const SpikeMesh& m, const double* q, const double* grad,
+                           const double* velocity, double* values) {
+  namespace av = autan::kernels::advection;
+  const auto nc = static_cast<std::size_t>(m.topo.n_cells);
+  const auto nf = static_cast<std::size_t>(m.topo.n_faces);
+  GeomCopy<P> g(m.packed);
+  auto qs = copy_in<typename P::state>(q, nc);
+  auto gs = copy_in<typename P::grad>(grad, 3 * nc);
+  av::Data<P> d{};
+  d.topo = m.topo;
+  d.q = qs.data();
+  d.grad = gs.data();
+  autan::spike::bind(d.face_r_left, g.face_r_left);
+  autan::spike::bind(d.face_r_right, g.face_r_right);
+  autan::spike::bind(d.face_normal, g.face_normal);
+  autan::spike::bind(d.face_area_magnitude, g.face_area_magnitude);
+  for (int i = 0; i < 3; ++i) {
+    d.velocity[i] = typename P::param(velocity[i]);
+  }
+  std::vector<typename P::compute> out(nf, typename P::compute(0));
+  av::cpu::residual_values(d, out.data());
+  for (std::size_t f = 0; f < nf; ++f) {
+    values[f] = static_cast<double>(out[f]);
+  }
+}
+
 }  // namespace autan::spike
 
 namespace {
@@ -873,6 +902,17 @@ int autan_spike_advection(const void* mesh, const char* policy, const char* stra
   const auto* m = static_cast<const SpikeMesh*>(mesh);
   return dispatch(policy, err, err_len, [&](auto p) {
     autan::spike::advection<decltype(p)>(*m, strategy, q, grad, velocity, res);
+  });
+}
+
+/// Per interior face, the advection face loop's body output before accumulation (n_faces values;
+/// boundary entries stay 0): what a conservation check sums (#43).
+int autan_spike_advection_face_values(const void* mesh, const char* policy, const double* q,
+                                      const double* grad, const double* velocity, double* values,
+                                      char* err, std::size_t err_len) {
+  const auto* m = static_cast<const SpikeMesh*>(mesh);
+  return dispatch(policy, err, err_len, [&](auto p) {
+    autan::spike::advection_face_values<decltype(p)>(*m, q, grad, velocity, values);
   });
 }
 

@@ -52,7 +52,13 @@ foreach(module IN LISTS AUTAN_KERNEL_MODULES AUTAN_TEST_KERNEL_MODULES)
     list(REMOVE_ITEM module_backends metal)
   endif()
   set(outputs ${AUTAN_GENERATED_DIR}/${module}.hpp)
-  list(APPEND outputs ${AUTAN_GENERATED_DIR}/${module}_cpu.hpp)
+  # ${module}_values_cpu.hpp: each face loop's outputs per face, for the spike's measurements
+  # (#43); the kernels never include it, so the product compiles the same code.
+  list(
+    APPEND outputs
+    ${AUTAN_GENERATED_DIR}/${module}_cpu.hpp
+    ${AUTAN_GENERATED_DIR}/${module}_values_cpu.hpp
+  )
   if(AUTAN_ENABLE_CUDA OR AUTAN_ENABLE_HIP)
     list(
       APPEND outputs
@@ -70,7 +76,7 @@ foreach(module IN LISTS AUTAN_KERNEL_MODULES AUTAN_TEST_KERNEL_MODULES)
     COMMAND
       ${CMAKE_COMMAND} -E env PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/src ${Python3_EXECUTABLE} -m
       autan_codegen ${module_source} --out ${AUTAN_GENERATED_DIR} --backends ${backends}
-      --source-root ${PROJECT_SOURCE_DIR}
+      --source-root ${PROJECT_SOURCE_DIR} --face-values
     DEPENDS
       ${module_source}
       ${AUTAN_CODEGEN_SOURCES}

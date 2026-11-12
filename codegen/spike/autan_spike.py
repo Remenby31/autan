@@ -263,6 +263,22 @@ def advection(
     return res
 
 
+def advection_face_values(
+    m: Mesh, policy: str, q: F64, grad: F64, velocity: tuple[float, float, float]
+) -> F64:
+    """The advection face loop's body output on each interior face, before accumulation (the
+    opt-in `residual_values`, #43); boundary entries are 0."""
+    err = ctypes.create_string_buffer(512)
+    values = np.zeros(m.n_faces)
+    vel = np.array(velocity, dtype=np.float64)
+    q, g = np.ascontiguousarray(q, dtype=np.float64), soa(grad)
+    rc = lib().autan_spike_advection_face_values(
+        m.handle, policy.encode(), _p(q), _p(g), _p(vel), _p(values), err, ctypes.c_size_t(len(err))
+    )
+    _check(rc, err)
+    return values
+
+
 STRATEGIES = ("atomic", "warp-aggregated", "coloured", "store-gather", "gather-recompute")
 DETERMINISTIC = ("coloured", "store-gather", "gather-recompute")
 
