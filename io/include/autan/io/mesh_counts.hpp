@@ -33,8 +33,8 @@ struct RanksRequest {
 ///   at least 2 and of at least long_line cells;
 /// - multigrid: the multigrid's levels on the mesh in `multigrid_order` (default `order`),
 ///   solvers::agglomerate with its default options as a run's multigrid builds them: nodes and
-///   edges per level, the mesh first. A run on one rank builds them in its cell order, a run on
-///   a partition (several ranks, or reproducibility "ranks") in input order;
+///   edges per level, the mesh first. A run on one rank builds them in its cell order, an
+///   inviscid run on a partition (several ranks, or reproducibility "ranks") in RCM order;
 /// - stencil_entries, periodic_ghosts: the face2 cell stencil's entries and the
 ///   ghost cells of a single-rank run's mesh (its one-part partition when the
 ///   mesh has periodic pairs, the mesh otherwise);

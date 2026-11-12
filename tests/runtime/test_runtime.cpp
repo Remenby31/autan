@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -1304,6 +1305,46 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
     other_size["mesh_info"]["source"]["bytes"] = 0;
     require_error(run(other_size), "E0705");
     require_error(run(autan_test::planned(input(), mesh_path, "input")), "E0705");
+    // Its quality.multigrid was built in the order this run builds its hierarchy in (mesh-info.md):
+    // the run's cell order on one rank, RCM for inviscid flow on a partition, here reproducibility
+    // "ranks" on one rank. autan-mesh-info's document for the other order is refused (E0705).
+    const std::string order = autan_test::run_cell_order();
+    const auto refused = [](const Outcome& o) {
+      return o.status == ExitStatus::invalid_input && !o.err.empty() &&
+             Json::parse(o.err)["location"]["path"] == "mesh_info.quality.multigrid.order";
+    };
+    const Outcome other_order =
+        run(autan_test::planned(input(), mesh_path, order, order == "rcm" ? "input" : "rcm"));
+    require_error(other_order, "E0705");
+    CHECK(refused(other_order));
+    CHECK(run(input()).status == ExitStatus::finished);
+    // On a partition the hierarchy is RCM's whatever order the run computes in.
+    const auto ranks = [](Json& d) { d["reproducibility"] = "ranks"; };
+    const char* given = std::getenv("AUTAN_CELL_ORDER");
+    const std::optional<std::string> caller =
+        given ? std::optional<std::string>(given) : std::nullopt;
+    for (const std::string computes : {"rcm", "input"}) {
+      REQUIRE(setenv("AUTAN_CELL_ORDER", computes.c_str(), 1) == 0);
+      for (const std::string built : {"rcm", "input"}) {
+        CAPTURE(computes, built);
+        const Json d = autan_test::planned(input(ranks, "hybrid-verification.solver-input.json"),
+                                           mesh_path, computes, built);
+        const Outcome o = run(d);
+        INFO(o.err);
+        if (built == "rcm") {
+          CHECK(o.status == ExitStatus::finished);
+          CHECK(!o.run.empty());
+        } else {
+          require_error(o, "E0705");
+          CHECK(refused(o));
+        }
+      }
+    }
+    if (caller) {
+      REQUIRE(setenv("AUTAN_CELL_ORDER", caller->c_str(), 1) == 0);
+    } else {
+      unsetenv("AUTAN_CELL_ORDER");
+    }
     for (const Json& broken :
          {Json(nullptr), Json::object(), Json{{"schema", "autan.mesh-info/2"}}}) {
       CAPTURE(broken.dump());
