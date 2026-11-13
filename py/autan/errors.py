@@ -264,7 +264,7 @@ _CODES = [
     Code(
         "E0140",
         "Invalid partition request",
-        "A part count, rank, part index or cell weight is out of range, a group of cells weighs more than 2^31 - 1 in total on two parts or more, or an array has the wrong size.",
+        "A part count, rank, part index or cell weight is out of range, a group of cells weighs more than 2^31 - 1 in total on two parts or more, an array has the wrong size, a graph level repeats a global id, or a halo message or all-gather exceeds MPI's int count range.",
         "Ask for 1 to N parts (N = number of cells), one rank per part, and a weight of at least 1 per cell.",
     ),
     Code(
@@ -412,11 +412,16 @@ _CODES = [
         "scale than the case's `mesh_unit`, or a run on several ranks has no partition for that "
         "rank count, the groups its linear solver keeps whole and the ghost stencil its physics "
         'reads, or a run on one rank with periodic pairs or reproducibility `"ranks"` has no '
-        "such one-part partition. The message names the difference.",
+        "such one-part partition, or a steady CPU run with the multigrid builds its hierarchy in "
+        "another cell order than `quality.multigrid`: RCM on a partition (several ranks, or "
+        'reproducibility `"ranks"`), its cell order on one rank. The message names the '
+        "difference.",
         "Run `autan-mesh-info --json --scale <metres per mesh unit>` again, with "
-        "`--ranks N` (and `--groups lines` for a steady CPU run with the lines solver) for a run "
-        "on N ranks, and `--ghosts vertex4` for a Navier-Stokes case (laminar or SA) under "
-        'reproducibility `"ranks"`, `--ghosts vertex3` otherwise.',
+        "`--ranks N` (and `--groups lines` for a steady CPU run with the lines solver, "
+        "`--groups multigrid` with the multigrid) for a run on N ranks, `--ghosts vertex4` for a "
+        'Navier-Stokes case (laminar or SA) under reproducibility `"ranks"`, `--ghosts vertex3` '
+        "otherwise, and `--multigrid-order rcm` for a steady CPU run with the multigrid on a "
+        "partition.",
     ),
     Code(
         "W0204",

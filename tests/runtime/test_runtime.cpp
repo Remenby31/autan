@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -21,6 +22,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -31,6 +33,7 @@
 #include <hdf5.h>
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
+#include <sched.h>
 #include <signal.h>
 #include <spawn.h>
 #include <sys/stat.h>
@@ -47,6 +50,7 @@
 #include "../io/outside_data.hpp"
 #include "autan/core/geometry.hpp"
 #include "autan/io/cgns.hpp"
+#include "autan/io/mesh_counts.hpp"
 #include "autan/io/mesh_info.hpp"
 #include "autan/io/read_mesh.hpp"
 #include "autan/partition/partition.hpp"
@@ -56,6 +60,9 @@
 #include "autan/runtime/run.hpp"
 #include "planned.hpp"
 #include "relaxation.hpp"
+#ifdef AUTAN_MPIEXEC
+#include "mpiexec_preflags.hpp"
+#endif
 
 extern char** environ;
 
@@ -1298,6 +1305,46 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
     other_size["mesh_info"]["source"]["bytes"] = 0;
     require_error(run(other_size), "E0705");
     require_error(run(autan_test::planned(input(), mesh_path, "input")), "E0705");
+    // Its quality.multigrid was built in the order this run builds its hierarchy in (mesh-info.md):
+    // the run's cell order on one rank, RCM for inviscid flow on a partition, here reproducibility
+    // "ranks" on one rank. autan-mesh-info's document for the other order is refused (E0705).
+    const std::string order = autan_test::run_cell_order();
+    const auto refused = [](const Outcome& o) {
+      return o.status == ExitStatus::invalid_input && !o.err.empty() &&
+             Json::parse(o.err)["location"]["path"] == "mesh_info.quality.multigrid.order";
+    };
+    const Outcome other_order =
+        run(autan_test::planned(input(), mesh_path, order, order == "rcm" ? "input" : "rcm"));
+    require_error(other_order, "E0705");
+    CHECK(refused(other_order));
+    CHECK(run(input()).status == ExitStatus::finished);
+    // On a partition the hierarchy is RCM's whatever order the run computes in.
+    const auto ranks = [](Json& d) { d["reproducibility"] = "ranks"; };
+    const char* given = std::getenv("AUTAN_CELL_ORDER");
+    const std::optional<std::string> caller =
+        given ? std::optional<std::string>(given) : std::nullopt;
+    for (const std::string computes : {"rcm", "input"}) {
+      REQUIRE(setenv("AUTAN_CELL_ORDER", computes.c_str(), 1) == 0);
+      for (const std::string built : {"rcm", "input"}) {
+        CAPTURE(computes, built);
+        const Json d = autan_test::planned(input(ranks, "hybrid-verification.solver-input.json"),
+                                           mesh_path, computes, built);
+        const Outcome o = run(d);
+        INFO(o.err);
+        if (built == "rcm") {
+          CHECK(o.status == ExitStatus::finished);
+          CHECK(!o.run.empty());
+        } else {
+          require_error(o, "E0705");
+          CHECK(refused(o));
+        }
+      }
+    }
+    if (caller) {
+      REQUIRE(setenv("AUTAN_CELL_ORDER", caller->c_str(), 1) == 0);
+    } else {
+      unsetenv("AUTAN_CELL_ORDER");
+    }
     for (const Json& broken :
          {Json(nullptr), Json::object(), Json{{"schema", "autan.mesh-info/2"}}}) {
       CAPTURE(broken.dump());
@@ -1308,6 +1355,35 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
     Json other_scale = input();
     other_scale["mesh_info"]["quality"]["lines"]["scale"] = 0.0254;
     require_error(run(other_scale), "E0705");
+#ifdef AUTAN_HAVE_METIS
+    // mesh-info.md, partition.groups: a run on several ranks, this steady CPU multigrid on two,
+    // is planned with a partition that keeps its multigrid's finest lines whole; one formed with
+    // the line smoother's lines or none is another run's. Here one process runs it, so the input
+    // that passes this check is refused for its devices.count instead.
+    {
+      const autan::Mesh read = autan::io::read_mesh(mesh_path);
+      using autan::io::RankGroups;
+      for (const auto& [groups, name] :
+           {std::pair{RankGroups::none, "none"}, std::pair{RankGroups::lines, "lines"},
+            std::pair{RankGroups::multigrid, "multigrid"}}) {
+        CAPTURE(name);
+        const auto counts =
+            autan::io::run_counts(read, 1.0, autan::io::CellOrder::rcm,
+                                  autan::io::RanksRequest{.ranks = 2, .groups = groups});
+        Json d = input();
+        d["devices"]["count"] = 2;
+        d["mesh_info"]["partition"] = Json::parse(autan::io::mesh_info_json(
+            read, autan::io::mesh_hash(mesh_path), autan::io::mesh_bytes(mesh_path),
+            autan::io::mesh_logical_bytes(mesh_path), counts))["partition"];
+        REQUIRE(d["mesh_info"]["partition"]["groups"] == name);
+        const Outcome o = run(d);
+        require_error(o, "E0705");
+        const bool groups_refused =
+            Json::parse(o.err)["location"]["path"] == "mesh_info.partition.groups";
+        CHECK(groups_refused == (groups != RankGroups::multigrid));
+      }
+    }
+#endif
     // The whole contract of mesh-info.md, which Results.open checks on the archived document:
     // each of these breaks one of its members or rules.
     const std::vector<std::function<void(Json&)>> breaks{
@@ -1338,6 +1414,7 @@ TEST_CASE("Invalid inputs exit 2 with a coded diagnostic and no directory", "[ru
           auto& edges = m["quality"]["multigrid"]["edges_by_level"][0];
           edges = edges.get<int>() + 1;
         },
+        [](Json& m) { m["quality"]["multigrid"]["order"] = "metis"; },
         [](Json& m) {
           const int cells = m["counts"]["cells"].get<int>();
           m["partition"] = {{"ranks", 2},
@@ -2906,6 +2983,29 @@ TEST_CASE("An equation at round-off from iteration 1 does not hold back converge
   CHECK(Json::parse(read(above.run / "run.json"))["status"] == "completed");
 }
 
+TEST_CASE("A momentum component drops from the largest momentum residual at iteration 1",
+          "[runtime]") {
+  // case-schema.md#time: residuals (e + 1) 0.5^(k-1) drop 8 orders at k = 28. A weakly excited
+  // equation starts at 1e-5 of that law, above the floor 1e-12 x 6, and stops at 1e-12, 7.5
+  // orders below its own first value. A momentum component drops from the largest momentum
+  // residual at iteration 1, momentum-z's 4: the run converges at k = 28 whether momentum-x or
+  // momentum-y is the weak one, as when the mesh axes are permuted; stopping at 5e-8 instead,
+  // above 4e-8, it holds the run back. Energy keeps its own reference: weak, it holds the run back.
+  for (const auto& [equation, stall, converges] :
+       {std::tuple{1, 1e-12, true}, std::tuple{2, 1e-12, true}, std::tuple{1, 5e-8, false},
+        std::tuple{4, 1e-12, false}}) {
+    CAPTURE(equation, stall);
+    autan_test::RelaxationOptions weak;
+    weak.weak_equation = equation;
+    weak.weak_stall = stall;
+    const Outcome o = run(input([](Json& d) { d["time"]["max_iterations"] = 100; }), weak);
+    REQUIRE(o.status == ExitStatus::finished);
+    const Json info = Json::parse(read(o.run / "run.json"));
+    CHECK(info["status"] == (converges ? "converged" : "completed"));
+    CHECK(info["iterations"] == (converges ? 28 : 100));
+  }
+}
+
 TEST_CASE("A continuation keeps the equations that left their floor", "[runtime]") {
   // momentum-x leaves its floor at iterations 10-14, then falls back to round-off or to exactly
   // zero, which its reference then holds (results.md, `start`): woken, it drops from momentum-z's
@@ -3194,6 +3294,17 @@ TEST_CASE("A physics' groups reach it whole on one rank", "[runtime][groups]") {
 #ifdef AUTAN_MPIEXEC
 namespace {
 
+const std::vector<std::string> launcher_flags{AUTAN_MPIEXEC_PREFLAGS};
+
+int usable_cores() {
+#ifdef __linux__
+  cpu_set_t set;
+  CPU_ZERO(&set);
+  if (sched_getaffinity(0, sizeof set, &set) == 0) return CPU_COUNT(&set);
+#endif
+  return static_cast<int>(std::thread::hardware_concurrency());
+}
+
 // The arrays of solution.cgns's WallSolution subregion, by name.
 std::map<std::string, std::vector<double>> wall_solution(const fs::path& file) {
   int fn = 0;
@@ -3357,14 +3468,10 @@ fs::path run_on_ranks(const Json& doc, int ranks, const std::vector<std::string>
   Json with_count = doc;
   if (with_count["devices"]["count"] == 1) with_count["devices"]["count"] = ranks;
   std::ofstream(input_file) << with_count.dump();
-  std::vector<std::string> args{AUTAN_MPIEXEC,
-                                AUTAN_MPIEXEC_NUMPROC_FLAG,
-                                std::to_string(ranks),
-                                AUTAN_RUN_RELAXATION,
-                                "--input",
-                                input_file.string(),
-                                "--runs",
-                                (dir / "runs").string()};
+  std::vector<std::string> args{AUTAN_MPIEXEC, AUTAN_MPIEXEC_NUMPROC_FLAG, std::to_string(ranks)};
+  args.insert(args.end(), launcher_flags.begin(), launcher_flags.end());
+  args.insert(args.end(), {AUTAN_RUN_RELAXATION, "--input", input_file.string(), "--runs",
+                           (dir / "runs").string()});
   args.insert(args.end(), extra_args.begin(), extra_args.end());
   std::vector<char*> argv;
   for (auto& a : args) argv.push_back(a.data());
@@ -3543,6 +3650,37 @@ TEST_CASE("The ranks of a host share its memory", "[runtime][mpi]") {
   REQUIRE(info["diagnostics"].size() == 1);
   CHECK(info["diagnostics"][0]["code"] == "W0712");
   CHECK(info["diagnostics"][0]["data"]["required_bytes"] == ranks * huge);
+}
+
+TEST_CASE(
+    "A run on more ranks than the machine has cores starts through the build's launcher flags",
+    "[runtime][mpi]") {
+  // Open MPI 5 refuses more ranks than slots unless told to oversubscribe; the build's
+  // MPIEXEC_PREFLAGS says it, and the environment must not be what does.
+  if (std::ranges::find(launcher_flags, "--oversubscribe") == launcher_flags.end()) {
+    SKIP("the build's MPIEXEC_PREFLAGS has no --oversubscribe");
+  }
+  const int ranks = usable_cores() + 1;
+  CAPTURE(ranks);
+  if (ranks > autan::io::read_mesh(mesh_path).n_cells()) SKIP("more cores than the mesh has cells");
+  struct Unset {
+    std::vector<std::pair<std::string, std::optional<std::string>>> saved;
+    explicit Unset(std::initializer_list<const char*> names) {
+      for (const char* name : names) {
+        const char* v = std::getenv(name);
+        saved.emplace_back(name, v != nullptr ? std::optional<std::string>(v) : std::nullopt);
+        unsetenv(name);
+      }
+    }
+    ~Unset() {
+      for (const auto& [name, v] : saved) {
+        if (v) setenv(name.c_str(), v->c_str(), 1);
+      }
+    }
+    Unset(const Unset&) = delete;
+    Unset& operator=(const Unset&) = delete;
+  } unset{"PRTE_MCA_rmaps_default_mapping_policy", "OMPI_MCA_rmaps_base_oversubscribe"};
+  CHECK_FALSE(run_on_ranks(input(), ranks, {}).empty());
 }
 
 TEST_CASE("Several ranks give the bits of one", "[runtime][mpi][gpu]") {

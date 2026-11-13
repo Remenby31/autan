@@ -3,6 +3,8 @@ add_library(
   autan_solvers
   src/agglomeration.cpp
   src/dense.cpp
+  src/distributed_multigrid.cpp
+  src/distributed_operator.cpp
   src/gcr.cpp
   src/line_smoother.cpp
   src/multigrid.cpp
@@ -14,7 +16,11 @@ target_include_directories(
   autan_solvers
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
-target_link_libraries(autan_solvers PUBLIC autan::core PRIVATE autan_compile_options)
+target_link_libraries(
+  autan_solvers
+  PUBLIC autan::core autan::partition
+  PRIVATE autan::picosha2 autan_compile_options
+)
 set_target_properties(autan_solvers PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # The multigrid's device kernels (docs/design/multigrid-gpu.md). nvcc does not take the host

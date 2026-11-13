@@ -6,7 +6,7 @@
 autan run CASE --mesh-info MESHINFO [--backend fake|cpu|cuda|hip] [--device-count N] [--runs DIR] [--json]
 ```
 
-In Python: `case.run(mesh_info, backend=..., runs="runs")`, which returns `autan.Results`.
+In Python: `case.run(mesh_info, backend=..., runs="runs")`, which returns `autan.Results` ([its arrays](results.md)).
 
 ## Solver backend
 

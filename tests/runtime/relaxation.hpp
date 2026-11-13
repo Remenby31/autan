@@ -110,6 +110,11 @@ struct RelaxationOptions {
   std::int64_t wake_at = 0;
   std::int64_t sleep_at = 0;  ///< 0: never; from then on, back at silent_residual
   double awake_value = 1e-3;
+  /// An equation the flow excites weakly: its residual is `weak_scale` times the others' law and
+  /// stops decreasing at `weak_stall`; -1: none.
+  std::int64_t weak_equation = -1;
+  double weak_scale = 1e-5;
+  double weak_stall = 1e-12;
   std::vector<double> scales{};  ///< residual_scales(); empty: none
   /// Equation e's residual stops decreasing at (e + 1) times this value; 0: never.
   double plateau = 0.0;
@@ -307,6 +312,10 @@ class Relaxation final : public autan::runtime::Physics {
                                  std::max(r * rms_ * smoothed, options_.plateau));
     }
     report.provisional = iteration < options_.provisional_until;
+    if (options_.weak_equation >= 0) {
+      auto& weak = report.residuals[static_cast<std::size_t>(options_.weak_equation)];
+      weak = std::max(options_.weak_scale * weak, options_.weak_stall);
+    }
     if (options_.silent_equation >= 0) {
       const bool awake = options_.wake_at > 0 && iteration >= options_.wake_at &&
                          (options_.sleep_at == 0 || iteration < options_.sleep_at);
@@ -708,12 +717,14 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
   auto asked = std::make_shared<int>(0);
   autan::runtime::PartitionGroups groups;
   if (options.groups == -1) {
-    groups = [](const autan::runtime::SolverInput&, const autan::Mesh&, const autan::Geometry&) {
-      return autan::runtime::CellGroups{.offsets = {0, 2}, .cells = {0, 0}};
+    groups = [](const autan::runtime::SolverInput&, const autan::Mesh&, const autan::Geometry&,
+                int) {
+      return autan::runtime::CellGroups{.offsets = {0, 2}, .cells = {0, 0}, .setup = nullptr};
     };
   }
   if (options.groups == -2) {
-    groups = [](const autan::runtime::SolverInput&, const autan::Mesh&, const autan::Geometry&) {
+    groups = [](const autan::runtime::SolverInput&, const autan::Mesh&, const autan::Geometry&,
+                int) {
       const char* rank = launcher_rank();
       if (rank == nullptr) throw std::runtime_error("no launcher rank");
       if (std::string(rank) == "1")
@@ -724,7 +735,7 @@ inline autan::runtime::PhysicsRegistry relaxation_registry(RelaxationOptions opt
   if (options.groups > 0) {
     groups = [n = options.groups, group_sizes, asked](const autan::runtime::SolverInput&,
                                                       const autan::Mesh& mesh,
-                                                      const autan::Geometry&) {
+                                                      const autan::Geometry&, int) {
       ++*asked;
       autan::runtime::CellGroups g;
       g.offsets.push_back(0);

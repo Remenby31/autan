@@ -3,12 +3,14 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <map>
 #include <numbers>
+#include <numeric>
 #include <random>
 #include <set>
 #include <span>
@@ -904,6 +906,120 @@ TEMPLATE_TEST_CASE("the limited residual is that of the generated loops run one 
   ek::cpu::roe_faces(d);
   ek::cpu::roe_boundaries(d);
   CHECK(std::memcmp(r.data(), ref.data(), r.size() * sizeof(r[0])) == 0);
+}
+
+TEMPLATE_TEST_CASE("the face part of the residual and the face fluxes do not depend on the source",
+                   "[euler]", autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // The conservation check's face sums (docs/design/euler.md, Conservation check): on one state,
+  // a zero and a constant non-zero source in every equation give the same bits, through the
+  // residual's loops and the steady step's fused Jacobian loops alike, and every face's flux is
+  // written.
+  using P = TestType;
+  using R = typename P::residual;
+  const char* file = GENERATE(from_range(meshes));
+  const Flux flux = GENERATE(Flux::roe, Flux::hllc, Flux::ausm_up);
+  const bool jacobian = GENERATE(false, true);
+  INFO(file << " flux " << static_cast<int>(flux) << " jacobian " << jacobian);
+  const Case c(file);
+  const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
+  const auto nc = static_cast<std::size_t>(c.mesh.n_cells());
+  const auto nf = static_cast<std::size_t>(c.mesh.n_faces());
+  const Prim w{1.2, {100.0, 30.0, 10.0}, 1e5};
+  std::vector<BoundaryKind> kind(nb, BoundaryKind::farfield);
+  std::vector<double> data(5 * nb);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const std::array<double, 5> v = {w.rho, w.v[0], w.v[1], w.v[2], w.p};
+    for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = v[j];
+  }
+  std::vector<double> u(5 * nc), zero(5 * nc, 0.0), source(5 * nc);
+  for (std::size_t i = 0; i < nc; ++i) {
+    const double f = c.geometry.cell_centroid_x[i] < 0.5 ? 2.0 : 1.0;
+    const auto q = conserved({f * w.rho, w.v, f * w.p});
+    for (std::size_t k = 0; k < 5; ++k) {
+      u[k * nc + i] = q[k];
+      source[k * nc + i] = 0.25 * static_cast<double>(k + 1);
+    }
+  }
+  Euler<P> e(c.mesh, c.geometry, air, second_order(flux, 0.3));
+  e.set_boundary(kind, data);
+  e.set_planar(e.all_planar());
+  const auto s = stored(e, u);
+  std::vector<R> faces0(5 * nc), fluxes0(5 * nf, R(0)), faces1(5 * nc), fluxes1(5 * nf, R(7));
+  e.face_parts(s, faces0, fluxes0, jacobian);
+  e.set_source(source);
+  e.face_parts(s, faces1, fluxes1, jacobian);
+  CHECK(std::memcmp(faces0.data(), faces1.data(), faces0.size() * sizeof(R)) == 0);
+  CHECK(std::memcmp(fluxes0.data(), fluxes1.data(), fluxes0.size() * sizeof(R)) == 0);
+  std::vector<R> with(5 * nc), without(5 * nc);
+  e.residual(s, with);
+  e.set_source(zero);
+  e.residual(s, without);
+  CHECK(with != without);
+}
+
+TEMPLATE_TEST_CASE("a cell's face part sums the fluxes its faces are written with", "[euler]",
+                   autan::kernels::fp64, autan::kernels::fp32_acc64) {
+  // Under global keys every cell evaluates its own faces (the gather strategies), so an interior
+  // face is evaluated once from each cell. Each cell's face part must be, bit for bit, the sum of
+  // the write-only loops' fluxes in the cell's global face order, interior faces first, signed by
+  // the cell's side, as the gather adds them. A sum can hide compensating differences: this
+  // checks the cells' sums, not each evaluation.
+  using P = TestType;
+  using R = typename P::residual;
+  const char* file = GENERATE(from_range(meshes));
+  const Flux flux = GENERATE(Flux::roe, Flux::hllc, Flux::ausm_up);
+  const bool jacobian = GENERATE(false, true);
+  INFO(file << " flux " << static_cast<int>(flux) << " jacobian " << jacobian);
+  const Case c(file);
+  const auto ni = static_cast<std::size_t>(c.mesh.n_interior_faces());
+  const auto nb = static_cast<std::size_t>(c.mesh.n_boundary_faces());
+  const auto nc = static_cast<std::size_t>(c.mesh.n_cells());
+  const auto nf = ni + nb;
+  std::vector<std::int64_t> face_id(nf);
+  std::iota(face_id.begin(), face_id.end(), std::int64_t{0});
+  const std::vector<std::uint8_t> not_reversed(nf, 0);
+  const autan::kernels::GlobalKeys keys{
+      .cell = c.mesh.cell_global_id(), .face = face_id, .reversed = not_reversed, .shift = {}};
+  const Prim w{1.2, {100.0, 30.0, 10.0}, 1e5};
+  std::vector<BoundaryKind> kind(nb, BoundaryKind::farfield);
+  std::vector<double> data(5 * nb);
+  for (std::size_t b = 0; b < nb; ++b) {
+    const std::array<double, 5> v = {w.rho, w.v[0], w.v[1], w.v[2], w.p};
+    for (std::size_t j = 0; j < 5; ++j) data[j * nb + b] = v[j];
+  }
+  std::vector<double> u(5 * nc);
+  for (std::size_t i = 0; i < nc; ++i) {
+    const double x = c.geometry.cell_centroid_x[i], y = c.geometry.cell_centroid_y[i];
+    const auto q = conserved(
+        {w.rho * (1.0 + 0.3 * x), {w.v[0], w.v[1] * (1.0 - y), w.v[2]}, w.p * (1.0 + 0.2 * x * y)});
+    for (std::size_t k = 0; k < 5; ++k) u[k * nc + i] = q[k];
+  }
+  Euler<P> e(c.mesh, c.geometry, air, second_order(flux, 0.3), &keys);
+  e.set_boundary(kind, data);
+  e.set_planar(e.all_planar());
+  const auto s = stored(e, u);
+  std::vector<R> faces(5 * nc), fluxes(5 * nf);
+  e.face_parts(s, faces, fluxes, jacobian);
+  const auto order = autan::kernels::global_order(c.mesh, keys);
+  const auto offsets = c.mesh.cell_face_offsets();
+  const auto owner = c.mesh.owner();
+  std::vector<R> expected(5 * nc);
+  for (std::size_t i = 0; i < nc; ++i) {
+    for (std::size_t k = 0; k < 5; ++k) {
+      R interior = 0, boundary = 0;
+      for (auto j = offsets[i]; j < offsets[i + 1]; ++j) {
+        const auto f = static_cast<std::size_t>(order.cell_faces[static_cast<std::size_t>(j)]);
+        const R value = fluxes[k * nf + f];
+        if (f < ni) {
+          interior += static_cast<std::size_t>(owner[f]) == i ? value : -value;
+        } else {
+          boundary += value;
+        }
+      }
+      expected[k * nc + i] = (R(0) + interior) + boundary;
+    }
+  }
+  CHECK(std::memcmp(expected.data(), faces.data(), faces.size() * sizeof(R)) == 0);
 }
 
 namespace {

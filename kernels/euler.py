@@ -1056,6 +1056,34 @@ ausm_boundaries_jacobian = boundary_loop(
     ausm_boundary, **BOUNDARY_ARGS, minf=mach_ref, out=BOUNDARY_JAC
 )
 
+# The flux of every owned interior face, in its global orientation, and of every boundary face,
+# from the bodies of the residual's face loops: the conservation check (docs/design/euler.md,
+# Conservation check) reads them apart from the residual.
+face_flux = faces.field("face_flux", Residual.Vec5)
+FLUX = Write(face_flux)
+roe_face_fluxes = face_loop(roe_face, **FACE_ARGS, out=FLUX, frozen=True)
+hllc_face_fluxes = face_loop(hllc_face, **FACE_ARGS, out=FLUX, frozen=True)
+ausm_face_fluxes = face_loop(ausm_face, **FACE_ARGS, minf=mach_ref, out=FLUX, frozen=True)
+roe_face_fluxes_planar = face_loop(roe_face_planar, **PLANAR_FACE_ARGS, out=FLUX, frozen=True)
+hllc_face_fluxes_planar = face_loop(hllc_face_planar, **PLANAR_FACE_ARGS, out=FLUX, frozen=True)
+ausm_face_fluxes_planar = face_loop(
+    ausm_face_planar, **PLANAR_FACE_ARGS, minf=mach_ref, out=FLUX, frozen=True
+)
+roe_boundary_fluxes = boundary_loop(roe_boundary, **BOUNDARY_ARGS, out=FLUX, frozen=True)
+hllc_boundary_fluxes = boundary_loop(hllc_boundary, **BOUNDARY_ARGS, out=FLUX, frozen=True)
+ausm_boundary_fluxes = boundary_loop(
+    ausm_boundary, **BOUNDARY_ARGS, minf=mach_ref, out=FLUX, frozen=True
+)
+roe_boundary_fluxes_planar = boundary_loop(
+    roe_boundary_planar, **PLANAR_BOUNDARY_ARGS, out=FLUX, frozen=True
+)
+hllc_boundary_fluxes_planar = boundary_loop(
+    hllc_boundary_planar, **PLANAR_BOUNDARY_ARGS, out=FLUX, frozen=True
+)
+ausm_boundary_fluxes_planar = boundary_loop(
+    ausm_boundary_planar, **PLANAR_BOUNDARY_ARGS, minf=mach_ref, out=FLUX, frozen=True
+)
+
 
 lam = cells.field("lam", State)
 
