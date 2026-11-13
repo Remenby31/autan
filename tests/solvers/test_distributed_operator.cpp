@@ -4,14 +4,17 @@
 #include <barrier>
 #include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <limits>
 #include <map>
+#include <optional>
 #include <random>
 #include <span>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -69,10 +72,19 @@ Data make_data(const std::vector<Level>& levels) {
   return d;
 }
 
+// A ghost node's diagonal block as one part holds it.
+struct GhostBlock {
+  std::size_t level, node;
+  std::array<double, 25> block;
+};
+
 // What every part computes, gathered by global id: each level's blocks (owned nodes, owned
-// edges), A x, the restriction of r and the prolongation of xc.
+// edges), A x, the restriction of r and the prolongation of xc; the part that owns each node;
+// the diagonal blocks of the ghosts.
 struct Result {
   std::vector<std::vector<double>> diag, upper, lower, y, coarse, e;
+  std::vector<std::vector<std::int32_t>> owner;
+  std::vector<GhostBlock> ghost_diag;
   std::size_t reversed = 0;  // local edges whose local orientation runs against the level's
 };
 
@@ -87,7 +99,9 @@ Result run(const std::vector<Level>& levels, const Data& d, const std::vector<st
     out.y.emplace_back(5 * l.n_nodes, std::numeric_limits<double>::quiet_NaN());
     out.coarse.emplace_back(5 * l.n_nodes, std::numeric_limits<double>::quiet_NaN());
     out.e.emplace_back(5 * l.n_nodes, std::numeric_limits<double>::quiet_NaN());
+    out.owner.emplace_back(l.n_nodes, -1);
   }
+  std::vector<std::vector<GhostBlock>> ghosts(at(n_parts));
   autan::test::Hub hub(n_parts);
   std::vector<std::exception_ptr> failed(at(n_parts));
   std::vector<std::size_t> reversed(at(n_parts), 0);
@@ -114,6 +128,12 @@ Result run(const std::vector<Level>& levels, const Data& d, const std::vector<st
         for (std::size_t i = 0; i < g.n_owned; ++i) {
           const auto v = at(g.node_source[i]);
           std::copy_n(&op.diagonal(l)[25 * i], 25, &out.diag[l][25 * v]);
+          out.owner[l][v] = rank;
+        }
+        for (std::size_t i = g.n_owned; i < n; ++i) {
+          GhostBlock b{.level = l, .node = at(g.node_source[i]), .block = {}};
+          std::copy_n(&op.diagonal(l)[25 * i], 25, b.block.begin());
+          ghosts[at(rank)].push_back(b);
         }
         for (std::size_t k = 0; k < g.n_owned_edges; ++k) {
           const auto e = at(g.edge_global_id[k]);
@@ -130,7 +150,8 @@ Result run(const std::vector<Level>& levels, const Data& d, const std::vector<st
           return v;
         };
         auto x = local(d.x[l]);
-        std::vector<double> y(5 * n);
+        // Outputs start as NaN, so an entry left unwritten or accumulated into shows.
+        std::vector<double> y(5 * n, std::numeric_limits<double>::quiet_NaN());
         op.multiply(l, x, y);
         for (std::size_t i = 0; i < g.n_owned; ++i) {
           for (std::size_t c = 0; c < 5; ++c)
@@ -140,7 +161,7 @@ Result run(const std::vector<Level>& levels, const Data& d, const std::vector<st
         const autan::LocalGraph& gc = op.graph(l + 1);
         const std::size_t nc = op.n_local(l + 1), nglob = levels[l + 1].n_nodes;
         auto r = local(d.r[l]);
-        std::vector<double> coarse(5 * nc);
+        std::vector<double> coarse(5 * nc, std::numeric_limits<double>::quiet_NaN());
         op.restrict_to(l, r, coarse);
         std::vector<double> xc(5 * nc, std::numeric_limits<double>::quiet_NaN());
         for (std::size_t k = 0; k < gc.n_owned; ++k) {
@@ -150,7 +171,7 @@ Result run(const std::vector<Level>& levels, const Data& d, const std::vector<st
             xc[c * nc + k] = d.xc[l + 1][c * nglob + v];
           }
         }
-        std::vector<double> e(5 * n);
+        std::vector<double> e(5 * n, std::numeric_limits<double>::quiet_NaN());
         op.prolong_from(l, xc, e);
         for (std::size_t i = 0; i < g.n_owned; ++i) {
           for (std::size_t c = 0; c < 5; ++c)
@@ -170,6 +191,8 @@ Result run(const std::vector<Level>& levels, const Data& d, const std::vector<st
     if (f) std::rethrow_exception(f);
   }
   for (const std::size_t k : reversed) out.reversed += k;
+  for (const auto& blocks : ghosts)
+    out.ghost_diag.insert(out.ghost_diag.end(), blocks.begin(), blocks.end());
   return out;
 }
 
@@ -264,9 +287,10 @@ void check_definitions(const std::vector<Level>& levels, const Data& d, const Re
   }
 }
 
-void check_parts(const autan::Mesh& mesh, const autan::Geometry& g,
+// Returns whether a level-1 line of at least two nodes exercised level_parts' line rule.
+bool check_parts(const autan::Mesh& mesh, const autan::Geometry& g,
                  const autan::solvers::MultigridOptions& options,
-                 const std::vector<std::vector<std::int32_t>>& cuts) {
+                 std::vector<std::vector<std::int32_t>> cuts) {
   autan::solvers::Multigrid host(mesh, g, options);
   const std::vector<Level>& levels = host.levels();
   const Data d = make_data(levels);
@@ -284,12 +308,83 @@ void check_parts(const autan::Mesh& mesh, const autan::Geometry& g,
     CHECK(span_bits(host.upper(l), one.upper[l]));
     CHECK(span_bits(host.lower(l), one.lower[l]));
   }
-  std::size_t reversed = 0;
-  for (const auto& parts : cuts) {
+  // A cut through a level-1 line of at least two nodes: the children of one of its nodes on part
+  // 1, every other cell on part 0. That node is not the parent of the line's least child (the
+  // least fine id), so level_parts gives the whole line to part 0 (partition.hpp, level_parts),
+  // and the node moved holds none of its children there; coarse_parts alone splits the line.
+  const Level& fine = levels[0];
+  std::optional<std::pair<std::size_t, std::size_t>> line_cut;  // the line, the node moved
+  if (levels.size() > 1) {
+    const Level& c = levels[1];
+    for (std::size_t k = 0; k < c.n_lines() && !line_cut; ++k) {
+      const auto begin = at(c.line_offsets[k]), end = at(c.line_offsets[k + 1]);
+      if (end - begin < 2) continue;
+      std::vector<std::uint8_t> on_line(c.n_nodes, 0);
+      for (std::size_t j = begin; j < end; ++j) on_line[at(c.line_nodes[j])] = 1;
+      std::size_t least = c.n_nodes;
+      for (std::size_t i = 0; i < fine.n_nodes && least == c.n_nodes; ++i) {
+        if (on_line[at(fine.coarse_node[i])] != 0) least = at(fine.coarse_node[i]);
+      }
+      const std::size_t first = at(c.line_nodes[begin]);
+      const std::size_t moved = first == least ? at(c.line_nodes[begin + 1]) : first;
+      std::vector<std::int32_t> cut(fine.n_nodes, 0);
+      for (std::size_t i = 0; i < fine.n_nodes; ++i) {
+        if (at(fine.coarse_node[i]) == moved) cut[i] = 1;
+      }
+      cuts.push_back(cut);
+      line_cut = std::pair{k, moved};
+    }
+  }
+  std::size_t reversed = 0, ghost_blocks = 0;
+  for (std::size_t q = 0; q < cuts.size(); ++q) {
+    const auto& parts = cuts[q];
+    const bool constructed = line_cut && q + 1 == cuts.size();
+    std::size_t split_by_coarse_parts = 0, no_local_child = 0;
     const std::int32_t n_parts = *std::ranges::max_element(parts) + 1;
     CAPTURE(n_parts);
     const Result many = run(levels, d, parts, n_parts);
     reversed += many.reversed;
+    // DistributedOperator::diagonal: ghosts filled, with the owner's block.
+    for (const GhostBlock& b : many.ghost_diag) {
+      CAPTURE(b.level, b.node);
+      CHECK(
+          same_bits(std::vector<double>(b.block.begin(), b.block.end()),
+                    std::vector<double>(
+                        one.diag[b.level].begin() + 25 * static_cast<std::ptrdiff_t>(b.node),
+                        one.diag[b.level].begin() + 25 * static_cast<std::ptrdiff_t>(b.node + 1))));
+    }
+    ghost_blocks += many.ghost_diag.size();
+    // partitioning.md, level_parts: every line of a coarse level lies on one part. The same parts
+    // taken by coarse_parts alone (each node to its least child's part) split some lines.
+    std::vector<std::int32_t> finer = parts;
+    for (std::size_t l = 1; l < levels.size(); ++l) {
+      CAPTURE(l);
+      const Level& c = levels[l];
+      std::vector<std::int64_t> ids(levels[l - 1].n_nodes);
+      for (std::size_t i = 0; i < ids.size(); ++i) ids[i] = static_cast<std::int64_t>(i);
+      const auto alone = autan::coarse_parts(finer, levels[l - 1].coarse_node, ids, c.n_nodes);
+      for (std::size_t k = 0; k < c.n_lines(); ++k) {
+        const auto begin = at(c.line_offsets[k]), end = at(c.line_offsets[k + 1]);
+        if (end - begin < 2) continue;
+        bool one_part = true, split = false;
+        for (std::size_t j = begin + 1; j < end; ++j) {
+          one_part = one_part &&
+                     many.owner[l][at(c.line_nodes[j])] == many.owner[l][at(c.line_nodes[begin])];
+          split = split || alone[at(c.line_nodes[j])] != alone[at(c.line_nodes[begin])];
+        }
+        CHECK(one_part);
+        if (split) ++split_by_coarse_parts;
+      }
+      // A node the line moved to a part that holds none of its children: its restriction and
+      // prolongation go through remote children and parent imports only.
+      std::vector<std::uint8_t> local_child(c.n_nodes, 0);
+      for (std::size_t i = 0; i < levels[l - 1].n_nodes; ++i) {
+        const auto v = at(levels[l - 1].coarse_node[i]);
+        if (finer[i] == many.owner[l][v]) local_child[v] = 1;
+      }
+      no_local_child += static_cast<std::size_t>(std::ranges::count(local_child, 0));
+      finer = many.owner[l];
+    }
     for (std::size_t l = 0; l < levels.size(); ++l) {
       CAPTURE(l);
       CHECK(same_bits(many.diag[l], one.diag[l]));
@@ -299,10 +394,20 @@ void check_parts(const autan::Mesh& mesh, const autan::Geometry& g,
       if (l > 0) CHECK(same_bits(many.coarse[l], one.coarse[l]));
       if (l + 1 < levels.size()) CHECK(same_bits(many.e[l], one.e[l]));
     }
+    if (constructed) {
+      const Level& c = levels[1];
+      for (auto j = at(c.line_offsets[line_cut->first]);
+           j < at(c.line_offsets[line_cut->first + 1]); ++j)
+        CHECK(many.owner[1][at(c.line_nodes[j])] == 0);
+      CHECK(split_by_coarse_parts > 0);
+      CHECK(no_local_child > 0);
+    }
   }
   // Some local edges run against their level's orientation, so the global orientation of the
-  // blocks is exercised.
+  // blocks is exercised; some ghosts hold diagonal blocks.
   CHECK(reversed > 0);
+  CHECK(ghost_blocks > 0);
+  return line_cut.has_value();
 }
 
 std::vector<std::vector<std::int32_t>> slabs(const autan::Geometry& g, std::size_t n_cells) {
@@ -341,5 +446,9 @@ TEST_CASE(
   autan::solvers::MultigridOptions options;
   options.agglomeration.coarsest_nodes = 4;
   REQUIRE(autan::solvers::agglomerate(mesh, g, options.agglomeration).size() >= 2);
-  check_parts(mesh, g, options, slabs(g, static_cast<std::size_t>(mesh.n_cells())));
+  const bool line_rule =
+      check_parts(mesh, g, options, slabs(g, static_cast<std::size_t>(mesh.n_cells())));
+  // The polyhedral mesh has lines on level 1, so the line rule is never left untested; the others
+  // may have none (the uniform hex mesh's couplings are equal).
+  if (std::string_view(file) == "poly/polyMesh") REQUIRE(line_rule);
 }
