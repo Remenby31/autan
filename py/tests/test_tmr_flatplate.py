@@ -26,17 +26,27 @@ def test_flat_plate_script_defines_the_tmr_case() -> None:
         "top": "farfield",
     }
     assert "temperature" not in conditions["plate"]
-    assert document["physics"]["turbulence"]["model"] == "sa"
-    assert document["freestream"]["mach"] == 0.2
+    physics = document["physics"]
+    assert (physics["kind"], physics["precision"]) == ("compressible", "fp64")
+    assert physics["turbulence"] == {"model": "sa", "nu_tilde_ratio": 3.0}
+    gas = physics["gas"]
+    assert gas["gamma"] == 1.4
+    assert gas["prandtl"] == 0.72
+    assert Quantity(gas["molar_mass"]).to("kg/mol").magnitude == pytest.approx(0.0289647)
+    freestream = document["freestream"]
+    assert freestream["mach"] == 0.2
+    assert freestream["re"] == 5.0e6
+    assert Quantity(freestream["ref_length"]).to("m").magnitude == 1.0
+    assert Quantity(freestream["aoa"]).to("deg").magnitude == 0.0
+    assert (document["time"]["kind"], document["time"]["max_iterations"]) == ("steady", 20000)
+    assert document["time"]["residual_orders"] == 10.0
     assert Quantity(document["freestream"]["temperature"]).to("K").magnitude == 300.0
 
-    # The outflow static pressure gives Re = rho V / mu = 5e6 per metre (Sutherland's law).
     p = Quantity(conditions["outflow"]["static_pressure"]).to("Pa").magnitude
     mu = 1.716e-5 * (300.0 / 273.15) ** 1.5 * (273.15 + 110.4) / (300.0 + 110.4)
     speed = 0.2 * math.sqrt(GAMMA * GAS_CONSTANT * 300.0)
     assert p / (GAS_CONSTANT * 300.0) * speed / mu == pytest.approx(5.0e6, rel=1e-9)
 
-    # Isentropic totals of a Mach 0.2 stream.
     ratio = 1.0 + 0.5 * (GAMMA - 1.0) * 0.2**2
     total_pressure = Quantity(conditions["inflow"]["total_pressure"]).to("Pa").magnitude
     total_temperature = Quantity(conditions["inflow"]["total_temperature"]).to("K").magnitude
@@ -44,5 +54,10 @@ def test_flat_plate_script_defines_the_tmr_case() -> None:
     assert total_temperature == pytest.approx(300.0 * ratio, rel=1e-9)
 
     (monitor,) = document["monitors"]
-    assert monitor["surfaces"] == "plate"
+    assert (monitor["kind"], monitor["name"], monitor["surfaces"], monitor["every"]) == (
+        "forces",
+        "wall",
+        "plate",
+        1,
+    )
     assert Quantity(monitor["ref_area"]).to("m**2").magnitude == pytest.approx(2.0)

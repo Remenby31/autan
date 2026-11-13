@@ -11,8 +11,7 @@ TEMPERATURE = 300.0
 PLATE_LENGTH = 2.0
 SPAN = 1.0
 
-# Static pressure that gives Re per metre at M and T (Sutherland air, ideal gas), then the totals
-# of the isentropic relations: inflow p0, T0; outflow p_inf.
+# p_inf = Re' mu R T / V; p0 = p_inf r^(g/(g-1)), T0 = T r with r = 1 + (g-1) M^2 / 2.
 gas = autan.gases.AIR
 R = 8.314462618 / gas.molar_mass.to("kg/mol").magnitude
 gamma = gas.gamma
