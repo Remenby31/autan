@@ -1174,6 +1174,34 @@ TEST_CASE("the line smoother sweeps the same lines whatever the flow model", "[n
   CHECK(colours(false) == colours(true));
 }
 
+TEST_CASE("SA sweeps in cell order on one rank without keys and by colour under keys",
+          "[navier-stokes]") {
+  // One rank without global keys sweeps SA's system cell by cell, whose four pairs reduce its
+  // residual more than the colours' on the TMR flat plate (#699); under keys, on a partition or on
+  // several ranks, by the runtime's colours, the same sweeps on any number of ranks. Gauss-Seidel
+  // for the flow: "ranks" refuses the multigrid (E1109).
+  auto order = [](const char* reproducibility) {
+    const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
+      d["reproducibility"] = reproducibility;
+      d["time"]["linear_solver"] = "gauss-seidel";
+      d["time"]["max_iterations"] = 1;
+    });
+    const auto out = run(doc);
+    INFO(out.err);
+    REQUIRE(out.status == ExitStatus::finished);
+    Json sweeps;
+    std::ifstream log_in(out.run / "log.jsonl");
+    for (std::string line; std::getline(log_in, line);) {
+      const Json event = Json::parse(line);
+      if (event["source"] == "linear" && event["data"].contains("sa_order")) sweeps = event["data"];
+    }
+    REQUIRE(sweeps.is_object());
+    return sweeps["sa_order"].get<std::string>();
+  };
+  CHECK(order("run") == "cell");
+  CHECK(order("ranks") == "colour");
+}
+
 TEST_CASE("a continued run reproduces the uninterrupted one bit for bit", "[euler]") {
   const char* precision = GENERATE("fp64", "fp32+acc64");
   const bool steady = GENERATE(true, false);
@@ -1746,6 +1774,40 @@ TEST_CASE("cases outside the Euler physics are refused before any directory exis
 #ifdef AUTAN_MPIEXEC
 namespace {
 
+// The arrays of the zone's SolverState (results.md, solution.cgns), keyed by name; empty when the
+// run writes none.
+std::map<std::string, std::vector<double>> solver_state(const fs::path& run) {
+  std::map<std::string, std::vector<double>> out;
+  int fn = 0;
+  REQUIRE(cg_open((run / "solution.cgns").string().c_str(), CG_MODE_READ, &fn) == CG_OK);
+  int user = 0;
+  REQUIRE(cg_goto(fn, 1, "Zone_t", 1, "end") == CG_OK);
+  REQUIRE(cg_nuser_data(&user) == CG_OK);
+  for (int u = 1; u <= user; ++u) {
+    char name[33];
+    REQUIRE(cg_goto(fn, 1, "Zone_t", 1, "end") == CG_OK);
+    REQUIRE(cg_user_data_read(u, name) == CG_OK);
+    if (std::string_view(name) != "SolverState") continue;
+    REQUIRE(cg_goto(fn, 1, "Zone_t", 1, "UserDefinedData_t", u, "end") == CG_OK);
+    int arrays = 0;
+    REQUIRE(cg_narrays(&arrays) == CG_OK);
+    for (int a = 1; a <= arrays; ++a) {
+      char array_name[33];
+      CGNS_ENUMT(DataType_t) type{};
+      int dims = 0;
+      cgsize_t extent[12] = {};
+      REQUIRE(cg_array_info(a, array_name, &type, &dims, extent) == CG_OK);
+      REQUIRE(type == CGNS_ENUMV(RealDouble));
+      REQUIRE(dims == 1);
+      std::vector<double> values(static_cast<std::size_t>(extent[0]));
+      REQUIRE(cg_array_read_as(a, CGNS_ENUMV(RealDouble), values.data()) == CG_OK);
+      out[array_name] = std::move(values);
+    }
+  }
+  cg_close(fn);
+  return out;
+}
+
 // Two runs of reproducibility "ranks" on different rank counts: the same history text and the
 // same bit patterns in every field (a signed zero or a NaN cannot pass for an equal value).
 void check_bit_for_bit(const fs::path& one, const fs::path& many) {
@@ -2075,16 +2137,16 @@ TEST_CASE("Navier-Stokes at ghost depth 3 repeats bit for bit at a fixed rank co
 
 TEST_CASE("Navier-Stokes under reproducibility ranks gives the bits of the pinned reference",
           "[navier-stokes][mpi][.b3]") {
-  // #651, G-fit v2 B3, hidden: run by hand with AUTAN_REFERENCE_RUN, the autan-run of 0a77fb9f
-  // (#648, vertex4 ghosts under "ranks"), built on the same host. #648's steady cases under
-  // "ranks" on 2 and 4 ranks give through this build the history and every array of the
-  // reference's run of the same input, bit for bit, in fp64: the fp32+acc64 first-order start
-  // ends on the level rule since (#611), which the reference does not have.
+  // #651, G-fit v2 B3, hidden: run by hand with AUTAN_REFERENCE_RUN, the autan-run of bb29a84a
+  // (#652, the first commit of main whose fp32+acc64 first-order start ends on the level rule),
+  // built on the same host with the same configuration. #648's steady cases under "ranks" on 2 and
+  // 4 ranks give through this build the history and every array of the reference's run of the same
+  // input, bit for bit, the SolverState the level rule writes included (#702).
   const char* reference = std::getenv("AUTAN_REFERENCE_RUN");
   if (reference == nullptr) SKIP("AUTAN_REFERENCE_RUN names the reference autan-run");
   const char* model = GENERATE("laminar", "sa");
   const char* linear = GENERATE("gauss-seidel", "lines");
-  const char* precision = "fp64";
+  const char* precision = GENERATE("fp64", "fp32+acc64");
   const int ranks = GENERATE(2, 4);
   INFO(model << " " << linear << " " << precision << " on " << ranks << " ranks");
   const auto doc = input("hybrid.solver-input.json", [&](Json& d) {
@@ -2104,16 +2166,15 @@ TEST_CASE("Navier-Stokes under reproducibility ranks gives the bits of the pinne
   const fs::path ours = run_on_ranks(doc, ranks, 0, &err);
   INFO(err);
   REQUIRE(!ours.empty());
-  // The reference reads the input of its own version: time.start_order came after it, and
-  // "first", the default, is the only start it has; so did the MeshInfo's multigrid order.
-  Json older = doc;
-  REQUIRE(older["time"]["start_order"] == "first");
-  older["time"].erase("start_order");
-  if (older.contains("mesh_info") && older["mesh_info"]["quality"].contains("multigrid")) {
-    older["mesh_info"]["quality"]["multigrid"].erase("order");
-  }
-  const fs::path theirs = run_on_ranks(older, ranks, 0, &err, reference);
+  const fs::path theirs = run_on_ranks(doc, ranks, 0, &err, reference);
   REQUIRE(!theirs.empty());
+  // Both runs went past the second-order switch, by at least the 10 steps past_switch gives.
+  for (const fs::path& run : {ours, theirs}) {
+    REQUIRE(field(run, "SolverSecondOrder", "RestartState").front() == 1.0);
+    const auto steps = history(run);
+    REQUIRE(std::ranges::count_if(steps, [](const Json& e) { return e["provisional"] == false; }) >=
+            10);
+  }
   CHECK(read(ours / "history.jsonl") == read(theirs / "history.jsonl"));
   const auto a = data_arrays(theirs), b = data_arrays(ours);
   REQUIRE(a.contains("RestartState/SolverSecondOrder"));
@@ -2122,6 +2183,16 @@ TEST_CASE("Navier-Stokes under reproducibility ranks gives the bits of the pinne
     INFO(name);
     REQUIRE(b.contains(name));
     const auto& other = b.at(name);
+    REQUIRE(values.size() == other.size());
+    CHECK(std::memcmp(values.data(), other.data(), values.size() * sizeof(double)) == 0);
+  }
+  const auto sa = solver_state(theirs), sb = solver_state(ours);
+  if (std::string_view(precision) != "fp64") REQUIRE(sa.contains("SolverStartWindow"));
+  CHECK(sa.size() == sb.size());
+  for (const auto& [name, values] : sa) {
+    INFO("SolverState/" << name);
+    REQUIRE(sb.contains(name));
+    const auto& other = sb.at(name);
     REQUIRE(values.size() == other.size());
     CHECK(std::memcmp(values.data(), other.data(), values.size() * sizeof(double)) == 0);
   }
@@ -2189,13 +2260,17 @@ TEST_CASE("Spalart-Allmaras on ranks of which one holds no ghost runs as on one 
   REQUIRE(!many.empty());
   // The partition this test needs: a rank without ghosts beside ranks with some.
   std::vector<std::int64_t> ghosts;
+  std::string sa_order;
   std::istringstream log(read(many / "log.jsonl"));
   for (std::string l; std::getline(log, l);) {
     const auto e = Json::parse(l);
     if (e["source"] == "mpi") ghosts = e["data"]["ghost_cells"].get<std::vector<std::int64_t>>();
+    if (e["source"] == "linear" && e["data"].contains("sa_order")) sa_order = e["data"]["sa_order"];
   }
   REQUIRE(ghosts.size() == 3);
   CHECK(std::ranges::count(ghosts, 0) == 1);
+  // Every rank sweeps SA by colour, the rank without ghosts included (#699), in either mode.
+  CHECK(sa_order == "colour");
   if (std::string(reproducibility) == "ranks") {
     CHECK(read(many / "history.jsonl") == read(one.run / "history.jsonl"));
     const auto a = data_arrays(one.run), b = data_arrays(many);
@@ -2498,8 +2573,11 @@ TEST_CASE("a steady case on several ranks converges to the one-rank solution", "
     check_bit_for_bit(one.run, many);
     if (std::string(linear) == "multigrid") {
       // The mesh's own order on N ranks: the partition and the physics' cells differ from RCM's.
+      // Its MeshInfo counts the lines in that order and the hierarchy in RCM's (mesh-info.md).
       REQUIRE(setenv("AUTAN_CELL_ORDER", "input", 1) == 0);
-      const fs::path read_order = run_on_ranks(input("hybrid.solver-input.json", edit), ranks);
+      const fs::path read_order = run_on_ranks(
+          autan_test::planned(input("hybrid.solver-input.json", edit), mesh_path, "input", "rcm"),
+          ranks);
       unsetenv("AUTAN_CELL_ORDER");
       REQUIRE(!read_order.empty());
       check_bit_for_bit(one.run, read_order);

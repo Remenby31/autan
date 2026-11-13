@@ -141,8 +141,9 @@ struct SaState {
       : model(mesh, geometry, flow, t, ft2, keys) {}
   SpalartAllmaras<P> model;
   std::vector<double> rnu, rhs, dx, diag, upper, lower;
-  // The owned cells by global colour, which solve() sweeps with an exchange after each: the same
-  // sweeps on any number of ranks and in any cell order.
+  // Under global keys, on a partition or on several ranks: the owned cells by global colour,
+  // which solve() sweeps with an exchange after each, the same sweeps on any number of ranks.
+  // Empty on one rank without keys, which sweeps in cell order.
   std::vector<std::vector<std::size_t>> colours;
   double nt_inf = 0.0;  ///< m^2/s, the freestream's
   std::vector<typename P::state> s;
@@ -768,9 +769,18 @@ class EulerPhysics final : public runtime::Physics {
     }
     // The ghosts' density may not be filled yet: their owners' rho nt.
     fill_ghost_values(t.rnu);
-    // ADR 0005 (B): SA's system is swept by the runtime's colours on any number of ranks and
-    // whatever the flow's linear solver, so that a device repeats the same sweeps.
-    t.colours = colour_groups(mesh, ctx_.cell_colours, ctx_.n_colours, owned_);
+    // SA's system is swept by the runtime's colours whenever a run spans ranks or global keys, the
+    // same sweeps on any number of ranks (ADR 0005, B), a rank without ghosts included; on one
+    // rank without keys in cell order, whose four pairs reduce the system's residual more than the
+    // colours' on the TMR flat plate (#699).
+    const bool by_colour = keys_ || owned_ < n_ || ctx_.ranks.size() > 1;
+    if (by_colour) t.colours = colour_groups(mesh, ctx_.cell_colours, ctx_.n_colours, owned_);
+    // "colour" only if every rank sweeps by colour: one collective, at set-up.
+    const bool colour_on_all = ctx_.ranks.min(by_colour ? 1.0 : 0.0) > 0.0;
+    ctx_.log.write(
+        "info", "linear", "Spalart-Allmaras symmetric Gauss-Seidel", {},
+        nlohmann::json{{"sa_order", colour_on_all ? "colour" : "cell"}, {"sweeps", nt_sweeps}}
+            .dump());
     t.rhs.assign(n_, 0.0);
     t.dx.assign(n_, 0.0);
     t.diag.assign(n_, 0.0);
@@ -1235,8 +1245,12 @@ class EulerPhysics final : public runtime::Physics {
         for (std::size_t c = 0; c < n_; ++c) t.rhs[c] = -static_cast<double>(t.res[c]);
         std::fill(t.dx.begin(), t.dx.end(), 0.0);
         t.model.assemble(shift, t.diag, t.upper, t.lower);
-        t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, nt_sweeps, t.colours,
-                      [this](std::span<double> x) { fill_ghost_values(x); });
+        if (t.colours.empty()) {
+          t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, nt_sweeps);
+        } else {
+          t.model.solve(t.diag, t.upper, t.lower, t.rhs, t.dx, nt_sweeps, &t.colours,
+                        [this](std::span<double> x) { fill_ghost_values(x); });
+        }
         // Local under-relaxation of the SA update: rho nt changes by at most a fraction of
         // max(|rho nt|, rho nt_inf) per step, which the converged state never reaches. Owned
         // cells; the ghosts take their owners' values.
