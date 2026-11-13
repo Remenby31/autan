@@ -1231,8 +1231,11 @@ def _solution_problems(
             found.append(f"WallSolution must hold exactly {wall_field_names(case)}")
         size = np.asarray(walls.child("PointList").data).size
         for name in set(names) & set(wall_field_names(case)):
-            if np.asarray(walls.child(name).data).shape != (size,):
+            values = np.asarray(walls.child(name).data)
+            if values.shape != (size,):
                 found.append(f"WallSolution {name} must hold one value per face")
+            elif values.dtype.kind != "f" or values.dtype.itemsize != 8:
+                found.append(f"WallSolution {name} must be R8")
     return found
 
 

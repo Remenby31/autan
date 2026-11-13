@@ -631,6 +631,15 @@ def _shrink_y_plus(path: Path) -> None:
         handle["Base/Zone/WallSolution/YPlus"].create_dataset(" data", data=values[:1])
 
 
+def _narrow_y_plus(path: Path) -> None:
+    with h5py.File(path, "r+") as handle:
+        values = handle["Base/Zone/WallSolution/YPlus/ data"][()]
+        del handle["Base/Zone/WallSolution/YPlus/ data"]
+        handle["Base/Zone/WallSolution/YPlus"].create_dataset(
+            " data", data=values.astype(np.float32)
+        )
+
+
 @pytest.mark.parametrize(
     "damage",
     [
@@ -639,6 +648,7 @@ def _shrink_y_plus(path: Path) -> None:
         _shrink_density,
         _drop_y_plus,
         _shrink_y_plus,
+        _narrow_y_plus,
     ],
 )
 def test_solution_is_checked_on_first_use(
