@@ -1697,7 +1697,7 @@ class EulerPhysics final : public runtime::Physics {
     const std::string absolute =
         has_file > 0.0 ? std::filesystem::absolute(file).string() : std::string();
     std::uint64_t hash = 14695981039346656037ULL;
-    for (const unsigned char c : absolute) hash = (hash ^ c) * 1099511628211ULL;
+    for (const char c : absolute) hash = (hash ^ static_cast<unsigned char>(c)) * 1099511628211ULL;
     const std::array<double, 2> halves{static_cast<double>(hash >> 32),
                                        static_cast<double>(hash & 0xffffffffULL)};
     std::array<double, 8> spread{ctx_.ranks.max(has_point) - ctx_.ranks.min(has_point),

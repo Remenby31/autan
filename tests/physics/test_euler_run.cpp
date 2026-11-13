@@ -2215,9 +2215,7 @@ TEST_CASE("Spalart-Allmaras on ranks of which one holds no ghost runs as on one 
 TEST_CASE("the conservation check's faces file is one absolute file on every rank",
           "[euler][mpi]") {
   // docs/design/euler.md, Conservation check: every rank must see the same values, or the run
-  // fails at setup (E0704, results.md). A wrapper, run from the test's directory, gives each rank
-  // AUTAN_CONSERVATION_FACES from its own MPI rank: a file per rank is refused before any step; one
-  // relative name for all starts, and its start event names the file absolutely.
+  // fails at setup (E0704, results.md).
   const Json doc = input("hybrid.solver-input.json", [](Json& d) {
     inviscid_along_x(d, "fp64");
     d["time"]["max_iterations"] = 1;
@@ -2230,7 +2228,7 @@ TEST_CASE("the conservation check's faces file is one absolute file on every ran
     const fs::path script = dir / name;
     std::ofstream(script) << "#!/bin/sh\nrank=${OMPI_COMM_WORLD_RANK:-${PMI_RANK:-0}}\ncd '"
                           << dir.string() << "' || exit 9\nAUTAN_CONSERVATION_FACES=\"" << file
-                          << "\" exec " << AUTAN_RUN << " \"$@\"\n";
+                          << "\" exec '" << AUTAN_RUN << "' \"$@\"\n";
     fs::permissions(script, fs::perms::owner_all);
     return script.string();
   };
