@@ -23,6 +23,8 @@ Every file has a URL, a size and a SHA-256. TMR data files use `raw.githubuserco
 | `onera-m6` | Schmitt and Charpin pressure at 7 span stations, runs 2308 (M 0.8395, α 3.06°) and 2565 (M 0.8372, α 6.06°), from TMR and NPARC (NPARC `.ex` files store −Cp); section profiles | Tecplot, columns |
 | `rae2822` | Geometry; case 6 Cp (NPARC); cases 1, 6, 7, 9, 12 conditions, forces, Cp, cf from the 1981 AFOSR-HTTM-Stanford conference tape (72 coded files decoded; the text file is skipped; see known defects) | columns, 1981 tape |
 
+**Flat plate as an SDK script.** `physics/tmr/flatplate.py` is the `tmr-2dzp-flatplate` case as an `autan.Case` (M 0.2, Re 5×10⁶ per metre, T 300 K, SA, isentropic totals at the inflow, freestream static pressure at the outflow, adiabatic plate, forces over `plate`) for a mesh `flatplate.msh` beside it; `autan run physics/tmr/flatplate.py --mesh-info …` runs it. `physics/tmr/case.sh` writes the same case as TOML for the three TMR cases.
+
 Pointers only (too large to fetch): HLPW-5 (CRM-HL, finest grids 2×10⁸–10⁹ cells, archive 1.75 GB at aiaa-hlpw.org) and DPW-7/DPW-8 (dpw.larc.nasa.gov; DPW-7 Vassberg grids 5.3–221 M points), in `pointers()`.
 
 **Known defects of the sources.** Section 1124 of the 1981 tape (case 6 Cp) is damaged in the checksummed copy: records 23–29 are bit-shifted bytes. The catalogue declares it, the reader skips it and raises `V0603` on any undeclared malformed section; take case 6 Cp from NPARC. NPARC files store −Cp (`raetaf01_cp.exp.gen`, the ONERA M6 `cp*.ex`), as their catalogue descriptions say.
