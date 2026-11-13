@@ -211,7 +211,7 @@ class World final : public Comm {
       counts[r] = static_cast<int>(sizes[r]);
       total += sizes[r];
       if (total > std::numeric_limits<int>::max()) {
-        throw Error(ErrorCode::halo_inconsistent,
+        throw Error(ErrorCode::partition_invalid_request,
                     "an all-gather of more than " +
                         std::to_string(std::numeric_limits<int>::max()) + " values");
       }

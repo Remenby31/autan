@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -38,6 +39,16 @@ namespace {
 namespace fs = std::filesystem;
 using autan::index_t;
 using autan::solvers::Level;
+
+// The operator keeps a reference to the hierarchy: no temporary binds to its constructor.
+template <class Levels>
+constexpr bool operator_from =
+    std::is_constructible_v<autan::solvers::DistributedOperator, Levels,
+                            std::span<const std::int32_t>, std::int32_t, std::int32_t,
+                            autan::solvers::LevelExchange&>;
+static_assert(operator_from<const std::vector<Level>&>);
+static_assert(!operator_from<std::vector<Level>&&>);
+static_assert(!operator_from<const std::vector<Level>&&>);
 
 std::size_t at(std::int64_t i) { return static_cast<std::size_t>(i); }
 

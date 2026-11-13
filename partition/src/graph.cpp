@@ -17,6 +17,13 @@ std::size_t at(std::int64_t i) { return static_cast<std::size_t>(i); }
   throw Error(ErrorCode::partition_invalid_request, why);
 }
 
+// Every rank orders nodes by their global ids; two equal ids leave that order to a sort's whim.
+void require_distinct(std::span<const std::int64_t> ids, const std::string& what) {
+  std::vector<std::int64_t> sorted(ids.begin(), ids.end());
+  std::ranges::sort(sorted);
+  if (std::ranges::adjacent_find(sorted) != sorted.end()) invalid(what + " repeats an id");
+}
+
 // The nodes and edges part q holds of a level: owned nodes, ghost nodes,
 // and the edges with an end owned or a remote child.
 struct Share {
@@ -32,6 +39,7 @@ class Level {
     if (level.global_id.size() != n || parts.size() != n ||
         level.owner.size() != level.neighbour.size())
       invalid("the graph level's arrays do not match its nodes and edges");
+    require_distinct(level.global_id, "global_id");
     if (!coarse_node.empty() && coarse_node.size() != n) invalid("coarse_node has the wrong size");
     for (const std::int32_t p : parts) {
       if (p < 0 || p >= n_parts) invalid("part " + std::to_string(p) + " out of range");
@@ -142,6 +150,7 @@ std::vector<std::int32_t> coarse_parts(std::span<const std::int32_t> parts,
                                        std::size_t n_coarse) {
   if (parts.size() != coarse_node.size() || global_id.size() != coarse_node.size())
     invalid("parts, coarse_node and global_id differ in size");
+  require_distinct(global_id, "global_id");
   std::vector<std::int32_t> out(n_coarse, -1);
   std::vector<std::int64_t> least(n_coarse, 0);
   for (std::size_t v = 0; v < coarse_node.size(); ++v) {
@@ -176,6 +185,7 @@ std::vector<std::int32_t> level_parts(std::span<const std::int32_t> parts,
                                       std::span<const index_t> line_nodes) {
   if (parts.size() != coarse_node.size() || global_id.size() != coarse_node.size())
     invalid("parts, coarse_node and global_id differ in size");
+  require_distinct(global_id, "global_id");
   if (line_offsets.empty() || line_offsets.front() != 0 ||
       at(line_offsets.back()) != line_nodes.size() || !std::ranges::is_sorted(line_offsets))
     invalid("the coarse lines are not offsets over line_nodes");
@@ -217,6 +227,7 @@ ParentImport parent_import(std::span<const std::int32_t> parts,
   if (parts.size() != coarse_node.size()) invalid("parts and coarse_node differ in size");
   if (coarse_parts.size() != coarse_global_id.size())
     invalid("coarse_parts and coarse_global_id differ in size");
+  require_distinct(coarse_global_id, "coarse_global_id");
   for (const std::int32_t p : parts) {
     if (p < 0 || p >= n_parts) invalid("part " + std::to_string(p) + " out of range");
   }

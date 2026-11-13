@@ -9,6 +9,7 @@
 #include <span>
 #include <stdexcept>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -28,6 +29,16 @@ namespace {
 namespace fs = std::filesystem;
 using autan::solvers::Level;
 using autan::solvers::MultigridOptions;
+
+// The multigrid keeps a reference to the hierarchy: no temporary binds to its constructor.
+template <class Levels>
+constexpr bool multigrid_from =
+    std::is_constructible_v<autan::solvers::DistributedMultigrid, Levels,
+                            std::span<const std::int32_t>, std::int32_t, std::int32_t,
+                            autan::solvers::LevelCollective&>;
+static_assert(multigrid_from<const std::vector<Level>&>);
+static_assert(!multigrid_from<std::vector<Level>&&>);
+static_assert(!multigrid_from<const std::vector<Level>&&>);
 
 std::size_t at(std::int64_t i) { return static_cast<std::size_t>(i); }
 

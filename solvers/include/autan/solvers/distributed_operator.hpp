@@ -32,8 +32,11 @@ class LevelExchange {
 /// indices, so the owned values are the same bits on any number of parts.
 class DistributedOperator {
  public:
+  /// Keeps a reference to `levels`, which must outlive the operator.
   DistributedOperator(const std::vector<Level>& levels, std::span<const std::int32_t> cell_parts,
                       std::int32_t n_parts, std::int32_t rank, LevelExchange& exchange);
+  DistributedOperator(const std::vector<Level>&&, std::span<const std::int32_t>, std::int32_t,
+                      std::int32_t, LevelExchange&) = delete;
 
   [[nodiscard]] std::size_t n_levels() const noexcept { return graphs_.size(); }
   [[nodiscard]] const LocalGraph& graph(std::size_t level) const { return graphs_.at(level); }
@@ -43,7 +46,9 @@ class DistributedOperator {
 
   /// Sets the fine operator from the blocks of level 0's owned nodes and owned edges (the first
   /// n_owned and n_owned_edges of its LocalGraph), then fills the ghosts and builds every coarse
-  /// operator P^T A P. Collective.
+  /// operator P^T A P. Collective. The spans' sizes are the caller's precondition: a rank given
+  /// other sizes throws std::invalid_argument alone, before any exchange, while its peers wait in
+  /// one; the caller ends the run.
   void set_operator(std::span<const double> diagonal, std::span<const double> upper,
                     std::span<const double> lower);
 

@@ -787,6 +787,10 @@ TEST_CASE("A coarse node goes to the part of its least child", "[partition][grap
   require_error(autan::ErrorCode::partition_invalid_request, [&] {
     (void)autan::coarse_parts(parts, std::vector<index_t>{0, 0, 0, 1, 2}, ids, 2);
   });
+  // Equal ids would leave each rank's choice to a sort: id 2 twice.
+  require_error(autan::ErrorCode::partition_invalid_request, [&] {
+    (void)autan::coarse_parts(parts, coarse, std::vector<std::int64_t>{5, 2, 7, 2, 9}, 2);
+  });
   // The largest id is an id like any other.
   const std::vector<std::int64_t> top{std::numeric_limits<std::int64_t>::max()};
   CHECK(autan::coarse_parts(std::vector<std::int32_t>{1}, std::vector<index_t>{0}, top, 1) ==
@@ -930,6 +934,13 @@ TEST_CASE("Graph parts send each other exactly the ghosts they hold", "[partitio
     bad_coarse.front() = wrong;
     refused(dual.level, parts, 0, bad_coarse, cp);
   }
+  auto repeated = dual.ids;
+  repeated[1] = repeated[0];
+  refused({.n_nodes = dual.level.n_nodes,
+           .owner = dual.owner,
+           .neighbour = dual.neighbour,
+           .global_id = repeated},
+          parts, 0, coarse, cp);
 }
 
 TEST_CASE("A coarse line goes whole to the part of its least child", "[partition][graph]") {
@@ -964,6 +975,10 @@ TEST_CASE("A coarse line goes whole to the part of its least child", "[partition
   refused(std::vector<autan::offset_t>{0, 2, 1, 3}, lines);                          // order
   require_error(autan::ErrorCode::partition_invalid_request, [&] {
     (void)autan::level_parts(parts, coarse, ids, 5, offsets, lines);  // coarse 4 empty
+  });
+  require_error(autan::ErrorCode::partition_invalid_request, [&] {
+    (void)autan::level_parts(parts, coarse, std::vector<std::int64_t>{0, 1, 2, 3, 4, 5, 1}, 4,
+                             offsets, lines);
   });
 }
 
@@ -1097,6 +1112,9 @@ TEST_CASE("A part imports its parents grouped by owning part, then by id", "[par
     CHECK(im.halo.neighbours == std::vector<std::int32_t>{2});
     CHECK(im.halo.send_cells == std::vector<index_t>{0, 1});
   }
+  require_error(autan::ErrorCode::partition_invalid_request, [&] {
+    (void)autan::parent_import(parts, coarse, cp, std::vector<std::int64_t>{5, 3, 5, 1}, 3, 2);
+  });
 }
 
 TEST_CASE("A part that owns no coarse node still imports its parents", "[partition][graph]") {
