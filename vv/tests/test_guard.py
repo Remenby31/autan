@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import math
 import os
@@ -18,6 +19,7 @@ from autan_vv.cli import main
 
 COMMIT = "c" * 40
 STEPS = guard.STEPS
+PLATEAU = 16000
 
 
 def _series(points: list[tuple[int, float]]) -> np.ndarray:
@@ -29,13 +31,16 @@ def _series(points: list[tuple[int, float]]) -> np.ndarray:
 def _green() -> dict[str, np.ndarray]:
     # Main's shape (#611): energy peaks at step 7, is 10 orders below the peak by step 1 500 and
     # stays there; momentum-y starts small, so only the shared momentum reference gives it 10 orders.
+    # Every residual reaches its final level by step 16 000 and stays there, as main's runs do.
     return {
         "density": _series([(1, 1e-15), (STEPS, 1e-15)]),
-        "momentum-x": _series([(1, 4.0), (STEPS, 4e-13)]),
-        "momentum-y": _series([(1, 1.5e-5), (2, 1e-3), (STEPS, 1.6e-13)]),
+        "momentum-x": _series([(1, 4.0), (PLATEAU, 4e-13), (STEPS, 4e-13)]),
+        "momentum-y": _series([(1, 1.5e-5), (2, 1e-3), (PLATEAU, 1.6e-13), (STEPS, 1.6e-13)]),
         "momentum-z": _series([(1, 1e-38), (2, 1e-19), (STEPS, 1e-19)]),
-        "energy": _series([(1, 12.0), (7, 400.0), (1500, 3e-8), (STEPS, 5.5e-10)]),
-        "nu-tilde": _series([(1, 6.8e-5), (STEPS, 1.1e-18)]),
+        "energy": _series(
+            [(1, 12.0), (7, 400.0), (1500, 3e-8), (PLATEAU, 5.5e-10), (STEPS, 5.5e-10)]
+        ),
+        "nu-tilde": _series([(1, 6.8e-5), (PLATEAU, 1.1e-18), (STEPS, 1.1e-18)]),
     }
 
 
@@ -79,6 +84,8 @@ def test_main_like_night_is_green_and_its_measures_follow_from_the_history(tmp_p
     below = energy <= energy.max() * 1e-10
     assert m["m3f"] == int(np.argmax(below)) + 1  # first step below
     assert m["m3s"] == m["m3f"]  # monotone after the peak: the crossing is sustained
+    # m3s is computed and reported, gated by no gate (#701, exception 6801958242).
+    assert all(g.get("measure") != "m3s" for g in v["gates"])
     # Once #544 is in the night's commit, the shared rule must be met: here it is.
     assert _night(tmp_path / "n544", _green(), has_544=True)["outcome"] == "green"
 
@@ -86,17 +93,25 @@ def test_main_like_night_is_green_and_its_measures_follow_from_the_history(tmp_p
 def _worse(edit: str) -> dict[str, np.ndarray]:
     s = _green()
     if edit == "energy-final":  # (b) and (c): energy ends an order higher
-        s["energy"] = _series([(1, 12.0), (7, 400.0), (1500, 3e-8), (STEPS, 5.5e-9)])
+        s["energy"] = _series(
+            [(1, 12.0), (7, 400.0), (1500, 3e-8), (PLATEAU, 5.5e-9), (STEPS, 5.5e-9)]
+        )
     elif edit == "m3f":  # (d): the first crossing comes late
-        s["energy"] = _series([(1, 12.0), (7, 400.0), (5000, 3e-8), (STEPS, 5.5e-10)])
-    elif edit == "m3s":  # (d): an excursion above 1e-10 x peak at step 14 000
+        s["energy"] = _series(
+            [(1, 12.0), (7, 400.0), (5000, 3e-8), (PLATEAU, 5.5e-10), (STEPS, 5.5e-10)]
+        )
+    elif edit == "tail":  # (d): energy back above 1e-10 x peak on 6 % of steps 10 001-20 000
         e = s["energy"].copy()
-        e[13999] = 1e-6
+        e[14000:14600] = 1e-6
+        s["energy"] = e
+    elif edit == "peak":  # (d): a peak 100 times higher, the rest unchanged
+        e = s["energy"].copy()
+        e[6] *= 100.0
         s["energy"] = e
     elif edit == "momentum-z":  # (b): the slab's zero equation leaves its floor
         s["momentum-z"] = _series([(1, 1e-38), (2, 1e-19), (STEPS, 1e-9)])
     elif edit == "nu-tilde":  # (b) and (c)
-        s["nu-tilde"] = _series([(1, 6.8e-5), (STEPS, 1.1e-16)])
+        s["nu-tilde"] = _series([(1, 6.8e-5), (PLATEAU, 1.1e-16), (STEPS, 1.1e-16)])
     return s
 
 
@@ -105,7 +120,8 @@ def _worse(edit: str) -> dict[str, np.ndarray]:
     [
         ("energy-final", "b", "energy"),
         ("m3f", "d", "m3f"),
-        ("m3s", "d", "m3s"),
+        ("tail", "d", "tail_fraction"),
+        ("peak", "d", "peak_ratio"),
         ("momentum-z", "b", "momentum-z"),
         ("nu-tilde", "c", "nu-tilde"),
     ],
@@ -117,9 +133,48 @@ def test_a_night_worse_than_main_is_red_on_its_gate(
     assert v["outcome"] == "red"
     failing = {(c["gate"], c.get("equation") or c.get("measure")) for c in v["failing"]}
     assert (gate, what) in failing
-    if edit == "m3s":
+    if edit == "tail":
         assert ("d", "m3f") not in failing
-        assert v["measures"]["m3s"] == 14001  # the step after the excursion at step 14 000
+        assert v["measures"]["tail_fraction"] == pytest.approx(0.06)
+
+
+def test_a_short_late_excursion_moves_m3s_but_no_longer_fails_the_night(tmp_path: Path) -> None:
+    # m3s is reported, not gated (#611: round-off-level inputs alone move it past any useful bound).
+    s = _green()
+    e = s["energy"].copy()
+    e[13999] = 1e-6
+    s["energy"] = e
+    v = _night(tmp_path, s)
+    assert v["outcome"] == "green", v["failing"]
+    assert v["measures"]["m3s"] == 14001  # the step after the excursion at step 14 000
+    assert v["measures"]["tail_fraction"] == pytest.approx(1e-4)
+
+
+def test_the_gate_measures_are_the_frozen_evaluators(tmp_path: Path) -> None:
+    # The gates read the measures the null search selected them on (vv/guard/null_eval.py, frozen
+    # before any null history was read): the same values from both implementations.
+    spec = importlib.util.spec_from_file_location(
+        "null_eval", Path(__file__).resolve().parents[1] / "guard" / "null_eval.py"
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    null_eval = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(null_eval)
+    sloped = (
+        _green()
+    )  # energy still falling across steps 18 001-20 000: median and last step differ
+    sloped["energy"] = _series([(1, 12.0), (7, 400.0), (1500, 3e-8), (STEPS, 5.5e-10)])
+    for name, series in (
+        ("green", _green()),
+        ("tail", _worse("tail")),
+        ("peak", _worse("peak")),
+        ("sloped", sloped),
+    ):
+        _, lines = guard.read_run(_run(tmp_path / name, series), COMMIT)
+        m, c = guard.measure(lines), null_eval.candidates(lines)
+        assert m["tail_fraction"] == c["T"]
+        assert m["peak_ratio"] == c["G_P"]
+        assert m["median_drops"] == c["median_drop"]
 
 
 def test_an_excursion_of_the_zero_equation_is_red_even_if_it_recovers(tmp_path: Path) -> None:
@@ -211,7 +266,9 @@ def test_cli_writes_strict_json_and_exits_1_on_red(tmp_path: Path) -> None:
         main(["guard", "verdict", str(night), "--run1", str(r1), "--run2", str(r2),
               "--commit", COMMIT])  # fmt: skip
     assert err.value.code == 1
-    assert json.loads((night / "verdict.json").read_text())["outcome"] == "red"
+    report = json.loads((night / "verdict.json").read_text())
+    assert report["outcome"] == "red"
+    assert isinstance(report["measures"]["m3s"], int)  # m3s stays in every report
     assert main(["guard", "status", str(night)]) == 0
 
 
@@ -263,3 +320,29 @@ def test_the_watchdog_voids_a_drained_night_left_without_a_verdict(tmp_path: Pat
     assert marker in line  # the drain's who, when and why reach STATUS
     assert json.loads((root / night / "verdict.json").read_text())["outcome"] == "void"
     assert status(drained=False).split()[:3] == [night, COMMIT[:12], "MISSING"]
+
+
+def test_gate_c_reads_the_median_of_the_last_2000_steps_not_the_last_step(tmp_path: Path) -> None:
+    window = slice(18000, 20000)  # steps 18 001-20 000
+    # Energy high over the window but low at its last step: (c) fails on the median, (b) passes.
+    high = _green()
+    e = high["energy"].copy()
+    e[window] = 1e-8
+    e[-1] = 5.5e-10
+    high["energy"] = e
+    v = _night(tmp_path / "high", high)
+    failing = {(c["gate"], c.get("equation") or c.get("measure")) for c in v["failing"]}
+    assert ("c", "energy") in failing
+    assert ("b", "energy") not in failing
+    assert v["measures"]["median_drops"]["energy/peak"] == pytest.approx(
+        math.log10(400.0 / float(np.median(e[window])))
+    )
+    # The opposite: a spike at the last step only. (b) fails on the final residual, (c) passes.
+    spike = _green()
+    e = spike["energy"].copy()
+    e[-1] = 1e-6
+    spike["energy"] = e
+    v = _night(tmp_path / "spike", spike)
+    failing = {(c["gate"], c.get("equation") or c.get("measure")) for c in v["failing"]}
+    assert ("b", "energy") in failing
+    assert ("c", "energy") not in failing

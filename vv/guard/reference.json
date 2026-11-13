@@ -39,6 +39,15 @@
     "first": 13.773590726186955,
     "shared": null
    }
+  },
+  "tail_fraction": 0.0002,
+  "peak_ratio": 1.5337448526632527,
+  "median_drops": {
+   "energy/peak": 11.937956880883755,
+   "energy/first": 10.4042120282205,
+   "momentum-x/first": 13.147239155486794,
+   "momentum-y/shared": 13.359360242658559,
+   "nu-tilde/first": 13.960132977713794
   }
  }
 }
