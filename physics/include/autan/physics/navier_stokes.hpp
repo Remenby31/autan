@@ -107,6 +107,11 @@ class NavierStokes {
   /// After residual(s): force per unit area the fluid exerts on every boundary face through the
   /// viscous stress, -tau n (3 x n_boundary_faces, Pa, n out of the fluid); zero on slip faces.
   void viscous_traction(std::span<double> t) const;
+  /// After residual(s): the wall state of the viscous wall flux on every boundary face, its
+  /// absolute pressure p_w (Pa, the zero-gradient wall pressure of kernels/euler.py wall_state) and
+  /// its temperature T_w (K: the condition's on an isothermal wall, the cell's extrapolated to the
+  /// face otherwise, kernels/navier_stokes.py boundary_temperature), n_boundary_faces each.
+  void wall_state(std::span<double> pressure, std::span<double> temperature) const;
 
   /// The arrays of the last evaluation and the eddy viscosity per cell and per face, which a
   /// turbulence model reads and writes (docs/design/ns-sa.md).
@@ -129,5 +134,13 @@ class NavierStokes {
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
+
+/// Dynamic viscosity of `transport` at temperature `t` (K), in Pa s.
+[[nodiscard]] double viscosity(const Transport& transport, double t);
+
+/// results.md, WallSolution YPlus: y1 sqrt(|tau_w| rho_w) / mu(T_w), rho_w = p_w / (R T_w), for a
+/// face whose first-cell height is `y1` (m), wall shear `tau` (Pa) and wall state (p_w, T_w).
+[[nodiscard]] double wall_y_plus(double y1, double tau, double p_wall, double t_wall,
+                                 double gas_constant, const Transport& transport);
 
 }  // namespace autan::physics

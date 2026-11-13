@@ -28,7 +28,7 @@ from pydantic import (
 from autan import cgns
 from autan.errors import CaseError, Diagnostic, Location, diagnostic
 from autan.meshinfo import MeshInfo
-from autan.schema import DDES, SA, SST, CaseSpec, Compressible, Steady, Unsteady
+from autan.schema import DDES, SA, SST, CaseSpec, Compressible, Inviscid, Steady, Unsteady
 from autan.texts import load_json
 from autan.units import metres_per
 
@@ -745,6 +745,30 @@ class Results:
         faces = np.asarray(region.child("PointList").data, dtype=np.int64).ravel() - 1
         return faces, np.asarray(region.child(name).data, dtype=np.float64)
 
+    def y_plus(self, zone: str) -> tuple[NDArray[np.int64], NDArray[np.float64]]:
+        """y⁺ on the faces of boundary zone ``zone``, as the run wrote it (results.md,
+        ``WallSolution`` ``YPlus``): the 0-based face indices, ascending, and their values.
+        ``E0703`` when the run has no y⁺ (inviscid physics, or no wall) or the zone has no wall
+        or slip face."""
+        tree = self._tree()
+        region = self._zone().children.get("WallSolution")
+        if region is None or "YPlus" not in region.children:
+            message = f"run {self.run.run_id} has no y+: its physics is inviscid or it has no wall"
+            raise CaseError([diagnostic("E0703", message)])
+        names = json.loads(tree.child("Base").child("ZoneNames").text())["boundary"]
+        node_name = next((k for k, v in names.items() if v == zone), None)
+        bcs = self._zone().children.get("ZoneBC")
+        if node_name is None or bcs is None or node_name not in bcs.children:
+            message = f"boundary zone {zone!r} has no wall or slip face"
+            raise CaseError([diagnostic("E0703", message)])
+        own = np.asarray(bcs.child(node_name).child("PointList").data, dtype=np.int64).ravel() - 1
+        faces, values = self.wall("YPlus")
+        kept = np.isin(faces, own)
+        if not kept.any():
+            message = f"boundary zone {zone!r} has no wall or slip face"
+            raise CaseError([diagnostic("E0703", message)])
+        return faces[kept], values[kept]
+
     def cell_zone(self, zone: str) -> NDArray[np.int64]:
         """0-based indices of the cells of cell zone ``zone``."""
         names = json.loads(self._tree().child("Base").child("ZoneNames").text())["cell"]
@@ -779,6 +803,12 @@ def field_names(spec: CaseSpec) -> list[str]:
     if isinstance(base, SST):
         return [*names, "TurbulentEnergyKinetic", "TurbulentDissipationRate"]
     return names
+
+
+def wall_field_names(spec: CaseSpec) -> list[str]:
+    """The WallSolution fields a run of ``spec`` writes (results.md#solutioncgns)."""
+    names = ["Pressure", "WallShearStressX", "WallShearStressY", "WallShearStressZ"]
+    return names if isinstance(spec.physics.turbulence, Inviscid) else [*names, "YPlus"]
 
 
 def force_keys(monitor: ForcesSpec, spec: CaseSpec) -> set[str]:
@@ -1194,6 +1224,18 @@ def _solution_problems(
         low, high = (1, faces) if region.name == "WallSolution" else (faces + 1, faces + cells)
         if not _ids_in(region.child("PointList").data, low, high):
             found.append(f"ZoneSubRegion {region.name} PointList is out of range")
+    walls = zone.children.get("WallSolution")
+    if walls is not None:
+        names = sorted(set(walls.children) - {"PointList", "GridLocation"})
+        if names != sorted(wall_field_names(case)):
+            found.append(f"WallSolution must hold exactly {wall_field_names(case)}")
+        size = np.asarray(walls.child("PointList").data).size
+        for name in set(names) & set(wall_field_names(case)):
+            values = np.asarray(walls.child(name).data)
+            if values.shape != (size,):
+                found.append(f"WallSolution {name} must hold one value per face")
+            elif values.dtype.kind != "f" or values.dtype.itemsize != 8:
+                found.append(f"WallSolution {name} must be R8")
     return found
 
 

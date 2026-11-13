@@ -15,6 +15,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/generators/catch_generators_range.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "autan/core/geometry.hpp"
 #include "autan/core/mesh.hpp"
@@ -43,6 +44,7 @@ using autan::physics::SpalartAllmaras;
 using autan::physics::Transport;
 using autan::test::Slab;
 using autan::test::stretched_slab;
+using Catch::Matchers::WithinRel;
 
 const fs::path mesh_dir{AUTAN_TEST_MESH_DIR};
 const std::array<const char*, 4> meshes = {"tet-gmsh/tet-gmsh.ascii.msh", "hex/hex.ascii.msh",
@@ -71,6 +73,29 @@ double worse(double worst, double error) {
 }
 
 }  // namespace
+
+TEST_CASE("y+ of a wall face from the wall state by hand", "[navier-stokes]") {
+  // results.md, WallSolution YPlus: y1 sqrt(|tau_w| rho_w) / mu(T_w), rho_w = p_w / (R T_w). For
+  // y1 = 1e-5 m, |tau_w| = 2 Pa, p_w = 101325 Pa, R = 287 J/(kg K) and air's Sutherland law
+  // (1.716e-5 Pa s, 273.15 K, 110.4 K): at T_w = 300 K mu = 1.84592e-5 Pa s, rho_w = 1.17683 kg/m^3
+  // and y+ = 0.831112; at 250 K, y+ = 1.05099; with a constant mu of 1.8e-5 Pa s at 300 K,
+  // 0.852313.
+  constexpr double eps = std::numeric_limits<double>::epsilon();
+  const Transport sutherland_air{};
+  CHECK_THAT(autan::physics::viscosity(sutherland_air, 300.0),
+             WithinRel(1.8459162511975804e-05, 64 * eps));
+  CHECK_THAT(autan::physics::wall_y_plus(1e-5, 2.0, 101325.0, 300.0, 287.0, sutherland_air),
+             WithinRel(0.8311123484984475, 64 * eps));
+  CHECK_THAT(autan::physics::wall_y_plus(1e-5, 2.0, 101325.0, 250.0, 287.0, sutherland_air),
+             WithinRel(1.0509925978906687, 64 * eps));
+  Transport constant = sutherland_air;
+  constant.sutherland = false;
+  constant.mu_ref = 1.8e-5;
+  CHECK_THAT(autan::physics::wall_y_plus(1e-5, 2.0, 101325.0, 300.0, 287.0, constant),
+             WithinRel(0.8523132170357062, 64 * eps));
+  // A slip face carries no shear: y+ 0.
+  CHECK(autan::physics::wall_y_plus(1e-5, 0.0, 101325.0, 300.0, 287.0, sutherland_air) == 0.0);
+}
 
 // With velocity and temperature linear, the least-squares gradients and the corrected face
 // gradients are exact, the stress tau and the heat flux are uniform, and the face values are exact

@@ -1116,6 +1116,121 @@ TEST_CASE("the multigrid builds the levels autan-mesh-info publishes", "[euler]"
   CHECK(built["edges"] == published["edges_by_level"]);
 }
 
+TEST_CASE("a viscous run writes the y+ of its wall faces from the wall state", "[navier-stokes]") {
+  // results.md, WallSolution YPlus: y+ = y1 sqrt(|tau_w| rho_w) / mu(T_w). On an isothermal wall
+  // T_w is the wall's temperature and p_w the owner cell's pressure (zero normal gradient), so
+  // every term comes from the written fields, the case and the geometry computed here:
+  // wall_fields evaluates the residual of the state FlowSolution holds. Two walls at different
+  // temperatures, normal to y and to x. An inviscid run writes no YPlus.
+  const char* precision = GENERATE("fp64", "fp32+acc64");
+  INFO(precision);
+  const std::map<std::string, double> t_walls{{"ymin", 300.0}, {"xmin", 350.0}};
+  auto wall_solution = [](const fs::path& run_dir) {
+    int fn = 0;
+    REQUIRE(cg_open((run_dir / "solution.cgns").string().c_str(), CG_MODE_READ, &fn) == CG_OK);
+    int regions = 0;
+    REQUIRE(cg_nsubregs(fn, 1, 1, &regions) == CG_OK);
+    std::map<std::string, std::vector<double>> arrays;
+    std::vector<cgsize_t> points;
+    for (int r = 1; r <= regions; ++r) {
+      char name[33];
+      int dim = 0, bc_len = 0, gc_len = 0;
+      CGNS_ENUMT(GridLocation_t) location{};
+      CGNS_ENUMT(PointSetType_t) ptset{};
+      cgsize_t npnts = 0;
+      REQUIRE(cg_subreg_info(fn, 1, 1, r, name, &dim, &location, &ptset, &npnts, &bc_len,
+                             &gc_len) == CG_OK);
+      if (std::string(name) != "WallSolution") continue;
+      points.resize(static_cast<std::size_t>(npnts));
+      REQUIRE(cg_subreg_ptset_read(fn, 1, 1, r, points.data()) == CG_OK);
+      REQUIRE(cg_goto(fn, 1, "Zone_t", 1, "ZoneSubRegion_t", r, "end") == CG_OK);
+      int count = 0;
+      REQUIRE(cg_narrays(&count) == CG_OK);
+      for (int a = 1; a <= count; ++a) {
+        char array[33];
+        CGNS_ENUMT(DataType_t) type{};
+        int rank = 0;
+        cgsize_t size[3];
+        REQUIRE(cg_array_info(a, array, &type, &rank, size) == CG_OK);
+        std::vector<double> values(static_cast<std::size_t>(size[0]));
+        REQUIRE(cg_array_read_as(a, CGNS_ENUMV(RealDouble), values.data()) == CG_OK);
+        arrays[array] = std::move(values);
+      }
+    }
+    cg_close(fn);
+    return std::pair{points, arrays};
+  };
+  const auto viscous = run(input("hybrid.solver-input.json", [&](Json& d) {
+    d["precision"] = precision;
+    for (auto& b : d["boundaries"]) {
+      const auto t = t_walls.find(b["zone"].get<std::string>());
+      if (t == t_walls.end()) continue;
+      b["kind"] = "wall";
+      b["temperature"] = t->second;
+    }
+    d["time"]["max_iterations"] = 2;
+  }));
+  INFO(viscous.err);
+  REQUIRE(viscous.status == ExitStatus::finished);
+  const auto [faces, wall] = wall_solution(viscous.run);
+  REQUIRE(wall.contains("YPlus"));
+  const auto mesh = autan::io::read_mesh(mesh_path);
+  const auto g = autan::compute_geometry(mesh);
+  // The wall temperature of each boundary face, 0 off the walls.
+  std::vector<double> face_t(static_cast<std::size_t>(mesh.n_faces()), 0.0);
+  const auto offsets = mesh.boundary_zone_offsets();
+  std::size_t n_walls = 0;
+  for (std::size_t z = 0; z < mesh.face_zones().size(); ++z) {
+    const auto t = t_walls.find(mesh.face_zones()[z].name);
+    if (t == t_walls.end()) continue;
+    for (auto f = offsets[z]; f < offsets[z + 1]; ++f)
+      face_t[static_cast<std::size_t>(f)] = t->second;
+    n_walls += static_cast<std::size_t>(offsets[z + 1] - offsets[z]);
+  }
+  REQUIRE(faces.size() == n_walls);
+  const auto pressure = field(viscous.run, "Pressure");
+  const Json medium = Json::parse(
+      read(data_dir / "runtime" / "hybrid.solver-input.json"))["cell_zones"][0]["medium"];
+  const auto& law = medium["viscosity"];
+  const double t_ref = law["t_ref"].get<double>(), s = law["s"].get<double>();
+  // Sutherland's law (case-schema.md).
+  const auto mu = [&](double t) {
+    return law["mu_ref"].get<double>() * std::pow(t / t_ref, 1.5) * (t_ref + s) / (t + s);
+  };
+  const double gas_constant = medium["gas_constant"].get<double>();
+  const double eps = std::string(precision) == "fp64" ? std::numeric_limits<double>::epsilon()
+                                                      : std::numeric_limits<float>::epsilon();
+  for (std::size_t j = 0; j < faces.size(); ++j) {
+    const auto f = static_cast<std::size_t>(faces[j] - 1);
+    const auto c = static_cast<std::size_t>(mesh.owner()[f]);
+    const double area = std::hypot(g.face_area_x[f], g.face_area_y[f], g.face_area_z[f]);
+    const double y1 = std::abs((g.cell_centroid_x[c] - g.face_centroid_x[f]) * g.face_area_x[f] +
+                               (g.cell_centroid_y[c] - g.face_centroid_y[f]) * g.face_area_y[f] +
+                               (g.cell_centroid_z[c] - g.face_centroid_z[f]) * g.face_area_z[f]) /
+                      area;
+    const double tau = std::hypot(wall.at("WallShearStressX")[j], wall.at("WallShearStressY")[j],
+                                  wall.at("WallShearStressZ")[j]);
+    const double t_wall = face_t[f];
+    REQUIRE(t_wall > 0.0);
+    REQUIRE(tau > 0.0);
+    const double expected =
+        y1 * std::sqrt(tau * pressure[c] / (gas_constant * t_wall)) / mu(t_wall);
+    INFO("face " << f);
+    CHECK(std::abs(wall.at("YPlus")[j] - expected) <= 64.0 * eps * expected);
+  }
+
+  const auto inviscid = run(input("hybrid.solver-input.json", [&](Json& d) {
+    inviscid_along_x(d, precision);
+    d["time"]["max_iterations"] = 2;
+  }));
+  INFO(inviscid.err);
+  REQUIRE(inviscid.status == ExitStatus::finished);
+  const auto [slip_faces, slip] = wall_solution(inviscid.run);
+  CHECK(slip_faces.size() == 20);  // ymin
+  CHECK(slip.contains("Pressure"));
+  CHECK_FALSE(slip.contains("YPlus"));
+}
+
 TEST_CASE("a partitioned multigrid builds the one-rank RCM run's hierarchy", "[euler]") {
   // #259 D2 (gate 4): on a partition, in either cell order, the run builds its hierarchy on the
   // mesh in RCM order, so it logs the multigrid_sha256 of a one-rank run computing in RCM order.

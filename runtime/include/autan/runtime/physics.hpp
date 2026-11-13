@@ -199,7 +199,8 @@ class Physics {
   /// bit, the same on every rank (rank 0's is written), as named arrays of the lengths its
   /// registration gives; empty when none.
   [[nodiscard]] virtual std::vector<io::Field> restart_scalars() const { return {}; }
-  /// Pressure and WallShearStressX/Y/Z on `wall_faces` (ascending).
+  /// Pressure and WallShearStressX/Y/Z on `wall_faces` (ascending), and YPlus for viscous
+  /// physics (results.md, WallSolution).
   [[nodiscard]] virtual std::vector<io::Field> wall_fields(
       std::span<const index_t> wall_faces) const = 0;
   /// Loads on the boundary faces of `zones` (indices into Mesh::face_zones()).

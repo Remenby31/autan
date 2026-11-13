@@ -2617,6 +2617,10 @@ class Run final : public Log {
     for (const auto& f : s.fields) names.push_back(f.name);
     if (names != field_names(in))
       throw PhysicsFailure("the physics returned another set of fields");
+    names.clear();
+    for (const auto& f : s.wall_fields) names.push_back(f.name);
+    if (!s.wall_faces.empty() && names != wall_field_names(in))
+      throw PhysicsFailure("the physics returned another set of wall fields");
     // The SolverState a continue checks names and lengths of (E0707): what the entry registers.
     std::vector<std::pair<std::string, std::int64_t>> scalars;
     for (const auto& f : s.solver_state)

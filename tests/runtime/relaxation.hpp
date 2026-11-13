@@ -438,14 +438,12 @@ class Relaxation final : public autan::runtime::Physics {
 
   [[nodiscard]] std::vector<autan::io::Field> wall_fields(
       std::span<const autan::index_t> faces) const override {
-    std::vector<autan::io::Field> out{{.name = "Pressure", .values = {}},
-                                      {.name = "WallShearStressX", .values = {}},
-                                      {.name = "WallShearStressY", .values = {}},
-                                      {.name = "WallShearStressZ", .values = {}}};
-    for (const auto f : faces) {
-      out[0].values.push_back(pressure(context_.mesh.owner()[static_cast<std::size_t>(f)]));
-      for (std::size_t k = 1; k < 4; ++k) out[k].values.push_back(0.0);
-    }
+    // No shear, so y+ is 0 too (results.md, WallSolution).
+    std::vector<autan::io::Field> out;
+    for (const auto& name : autan::runtime::wall_field_names(context_.input))
+      out.push_back({.name = name, .values = std::vector<double>(faces.size(), 0.0)});
+    for (std::size_t j = 0; j < faces.size(); ++j)
+      out[0].values[j] = pressure(context_.mesh.owner()[static_cast<std::size_t>(faces[j])]);
     return out;
   }
 

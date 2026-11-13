@@ -953,4 +953,11 @@ std::vector<std::string> field_names(const SolverInput& in) {
   return names;
 }
 
+std::vector<std::string> wall_field_names(const SolverInput& in) {
+  std::vector<std::string> names{"Pressure", "WallShearStressX", "WallShearStressY",
+                                 "WallShearStressZ"};
+  if (in.turbulence.model != "inviscid") names.emplace_back("YPlus");
+  return names;
+}
+
 }  // namespace autan::runtime

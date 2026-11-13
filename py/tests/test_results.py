@@ -134,6 +134,43 @@ def test_crm_hl_freestream_fields_follow_ideal_gas_and_sutherland(crm_run: autan
     np.testing.assert_allclose(pressure, rho * r * temperature, rtol=1e-12)
 
 
+def test_y_plus_is_the_runs_wall_field_on_the_zones_faces(
+    tmp_path: Path, write_case: Callable[[str], Path], crm_run: autan.Results
+) -> None:
+    # results.md, WallSolution YPlus: y1 sqrt(|tau_w| rho_w) / mu(T_w), 0 where tau_w is; the
+    # fake backend writes no wall shear.
+    base = cgns.read(crm_run.path / "solution.cgns").child("Base")
+    zone = base.child("Zone")
+    names = json.loads(base.child("ZoneNames").text())["boundary"]
+    node = next(k for k, v in names.items() if v == "wing.main")
+    own = np.asarray(zone.child("ZoneBC").child(node).child("PointList").data).ravel() - 1
+    faces, y_plus = crm_run.y_plus("wing.main")
+    assert faces.size > 0
+    assert faces.tolist() == sorted(own.tolist())
+    np.testing.assert_array_equal(y_plus, 0.0)
+    # Distinct values, one per wall face (its 1-based id): each zone reads its own faces' values.
+    with h5py.File(crm_run.path / "solution.cgns", "r+") as handle:
+        points = handle["Base/Zone/WallSolution/PointList/ data"][()].ravel()
+        handle["Base/Zone/WallSolution/YPlus/ data"][...] = points.astype(np.float64)
+    reopened = autan.Results.open(crm_run.path)
+    for name in ("wing.main", "wing.flap"):
+        faces, y_plus = reopened.y_plus(name)
+        np.testing.assert_array_equal(y_plus, faces + 1.0)
+    assert not set(reopened.y_plus("wing.main")[0]) & set(reopened.y_plus("wing.flap")[0])
+    with pytest.raises(autan.CaseError) as error:
+        crm_run.y_plus("farfield")
+    assert error.value.codes == ["E0703"]
+
+    body = CRM_HL.replace("autan.SA()", "autan.Inviscid()").replace(".wall()", ".slip()")
+    inviscid = autan.load(write_case(body)).run(
+        crm_run.mesh_info, backend=autan.FakeBackend(), runs=tmp_path / "inviscid"
+    )
+    assert inviscid.wall("Pressure")[0].size > 0
+    with pytest.raises(autan.CaseError) as error:
+        inviscid.y_plus("wing.main")
+    assert error.value.codes == ["E0703"]
+
+
 def test_heat_exchanger_zones_carry_their_own_media(tmp_path: Path) -> None:
     result = heat_run(tmp_path)
     pressure, temperature = 101325.0, 300.0
@@ -582,12 +619,36 @@ def _shrink_density(path: Path) -> None:
         handle["Base/Zone/FlowSolution/Density"].create_dataset(" data", data=values[:1])
 
 
+def _drop_y_plus(path: Path) -> None:
+    with h5py.File(path, "r+") as handle:
+        del handle["Base/Zone/WallSolution/YPlus"]
+
+
+def _shrink_y_plus(path: Path) -> None:
+    with h5py.File(path, "r+") as handle:
+        values = handle["Base/Zone/WallSolution/YPlus/ data"][()]
+        del handle["Base/Zone/WallSolution/YPlus/ data"]
+        handle["Base/Zone/WallSolution/YPlus"].create_dataset(" data", data=values[:1])
+
+
+def _narrow_y_plus(path: Path) -> None:
+    with h5py.File(path, "r+") as handle:
+        values = handle["Base/Zone/WallSolution/YPlus/ data"][()]
+        del handle["Base/Zone/WallSolution/YPlus/ data"]
+        handle["Base/Zone/WallSolution/YPlus"].create_dataset(
+            " data", data=values.astype(np.float32)
+        )
+
+
 @pytest.mark.parametrize(
     "damage",
     [
         lambda path: path.write_bytes(b"not a CGNS file"),
         lambda path: h5py.File(path, "w").close(),
         _shrink_density,
+        _drop_y_plus,
+        _shrink_y_plus,
+        _narrow_y_plus,
     ],
 )
 def test_solution_is_checked_on_first_use(
