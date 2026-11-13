@@ -145,8 +145,8 @@ LocalPartition extract_partition(const Mesh& global, const Geometry& global_geom
                                  std::int32_t rank, GhostStencil ghosts = GhostStencil::face2);
 
 /// One level of a graph hierarchy (a multigrid level): n_nodes nodes, edges owner -> neighbour
-/// (indices of nodes), and each node's global id. Global ids are distinct and an edge joins two
-/// distinct nodes; extract_graph relies on both without checking them.
+/// (indices of nodes), and each node's global id. Global ids are distinct (extract_graph throws
+/// E0140 otherwise); an edge joins two distinct nodes, which extract_graph relies on unchecked.
 struct GraphLevel {
   std::size_t n_nodes = 0;
   std::span<const index_t> owner, neighbour;
@@ -155,8 +155,8 @@ struct GraphLevel {
 
 /// The part of each coarse node: that of its child with the least global id, so that every
 /// rank, holding the same hierarchy, agrees. `coarse_node` gives each fine node's coarse node
-/// (n_coarse of them), `global_id` its id, distinct (not checked). Throws E0140 for sizes that do
-/// not match, a coarse node out of range or one without child.
+/// (n_coarse of them), `global_id` its id. Throws E0140 for sizes that do not match, a repeated
+/// global id, a coarse node out of range or one without child.
 std::vector<std::int32_t> coarse_parts(std::span<const std::int32_t> parts,
                                        std::span<const index_t> coarse_node,
                                        std::span<const std::int64_t> global_id,
@@ -167,6 +167,42 @@ std::vector<std::int32_t> coarse_parts(std::span<const std::int32_t> parts,
 std::vector<index_t> remote_children(std::int32_t rank, std::span<const std::int32_t> parts,
                                      std::span<const index_t> coarse_node,
                                      std::span<const std::int32_t> coarse_parts);
+
+/// The part of each node of a coarse level of a multigrid on N ranks (#259 D2): a node of a
+/// line of at least two nodes takes the part of the line's least child, the child with the least
+/// global id over all the line's nodes, so that each line is solved on one rank; a node in no
+/// line of at least two takes the part of its own least child, as coarse_parts. `parts` are the
+/// finer level's final parts; `line_offsets` and `line_nodes` the coarse level's lines (CSR over
+/// its nodes, as the multigrid's Level). Every rank, holding the same hierarchy, agrees. Throws
+/// E0140 for sizes that do not match, a repeated global id, a node out of range, a coarse node
+/// without child, or a node in two lines.
+std::vector<std::int32_t> level_parts(std::span<const std::int32_t> parts,
+                                      std::span<const index_t> coarse_node,
+                                      std::span<const std::int64_t> global_id, std::size_t n_coarse,
+                                      std::span<const offset_t> line_offsets,
+                                      std::span<const index_t> line_nodes);
+
+/// What a rank imports to prolong a coarse correction onto the fine nodes it owns: the coarse
+/// nodes owned by other parts that hold one of them (`parents`, ordered by owning part then
+/// global id), after its own coarse nodes (`owned`, in increasing global id, as LocalGraph's
+/// owned nodes). `halo` moves values laid out as owned then parents with HaloExchange, forward
+/// only; a rank may own no coarse node and still import.
+struct ParentImport {
+  std::vector<index_t> owned;
+  std::vector<index_t> parents;
+  HaloPattern halo;
+};
+
+/// The ParentImport of `rank` between a fine level partitioned by `parts` and its coarse level
+/// partitioned by `coarse_parts` (`coarse_node` gives each fine node's coarse node,
+/// `coarse_global_id` each coarse node's id). Every rank, holding the same levels, builds
+/// matching patterns. Throws E0140 for sizes that do not match, a repeated coarse global id, a part
+/// or node out of range.
+ParentImport parent_import(std::span<const std::int32_t> parts,
+                           std::span<const index_t> coarse_node,
+                           std::span<const std::int32_t> coarse_parts,
+                           std::span<const std::int64_t> coarse_global_id, std::int32_t n_parts,
+                           std::int32_t rank);
 
 /// One rank's share of a graph level, as LocalPartition is a mesh's.
 struct LocalGraph {
@@ -190,7 +226,8 @@ struct LocalGraph {
 /// The part `rank` of a graph level partitioned by `parts` (each node's part), for exchanges
 /// with HaloExchange. With `coarse_node` and `coarse_parts`, it also holds the remote children
 /// (remote_children) and their edges. Every rank of a run, holding the same level, builds
-/// matching patterns. Throws E0140 for sizes that do not match, a part or node out of range.
+/// matching patterns. Throws E0140 for sizes that do not match, a repeated global id, a part or
+/// node out of range.
 LocalGraph extract_graph(const GraphLevel& level, std::span<const std::int32_t> parts,
                          std::int32_t n_parts, std::int32_t rank,
                          std::span<const index_t> coarse_node = {},

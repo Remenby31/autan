@@ -1,7 +1,22 @@
-add_executable(autan_solvers_tests test_multigrid.cpp)
+find_package(Threads REQUIRED)
+add_executable(
+  autan_solvers_tests
+  test_multigrid.cpp
+  test_distributed_operator.cpp
+  test_distributed_multigrid.cpp
+  # The runtime's exact sum, header and source alone, for the threads' reductions.
+  ${PROJECT_SOURCE_DIR}/runtime/src/exact_sum.cpp
+)
+target_include_directories(autan_solvers_tests PRIVATE ${PROJECT_SOURCE_DIR}/runtime/include)
 target_link_libraries(
   autan_solvers_tests
-  PRIVATE autan::solvers autan::io autan::partition Catch2::Catch2WithMain autan_compile_options
+  PRIVATE
+    autan::solvers
+    autan::io
+    autan::partition
+    Threads::Threads
+    Catch2::Catch2WithMain
+    autan_compile_options
 )
 target_compile_definitions(
   autan_solvers_tests

@@ -147,12 +147,17 @@ struct SolverInput {
   double mesh_scale = 1.0;  ///< metres per mesh unit (solver-input.md, mesh.scale)
   /// SHA-256 of the zone-groups sidecar the SDK resolved the case with; none without one.
   std::optional<std::string> mesh_groups_sha256;
-  /// The MeshInfo the input was planned with (solver-input.md, mesh_info), as JSON text, and
-  /// the cell order and scale its quality.lines were counted in.
-  std::string mesh_info, mesh_info_order;
+  /// The MeshInfo the input was planned with (solver-input.md, mesh_info), as JSON text, the
+  /// cell order and scale its quality.lines were counted in, and the cell order its
+  /// quality.multigrid was built in.
+  std::string mesh_info, mesh_info_order, mesh_info_multigrid_order;
   double mesh_info_scale = 1.0;
   std::int64_t mesh_info_bytes = 0;  ///< its source.bytes: the size of what the mesh hash covers
-  std::string precision;             ///< "fp32+acc64" or "fp64"
+  /// Its partition's rank count and groups ("none", "lines" or "multigrid"); 0 and "none"
+  /// without a partition.
+  std::int64_t mesh_info_ranks = 0;
+  std::string mesh_info_groups = "none";
+  std::string precision;  ///< "fp32+acc64" or "fp64"
   /// "none", "run" or "ranks" (solver-input.md): which runs repeat the same bits.
   std::string reproducibility = "run";
   std::string device_kind;  ///< cpu, cuda, hip

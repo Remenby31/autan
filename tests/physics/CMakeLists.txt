@@ -84,20 +84,24 @@ if(AUTAN_ENABLE_CGNS)
       Catch2::Catch2WithMain
       autan_compile_options
   )
+  # The gate-7 controls run autan-run itself, then tools/gate7.py.
+  find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
   target_compile_definitions(
     autan_euler_run_tests
-    PRIVATE AUTAN_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/tests/data"
+    PRIVATE
+      AUTAN_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/tests/data"
+      AUTAN_PYTHON="${Python3_EXECUTABLE}"
+      AUTAN_RUN="$<TARGET_FILE:autan-run>"
   )
+  add_dependencies(autan_euler_run_tests autan-run)
   # Several ranks: autan-run under the MPI launcher, as tests/runtime does.
   if(AUTAN_ENABLE_MPI AND AUTAN_ENABLE_METIS)
     target_compile_definitions(
       autan_euler_run_tests
       PRIVATE
-        AUTAN_RUN="$<TARGET_FILE:autan-run>"
         AUTAN_MPIEXEC="${MPIEXEC_EXECUTABLE}"
         AUTAN_MPIEXEC_NUMPROC_FLAG="${MPIEXEC_NUMPROC_FLAG}"
     )
-    add_dependencies(autan_euler_run_tests autan-run)
   endif()
   # [mpi] cases carry the CTest label mpi: CI's hosted MPI ranks job selects them by it.
   # Processes started by these tests share their executables' hash (run.json

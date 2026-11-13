@@ -150,14 +150,16 @@ def _references(
             above = next((i for i, line in enumerate(residuals) if line[e] > zero), None)
             exempt_until[e] = len(residuals) if above is None else above
             wake[e] = above
-    # A woken equation drops from the largest first residual of its kind: the momentum components
-    # share units, every other equation takes the largest of all (case-schema.md#time).
+    # A momentum component drops from the largest momentum residual in the reference, exempt and
+    # woken or not; another woken equation from the largest of all (case-schema.md#time).
+    momentum = max(
+        (r for r, name in zip(reference, equations, strict=True) if name.startswith("momentum-")),
+        default=0.0,
+    )
     reference = [
-        max(
-            r
-            for k, r in enumerate(reference)
-            if not name.startswith("momentum-") or equations[k].startswith("momentum-")
-        )
+        momentum
+        if name.startswith("momentum-")
+        else max(reference)
         if reference[e] < zero
         else reference[e]
         for e, name in enumerate(equations)
@@ -166,10 +168,12 @@ def _references(
 
 
 def residual_drops(results: autan.Results) -> dict[str, float | None]:
-    """Orders of magnitude each equation's residual fell from its reference (case-schema.md#time:
-    iteration 1, `start.residual_reference` of a continuation, the largest of its kind for an
-    equation identically zero there) to the last line of the history, whatever the run's status;
-    None for an equation identically zero to the end. History residuals are finite (results.md)."""
+    """Orders of magnitude each equation's residual fell from its reference value
+    (case-schema.md#time: in iteration 1 or `start.residual_reference` of a continuation, the
+    largest momentum residual for a momentum component, the largest of all for another equation
+    identically zero there, its own otherwise) to the last line of the history, whatever the run's
+    status; None for an equation identically zero to the end. History residuals are finite
+    (results.md)."""
     history = results.history
     equations = history.equations
     if not equations:
@@ -195,8 +199,9 @@ def check_stop(results: autan.Results) -> None:
 
     The rule is case-schema.md#time, implemented here from that text and not by the solver: a
     `converged` run's last history line is the first one where every equation has dropped
-    `residual_orders` from its reference (iteration 1, or `start.residual_reference` of a
-    continuation; for one identically zero there, the largest of its kind), is identically zero
+    `residual_orders` from its reference value (in iteration 1, or `start.residual_reference` of
+    a continuation: the largest momentum residual for a momentum component, the largest of all
+    for another equation identically zero there, its own otherwise), is identically zero
     and still at its floor, or in `fp32+acc64` sits on a
     round-off plateau within 10 floors, its provisional lines counting towards none, at most
     at `max_iterations`; a `completed` run has no such line and ends at `max_iterations`.
