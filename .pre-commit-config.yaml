@@ -28,14 +28,14 @@ repos:
         args: [--branch, main]
 
   - repo: https://github.com/crate-ci/typos
-    rev: 9023c1f779400877cafdd98052113fc777e2cfdc  # frozen: v1.51.1
+    rev: 4c8b7f51ca60df14e3c5ca82770dfbbe6c3dae85  # frozen: v1.52.0
     hooks:
       # Report only: a spelling fix written without review can corrupt identifiers and translations.
       - id: typos
         args: [--force-exclude]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: 25bcf95026b96e2dd3c0aec3090c3d6ef6ca2e6c  # frozen: v0.17.3
+    rev: c0f278f1254ccc8fb09676bcdb8d847e7db493e5  # frozen: v0.17.4
     hooks:
       # Python sources only: Markdown code blocks in docs are hand-laid examples, not modules.
       - id: ruff-check
@@ -74,7 +74,7 @@ repos:
         additional_dependencies: [shellcheck-py==0.11.0.1]
 
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: c92afdf2c6ca336aaa8f39e2bd8d48f62dbd8e1f  # frozen: v1.31.1
+    rev: 06a39750ec31860bb44f2acf67182c40016cd1e7  # frozen: v1.32.0
     hooks:
       - id: zizmor
 
